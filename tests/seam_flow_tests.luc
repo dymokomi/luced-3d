@@ -2,6 +2,7 @@
 from cad import BrepModel
 from three import Vector3, PolygonMesh
 from geometry_tests import near, manifold
+from parallel_cad_tests import planned_matches
 import math
 
 func fixture(hard: bool, angle: float) -> BrepModel!:
@@ -63,12 +64,18 @@ func check(mesh: PolygonMesh, flows: bool) -> unit!:
         assert(b.position.subtract(a.position).cross(c.position.subtract(a.position)).dot(a.normal) > 0.0)
 
 pub func seam_flow_tests() -> unit!:
-    check(fixture(true,0.0).mesh(8),false)
-    check(fixture(false,math.pi/4.0).mesh(8),false)
-    check(fixture(false,math.pi/2.0).mesh(8),true)
-    check(fixture(false,0.0).mesh(8),true)
+    checked_case(true,0.0,false)
+    checked_case(false,math.pi/4.0,false)
+    checked_case(false,math.pi/2.0,true)
+    checked_case(false,0.0,true)
     curved_strip()
     print("PASS hard-seam boundary n-gons, rotated G1 flow stops, 90-degree row transport and canonical stitching")
+
+func checked_case(hard: bool, angle: float, flows: bool) -> unit!:
+    let b = fixture(hard,angle)
+    let mesh = b.mesh(8)
+    check(mesh,flows)
+    for selected in [0,1]: planned_matches(b,mesh,selected,8,0.0)
 
 func curved_strip() -> unit!:
     let b = BrepModel()
@@ -90,15 +97,36 @@ func curved_strip() -> unit!:
     discard(b.add_face(1,[1,-5],[2],false))
     discard(b.add_face(2,[3,-6],[2]))
     discard(b.add_face(3,[5,2,-6,4],[4]))
-    let mesh = b.mesh(8)
-    manifold(mesh)
-    let parents = mesh.find_attribute("cad_face",2)
-    var quads = 0
-    for face in 0..<mesh.face_count():
-        if mesh.attribute_value(parents,face,0) != 0.0: continue
-        assert(mesh.face_size(face) == 4)
-        quads += 1
-        for at in 0..<4:
-            let p = mesh.point(mesh.face_point(face,at))
-            near(p.y,p.x*(1.0-p.x))
-    assert(quads >= 8)
+    for spacing in [0.0,0.125]:
+        let mesh = b.mesh(8,edge_size=spacing)
+        planned_matches(b,mesh,0,8,spacing)
+        manifold(mesh)
+        let parents = mesh.find_attribute("cad_face",2)
+        var cells = 0
+        var interior_quads = 0
+        var trimmed = 0
+        for face in 0..<mesh.face_count():
+            if mesh.attribute_value(parents,face,0) != 0.0: continue
+            let count = mesh.face_size(face)
+            assert(count >= 4)
+            cells += 1
+            var boundary_corners = 0
+            for at in 0..<count:
+                let p = mesh.point(mesh.face_point(face,at))
+                near(p.y,p.x*(1.0-p.x))
+                if p.z < 0.000001 or p.z > 0.999999: boundary_corners += 1
+            # Extra samples may terminate only on the two hard curved trims;
+            # no extra rows or diagonal edges are allowed through the interior.
+            if count > 4:
+                trimmed += 1
+                assert(boundary_corners >= count-2)
+            elif boundary_corners == 0: interior_quads += 1
+        assert(cells >= 8)
+        if spacing > 0.0: assert(interior_quads >= 8)
+        else: assert(trimmed > 0)
+        for triangle in 0..<mesh.index_count()//3:
+            let a = mesh.vertex(mesh.index(triangle*3))
+            let middle = mesh.vertex(mesh.index(triangle*3+1))
+            let c = mesh.vertex(mesh.index(triangle*3+2))
+            let cross = middle.position.subtract(a.position).cross(c.position.subtract(a.position))
+            for n in [a.normal,middle.normal,c.normal]: assert(cross.dot(n) > cross.length()*0.0000000001)

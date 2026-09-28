@@ -1,0 +1,138 @@
+## A closed NURBS support is a cut chart, not a pinched polygon. Both uses of
+## its seam must stay separate in UV, then rejoin the same canonical 3D edge.
+from cad import BrepModel
+from three import Vector3
+from geometry_tests import near
+import math
+
+pub func periodic_grid_tests() -> unit!:
+    for variant in 0..<4:
+        let reverse = variant%2 == 1
+        let analytic = variant >= 2
+        let model = BrepModel()
+        discard(model.add_vertex(Vector3(1.0,0.0,0.0)))
+        discard(model.add_vertex(Vector3(1.0,0.0,1.0)))
+        for pair in [[0.3,0.3],[0.7,0.3],[0.7,0.7],[0.3,0.7]]:
+            discard(model.add_vertex(Vector3(math.cos(pair[0]),math.sin(pair[0]),pair[1])))
+        let z = Vector3(0.0,0.0,1.0)
+        let x = Vector3(1.0,0.0,0.0)
+        discard(model.add_circle(0,0,Vector3(),z,x,1.0))
+        discard(model.add_line(0,1))
+        discard(model.add_circle(1,1,z,z,x,1.0))
+        discard(model.add_circle(2,3,Vector3(0.0,0.0,0.3),z,x,1.0))
+        discard(model.add_line(3,4))
+        discard(model.add_circle(5,4,Vector3(0.0,0.0,0.7),z,x,1.0))
+        discard(model.add_line(2,5))
+        let controls: list[Vector3] = []
+        let weights: list[float] = []
+        let ring = [Vector3(1.0,0.0,0.0),Vector3(1.0,1.0,0.0),Vector3(0.0,1.0,0.0),Vector3(-1.0,1.0,0.0),Vector3(-1.0,0.0,0.0),Vector3(-1.0,-1.0,0.0),Vector3(0.0,-1.0,0.0),Vector3(1.0,-1.0,0.0),Vector3(1.0,0.0,0.0)]
+        for at in 0..<ring.length:
+            for v in [0.0,1.0]:
+                controls.append(ring[at].add(z.multiply_scalar(v)))
+                weights.append(1.0 if at%2 == 0 else math.sqrt(0.5))
+        if analytic:
+            discard(model.add_surface(1,Vector3(),z,x,1.0))
+        else:
+            discard(model.add_spline_surface(controls,weights,9,2,2,1,[0.0,0.0,0.0,0.25,0.25,0.5,0.5,0.75,0.75,1.0,1.0,1.0],[0.0,0.0,1.0,1.0]))
+        # Start either on a ring or on the reversed repeated seam.
+        discard(model.add_face(0,[-2,1,2,-3,7,6,-5,-4] if reverse else [1,2,-3,-2,7,6,-5,-4],[4,4]))
+        assert(model.face_surface_kind(0) == (1 if analytic else 3))
+        let mesh = model.mesh(8)
+        let method = mesh.find_attribute("cad_mesher",2)
+        var quads = 0
+        let counts: list[int] = []
+        for edge in 0..<mesh.edge_count(): counts.append(0)
+        for face in 0..<mesh.face_count():
+            assert(mesh.attribute_value(method,face,0) == 2.0)
+            if mesh.face_size(face) == 4: quads += 1
+            for at in 0..<mesh.face_size(face): counts[mesh.face_edge(face,at)] += 1
+        assert(quads > 64)
+        var seam_edges = 0
+        for edge in 0..<mesh.edge_count():
+            let a = mesh.point(mesh.edge_point(edge,0))
+            let b = mesh.point(mesh.edge_point(edge,1))
+            assert(counts[edge] == 1 or counts[edge] == 2)
+            if math.abs(a.x-1.0)+math.abs(a.y)+math.abs(b.x-1.0)+math.abs(b.y) < 0.000001:
+                assert(counts[edge] == 2)
+                seam_edges += 1
+        assert(seam_edges > 0)
+        for id in 0..<mesh.point_count():
+            let p = mesh.point(id)
+            near(p.x*p.x+p.y*p.y,1.0)
+        for triangle in 0..<mesh.index_count()//3:
+            let a = mesh.vertex(mesh.index(triangle*3))
+            let b = mesh.vertex(mesh.index(triangle*3+1))
+            let c = mesh.vertex(mesh.index(triangle*3+2))
+            let normal = b.position.subtract(a.position).cross(c.position.subtract(a.position))
+            for n in [a.normal,b.normal,c.normal]:
+                if normal.dot(n) <= 0.0:
+                    print(f"periodic triangle {triangle}: {a.position.x},{a.position.y},{a.position.z}; {b.position.x},{b.position.y},{b.position.z}; {c.position.x},{c.position.y},{c.position.z}; cross {normal.x},{normal.y},{normal.z}")
+                    assert(false)
+        # Ray through the hole must not hit the near shell; the back remains.
+        let direction = Vector3(math.cos(0.5),math.sin(0.5),0.0)
+        let distance = mesh.ray_distance(direction.multiply_scalar(2.0).add(z.multiply_scalar(0.5)),direction.multiply_scalar(-1.0))
+        assert(distance > 2.9 and distance < 3.1)
+    for phase in [-3.0,-1.5,0.0,1.5,3.0]:
+        for reverse in [false,true]: oblique_cylinder(reverse,phase)
+    print("PASS NURBS/analytic periodic charts, reversed seam start, hole/oblique clipping and stitched normals")
+
+func oblique_cylinder(reverse: bool, phase: float) -> unit!:
+    # A five-coedge cylinder with a sloping planar cut is not an arbitrary
+    # triangular patch. Keep an angular/axial grid and clip its end against the
+    # ellipse; the hard cap must share the trim but not transport its interior.
+    let model = BrepModel()
+    let z = Vector3(0.0,0.0,1.0)
+    let x = Vector3(1.0,0.0,0.0)
+    let middle = math.sqrt(0.5)
+    let points = [x,Vector3(0.0,1.0,0.0),Vector3(0.0,1.0,1.0),Vector3(middle,middle,1.0+0.5*middle),Vector3(1.0,0.0,1.5),z]
+    for p in points: discard(model.add_vertex(p))
+    discard(model.add_circle(0,1,Vector3(),z,x,1.0))
+    discard(model.add_line(1,2))
+    for entry in 0..<2:
+        let angle = (3.0 if entry == 0 else 1.0)*math.pi/8.0
+        let weight = math.cos(math.pi/8.0)
+        let cx = math.cos(angle)/weight
+        let control = Vector3(cx,math.sin(angle)/weight,1.0+0.5*cx)
+        discard(model.add_spline_edge(2+entry,3+entry,[points[2+entry],control,points[3+entry]],[1.0,weight,1.0],2,[0.0,0.0,0.0,1.0,1.0,1.0],true))
+    discard(model.add_line(4,0))
+    discard(model.add_line(4,5))
+    discard(model.add_line(5,2))
+    # Rotate only the support's chart, not any geometry. The same hard-trimmed
+    # cylinder must keep its cut quads when an ordinary coedge crosses atan2's
+    # branch; there is no repeated seam edge to trigger chart initialization.
+    discard(model.add_surface(1,Vector3(),z,Vector3(math.cos(phase),math.sin(phase),0.0),1.0))
+    discard(model.add_surface(0,z,Vector3(-0.5,0.0,1.0).normalized(),Vector3(0.0,1.0,0.0)))
+    discard(model.add_face(0,[-5,-4,-3,-2,-1] if reverse else [1,2,3,4,5],[5],not reverse))
+    discard(model.add_face(1,[6,7,3,4] if reverse else [-4,-3,-7,-6],[4],not reverse))
+    # Size refinement guarantees uncut interior cells even though axial
+    # isocurves are straight and need no curvature-driven subdivisions.
+    let mesh = model.mesh(8,0.25)
+    let owner = mesh.find_attribute("cad_face",2)
+    let method = mesh.find_attribute("cad_mesher",2)
+    let uses: list[int] = []
+    for e in 0..<mesh.edge_count(): uses.append(0)
+    for f in 0..<mesh.face_count():
+        for c in 0..<mesh.face_size(f): uses[mesh.face_edge(f,c)] += 1
+    var quads = 0
+    var shared = 0
+    for f in 0..<mesh.face_count():
+        if mesh.attribute_value(owner,f,0) != 0.0: continue
+        assert(mesh.attribute_value(method,f,0) == 2.0)
+        if mesh.face_size(f) == 4: quads += 1
+        for c in 0..<mesh.face_size(f):
+            let a = mesh.point(mesh.face_point(f,c))
+            let b = mesh.point(mesh.face_point(f,(c+1)%mesh.face_size(f)))
+            near(a.x*a.x+a.y*a.y,1.0)
+            assert(a.z <= 1.0+0.5*a.x+0.000001)
+            if math.abs(a.z-1.0-0.5*a.x)+math.abs(b.z-1.0-0.5*b.x) < 0.000001:
+                assert(uses[mesh.face_edge(f,c)] == 2)
+                shared += 1
+            else:
+                assert(math.abs(a.z-b.z) < 0.000001 or math.abs(a.x-b.x)+math.abs(a.y-b.y) < 0.000001)
+    assert(quads >= 16 and shared >= 8)
+    for triangle in 0..<mesh.index_count()//3:
+        let a = mesh.vertex(mesh.index(triangle*3))
+        let b = mesh.vertex(mesh.index(triangle*3+1))
+        let c = mesh.vertex(mesh.index(triangle*3+2))
+        let normal = b.position.subtract(a.position).cross(c.position.subtract(a.position))
+        for n in [a.normal,b.normal,c.normal]: assert(normal.dot(n) > 0.0)

@@ -22,6 +22,11 @@ accepts ASCII node-name text, not IME composition or clipboard paste.
 
 File has Browse, a path field and explicit Reload. It performs no scaling or
 tessellation. STEP produces analytic CAD surfaces; OBJ/FBX produce polygons.
+For STEP/STP, File also exposes **STEP tolerance / 0 = file**. Zero selects the
+file uncertainty; a positive override (`1e-9` through `1`, source units) governs
+boundary agreement and trim projection. The setting is part of the node recipe,
+project and undo history; changing it invalidates and recomputes File on the
+worker. It is hidden for OBJ/FBX and does not replace Tessellate's density controls.
 `File → Transform → Tessellate` changes analytic geometry and then explicitly
 creates polygons. Surface divisions belong to Tessellate. Imports enter the
 cached DAG with undoable parameters/reloads. No file watching or asynchronous

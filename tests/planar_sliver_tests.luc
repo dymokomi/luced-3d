@@ -1,0 +1,77 @@
+## A circular segment and its reflection must both reach the clipped-grid path.
+## Translation, chart axes and trim uncertainty cannot leave unsplit crossings.
+from cad import BrepModel
+from three import Vector3
+from geometry_tests import near
+import math
+
+pub func planar_sliver_tests() -> unit!:
+    for offset in [0.0,41.0]:
+        for angle in [0.0,math.pi]:
+            for uncertainty in [0.000001,0.01]:
+                for minor in [2.8,1.6]:
+                    for rotation in [0.0,0.37]:
+                        for reversed_curve in [false,true]: segment(offset,angle,uncertainty,minor,rotation,reversed_curve)
+    print("PASS planar arc/chord slivers, reflections, translated charts and canonical crossings")
+
+func segment(offset: float, angle: float, uncertainty: float, minor: float, rotation: float, reversed_curve: bool) -> unit!:
+    let model = BrepModel(uncertainty)
+    let radius = 2.8
+    let span = math.acos(2.575/radius)
+    let z = Vector3(0.0,0.0,1.0)
+    let x = Vector3(math.cos(rotation),math.sin(rotation),0.0)
+    let y = Vector3(-math.sin(rotation),math.cos(rotation),0.0)
+    let origin = Vector3(offset,0.0,0.0)
+    let a = origin.add(x.multiply_scalar(radius*math.cos(angle-span))).add(y.multiply_scalar(minor*math.sin(angle-span)))
+    let b = origin.add(x.multiply_scalar(radius*math.cos(angle+span))).add(y.multiply_scalar(minor*math.sin(angle+span)))
+    discard(model.add_vertex(b if reversed_curve else a))
+    discard(model.add_vertex(a if reversed_curve else b))
+    if minor == radius: discard(model.add_circle(0,1,origin,z,x,radius,not reversed_curve))
+    else: discard(model.add_ellipse(0,1,origin,z,x,radius,minor,not reversed_curve))
+    discard(model.add_line(1,0))
+    discard(model.add_surface(0,origin.add(Vector3(-0.112135,0.139327,0.0)),z.multiply_scalar(-1.0),Vector3(-1.0,0.0,0.0)))
+    discard(model.add_face(0,[1,2] if reversed_curve else [-2,-1],[2]))
+    let mesh = model.mesh(16)
+    let method = mesh.find_attribute("cad_mesher",2)
+    let counts: list[int] = []
+    let directions: list[int] = []
+    for edge in 0..<mesh.edge_count():
+        counts.append(0)
+        directions.append(0)
+    var quads = 0
+    for face in 0..<mesh.face_count():
+        if mesh.attribute_value(method,face,0) != 2.0:
+            print(f"sliver offset={offset} angle={angle} uncertainty={uncertainty} method={mesh.attribute_value(method,face,0)}")
+            assert(false)
+        if mesh.face_size(face) == 4: quads += 1
+        for corner in 0..<mesh.face_size(face):
+            let edge = mesh.face_edge(face,corner)
+            counts[edge] += 1
+            directions[edge] += 1 if mesh.face_point(face,corner) == mesh.edge_point(edge,0) else -1
+    assert(quads > 8)
+    near(mesh.point(0).subtract(b if reversed_curve else a).length(),0.0)
+    near(mesh.point(1).subtract(a if reversed_curve else b).length(),0.0)
+    for edge in 0..<mesh.edge_count():
+        assert(counts[edge] == 1 or counts[edge] == 2)
+        if counts[edge] == 2:
+            assert(directions[edge] == 0)
+            continue
+        let p = mesh.point(mesh.edge_point(edge,0)).subtract(origin)
+        let q = mesh.point(mesh.edge_point(edge,1)).subtract(origin)
+        let on_chord = math.abs(p.dot(x)-radius*math.cos(angle)*math.cos(span))+math.abs(q.dot(x)-radius*math.cos(angle)*math.cos(span)) < 0.000001
+        if not on_chord:
+            for point in [p,q]: near(point.dot(x)*point.dot(x)/(radius*radius)+point.dot(y)*point.dot(y)/(minor*minor),1.0)
+    var area = 0.0
+    for triangle in 0..<mesh.index_count()//3:
+        let pa = mesh.vertex(mesh.index(triangle*3))
+        let pb = mesh.vertex(mesh.index(triangle*3+1))
+        let pc = mesh.vertex(mesh.index(triangle*3+2))
+        let normal = pb.position.subtract(pa.position).cross(pc.position.subtract(pa.position))
+        area += normal.length()*0.5
+        for corner_normal in [pa.normal,pb.normal,pc.normal]: assert(normal.dot(corner_normal) > 0.0)
+    let exact = radius*minor*(span-math.sin(span)*math.cos(span))
+    assert(area > exact*0.99 and area <= exact*1.000001)
+    let radial = x.multiply_scalar(math.cos(angle))
+    let inside = origin.add(radial.multiply_scalar((radius+2.575)*0.5))
+    near(mesh.ray_distance(inside.add(z),z.multiply_scalar(-1.0)),1.0)
+    assert(mesh.ray_distance(origin.add(radial.multiply_scalar(2.5)).add(z),z.multiply_scalar(-1.0)) < 0.0)

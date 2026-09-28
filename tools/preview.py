@@ -18,7 +18,11 @@ parser.add_argument("--scene", choices=["default", "edit", "modeling", "spreadsh
 parser.add_argument("--background", action="store_true", help="Run actual background graph computation while capturing")
 parser.add_argument("--file", type=Path, help="External STEP file for the cad scene")
 parser.add_argument("--edge-size", type=float, default=0.0)
+parser.add_argument("--tolerance", type=float, default=0.0, help="STEP File-node import tolerance in source units; 0 uses the file")
 parser.add_argument("--group", default="", help="Isolate imported object paths through a Blast node")
+parser.add_argument("--patch", type=int, default=-1, help="Isolate an original CAD patch AFTER the complete cook, preserving global stations and display triangles")
+parser.add_argument("--patch-neighbors", action="store_true", help="Include CAD patches sharing a mesh edge with the selected patch, after the complete cook")
+parser.add_argument("--neutral", action="store_true", help="Use neutral material instead of imported Cd for isolated patch inspection")
 parser.add_argument("--mode", type=int, choices=range(5), default=3)
 parser.add_argument("--output", type=Path)
 parser.add_argument("--opt", choices=["0", "1", "2", "3"], default="0")
@@ -33,6 +37,8 @@ parser.add_argument("--width", type=int, default=2200, help="Requested logical w
 parser.add_argument("--height", type=int, default=1400, help="Requested logical window height (default: 1400)")
 parser.add_argument("--viewport-only", action="store_true", help="Use the full window for inspecting mesh detail")
 arguments = parser.parse_args()
+if arguments.patch_neighbors and arguments.patch < 0:
+    parser.error("--patch-neighbors requires --patch")
 if not 800 <= arguments.width <= 8192 or not 600 <= arguments.height <= 8192:
     parser.error("Capture size must be 800–8192 by 600–8192")
 
@@ -51,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix="luced-3d-preview-") as temporary:
     binary = project / "preview"
     build(project, binary, arguments.opt)
     ppm = project / "preview.ppm"
-    subprocess.run([str(binary), str(ppm), arguments.scene, str(arguments.file.resolve()) if arguments.file else "", str(arguments.edge_size), str(arguments.mode), "background" if arguments.background else "sync", arguments.group, "orbit" if arguments.orbit else "still", str(arguments.zoom), str(arguments.yaw), str(arguments.pitch), str(arguments.rotation_x) if arguments.rotation_x is not None else "", *(str(value) for value in arguments.target or ["", "", ""]), str(arguments.width), str(arguments.height), "viewport" if arguments.viewport_only else "editor"], check=True, timeout=arguments.timeout)
+    subprocess.run([str(binary), str(ppm), arguments.scene, str(arguments.file.resolve()) if arguments.file else "", str(arguments.edge_size), str(arguments.mode), "background" if arguments.background else "sync", arguments.group, "orbit" if arguments.orbit else "still", str(arguments.zoom), str(arguments.yaw), str(arguments.pitch), str(arguments.rotation_x) if arguments.rotation_x is not None else "", *(str(value) for value in arguments.target or ["", "", ""]), str(arguments.width), str(arguments.height), "viewport" if arguments.viewport_only else "editor", str(arguments.patch), "neutral" if arguments.neutral else "color", "neighbors" if arguments.patch_neighbors else "single", str(arguments.tolerance)], check=True, timeout=arguments.timeout)
     header, dimensions, maximum, pixels = ppm.read_bytes().split(b"\n", 3)
     assert header == b"P6" and maximum == b"255"
     width, height = map(int, dimensions.split())

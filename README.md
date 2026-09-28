@@ -81,7 +81,11 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   scale and Tessellate for explicit polygon conversion. CAD surfaces appear
   automatically with patch boundaries using cached, disposable viewport meshes;
   no Tessellate node is needed just to see them. The File inspector contains only
-  name, path, Browse/Reload, geometry summary and actual import errors. See the precise
+  name, path, Browse/Reload, geometry summary and actual import errors. STEP/STP
+  adds **STEP tolerance / 0 = file**: zero uses the source uncertainty; a positive
+  value overrides it in source units. This per-node setting is saved in projects,
+  supports undo, and reloads the analytic model off-main when changed. OBJ and FBX
+  do not show this setting. It is separate from tessellation density. See the precise
   [import contracts and viewport research](docs/VIEWPORT-AND-IMPORTS.md).
   Shared-edge CAD tessellation now supports planar holes, circular bands and
   ruled spline faces, with quads where suitable; see the
