@@ -62,31 +62,34 @@ pub func quad_flow_tests() -> unit!:
     print("PASS cross-patch row continuity, swapped/reversed UV axes, oblique trim and shared seam topology")
     fillet_phase_test(false)
     fillet_phase_test(true)
+    fillet_phase_test(true,math.pi*0.5+0.00001)
     hard_oblique_quad()
+    hard_oblique_quad(40.0)
 
-func hard_oblique_quad() -> unit!:
+func hard_oblique_quad(length: float = 1.0) -> unit!:
     # Four CAD edges still describe an oblique trim, not a rectangular UV map.
     # Its hard cap shares every cut vertex but must not pull diagonal rows into
     # the curved surface. The old mapped-first path failed this contract.
     let model = BrepModel()
-    let p = [position(0.0,0.0),position(1.0,0.0),position(1.0,0.6),position(0.0,1.0),Vector3(1.0,0.6,0.0)]
+    let p = [position(0.0,0.0),position(length,0.0),position(length,0.6),position(0.0,1.0),Vector3(length,0.6,0.0)]
     for point in p: discard(model.add_vertex(point))
     for at in 0..<4: edge(model,at,(at+1)%4,p[at],p[(at+1)%4])
     discard(model.add_line(3,4))
     discard(model.add_line(4,2))
     let controls: list[Vector3] = []
-    for x in [0.0,1.0]:
+    for x in [0.0,length]:
         controls.append(Vector3(x,0.0,0.0))
         controls.append(Vector3(x,0.5,0.5))
         controls.append(Vector3(x,1.0,0.0))
     discard(model.add_spline_surface(controls,[1.0,1.0,1.0,1.0,1.0,1.0],2,3,1,2,[0.0,0.0,1.0,1.0],[0.0,0.0,0.0,1.0,1.0,1.0]))
-    discard(model.add_surface(0,p[3],Vector3(0.4,1.0,0.0).normalized(),Vector3(0.0,0.0,1.0)))
+    discard(model.add_surface(0,p[3],Vector3(0.4/length,1.0,0.0).normalized(),Vector3(0.0,0.0,1.0)))
     discard(model.add_face(0,[1,2,3,4],[4]))
     discard(model.add_face(1,[-3,-6,-5],[3]))
     let mesh = model.mesh(8)
     let parents = mesh.find_attribute("cad_face",2)
     let clipped = mesh.find_attribute("cad_trim_grid",2)
     var checked = 0
+    var interior_quads = 0
     for f in 0..<mesh.face_count():
         if mesh.attribute_value(parents,f,0) != 0.0: continue
         assert(mesh.attribute_value(clipped,f,0) == 1.0)
@@ -94,7 +97,7 @@ func hard_oblique_quad() -> unit!:
             let a = mesh.point(mesh.face_point(f,at))
             let b = mesh.point(mesh.face_point(f,(at+1)%mesh.face_size(f)))
             near(a.z,a.y*(1.0-a.y))
-            if math.abs(a.y+0.4*a.x-1.0)+math.abs(b.y+0.4*b.x-1.0) < 0.000001:
+            if math.abs(a.y+0.4*a.x/length-1.0)+math.abs(b.y+0.4*b.x/length-1.0) < 0.000001:
                 let e = mesh.face_edge(f,at)
                 var uses = 0
                 for other in 0..<mesh.face_count():
@@ -104,9 +107,23 @@ func hard_oblique_quad() -> unit!:
                 checked += 1
             else:
                 assert(math.abs(a.x-b.x) < 0.000001 or math.abs(a.y-b.y) < 0.000001)
+        if length > 1.0 and mesh.face_size(f) == 4:
+            var whole = true
+            var shortest = 1e100
+            var longest = 0.0
+            for at in 0..<4:
+                let a = mesh.point(mesh.face_point(f,at))
+                let b = mesh.point(mesh.face_point(f,(at+1)%4))
+                whole = whole and math.abs(a.y+0.4*a.x/length-1.0) > 0.000001
+                shortest = math.min(shortest,b.subtract(a).length())
+                longest = math.max(longest,b.subtract(a).length())
+            if whole:
+                assert(longest <= shortest*32.0)
+                interior_quads += 1
     assert(checked >= 8)
+    if length > 1.0: assert(interior_quads > 64)
 
-func fillet_phase_test(split: bool) -> unit!:
+func fillet_phase_test(split: bool, split_angle: float = 2.1) -> unit!:
     let model = BrepModel()
     let x = Vector3(1.0,0.0,0.0)
     let z = Vector3(0.0,0.0,1.0)
@@ -114,7 +131,7 @@ func fillet_phase_test(split: bool) -> unit!:
         discard(model.add_vertex(p))
     discard(model.add_circle(0,0,Vector3(),z,x,4.0))
     if split:
-        discard(model.add_vertex(Vector3(3.0*math.cos(2.1),3.0*math.sin(2.1),1.0)))
+        discard(model.add_vertex(Vector3(3.0*math.cos(split_angle),3.0*math.sin(split_angle),1.0)))
         discard(model.add_circle(1,4,z,z.multiply_scalar(-1.0),x,3.0,false))
         discard(model.add_circle(4,1,z,z.multiply_scalar(-1.0),x,3.0,false))
     else:
@@ -140,20 +157,24 @@ func fillet_phase_test(split: bool) -> unit!:
     let mesh = model.mesh(8)
     manifold(mesh)
     let parent = mesh.find_attribute("cad_face",2)
+    let strategy = mesh.find_attribute("cad_mesher",2)
+    assert(strategy >= 0)
     let islands = mesh.find_attribute("cad_flow_island",2)
     assert(islands >= 0)
     var fillet_quads = 0
+    var smallest_angle = 10.0
+    var largest_angle = 0.0
     for face in 0..<mesh.face_count():
         # A circular G1 fillet/Cartesian-plane trim is not a flow seam, even
         # though their tangent planes agree. The hard bottom cap also stops.
         near(mesh.attribute_value(islands,face,0),mesh.attribute_value(parent,face,0))
         if mesh.attribute_value(parent,face,0) != 0.0: continue
+        assert(mesh.attribute_value(strategy,face,0) == 1.0)
         if split:
             for at in 0..<mesh.face_size(face):
                 let p = mesh.point(mesh.face_point(face,at))
                 let radius = math.sqrt(p.x*p.x+p.y*p.y)-3.0
                 near(radius*radius+p.z*p.z,1.0)
-            continue
         # Incompatible planar cap rows end on the circular boundary. Interior
         # fillet cells stay quads; only ring-adjacent cells may acquire corners.
         assert(mesh.face_size(face) >= 4)
@@ -168,10 +189,23 @@ func fillet_phase_test(split: bool) -> unit!:
         for at in 0..<4:
             let p = mesh.point(mesh.face_point(face,at))
             let radial = Vector3(p.x,p.y,0.0).normalized()
+            let next = mesh.point(mesh.face_point(face,(at+1)%4))
+            if math.abs(p.z-next.z) < 0.0000001 and p.z > 0.000001 and p.z < 0.999999:
+                let other_radial = Vector3(next.x,next.y,0.0).normalized()
+                let angle = math.acos(math.clamp(radial.dot(other_radial),-1.0,1.0))
+                if angle > 0.0000001:
+                    smallest_angle = math.min(smallest_angle,angle)
+                    largest_angle = math.max(largest_angle,angle)
             var paired = false
             for other in 0..<4:
                 if other == at: continue
                 let q = mesh.point(mesh.face_point(face,other))
                 if radial.subtract(Vector3(q.x,q.y,0.0).normalized()).length() < 0.000001: paired = true
             assert(paired)
-    if not split: assert(fillet_quads > 64)
+    # A topological split at a non-grid angular phase must not turn this same
+    # regular fillet into adaptive triangle fans.
+    assert(fillet_quads > 64)
+    # Matching phases must not mean unioning almost-coincident angular rows.
+    # The arbitrary 2.1-radian CAD split stays fixed, but the rows between that
+    # endpoint and the quadrant anchors are distributed as a single family.
+    assert(smallest_angle > 0.025 and largest_angle < smallest_angle*2.0)

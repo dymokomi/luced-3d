@@ -1,7 +1,9 @@
 import probe
 import time
 from app import Luce3D
-from three import Vector3
+from three import Vector3, Matrix4, MeshOps, Group, AmbientLight, DirectionalLight, WireBatch
+from geometry_data import GeometryData
+from scene_projection import append_scene, append_overlays
 
 pub func main(arguments: list[str]) -> int!:
     let editor = Luce3D(width = int(arguments[15]) if arguments.length > 16 else 2200, height = int(arguments[16]) if arguments.length > 16 else 1400)
@@ -18,6 +20,8 @@ pub func main(arguments: list[str]) -> int!:
         w.delete_selected()
         w.add_node("File", 40.0, 40.0)
         w.set_text(0, arguments[2])
+        if arguments.length > 21 and probe.parse_value(arguments[21]) != 0.0:
+            w.set_parameter(0, probe.parse_value(arguments[21]))
         if arguments.length > 6 and arguments[6] != "":
             w.add_node("Blast", 220.0, 100.0)
             w.set_text(0, arguments[6])
@@ -136,7 +140,7 @@ pub func main(arguments: list[str]) -> int!:
                 editor.panels.view.layout().invalidate()
                 return
             if frames == 0:
-                assert(editor.workspace.notice == "")
+                if editor.workspace.notice != "": trap(editor.workspace.notice)
                 print(f"Background compute: {computing_frames} live frames in {float(time.now() - started) / 1000000000.0}s; {editor.workspace.notice}")
                 editor.workspace.frame_cube()
         if frames == 0 and arguments.length > 10 and arguments[1] in ["cad", "cad_wire", "analytic"]:
@@ -144,6 +148,58 @@ pub func main(arguments: list[str]) -> int!:
                 let visible = editor.workspace.geometry else trap("capture has no polygon geometry; check the group expression")
                 assert(visible.face_count() > 0)
             editor.workspace.frame_cube()
+            if arguments.length > 18 and int(probe.parse_value(arguments[18])) >= 0:
+                let w = editor.workspace
+                let whole = w.geometry else trap("patch capture requires polygons")
+                let owner = whole.find_attribute("cad_face", 2)
+                if owner < 0: trap("patch capture requires original CAD face ownership")
+                let patch = int(probe.parse_value(arguments[18]))
+                let neighbors = arguments.length > 20 and arguments[20] == "neighbors"
+                let kept: list[bool] = []
+                if neighbors:
+                    let seam: list[bool] = []
+                    for edge in 0..<whole.edge_count(): seam.append(false)
+                    for face in 0..<whole.face_count():
+                        let parent = int(whole.attribute_value(owner,face,0))
+                        while kept.length <= parent: kept.append(false)
+                        if parent != patch: continue
+                        for corner in 0..<whole.face_size(face): seam[whole.face_edge(face,corner)] = true
+                    for face in 0..<whole.face_count():
+                        for corner in 0..<whole.face_size(face):
+                            if seam[whole.face_edge(face,corner)]:
+                                kept[int(whole.attribute_value(owner,face,0))] = true
+                                break
+                let remove: list[int] = []
+                for face in 0..<whole.face_count():
+                    let parent = int(whole.attribute_value(owner,face,0))
+                    if not (kept[parent] if neighbors else parent == patch): remove.append(face)
+                var isolated = MeshOps.compact(MeshOps.faces(whole, remove, 0))
+                if arguments.length > 19 and arguments[19] == "neutral":
+                    for domain in 0..<4:
+                        if isolated.find_attribute("Cd", domain) >= 0: isolated = isolated.without_attribute("Cd", domain)
+                if isolated.face_count() == 0: trap("requested CAD patch has no polygons")
+                w.geometry = isolated
+                w.scene.clear()
+                # Inspection lighting must reveal underside patches too. The
+                # mesh, normals, depth test and actual wire edges are unchanged.
+                w.scene.add(AmbientLight(intensity = 0.6))
+                w.scene.add(DirectionalLight(direction = Vector3(3.0, 5.0, 2.0), intensity = 0.45))
+                w.scene.add(DirectionalLight(direction = Vector3(-3.0, -5.0, -2.0), intensity = 0.45))
+                let branch = Group()
+                let data = GeometryData(isolated)
+                discard(append_scene(data, branch, mode = w.display_mode))
+                w.scene.add(branch)
+                w.wire_points.clear()
+                w.normal_points.clear()
+                append_overlays(data, Matrix4(), w.wire_points, w.normal_points, w.display_mode)
+                w.wire_batch = WireBatch(w.wire_points)
+                w.normal_batch = WireBatch(w.normal_points)
+                w.patch_batch = none
+                w.grid_visible = false
+                let bounds = isolated.bounds()
+                w.target = bounds.minimum.add(bounds.maximum).multiply_scalar(0.5)
+                w.distance = bounds.maximum.subtract(bounds.minimum).length() * 1.8
+                print(f"Isolated assembled patch {patch}, neighbors={neighbors}: {isolated.face_count()} polygons, {isolated.edge_count()} real edges")
             editor.workspace.distance *= probe.parse_value(arguments[8])
             editor.workspace.yaw = probe.parse_value(arguments[9])
             editor.workspace.pitch = probe.parse_value(arguments[10])
@@ -171,7 +227,7 @@ pub func main(arguments: list[str]) -> int!:
             probe.begin("Luced 3D")
             editor.panels.view.layout().invalidate()
         elif frames >= final_frame:
-            assert(editor.workspace.notice == "")
+            if editor.workspace.notice != "": trap(editor.workspace.notice)
             if orbit: print(f"Native orbit: {frame_total / 300.0} ms mean, {frame_worst} ms worst; callbacks, not input-to-photon")
             editor.app.stop())
     editor.app.run()

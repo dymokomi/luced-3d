@@ -1,7 +1,8 @@
-from three import PolygonMesh, Vector3
+from three import PolygonMesh, Vector3, MeshOps
 import math
 
 pub func near(a: float, b: float):
+    if math.abs(a - b) >= 0.000001: print(f"near failed: actual={a}, expected={b}")
     assert(math.abs(a - b) < 0.000001)
 
 pub func manifold(mesh: PolygonMesh) -> unit!:
@@ -25,9 +26,12 @@ pub func manifold(mesh: PolygonMesh) -> unit!:
         let a = mesh.vertex(mesh.index(triangle * 3))
         let b = mesh.vertex(mesh.index(triangle * 3 + 1))
         let c = mesh.vertex(mesh.index(triangle * 3 + 2))
-        assert(b.position.subtract(a.position).cross(c.position.subtract(a.position)).dot(a.normal) > 0.0)
+        if b.position.subtract(a.position).cross(c.position.subtract(a.position)).dot(a.normal) <= 0.0:
+            print(f"invalid display triangle {triangle}: {a.position.x},{a.position.y},{a.position.z}; {b.position.x},{b.position.y},{b.position.z}; {c.position.x},{c.position.y},{c.position.z}; normal {a.normal.x},{a.normal.y},{a.normal.z}")
+            assert(false)
 
 pub func geometry_tests() -> unit!:
+    compaction_normals()
     let cube = PolygonMesh.cube()
     assert(cube.point_count() == 8 and cube.face_count() == 6 and cube.edge_count() == 12)
     assert(cube.vertex_count() == 24 and cube.index_count() == 36)
@@ -91,3 +95,26 @@ pub func geometry_tests() -> unit!:
             area += twice*0.5
         near(area/(scale*scale),1.0)
     print("PASS polygon topology, region extrusion, winding, immutable transforms, merge and ray picking")
+
+## Index-only compaction must not invalidate authored CAD/import shading.
+func compaction_normals() -> unit!:
+    let source = PolygonMesh([Vector3(9.0,9.0,9.0),Vector3(),Vector3(1.0,0.0,0.0),Vector3(1.0,1.0,0.0),Vector3(0.0,1.0,0.0),Vector3(-9.0,-9.0,-9.0)],[4],[1,2,3,4])
+    let values = [0.0,0.6,0.8, 0.6,0.0,0.8, 0.0,-0.6,0.8, -0.6,0.0,0.8]
+    let authored = source.with_attribute("N",1,3,values).with_attribute("tag",0,1,[10.0,11.0,12.0,13.0,14.0,15.0])
+    for compacted in [MeshOps.compact(authored),MeshOps.compact(MeshOps.compact(authored))]:
+        assert(compacted.point_count() == 4 and compacted.face_count() == 1)
+        let normal = compacted.find_attribute("N",1)
+        assert(normal >= 0)
+        for corner in 0..<4:
+            assert(compacted.vertex(corner).normal.subtract(authored.vertex(corner).normal).length() == 0.0)
+            for axis in 0..<3: assert(compacted.attribute_value(normal,corner,axis) == values[corner*3+axis])
+            assert(compacted.attribute_value(compacted.find_attribute("tag",0),corner,0) == float(11+corner))
+        for index in 0..<authored.index_count(): assert(compacted.index(index) == authored.index(index))
+    # This exemption does not authorize preserving stale normals after edits.
+    assert(authored.moved_points([2],Vector3(0.0,0.0,0.5)).find_attribute("N",1) < 0)
+    let two = PolygonMesh([Vector3(),Vector3(1.0,0.0,0.0),Vector3(1.0,1.0,0.0),Vector3(0.0,1.0,0.0)],[3,3],[0,1,2,0,2,3]).with_attribute("N",1,3,[0.6,0.0,0.8,0.6,0.0,0.8,0.6,0.0,0.8,0.0,0.6,0.8,0.0,0.6,0.8,0.0,0.6,0.8])
+    for selected in [0,1]:
+        let part = MeshOps.compact(MeshOps.faces(two,[1-selected],0))
+        assert(part.find_attribute("N",1) >= 0)
+        for corner in 0..<3: assert(part.vertex(corner).normal.subtract(two.vertex(selected*3+corner).normal).length() == 0.0)
+    assert(MeshOps.faces(two,[0],1).find_attribute("N",1) < 0)

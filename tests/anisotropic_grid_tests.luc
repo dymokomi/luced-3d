@@ -1,0 +1,42 @@
+## A long, narrow trimmed chart is bounded by total cells, not a square axis cap.
+from cad import BrepModel
+from three import Vector3
+from geometry_tests import near
+
+pub func anisotropic_grid_tests() -> unit!:
+    for swapped in [false,true]:
+        for reverse in [false,true]: narrow_strip(swapped,reverse)
+    print("PASS long narrow clipped grids, swapped chart axes, winding, exact trims and area")
+
+func narrow_strip(swapped: bool, reverse: bool) -> unit!:
+    let model = BrepModel()
+    # Split long borders keep each CAD edge below the existing size budget.
+    # The triangular tab makes the whole outline an irregular clipping domain.
+    let points = [Vector3(),Vector3(2.0,0.0,0.0),Vector3(4.0,0.0,0.0),Vector3(6.0,0.0,0.0),Vector3(8.0,0.0,0.0),Vector3(10.0,0.0,0.0),Vector3(10.0,0.1,0.0),Vector3(6.0,0.1,0.0),Vector3(5.0,0.2,0.0),Vector3(4.0,0.1,0.0),Vector3(0.0,0.1,0.0)]
+    for p in points: discard(model.add_vertex(p))
+    let uses: list[int] = []
+    for at in 0..<points.length: discard(model.add_line(at,(at+1)%points.length))
+    for at in 0..<points.length: uses.append(-(points.length-at) if reverse else at+1)
+    discard(model.add_surface(0,Vector3(),Vector3(0.0,0.0,1.0),Vector3(0.0,1.0,0.0) if swapped else Vector3(1.0,0.0,0.0)))
+    discard(model.add_face(0,uses,[uses.length],not reverse))
+    let mesh = model.mesh(8,0.02)
+    let strategy = mesh.find_attribute("cad_mesher",2)
+    var quads = 0
+    for face in 0..<mesh.face_count():
+        assert(mesh.attribute_value(strategy,face,0) == 2.0)
+        if mesh.face_size(face) == 4: quads += 1
+    assert(quads > 1000 and mesh.face_count() < 15000)
+    for at in 0..<points.length: near(mesh.point(at).subtract(points[at]).length(),0.0)
+    var area = 0.0
+    for triangle in 0..<mesh.index_count()//3:
+        let a = mesh.vertex(mesh.index(triangle*3))
+        let b = mesh.vertex(mesh.index(triangle*3+1))
+        let c = mesh.vertex(mesh.index(triangle*3+2))
+        let normal = b.position.subtract(a.position).cross(c.position.subtract(a.position))
+        assert(normal.z < 0.0 if reverse else normal.z > 0.0)
+        for n in [a.normal,b.normal,c.normal]: assert(normal.dot(n) > 0.0)
+        area += normal.z*0.5
+    near(area,-1.1 if reverse else 1.1)
+    # Neither the tab's missing shoulders nor its material may be bridged away.
+    assert(mesh.ray_face(Vector3(4.2,0.18,1.0),Vector3(0.0,0.0,-1.0)) == -1)
+    assert(mesh.ray_face(Vector3(5.0,0.18,1.0),Vector3(0.0,0.0,-1.0)) >= 0)

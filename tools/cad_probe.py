@@ -60,12 +60,23 @@ if __name__ == "__main__":
     parser.add_argument("--reference", type=Path)
     parser.add_argument("--divisions", choices=["4", "8", "16", "64"], default="16")
     parser.add_argument("--opt", choices=["0", "1", "2"], default="0")
+    parser.add_argument("--backend", choices=["native", "c"], default="native")
     parser.add_argument("--edge-size", type=float, default=0.0)
+    parser.add_argument("--tolerance", type=float, default=0.0, help="STEP import tolerance in source units; 0 uses the file uncertainty")
+    parser.add_argument("--timeout", type=float, default=120.0, help="Maximum native import/meshing runtime in seconds")
     parser.add_argument("--preview", action="store_true", help="Audit per-patch display meshing, without converting the whole CAD model")
     parser.add_argument("--stats", action="store_true", help="Report triangle/quad counts per original CAD face")
-    parser.add_argument("--patch", type=int, default=-1, help="Isolate one zero-based patch in preview audits")
+    parser.add_argument("--topology", action="store_true", help="Inspect one patch's support type and shared CAD edges without meshing")
+    parser.add_argument("--patch", type=int, default=-1, help="Extract a zero-based patch after the full production cook (or isolate preview with --preview)")
+    parser.add_argument("--planned", action="store_true", help="Mesh --patch with the full model's shared-edge/layout plan, skipping other final face jobs; NOT proof of whole-model success")
     parser.add_argument("--output", type=Path, help="Optional generated OBJ (never the reference file)")
     args = parser.parse_args()
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        parser.error("timeout must be finite and positive")
+    if args.topology and args.patch < 0:
+        parser.error("--topology requires --patch")
+    if args.planned and (args.patch < 0 or args.preview or args.topology):
+        parser.error("--planned requires --patch and cannot be combined with --preview or --topology")
     if args.output and args.reference and args.output.resolve() == args.reference.resolve():
         parser.error("output must not overwrite the reference")
     with tempfile.TemporaryDirectory(prefix="luced-cad-probe-") as temporary:
@@ -73,20 +84,28 @@ if __name__ == "__main__":
         prepare(project)
         shutil.copy2(ROOT / "tools/cad_probe.luc", project / "src/main.luc")
         shutil.copy2(ROOT / "tools/cad_probe_output.lucb", project / "src/cad_probe_output.lucb")
+        shutil.copy2(ROOT / "tools/cad_probe_quality.lucb", project / "src/cad_probe_quality.lucb")
         binary = project / "cad-probe"
-        build(project, binary, args.opt)
-        result = subprocess.run([str(binary), str(args.step.resolve()), args.divisions, str(args.edge_size), "stats" if args.stats else ("preview" if args.preview else "mesh"), str(args.patch)],
-                                capture_output=True, text=True, timeout=120)
+        build(project, binary, args.opt, args.backend)
+        result = subprocess.run([str(binary), str(args.step.resolve()), args.divisions, str(args.edge_size), "topology" if args.topology else ("stats" if args.stats else ("preview" if args.preview else "mesh")), str(args.patch), str(args.tolerance), "planned" if args.planned else "full"],
+                                capture_output=True, text=True, timeout=args.timeout)
         if result.returncode:
             sys.stderr.write(result.stdout + result.stderr)
             result.check_returncode()
         print(result.stdout.splitlines()[0])
+        if args.topology:
+            print("\n".join(result.stdout.splitlines()[1:]))
+            if args.output: args.output.write_text(result.stdout)
+            sys.exit(0)
         if args.stats:
             print(result.stdout.splitlines()[-1])
             lines = [line for line in result.stdout.splitlines() if line.startswith("patch ")]
             print("worst non-quad counts (triangles and cut-cell n-gons):")
             print("\n".join(sorted(lines, key=lambda line: int(line.split()[4]), reverse=True)[:30]))
             print("groups:", sorted({line.split(" ", 5)[5] for line in lines}))
+            quality = [line for line in result.stdout.splitlines() if line.startswith("quality ")]
+            print("worst quad skew counts (corner sine below 0.1):")
+            print("\n".join(sorted(quality, key=lambda line: int(line.split()[7]), reverse=True)[:20]))
             if args.output: args.output.write_text(result.stdout)
             sys.exit(0)
         if args.preview:
@@ -101,7 +120,8 @@ if __name__ == "__main__":
             sys.exit(0)
         generated = audit(result.stdout)
         print("STEP", generated)
-        assert generated["boundary_edges"] == generated["nonmanifold_edges"] == generated["inconsistent_edges"] == 0
+        assert generated["nonmanifold_edges"] == generated["inconsistent_edges"] == 0
+        if args.patch < 0: assert generated["boundary_edges"] == 0
         if args.reference:
             reference_text = args.reference.read_text()
             reference = audit(reference_text)

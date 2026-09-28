@@ -1,5 +1,5 @@
 from cad import BrepModel
-from three import Vector3
+from three import Vector3, PolygonMesh, MeshOps
 from tesselator import TrimPolygon
 
 pub func parallel_cad_tests() -> unit!:
@@ -22,6 +22,18 @@ pub func parallel_cad_tests() -> unit!:
             assert(first.face_point(face, corner) == second.face_point(face, corner))
     for index in 0..<first.point_count():
         assert(first.point(index).subtract(second.point(index)).length() == 0.0)
+    for selected in [3, 19]:
+        let planned = boundary.planned_face(selected, 4)
+        assert(planned.face_count() == 1 and planned.point_count() == 4)
+        let provenance = planned.find_attribute("cad_face", 2)
+        assert(provenance >= 0 and planned.attribute_value(provenance, 0, 0) == float(selected))
+        for corner in 0..<4:
+            assert(planned.point(planned.face_point(0, corner)).subtract(first.point(first.face_point(selected, corner))).length() == 0.0)
+    var rejected = false
+    discard(boundary.planned_face(20, 4)) catch failure:
+        rejected = true
+        recover ()
+    assert(rejected)
     let strip = TrimPolygon.quadrangulate([Vector3(), Vector3(20.0, 0.0, 0.0), Vector3(20.0, 0.2, 0.0), Vector3(0.0, 0.2, 0.0)], [4], normal, 2.0, 0.025)
     var interior = 0
     for index in 0..<strip.point_count():
@@ -29,3 +41,36 @@ pub func parallel_cad_tests() -> unit!:
         if point.y > 0.0 and point.y < 0.2: interior += 1
     assert(interior > 40)
     print("PASS deterministic native parallel face meshing and anisotropic narrow-strip refinement")
+
+## Compare with extraction AFTER a full cook: independent previews cannot
+## prove that shared stations, stopped trims and display diagonals survived.
+pub func planned_matches(model: BrepModel, whole: PolygonMesh, selected: int, divisions: int, spacing: float) -> unit!:
+    let planned = model.planned_face(selected, divisions, spacing)
+    let parent = whole.find_attribute("cad_face", 2)
+    let normals = whole.find_attribute("N", 1)
+    let planned_normals = planned.find_attribute("N", 1)
+    assert(normals >= 0 and planned_normals >= 0)
+    let remove: list[int] = []
+    let kept: list[int] = []
+    for face in 0..<whole.face_count():
+        if int(whole.attribute_value(parent, face, 0)) != selected: remove.append(face)
+        else: kept.append(face)
+    let reference = MeshOps.compact(MeshOps.faces(whole, remove, 0))
+    assert(planned.point_count() == reference.point_count())
+    assert(planned.face_count() == reference.face_count() and planned.index_count() == reference.index_count())
+    for face in 0..<planned.face_count():
+        assert(planned.face_size(face) == reference.face_size(face))
+        for corner in 0..<planned.face_size(face):
+            assert(planned.point(planned.face_point(face, corner)).subtract(reference.point(reference.face_point(face, corner))).length() == 0.0)
+            for component in 0..<3:
+                assert(planned.attribute_value(planned_normals,planned.face_offset(face)+corner,component) == whole.attribute_value(normals,whole.face_offset(kept[face])+corner,component))
+        for name in ["cad_face", "cad_flow_island", "cad_mesher", "cad_trim_grid"]:
+            assert(planned.attribute_value(planned.find_attribute(name, 2), face, 0) == reference.attribute_value(reference.find_attribute(name, 2), face, 0))
+    for index in 0..<planned.index_count():
+        let a = planned.vertex(planned.index(index))
+        let b = reference.vertex(reference.index(index))
+        assert(a.position.subtract(b.position).length() == 0.0)
+        let id = planned.index(index)
+        let face = planned.corner_face(id)
+        let original = whole.vertex(whole.face_offset(kept[face])+id-planned.face_offset(face))
+        assert(a.normal.subtract(original.normal).length() == 0.0)

@@ -1,12 +1,26 @@
 import time
 import cad_probe_output
+import cad_probe_quality
 from step import Step
 
 pub func main(arguments: list[str]) -> int!:
-    let model = Step.load_model(arguments[0])
+    let model = Step.load_model(arguments[0], cad_probe_output.number(arguments[5]) if arguments.length > 5 else 0.0)
     let start = time.now()
     let divisions = int(cad_probe_output.number(arguments[1])) if arguments.length > 1 else 16
     let edge_size = cad_probe_output.number(arguments[2]) if arguments.length > 2 else 0.0
+    if arguments.length > 3 and arguments[3] == "topology":
+        let patch = int(cad_probe_output.number(arguments[4]))
+        print(f"patch {patch} support={model.face_surface_kind(patch)} edges={model.face_edge_count(patch)} path={model.face_path(patch)}")
+        for use in 0..<model.face_edge_count(patch):
+            let a = model.face_edge_point(patch,use,0.0)
+            let b = model.face_edge_point(patch,use,1.0)
+            print(f"edge {use} id={model.face_edge_id(patch,use)} linear={model.face_edge_linear(patch,use)} start={a.x},{a.y},{a.z} end={b.x},{b.y},{b.z}")
+            for other in 0..<model.face_count():
+                if other == patch: continue
+                for neighbor_use in 0..<model.face_edge_count(other):
+                    if model.face_edge_id(other,neighbor_use) == model.face_edge_id(patch,use):
+                        print(f"  neighbor={other} use={neighbor_use} support={model.face_surface_kind(other)} path={model.face_path(other)}")
+        return 0
     if arguments.length > 3 and arguments[3] == "preview":
         print(f"analytic_faces={model.face_count()} shared_edges={model.edge_count()}")
         var points = 0
@@ -24,8 +38,10 @@ pub func main(arguments: list[str]) -> int!:
             polygons += part.face_count()
         print(f"preview_points={points} polygons={polygons} time_ns={time.now() - start}")
         return 0
-    let mesh = model.tessellate(divisions, edge_size)
-    print(f"# analytic_faces={model.face_count()} shared_edges={model.edge_count()} tessellation_ns={time.now() - start}")
+    let planned = arguments.length > 6 and arguments[6] == "planned"
+    let selected = int(cad_probe_output.number(arguments[4])) if planned else -1
+    let mesh = model.planned_face(selected, divisions, edge_size) if planned else model.tessellate(divisions, edge_size)
+    print(f"# analytic_faces={model.face_count()} shared_edges={model.edge_count()} tessellation_ns={time.now() - start} planned_face={selected}")
     if arguments.length > 3 and arguments[3] == "stats":
         let nonquads: list[int] = []
         let quads: list[int] = []
@@ -42,7 +58,11 @@ pub func main(arguments: list[str]) -> int!:
             else: nonquads[parent] += 1
         for parent in 0..<model.face_count():
             print(f"patch {parent} {model.face_edge_count(parent)} {quads[parent]} {nonquads[parent]} {model.face_path(parent)}")
+        cad_probe_quality.report(mesh, model.face_count())
         print(f"trim_grid_polygons={clipped} total_polygons={mesh.face_count()}")
+        return 0
+    if arguments.length > 4 and int(cad_probe_output.number(arguments[4])) >= 0:
+        cad_probe_quality.write_patch(mesh, int(cad_probe_output.number(arguments[4])))
         return 0
     cad_probe_output.metrics(mesh)
     for index in 0..<mesh.point_count():

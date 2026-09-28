@@ -1,0 +1,91 @@
+## One clipped rational chart and one mapped analytic chart share a split ring.
+## A complete rail must be seeded before either surface adds its own rows.
+from cad import BrepModel
+from three import Vector3
+from geometry_tests import near
+import math
+
+pub func mixed_chart_tests() -> unit!:
+    for split_angle in [2.1,math.pi*0.5+0.00001]: mixed_ring(split_angle)
+    mixed_ring(2.1,0.0000003)
+    print("PASS mixed NURBS/analytic charts, complete split-rail seeds and shared circular flow")
+
+func mixed_ring(split_angle: float, rail_noise: float = 0.0) -> unit!:
+    let model = BrepModel()
+    let z = Vector3(0.0,0.0,1.0)
+    let x = Vector3(1.0,0.0,0.0)
+    for p in [x,x.add(z),Vector3(math.cos(split_angle),math.sin(split_angle),1.0),x.add(z.multiply_scalar(2.0))]:
+        discard(model.add_vertex(p))
+    for pair in [[0.3,0.3],[0.7,0.3],[0.7,0.7],[0.3,0.7]]:
+        discard(model.add_vertex(Vector3(math.cos(pair[0]),math.sin(pair[0]),pair[1])))
+    discard(model.add_circle(0,0,Vector3(),z,x,1.0))
+    discard(model.add_line(0,1))
+    discard(model.add_circle(1,2,z,z,x,1.0))
+    discard(model.add_circle(2,1,z,z,x,1.0))
+    discard(model.add_circle(3,3,z.multiply_scalar(2.0),z,x,1.0))
+    discard(model.add_line(1,3))
+    discard(model.add_circle(4,5,Vector3(0.0,0.0,0.3),z,x,1.0))
+    discard(model.add_line(5,6))
+    discard(model.add_circle(7,6,Vector3(0.0,0.0,0.7),z,x,1.0))
+    discard(model.add_line(4,7))
+    let ring = [Vector3(1.0,0.0,0.0),Vector3(1.0,1.0,0.0),Vector3(0.0,1.0,0.0),Vector3(-1.0,1.0,0.0),Vector3(-1.0,0.0,0.0),Vector3(-1.0,-1.0,0.0),Vector3(0.0,-1.0,0.0),Vector3(1.0,-1.0,0.0),Vector3(1.0,0.0,0.0)]
+    let controls: list[Vector3] = []
+    let weights: list[float] = []
+    for at in 0..<ring.length:
+        for v in [0.0,1.0]:
+            # An independently fitted support differs from its exact circular
+            # CAD trim within the model tolerance. Its inverse UV rail wavers;
+            # that must not seed an unrelated angular family.
+            controls.append(ring[at].add(z.multiply_scalar(v+(rail_noise if v == 1.0 and at == 2 else 0.0))))
+            weights.append(1.0 if at%2 == 0 else math.sqrt(0.5))
+    discard(model.add_spline_surface(controls,weights,9,2,2,1,[0.0,0.0,0.0,0.25,0.25,0.5,0.5,0.75,0.75,1.0,1.0,1.0],[0.0,0.0,1.0,1.0]))
+    discard(model.add_surface(1,Vector3(),z,x,1.0))
+    discard(model.add_face(0,[1,2,-4,-3,-2,10,9,-8,-7],[5,4]))
+    discard(model.add_face(1,[3,4,6,-5,-6],[5]))
+    let mesh = model.mesh(8)
+    let parents = mesh.find_attribute("cad_face",2)
+    let methods = mesh.find_attribute("cad_mesher",2)
+    let islands = mesh.find_attribute("cad_flow_island",2)
+    let uses: list[int] = []
+    let degree: list[int] = []
+    for e in 0..<mesh.edge_count(): uses.append(0)
+    for p in 0..<mesh.point_count(): degree.append(0)
+    var mapped_quads = 0
+    for face in 0..<mesh.face_count():
+        near(mesh.attribute_value(islands,face,0),0.0)
+        let owner = mesh.attribute_value(parents,face,0)
+        near(mesh.attribute_value(methods,face,0),2.0 if owner == 0.0 else 1.0)
+        if owner == 1.0:
+            assert(mesh.face_size(face) == 4)
+            mapped_quads += 1
+        for at in 0..<mesh.face_size(face): uses[mesh.face_edge(face,at)] += 1
+    var minimum = 10.0
+    var maximum = 0.0
+    var shared = 0
+    for e in 0..<mesh.edge_count():
+        let ai = mesh.edge_point(e,0)
+        let bi = mesh.edge_point(e,1)
+        degree[ai] += 1
+        degree[bi] += 1
+        let a = mesh.point(ai)
+        let b = mesh.point(bi)
+        assert(uses[e] == 1 or uses[e] == 2)
+        if math.abs(a.z-1.0)+math.abs(b.z-1.0) > 0.000001: continue
+        assert(uses[e] == 2)
+        shared += 1
+        let angle = math.acos(math.clamp(a.x*b.x+a.y*b.y,-1.0,1.0))
+        minimum = math.min(minimum,angle)
+        maximum = math.max(maximum,angle)
+    assert(shared >= 32 and mapped_quads >= 32)
+    for p in 0..<mesh.point_count():
+        let value = mesh.point(p)
+        near(value.x*value.x+value.y*value.y,1.0)
+        if math.abs(value.z-1.0) < 0.000001: assert(degree[p] == 4)
+    for triangle in 0..<mesh.index_count()//3:
+        let a = mesh.vertex(mesh.index(triangle*3))
+        let b = mesh.vertex(mesh.index(triangle*3+1))
+        let c = mesh.vertex(mesh.index(triangle*3+2))
+        let normal = b.position.subtract(a.position).cross(c.position.subtract(a.position))
+        for n in [a.normal,b.normal,c.normal]: assert(normal.dot(n) > 0.0)
+    print(f"mixed ring {split_angle}: {shared} stations, angular gaps {minimum} .. {maximum}")
+    assert(minimum > 0.005 and maximum < minimum*2.5)
