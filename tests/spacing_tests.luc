@@ -39,6 +39,8 @@ pub func spacing_tests() -> unit!:
     assert(longest/shortest < 8.0)
     parameter_spacing()
     tangent_trim()
+    affine_strip()
+    notched_extrusion()
     print("PASS physical-span allocation on unequal compound sides, no tiny-edge row bunching and exact support")
 
 func parameter_spacing() -> unit!:
@@ -73,3 +75,96 @@ func tangent_trim() -> unit!:
     let mesh = b.mesh(16)
     let clipped = mesh.find_attribute("cad_trim_grid",2)
     for face in 0..<mesh.face_count(): assert(mesh.attribute_value(clipped,face,0) == 1.0)
+
+## Degree-elevated straight extrusion: shape needs longitudinal pitch even
+## though curvature needs none. Exercise production planning, not just helpers.
+func affine_strip() -> unit!:
+    for swapped in [false,true]:
+        let b = BrepModel()
+        let p = [Vector3(),Vector3(1.0,0.0,0.0),Vector3(1.0,20.0,0.0),Vector3(0.0,20.0,0.0)]
+        for point in p: discard(b.add_vertex(point))
+        let quadratic = [0.0,0.0,0.0,1.0,1.0,1.0]
+        let cubic = [0.0,0.0,0.0,0.0,1.0,1.0,1.0,1.0]
+        discard(b.add_spline_edge(0,1,[p[0],Vector3(0.5,0.0,0.3),p[1]],[1.0,1.0,1.0],2,quadratic,true))
+        discard(b.add_line(1,2))
+        discard(b.add_spline_edge(2,3,[p[2],Vector3(0.5,20.0,0.3),p[3]],[1.0,1.0,1.0],2,quadratic,true))
+        discard(b.add_line(3,0))
+        let points: list[Vector3] = []
+        let weights: list[float] = []
+        for a in 0..<(4 if swapped else 3):
+            for c in 0..<(3 if swapped else 4):
+                let u = c if swapped else a
+                let v = a if swapped else c
+                points.append(Vector3(float(u)*0.5,20.0*float(v)/3.0,0.3 if u == 1 else 0.0))
+                weights.append(1.0)
+        discard(b.add_spline_surface(points,weights,4 if swapped else 3,3 if swapped else 4,
+            3 if swapped else 2,2 if swapped else 3,cubic if swapped else quadratic,quadratic if swapped else cubic))
+        discard(b.add_face(0,[1,2,3,4],[4],not swapped))
+        let mesh = b.mesh(8)
+        assert(mesh.face_count() > 32)
+        for at in 0..<mesh.point_count():
+            let q = mesh.point(at)
+            near(q.z,0.6*q.x*(1.0-q.x))
+        for face in 0..<mesh.face_count():
+            assert(mesh.face_size(face) == 4)
+            var low = 1e100
+            var high = 0.0
+            for corner in 0..<4:
+                let a = mesh.point(mesh.face_point(face,corner))
+                let c = mesh.point(mesh.face_point(face,(corner+1)%4))
+                let length = a.subtract(c).length()
+                low = math.min(low,length)
+                high = math.max(high,length)
+                assert(math.abs(a.x-c.x) < 1e-8 or math.abs(a.y-c.y) < 1e-8)
+            assert(high/low < 18.0)
+
+## A notch has eight logical corners, so mapped planning is unavailable.
+## Its Boolean support grid still needs physical pitch along the straight axis.
+func notched_extrusion() -> unit!:
+    for swapped in [false,true]:
+        for reversed in [false,true]:
+            let b = BrepModel()
+            let uv = [Vector3(),Vector3(1.0,0.0,0.0),Vector3(1.0,20.0,0.0),Vector3(0.0,20.0,0.0),
+                Vector3(0.0,11.0,0.0),Vector3(0.2,11.0,0.0),Vector3(0.2,9.0,0.0),Vector3(0.0,9.0,0.0)]
+            let p: list[Vector3] = []
+            for q in uv:
+                p.append(Vector3(q.x,q.y,0.6*q.x*(1.0-q.x)))
+                discard(b.add_vertex(p[-1]))
+            let quadratic = [0.0,0.0,0.0,1.0,1.0,1.0]
+            let linear = [0.0,0.0,1.0,1.0]
+            for at in 0..<p.length:
+                let next = (at+1)%p.length
+                let a = p[at]
+                let c = p[next]
+                if a.x == c.x:
+                    discard(b.add_line(at,next))
+                else:
+                    let dx = c.x-a.x
+                    let middle = Vector3((a.x+c.x)*0.5,a.y,(a.z+c.z)*0.5+0.3*dx*dx)
+                    discard(b.add_spline_edge(at,next,[a,middle,c],[1.0,1.0,1.0],2,quadratic,true))
+            let controls: list[Vector3] = []
+            for a in 0..<(2 if swapped else 3):
+                for c in 0..<(3 if swapped else 2):
+                    let u = c if swapped else a
+                    let v = a if swapped else c
+                    controls.append(Vector3(float(u)*0.5,float(v)*20.0,0.3 if u == 1 else 0.0))
+            discard(b.add_spline_surface(controls,[1.0,1.0,1.0,1.0,1.0,1.0],2 if swapped else 3,3 if swapped else 2,
+                1 if swapped else 2,2 if swapped else 1,linear if swapped else quadratic,quadratic if swapped else linear))
+            discard(b.add_face(0,[-8,-7,-6,-5,-4,-3,-2,-1] if reversed else [1,2,3,4,5,6,7,8],[8],swapped == reversed))
+            let mesh = b.mesh(8)
+            let method = mesh.find_attribute("cad_mesher",2)
+            var quads = 0
+            for at in 0..<mesh.point_count():
+                let q = mesh.point(at)
+                near(q.z,0.6*q.x*(1.0-q.x))
+                assert(not (q.x < 0.2-1e-8 and q.y > 9.0+1e-8 and q.y < 11.0-1e-8))
+            for face in 0..<mesh.face_count():
+                assert(mesh.attribute_value(method,face,0) == 2.0)
+                if mesh.face_size(face) != 4: continue
+                quads += 1
+                for corner in 0..<4:
+                    let a = mesh.point(mesh.face_point(face,corner))
+                    let c = mesh.point(mesh.face_point(face,(corner+1)%4))
+                    assert(math.abs(a.x-c.x) < 1e-8 or math.abs(a.y-c.y) < 1e-8)
+                    assert(math.abs(a.y-c.y) < 2.5)
+            assert(quads >= 40)

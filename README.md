@@ -29,6 +29,29 @@ The [endpoint and layout correction](docs/CAD_ENDPOINT_LAYOUT_2026-09-27.md)
 supersedes the later phase-mismatch workaround: it fixes erroneous spline-end
 wrapping, reconciles mapped/clipped rows together, and records four new native
 camera close-ups plus topology and surface-distance checks.
+The [affine rail checkpoint](docs/CAD_IMPORT_UNCERTAINTY_RAILS_2026-09-28.md),
+[notched cut-chart correction](docs/CAD_NOTCHED_CUT_OWNERSHIP_2026-09-28.md)
+and [physical curved-row admission](docs/CAD_CURVED_FLOW_ADMISSION_2026-09-28.md)
+record the latest local engine changes, matched large native captures,
+native/C regressions and the remaining crowded rows and import blockers.
+The [circular endpoint checkpoint](docs/CAD_CIRCULAR_ENDPOINTS_2026-09-28.md)
+adds a complete, watertight Camera 2 cook with an explicit File tolerance of
+0.02; its original tolerance failure and remaining density issues are documented.
+The [mapped-count feasibility correction](docs/CAD_COUNT_FEASIBILITY_2026-09-28.md)
+stops a proved cyclic constraint, reducing Camera 2 polygons by 20.9% while
+preserving closed topology; it includes matched captures and remaining defects.
+The [wire-depth correction](docs/CAD_WIRE_DEPTH_2026-09-28.md) fixes broken
+coplanar wire overlays with slope-aware Metal/Vulkan fill depth, preserving
+actual mesh edges and checking foreground occlusion with real GPU pixels.
+The [lazy query-index checkpoint](docs/CAD_LAZY_QUERY_INDEX_2026-09-28.md)
+removes repeated spatial-index builds from unqueried intermediate meshes, with
+concurrent-reader and allocation-failure checks and unchanged patch diagnostics.
+The [local dissolve checkpoint](docs/CAD_LOCAL_DISSOLVES_2026-09-28.md)
+removes repeated whole-patch rebuilds during optional trim-sliver cleanup,
+preserving the existing merge decisions and display surface.
+The [spherical chart-fit checkpoint](docs/CAD_SPHERICAL_CAP_FIT_2026-09-28.md)
+gets Car 2 through a full cook at an explicit File tolerance of 0.000025;
+the report also records its substantial remaining tire/fold and density defects.
 
 ![Procedural modeling with shared LuciaOS SVG icons](docs/preview_shared_icons.png)
 
@@ -81,7 +104,11 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   scale and Tessellate for explicit polygon conversion. CAD surfaces appear
   automatically with patch boundaries using cached, disposable viewport meshes;
   no Tessellate node is needed just to see them. The File inspector contains only
-  name, path, Browse/Reload, geometry summary and actual import errors. See the precise
+  name, path, Browse/Reload, geometry summary and actual import errors. STEP/STP
+  adds **STEP tolerance / 0 = file**: zero uses the source uncertainty; a positive
+  value overrides it in source units. This per-node setting is saved in projects,
+  supports undo, and reloads the analytic model off-main when changed. OBJ and FBX
+  do not show this setting. It is separate from tessellation density. See the precise
   [import contracts and viewport research](docs/VIEWPORT-AND-IMPORTS.md).
   Shared-edge CAD tessellation now supports planar holes, circular bands and
   ruled spline faces, with quads where suitable; see the

@@ -4,8 +4,9 @@ from obj import Obj
 from three import PolygonMesh
 from cad import CadModel
 import time
+import cad_probe_output
 
-func compare(source: PolygonMesh, target: PolygonMesh, label: str, model: CadModel) -> unit!:
+func compare(source: PolygonMesh, target: PolygonMesh, label: str, model: CadModel, source_scale: float = 1.0, target_scale: float = 1.0) -> unit!:
     let count = 2048
     var sum = 0.0
     var maximum = 0.0
@@ -17,24 +18,33 @@ func compare(source: PolygonMesh, target: PolygonMesh, label: str, model: CadMod
         let b = source.vertex(source.index(triangle * 3 + 1)).position
         let c = source.vertex(source.index(triangle * 3 + 2)).position
         for p in [point, a.add(b).add(c).multiply_scalar(1.0 / 3.0)]:
-            let distance = target.surface_distance(p)
+            # Convert only query coordinates, not multi-million-face meshes.
+            # Report all distances in STEP source units. This is an explicit
+            # caller-supplied unit conversion, never a fitted alignment.
+            let query = p.multiply_scalar(source_scale / target_scale)
+            let distance = target.surface_distance(query) * target_scale
             sum += distance * distance
             if distance > maximum:
                 maximum = distance
-                let face = target.closest_face(p)
+                let face = target.closest_face(query)
                 let attribute = target.find_attribute("cad_face", 2)
                 let parent = int(target.attribute_value(attribute, face, 0)) if attribute >= 0 else -1
-                print(f"worst {label}: distance={distance} at=({p.x},{p.y},{p.z}) face={face} cad_face={parent}")
+                let world = p.multiply_scalar(source_scale)
+                print(f"worst {label}: distance={distance} at=({world.x},{world.y},{world.z}) face={face} cad_face={parent}")
                 if parent >= 0: print(model.face_path(parent))
             samples += 1
     print(f"{label}: samples={samples} max={maximum} mean_squared={sum / float(samples)}")
 
 pub func main(arguments: list[str]) -> int!:
     let start = time.now()
-    let model = Step.load_model(arguments[0])
+    # Optional File-node import tolerance; never adjust it from the comparison.
+    let tolerance = cad_probe_output.number(arguments[2]) if arguments.length > 2 else 0.0
+    let reference_scale = cad_probe_output.number(arguments[3]) if arguments.length > 3 else 1.0
+    if reference_scale != reference_scale or reference_scale < 1e-9 or reference_scale > 1e9: trap("OBJ-to-STEP unit scale must be finite and between 1e-9 and 1e9")
+    let model = Step.load_model(arguments[0], tolerance)
     let mesh = model.tessellate(16)
     let reference = Obj.load(arguments[1])
-    print(f"STEP faces={mesh.face_count()} OBJ faces={reference.face_count()} prepare_ms={float(time.now() - start) / 1000000.0}")
-    compare(mesh, reference, "STEP-to-OBJ", model)
-    compare(reference, mesh, "OBJ-to-STEP", model)
+    print(f"STEP faces={mesh.face_count()} OBJ faces={reference.face_count()} OBJ_to_STEP_unit_scale={reference_scale} prepare_ms={float(time.now() - start) / 1000000.0}")
+    compare(mesh, reference, "STEP-to-OBJ", model, target_scale = reference_scale)
+    compare(reference, mesh, "OBJ-to-STEP", model, source_scale = reference_scale)
     return 0

@@ -1,0 +1,49 @@
+## A triangular spherical fillet may contain an authored latitude pole. The
+## trim is regular in space even when its original longitude chart is not.
+from cad import BrepModel
+from three import Vector3, Matrix4
+import math
+
+pub func sphere_trim_tests() -> unit!:
+    for radius in [0.005,1.0]:
+        for reverse in [false,true]:
+            for start in 0..<3:
+                let model = BrepModel(radius*0.00001)
+                let frame = Matrix4.compose(Vector3(2.0,3.0,-5.0),Vector3(0.21,-0.17,0.38),Vector3(1.0,1.0,1.0))
+                let origin = frame.transform_point(Vector3())
+                let axes = [frame.transform_point(Vector3(1.0,0.0,0.0)).subtract(origin),frame.transform_point(Vector3(0.0,1.0,0.0)).subtract(origin),frame.transform_point(Vector3(0.0,0.0,1.0)).subtract(origin)]
+                for axis in axes: discard(model.add_vertex(origin.add(axis.multiply_scalar(radius))))
+                for at in 0..<3:
+                    discard(model.add_circle(at,(at+1)%3,origin,axes[(at+2)%3],axes[at],radius))
+                discard(model.add_surface(4,origin,axes[2],axes[0],radius))
+                let uses: list[int] = []
+                for at in 0..<3: uses.append(-((start+3-at)%3+1) if reverse else (start+at)%3+1)
+                discard(model.add_face(0,uses,[3],not reverse))
+                let mesh = model.mesh(8)
+                assert(mesh.face_count() > 16)
+                for point in 0..<mesh.point_count():
+                    assert(math.abs(mesh.point(point).subtract(origin).length()/radius-1.0) < 0.00001)
+                var area = 0.0
+                for triangle in 0..<mesh.index_count()//3:
+                    let a = mesh.vertex(mesh.index(triangle*3))
+                    let b = mesh.vertex(mesh.index(triangle*3+1))
+                    let c = mesh.vertex(mesh.index(triangle*3+2))
+                    let normal = b.position.subtract(a.position).cross(c.position.subtract(a.position))
+                    area += normal.length()*0.5
+                    for n in [a.normal,b.normal,c.normal]:
+                        if normal.dot(n) <= 0.0: print(f"sphere radius={radius} reverse={reverse} start={start} triangle={triangle} normal_dot={normal.dot(n)}")
+                        assert(normal.dot(n) > 0.0)
+                assert(math.abs(area/(radius*radius)-math.pi/2.0) < 0.01)
+                let counts: list[int] = []
+                for edge in 0..<mesh.edge_count(): counts.append(0)
+                for face in 0..<mesh.face_count():
+                    for at in 0..<mesh.face_size(face): counts[mesh.face_edge(face,at)] += 1
+                for edge in 0..<mesh.edge_count():
+                    assert(counts[edge] == 1 or counts[edge] == 2)
+                    if counts[edge] != 1: continue
+                    let a = mesh.point(mesh.edge_point(edge,0)).subtract(origin)
+                    let b = mesh.point(mesh.edge_point(edge,1)).subtract(origin)
+                    var trim = false
+                    for axis in axes: trim = trim or (math.abs(a.dot(axis))+math.abs(b.dot(axis))) < radius*0.000001
+                    assert(trim)
+    print("PASS spherical pole trims, source scales, rotated frames, all loop starts and reversed face normals")

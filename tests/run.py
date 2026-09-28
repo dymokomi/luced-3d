@@ -39,6 +39,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--opt", choices=["0", "1", "2", "3"], default="0")
     parser.add_argument("--backend", choices=["native", "c"], default="native")
+    parser.add_argument("--case", choices=sorted(path.stem for path in (ROOT / "tests").glob("*_tests.luc")), help="Run one named regression module (default: the complete suite)")
     arguments = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="luced-3d-tests-") as temporary:
         project = Path(temporary)
@@ -51,8 +52,19 @@ if __name__ == "__main__":
                         "-o", str(cad_binary)], check=True, timeout=240)
         subprocess.run([str(cad_binary)], check=True, timeout=60)
         print("PASS spline endpoint roundoff, periodic crossings, diagonal curvature and fixed-trim interior spacing", flush=True)
+        trim_binary = project / "trim-predicate-tests"
+        subprocess.run([os.environ.get("LUCE_BASE", "luce-base"), "build",
+                        str(ROOT.parent / "luce-tesselator/src/luce_tesselator/tests/trim_predicates_contract.lucb"), *cad_flags,
+                        "-o", str(trim_binary)], check=True, timeout=240)
+        subprocess.run([str(trim_binary)], check=True, timeout=60)
+        print("PASS filtered/exact trim predicates, close boundary vertices, disjoint holes and true crossing rejection", flush=True)
         prepare(project)
-        shutil.copy2(ROOT / "tests/main.luc", project / "src/main.luc")
+        if arguments.case:
+            (project / "src/main.luc").write_text(
+                f"from {arguments.case} import {arguments.case}\n"
+                f"pub func main(arguments: list[str]) -> int!:\n    {arguments.case}()\n    return 0\n")
+        else:
+            shutil.copy2(ROOT / "tests/main.luc", project / "src/main.luc")
         for module in (ROOT / "tests").glob("*_tests.luc"):
             shutil.copy2(module, project / "src" / module.name)
         binary = project / "test-runner"

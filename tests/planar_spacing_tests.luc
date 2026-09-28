@@ -1,0 +1,95 @@
+## Independent planar supports use physical spacing, not equal axis counts.
+from cad import BrepModel
+from three import Vector3
+from geometry_tests import near
+import math
+
+pub func planar_spacing_tests() -> unit!:
+    for length in [10.0,30.0]:
+        for swapped in [false,true]:
+            for reverse in [false,true]:
+                for joined in [false,true]: strip(length,swapped,reverse,joined)
+    for scale in [0.01,1.0,100.0]:
+        for swapped in [false,true]:
+            for reverse in [false,true]:
+                for split in [false,true]: concave_map(scale,swapped,reverse,split)
+    print("PASS independent planar strip spacing, rotated charts, exact trims, area and normals")
+
+func concave_map(scale: float, swapped: bool, reverse: bool, split: bool) -> unit!:
+    # Both variants have four logical corners. A fitted Coons grid folds at
+    # the concave corner, so clipping must be prepared BEFORE seam freezing.
+    let model = BrepModel()
+    let points = [Vector3(),Vector3(2.0,0.0,0.0),Vector3(4.0,0.0,0.0),Vector3(1.0,1.0,0.0),Vector3(0.0,4.0,0.0),Vector3(0.0,2.0,0.0)] if split else [Vector3(),Vector3(4.0,0.0,0.0),Vector3(1.0,1.0,0.0),Vector3(0.0,4.0,0.0)]
+    for p in points: discard(model.add_vertex(p.multiply_scalar(scale)))
+    let uses: list[int] = []
+    for at in 0..<points.length:
+        discard(model.add_line(at,(at+1)%points.length))
+        uses.append(-(points.length-at) if reverse else at+1)
+    discard(model.add_surface(0,Vector3(),Vector3(0.0,0.0,1.0),Vector3(0.0,1.0,0.0) if swapped else Vector3(1.0,0.0,0.0)))
+    discard(model.add_face(0,uses,[uses.length],not reverse))
+    let mesh = model.mesh(8)
+    let strategy = mesh.find_attribute("cad_mesher",2)
+    for face in 0..<mesh.face_count(): assert(mesh.attribute_value(strategy,face,0) == 2.0)
+    for at in 0..<points.length: near(mesh.point(at).subtract(points[at].multiply_scalar(scale)).length(),0.0)
+    var area = 0.0
+    for triangle in 0..<mesh.index_count()//3:
+        let a = mesh.vertex(mesh.index(triangle*3)).position
+        let b = mesh.vertex(mesh.index(triangle*3+1)).position
+        let c = mesh.vertex(mesh.index(triangle*3+2)).position
+        let cross = b.subtract(a).cross(c.subtract(a)).z
+        assert(cross < 0.0 if reverse else cross > 0.0)
+        area += cross*0.5
+    near(area/(scale*scale),-4.0 if reverse else 4.0)
+    assert(mesh.ray_face(Vector3(3.0*scale,3.0*scale,scale),Vector3(0.0,0.0,-1.0)) == -1)
+
+func strip(length: float, swapped: bool, reverse: bool, joined: bool) -> unit!:
+    let model = BrepModel()
+    let center = length*0.5
+    let points = [Vector3(),Vector3(length*0.2,0.0,0.0),Vector3(length*0.4,0.0,0.0),Vector3(length*0.6,0.0,0.0),Vector3(length*0.8,0.0,0.0),Vector3(length,0.0,0.0),Vector3(length,0.5,0.0),Vector3(center+1.0,0.5,0.0),Vector3(center,0.3,0.0),Vector3(center-1.0,0.5,0.0),Vector3(0.0,0.5,0.0)]
+    for p in points: discard(model.add_vertex(p))
+    let uses: list[int] = []
+    for at in 0..<points.length: discard(model.add_line(at,(at+1)%points.length))
+    for at in 0..<points.length: uses.append(-(points.length-at) if reverse else at+1)
+    discard(model.add_surface(0,Vector3(),Vector3(0.0,0.0,1.0),Vector3(0.0,1.0,0.0) if swapped else Vector3(1.0,0.0,0.0)))
+    discard(model.add_face(0,uses,[uses.length],not reverse))
+    if joined:
+        # A coplanar neighbor shares the left rail, initially only its endpoints.
+        # Smooth eligibility is not an imposed interior row family.
+        discard(model.add_vertex(Vector3(-1.0,0.5,0.0)))
+        discard(model.add_vertex(Vector3(-1.0,0.0,0.0)))
+        discard(model.add_line(10,11))
+        discard(model.add_line(11,12))
+        discard(model.add_line(12,0))
+        discard(model.add_face(0,[-14,-13,-12,11] if reverse else [-11,12,13,14],[4],not reverse))
+    let mesh = model.mesh(8)
+    let strategy = mesh.find_attribute("cad_mesher",2)
+    let parent = mesh.find_attribute("cad_face",2)
+    var quads = 0
+    for face in 0..<mesh.face_count():
+        if mesh.attribute_value(parent,face,0) != 0.0: continue
+        assert(mesh.attribute_value(strategy,face,0) == 2.0)
+        if mesh.face_size(face) != 4: continue
+        quads += 1
+        var shortest = 1e100
+        var longest = 0.0
+        for at in 0..<4:
+            let a = mesh.point(mesh.face_point(face,at))
+            let b = mesh.point(mesh.face_point(face,(at+1)%4))
+            let edge = b.subtract(a).length()
+            shortest = math.min(shortest,edge)
+            longest = math.max(longest,edge)
+        assert(longest/shortest < 8.0)
+    assert(quads >= 4 and mesh.face_count() < 100)
+    for at in 0..<points.length: near(mesh.point(at).subtract(points[at]).length(),0.0)
+    var area = 0.0
+    for triangle in 0..<mesh.index_count()//3:
+        let a = mesh.vertex(mesh.index(triangle*3))
+        let b = mesh.vertex(mesh.index(triangle*3+1))
+        let c = mesh.vertex(mesh.index(triangle*3+2))
+        let normal = b.position.subtract(a.position).cross(c.position.subtract(a.position))
+        assert(normal.z < 0.0 if reverse else normal.z > 0.0)
+        for n in [a.normal,b.normal,c.normal]: assert(normal.dot(n) > 0.0)
+        area += normal.z*0.5
+    near(area,(-1.0 if reverse else 1.0)*(length*0.5-0.2+(0.5 if joined else 0.0)))
+    assert(mesh.ray_face(Vector3(center,0.48,1.0),Vector3(0.0,0.0,-1.0)) == -1)
+    assert(mesh.ray_face(Vector3(center,0.28,1.0),Vector3(0.0,0.0,-1.0)) >= 0)
