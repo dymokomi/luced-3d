@@ -1,0 +1,102 @@
+## Worker-local DAG and preview caches. No UI objects are created here.
+from compute_bridge import ComputeChannel, ComputeHandler
+import compute_bridge
+from compute_protocol import Reader, read_graph, escaped
+from network import Network
+from geometry_data import GeometryData
+from scene_projection import append_overlays, append_patch_boundaries
+from three import Vector3, Matrix4
+
+class Computation:
+    let channel: ComputeChannel
+    var graph: Network
+    var preview_warning: str = ""
+    pub func init(self, channel: ComputeChannel) -> unit!:
+        self.channel = channel
+        self.graph = Network(false)
+
+    pub func compute(self, message: str) -> unit!:
+        self.preview_warning = ""
+        for node in self.graph.nodes:
+            if node.failure.contains("Computation superseded"):
+                self.graph.invalidate(node.id)
+        self.graph = read_graph(Reader(message), self.graph)
+        let graph = self.graph
+        graph.on_progress = self.channel.progress
+        var notice = ""
+        var outputs = graph.outputs(graph.scope)
+        if graph.preview:
+            if let node = graph.find(graph.display):
+                outputs = [node]
+        let wires: list[Vector3] = []
+        let normals: list[Vector3] = []
+        let patches: list[Vector3] = []
+        for node in outputs:
+            if not node.visible:
+                continue
+            let data = graph.evaluate_data(node.id) catch failure:
+                notice = failure.message
+                continue
+            self.prepare(data, node.id)
+            self.channel.progress(node.id, 0.95, "Preparing viewport")
+            self.display(data, Matrix4(), node.id, graph.compute_mode)
+            self.polygon_overlays(data, Matrix4())
+            append_overlays(data, Matrix4(), wires, normals, graph.compute_mode, polygons = false)
+            append_patch_boundaries(data, Matrix4(), patches)
+        if let node = graph.find(graph.selected):
+            let data = graph.evaluate_data(node.id) catch failure:
+                recover GeometryData()
+            if let mesh = data.mesh:
+                self.channel.mesh(mesh, node.id, false)
+        if notice == "":
+            notice = self.preview_warning
+        let report = [escaped(notice), str(graph.nodes.length)]
+        for node in graph.nodes:
+            report.append(str(node.id))
+            report.append("1" if node.dirty else "0")
+            report.append(escaped(node.failure))
+            report.append(escaped(node.summary))
+            report.append(str(node.evaluations))
+            report.append(str(node.group_paths.length))
+            for path in node.group_paths: report.append(escaped(path))
+        self.channel.overlays(wires, normals, patches)
+        self.channel.report(report.join("\n"))
+        self.channel.check() catch failure:
+            for node in graph.nodes:
+                if node.failure != "":
+                    graph.invalidate(node.id)
+            error(failure.code, failure.message)
+
+    func prepare(self, data: GeometryData, node: int) -> unit!:
+        if data.surfaces.length > 0:
+            let preview = data.preview(func (fraction: float) -> unit!:
+                self.channel.progress(node, fraction * 0.9, "Previewing CAD"))
+            if preview.failed_faces > 0:
+                self.preview_warning = f"{preview.failed_faces} CAD preview patches failed: {preview.first_error}"
+                self.channel.progress(node, 0.9, f"{preview.failed_faces} preview failures")
+        for instance in data.instances:
+            if instance.visible:
+                self.prepare(instance.data, node)
+
+    func display(self, data: GeometryData, matrix: Matrix4, node: int, mode: int) -> unit!:
+        self.channel.check()
+        if let mesh = data.mesh:
+            let display = mesh if matrix.is_identity() else mesh.placed(matrix)
+            self.channel.mesh(display, node, true)
+        if data.surfaces.length > 0:
+            for mesh in data.preview().meshes:
+                self.display(GeometryData(mesh), matrix, node, mode)
+        for instance in data.instances:
+            if instance.visible:
+                self.display(instance.data, matrix.multiply(Matrix4.compose(instance.translation, instance.rotation, instance.scale)), node, mode)
+
+    func polygon_overlays(self, data: GeometryData, matrix: Matrix4) -> unit!:
+        if let mesh = data.mesh:
+            self.channel.polygon_overlays(mesh, matrix)
+        for instance in data.instances:
+            if instance.visible:
+                self.polygon_overlays(instance.data, matrix.multiply(Matrix4.compose(instance.translation, instance.rotation, instance.scale)))
+
+pub func compute_factory(token: int) -> ComputeHandler!:
+    let computation = Computation(compute_bridge.channel(token))
+    return computation.compute

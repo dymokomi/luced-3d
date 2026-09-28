@@ -1,0 +1,54 @@
+from ui import Application, Font
+import theme
+from workspace import Workspace
+from panels import Panels
+from interop import Connection
+from ui_state import UIState, settings_path
+
+pub class Luce3D:
+    pub let app: Application
+    pub let workspace: Workspace
+    pub let panels: Panels
+    let ticking: Connection
+    let compute_timer: int
+    let settings: UIState
+
+    pub func init(self, persist: bool = false, width: int = 1400, height: int = 900) -> unit!:
+        self.settings = UIState(settings_path() if persist else "")
+        self.workspace = Workspace()
+        self.panels = Panels(self.workspace, Font())
+        self.settings.restore(self.panels)
+        self.app = Application(self.panels.body, title = "Luced 3D", width = self.settings.width if persist else width, height = self.settings.height if persist else height, theme = theme.editor_theme())
+        self.panels.projects.app = self.app
+        self.app.set_close_handler(self.panels.projects.can_quit)
+        self.app.focus(self.panels.view.layout())
+        self.app.set_commands(self.panels.actions.all)
+        self.ticking = self.app.on_frame(self.panels.poll)
+        self.compute_timer = self.app.every(0.016, func () -> unit!:
+            self.panels.poll(0.016)
+            self.settings.poll(self.panels, 0.016))
+        self.app.set_error_handler(self.panels.report_error)
+        self.panels.inspector.on_browse = self.browse_geometry
+        if self.settings.warning != "": self.panels.report_error(self.settings.warning)
+
+    func browse_geometry(self) -> unit!:
+        let path = self.app.open_file("Open geometry (.obj, .fbx, .step, .stp)")
+        if path != "":
+            self.workspace.set_text(0, path)
+            self.panels.refresh()
+
+    pub func run(self, arguments: list[str]) -> unit!:
+        self.workspace.enable_compute()
+        for argument in arguments:
+            if argument != "--smoke": self.panels.projects.load_from(argument)
+        self.app.run(frame_limit = 3 if "--smoke" in arguments else 0)
+
+    pub func close(self):
+        self.settings.save(self.panels) catch failure:
+            discard(failure)
+        self.app.cancel(self.compute_timer)
+        if let compute = self.workspace.compute:
+            compute.close()
+        self.ticking.disconnect()
+        self.panels.close()
+        self.app.close()

@@ -1,0 +1,286 @@
+## App-owned worker boundary. Luce graphs and ARC owners never cross threads.
+## Requests are copied text; completed native mesh copies are adopted on the UI
+## thread. One active job and one replaceable pending request bound memory/work.
+import interop
+import memory
+import thread
+import sync
+import strings
+from three import PolygonMesh, polygon_mesh_type, detached_mesh, Vector3, Matrix4, invalid, WireBatch, wire_batch_type, mesh_overlay_points
+
+pub type ComputeHandler = interop.Callback[str, unit]
+
+pub func number(text: str) -> f64!:
+    return try strings.parse_f64(text)
+
+pub func decimal(value: f64) -> interop.Outcome[str]:
+    var buffer: u8[32]
+    let text = strings.format_f64(value, buffer) catch failure:
+        return interop.Outcome[str].failure(failure.code, interop.copy_text(failure.message) catch exhausted: trap(exhausted.message))
+    return interop.Outcome[str].success(interop.copy_text(text) catch exhausted: trap(exhausted.message))
+
+struct Product:
+    var mesh: PolygonMesh*?
+    let node: i64
+    let display: bool
+    let source: u64
+    var inspect: bool
+
+struct State:
+    var lock: sync.Mutex
+    var changed: sync.Condition
+    var stopping: bool = false
+    var pending: interop.Packet[str]? = none
+    var requested: i64 = 0
+    var active: i64 = 0
+    var completed: i64 = 0
+    var sequence: i64 = 0
+    var node: i64 = -1
+    var fraction: f64 = 0.0
+    var phase: interop.Packet[str]? = none
+    var report: interop.Packet[str]? = none
+    var failed: bool = false
+    var products: Product[1024]
+    var count: usize = 0
+    var wires: Vector3[]
+    var normals: Vector3[]
+    var patches: Vector3[]
+    var handle: thread.Handle
+    let entry: interop.WorkerEntry[i64, str, unit]
+
+    mutating func clear():
+        for product in self.products[..<self.count]:
+            if let mesh = product.mesh:
+                mesh.close()
+                free(mesh) in memory.heap
+        self.count = 0
+        if self.wires.length > 0:
+            free(self.wires) in memory.heap
+        if self.normals.length > 0:
+            free(self.normals) in memory.heap
+        if self.patches.length > 0:
+            free(self.patches) in memory.heap
+        var empty: Vector3[]
+        self.wires = empty
+        self.normals = empty
+        self.patches = empty
+        if let report = self.report:
+            report.release()
+        self.report = none
+        self.failed = false
+
+## Borrowed synchronized channel valid only while the service's worker lives.
+pub struct ComputeChannel:
+    let state: State*
+
+    pub mutating func close():
+        discard(self.state)
+
+    pub func check() -> !:
+        self.state.lock.lock()
+        let cancelled = self.state.stopping or self.state.active != self.state.requested
+        self.state.lock.unlock()
+        if cancelled:
+            error(invalid, "Computation superseded")
+
+    pub func progress(node: i64, fraction: f64, phase: str) -> !:
+        try self.check()
+        let copied = try interop.text_transfer.copy(phase)
+        self.state.lock.lock()
+        defer self.state.lock.unlock()
+        if let previous = self.state.phase:
+            previous.release()
+        self.state.phase = copied
+        self.state.node = node
+        self.state.fraction = fraction
+        self.state.sequence += 1
+
+    pub func mesh(source: interop.Reference[PolygonMesh], node: i64, display: bool) -> !:
+        try self.check()
+        if not display:
+            for index in 0..<self.state.count:
+                if self.state.products[index].node == node and self.state.products[index].source == source.identity():
+                    self.state.products[index].inspect = true
+                    return
+        if self.state.count == self.state.products.length:
+            error(invalid, "Computed scene exceeds 1024 mesh batches")
+        let copy = try detached_mesh(source)
+        self.state.products[self.state.count] = Product(copy, node, display, source.identity(), not display)
+        self.state.count += 1
+
+    pub func overlays(wires: const Vector3[], normals: const Vector3[], patches: const Vector3[]) -> !:
+        try self.check()
+        try append_points(&self.state.wires, wires)
+        try append_points(&self.state.normals, normals)
+        self.state.patches = try alloc Vector3[patches.length] in memory.heap
+        for index in 0..<patches.length:
+            self.state.patches[index] = patches[index]
+
+    ## Extract whole polygon batches in Base, without millions of boxed Luce
+    ## vectors or per-corner interop calls during large-file preparation.
+    pub func polygon_overlays(source: interop.Reference[PolygonMesh], matrix: Matrix4) -> !:
+        try self.check()
+        let wires = try mesh_overlay_points(source.value(), matrix, false)
+        defer free(wires) in memory.heap
+        try append_points(&self.state.wires, wires)
+        let normals = try mesh_overlay_points(source.value(), matrix, true)
+        defer free(normals) in memory.heap
+        try append_points(&self.state.normals, normals)
+
+    pub func report(text: str) -> !:
+        try self.check()
+        self.state.report = try interop.text_transfer.copy(text)
+
+pub let compute_channel_type: interop.Type[ComputeChannel] = interop.Type[ComputeChannel]("Worker compute channel", ComputeChannel.close)
+
+func append_points(target: Vector3[]*, points: const Vector3[]) -> !:
+    if points.length == 0: return
+    let output = try alloc Vector3[target.length + points.length] in memory.heap
+    memory.copy(output, *target, target.length)
+    memory.copy(output[target.length..], points, points.length)
+    if target.length > 0: free(*target) in memory.heap
+    *target = output
+
+## Called only by the named worker factory with its service-provided token.
+pub func channel(token: i64) -> interop.Reference[ComputeChannel]!:
+    return try interop.Reference[ComputeChannel].adopt(new ComputeChannel((State*)(usize)token) in memory.heap, compute_channel_type, memory.heap)
+
+## Main-thread owner. poll never waits for geometry work; close cancels and joins.
+pub struct ComputeService:
+    var state: State*?
+
+    pub func init(entry: interop.WorkerEntry[i64, str, unit]) -> !:
+        let state = try new State(entry = entry) in memory.heap
+        errdefer free(state) in memory.heap
+        state.handle = try thread.spawn(run, (void*)state, name = "luced-3d compute")
+        self.state = state
+
+    pub func submit(text: str, generation: i64) -> !:
+        let state = self.state else error(invalid, "Compute service closed")
+        let request = try interop.text_transfer.copy(text)
+        state.lock.lock()
+        defer state.lock.unlock()
+        if let old = state.pending:
+            old.release()
+        state.pending = request
+        state.requested = generation
+        state.changed.broadcast()
+
+    pub func sequence() -> i64:
+        let state = self.state else return 0
+        state.lock.lock()
+        defer state.lock.unlock()
+        return state.sequence
+
+    pub func active_node() -> i64:
+        let state = self.state else return -1
+        state.lock.lock()
+        defer state.lock.unlock()
+        return state.node
+
+    pub func progress() -> f64:
+        let state = self.state else return 0.0
+        state.lock.lock()
+        defer state.lock.unlock()
+        return state.fraction
+
+    pub func phase() -> interop.Outcome[str]:
+        let state = self.state else return interop.Outcome[str].success(interop.Owned[str](""))
+        state.lock.lock()
+        defer state.lock.unlock()
+        let value = (state.phase else interop.Packet[str]("")).value
+        return interop.Outcome[str].success(interop.copy_text(value) catch failure: trap(failure.message))
+
+    ## Claim completed data. The worker waits for release_result before reusing
+    ## this slot, so readers never race a pending replacement job.
+    pub func completed() -> i64:
+        let state = self.state else return 0
+        state.lock.lock()
+        defer state.lock.unlock()
+        return state.completed
+
+    pub func mesh_count() -> i64:
+        return (i64)(self.state else return 0).count
+    pub func mesh_node(index: i64) -> i64:
+        return (self.state else return -1).products[(usize)index].node
+    pub func mesh_display(index: i64) -> bool:
+        return (self.state else return false).products[(usize)index].display
+    pub func mesh_inspect(index: i64) -> bool:
+        return (self.state else return false).products[(usize)index].inspect
+    pub func take_mesh(index: i64) -> interop.Reference[PolygonMesh]!:
+        let state = self.state else error(invalid, "Compute service closed")
+        if index < 0 or (usize)index >= state.count or state.completed == 0:
+            error(invalid, "No completed mesh")
+        let mesh = state.products[(usize)index].mesh else error(invalid, "Mesh already consumed")
+        state.products[(usize)index].mesh = none
+        return try interop.Reference[PolygonMesh].adopt(mesh, polygon_mesh_type, memory.heap)
+    pub func wires() -> interop.Reference[WireBatch]!:
+        return try interop.Reference[WireBatch].adopt(new WireBatch((self.state else trap("closed compute service")).wires) in memory.heap, wire_batch_type, memory.heap)
+    pub func normals() -> interop.Reference[WireBatch]!:
+        return try interop.Reference[WireBatch].adopt(new WireBatch((self.state else trap("closed compute service")).normals) in memory.heap, wire_batch_type, memory.heap)
+    pub func patches() -> interop.Reference[WireBatch]!:
+        return try interop.Reference[WireBatch].adopt(new WireBatch((self.state else trap("closed compute service")).patches) in memory.heap, wire_batch_type, memory.heap)
+    pub func report() -> str:
+        return ((self.state else trap("closed compute service")).report else interop.Packet[str]("")).value
+    pub func failed() -> bool:
+        return (self.state else trap("closed compute service")).failed
+
+    pub func release_result():
+        let state = self.state else return
+        state.lock.lock()
+        defer state.lock.unlock()
+        state.clear()
+        state.completed = 0
+        state.changed.broadcast()
+
+    pub mutating func close():
+        let state = self.state else return
+        state.lock.lock()
+        state.stopping = true
+        state.changed.broadcast()
+        state.lock.unlock()
+        state.handle.join() catch failure: trap(failure.message)
+        state.clear()
+        if let pending = state.pending:
+            pending.release()
+        if let phase = state.phase:
+            phase.release()
+        free(state) in memory.heap
+        self.state = none
+
+pub let compute_service_type: interop.Type[ComputeService] = interop.Type[ComputeService]("3D compute service", ComputeService.close, closeable = true, main_thread = true)
+
+func run(raw: void*?):
+    let state = (State*)(raw else return)
+    state.entry.enter()
+    defer state.entry.leave()
+    let opened = state.entry.open(state.entry.context, (i64)(usize)state)
+    defer opened.release()
+    let handler = opened.get() catch failure: trap(failure.message)
+    while true:
+        state.lock.lock()
+        while (state.pending == none or state.completed != 0) and not state.stopping:
+            state.changed.wait(&state.lock)
+        if state.stopping:
+            state.lock.unlock()
+            return
+        let request = state.pending else trap("missing compute request")
+        state.pending = none
+        state.active = state.requested
+        state.lock.unlock()
+        let result = handler.invoke(request.value)
+        result.get() catch failure:
+            state.failed = true
+            if let previous = state.report:
+                previous.release()
+            state.report = interop.text_transfer.copy(failure.message) catch exhausted: trap(exhausted.message)
+            recover ()
+        result.release()
+        request.release()
+        state.lock.lock()
+        if state.active == state.requested and not state.stopping:
+            state.completed = state.active
+        else:
+            state.clear()
+        state.sequence += 1
+        state.lock.unlock()

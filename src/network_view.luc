@@ -1,0 +1,341 @@
+from ui import Widget, Layout, Constraints, Size, Event, Painter, Point, Font
+from gpu import RenderTarget, Rect
+from input import EventKind, Key, ScrollUnit
+from network import Node
+from workspace import Workspace
+from actions import Actions
+import math
+import theme
+import time
+from tool_icons import draw_icon
+
+pub let node_width: float = 96.0
+pub let node_height: float = 40.0
+
+pub class NetworkView: Widget:
+    let box: Layout
+    let workspace: Workspace
+    let actions: Actions
+    var font: Font
+    var font_size: int = 14
+    pub var zoom: float = 1.0
+    pub var pan_x: float = 0.0
+    pub var pan_y: float = 0.0
+    pub var pointer_x: float = 100.0
+    pub var pointer_y: float = 70.0
+    pub var on_search: func() -> unit!? = none
+    pub var on_inspect: func(int) -> unit!? = none
+    var mode: str = ""
+    var moving: int = -1
+    var wire_node: int = -1
+    var wire_port: int = -1
+    var from_output: bool = true
+    var start_x: float = 0.0
+    var start_y: float = 0.0
+    var last_x: float = 0.0
+    var last_y: float = 0.0
+    var node_x: float = 0.0
+    var node_y: float = 0.0
+    var space: bool = false
+    var hovered: int = -1
+    var last_click: int = 0
+    var last_node: int = -1
+
+    pub func reset_scope(self) -> unit!:
+        self.mode = ""
+        self.hovered = -1
+        self.pan_x = 20.0
+        self.pan_y = 20.0
+        self.zoom = 1.0
+        self.last_node = -1
+        self.box.invalidate()
+
+    pub func init(self, workspace: Workspace, actions: Actions, font: Font) -> unit!:
+        self.workspace = workspace
+        self.actions = actions
+        self.font = font
+        self.box = Layout()
+        self.box.set_flex()
+        self.box.set_interactive(true)
+        self.box.set_focusable(true)
+        self.box.set_accepts_tab(true)
+
+    pub func layout(self) -> Layout:
+        return self.box
+    pub func measure(self, available: Constraints) -> Size!:
+        return Size(460.0, 220.0)
+    pub func to_graph(self, x: float, y: float) -> Point:
+        return Point((x - self.pan_x) / self.zoom, (y - self.pan_y) / self.zoom)
+    pub func to_screen(self, x: float, y: float) -> Point:
+        return Point(x * self.zoom + self.pan_x, y * self.zoom + self.pan_y)
+    pub func port_point(self, node: Node, output: bool, port: int = 0) -> Point:
+        return self.to_screen(node.x + (node_width * 0.5 if output else node_width * float(port + 1) / float(node.inputs.length + 1)), node.y + (node_height if output else 0.0))
+
+    pub func zoom_about(self, factor: float, x: float, y: float):
+        let before = self.to_graph(x, y)
+        self.zoom = math.max(0.3, math.min(2.5, self.zoom * factor))
+        self.pan_x = x - before.x * self.zoom
+        self.pan_y = y - before.y * self.zoom
+        self.box.invalidate()
+
+    pub func frame_all(self) -> unit!:
+        let nodes = self.workspace.network.local_nodes()
+        if nodes.length == 0:
+            return
+        var left = nodes[0].x
+        var top = nodes[0].y
+        var right = left + node_width + 170.0
+        var bottom = top + node_height
+        for node in nodes:
+            left = math.min(left, node.x)
+            top = math.min(top, node.y)
+            right = math.max(right, node.x + node_width + 170.0)
+            bottom = math.max(bottom, node.y + node_height)
+        let bounds = self.box.bounds()
+        self.zoom = math.max(0.3, math.min(1.4, math.min((bounds.width - 80.0) / (right - left), (bounds.height - 70.0) / (bottom - top))))
+        self.pan_x = (bounds.width - (right - left) * self.zoom) * 0.5 - left * self.zoom
+        self.pan_y = (bounds.height - (bottom - top) * self.zoom) * 0.5 - top * self.zoom
+        self.box.invalidate()
+
+    pub func draw(self, target: RenderTarget) -> unit!:
+        let size = target.size()
+        let p = Painter(target)
+        p.rectangle(Rect(0.0, 0.0, size.width, size.height), theme.backdrop())
+        let step = 32.0 * self.zoom
+        var x = self.pan_x - math.floor(self.pan_x / step) * step
+        while x < size.width:
+            var y = self.pan_y - math.floor(self.pan_y / step) * step
+            while y < size.height:
+                p.rectangle(Rect(x, y, 1.0, 1.0), theme.border())
+                y += step
+            x += step
+        let wanted = int(math.max(8.0, 14.0 * self.zoom))
+        if wanted != self.font_size:
+            self.font_size = wanted
+            self.font = Font(float(wanted))
+        let graph = self.workspace.network
+        let exposed: list[int] = []
+        for node in graph.outputs(graph.scope):
+            exposed.append(node.id)
+        for node in graph.local_nodes():
+            for port in 0..<node.inputs.length:
+                if let source = graph.find(node.inputs[port]):
+                    self.wire(p, self.port_point(source, true), self.port_point(node, false, port))
+        for node in graph.local_nodes():
+            let at = self.to_screen(node.x, node.y)
+            let w = node_width * self.zoom
+            let h = node_height * self.zoom
+            if at.x + w + 170.0 * self.zoom < 0.0 or at.x > size.width or at.y + h < 0.0 or at.y > size.height:
+                continue
+            let selected = node.id == graph.selected
+            let radius = 10.0 * self.zoom if node.kind in ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus"] else 3.0 * self.zoom
+            p.rounded_rectangle(Rect(at.x - 1.5, at.y - 1.5, w + 3.0, h + 3.0), theme.accent() if selected else (theme.text_muted() if self.hovered == node.id else theme.grey(78.0)), radius + 1.0)
+            p.rounded_rectangle(Rect(at.x, at.y, w, h), theme.grey(64.0) if node.enabled else theme.tab_strip(), radius)
+            if node.computing:
+                p.rectangle(Rect(at.x, at.y + h - 3.0, w * math.max(0.02, math.min(1.0, node.progress)), 3.0), theme.accent())
+            draw_icon(p, node.kind, at.x + 36.0 * self.zoom, at.y + 8.0 * self.zoom, 24.0 * self.zoom, theme.text() if node.enabled else theme.text_muted())
+            let caption = node.name[0..<24] + "…" if node.name.length > 24 else node.name
+            p.text(caption, at.x + 109.0 * self.zoom, at.y + (1.0 if self.zoom >= 0.65 else 10.0) * self.zoom, theme.text() if node.enabled else theme.text_muted(), self.font)
+            let detail = (f"{node.phase} {int(node.progress * 100.0)}%" if node.progress > 0.0 else node.phase) if node.computing else ("ERROR" if node.failure != "" else ("bypassed" if not node.enabled else (f"{node.edits.length} edits" if node.kind == "Edit" else "geometry")))
+            if self.zoom >= 0.65:
+                p.text(detail if node.computing or node.failure != "" or not node.enabled or node.kind == "Edit" else node.kind, at.x + 109.0 * self.zoom, at.y + 22.0 * self.zoom, theme.accent() if node.failure != "" or node.computing else theme.text_muted(), self.font)
+            # Two distinct flags, with matching commands in the inspector.
+            p.rectangle(Rect(at.x + 84.0 * self.zoom, at.y + 5.0 * self.zoom, 9.0 * self.zoom, 30.0 * self.zoom), theme.accent() if node.id in exposed else theme.border())
+            p.rectangle(Rect(at.x + 3.0 * self.zoom, at.y + 5.0 * self.zoom, 9.0 * self.zoom, 30.0 * self.zoom), theme.accent() if not node.enabled else theme.border())
+            if not node.enabled:
+                p.line(Point(at.x + 18.0 * self.zoom, at.y + 31.0 * self.zoom), Point(at.x + 78.0 * self.zoom, at.y + 9.0 * self.zoom), 1.0, theme.text_muted())
+            for port in 0..<node.inputs.length:
+                self.draw_port(p, self.port_point(node, false, port), node.inputs[port] >= 0)
+            self.draw_port(p, self.port_point(node, true), true)
+        if self.mode == "wire":
+            if let node = graph.find(self.wire_node):
+                let port = self.port_point(node, self.from_output, self.wire_port)
+                let pointer = Point(self.pointer_x, self.pointer_y)
+                self.wire(p, port if self.from_output else pointer, pointer if self.from_output else port)
+        if self.hovered >= 0 and self.mode == "":
+            if let node = graph.find(self.hovered):
+                let at = self.to_graph(self.pointer_x, self.pointer_y)
+                let hint = "Bypass (B)" if at.x < node.x + 15.0 else ("Out (O)" if at.x > node.x + 81.0 else node.kind + " / geometry")
+                p.text(hint, 12.0, size.height - 24.0, theme.text_muted())
+                let screen = self.to_screen(node.x, node.y)
+                # Fixed screen-size hover controls keep flags usable zoomed out.
+                for flag in 0..<3:
+                    let flag_x = screen.x - 26.0 if flag == 0 else (screen.x + node_width * self.zoom + 6.0 if flag == 1 else screen.x + node_width * self.zoom * 0.5 - 10.0)
+                    let flag_y = screen.y + node_height * self.zoom * 0.5 - 10.0 if flag != 2 else screen.y - 27.0
+                    p.rounded_rectangle(Rect(flag_x, flag_y, 20.0, 20.0), theme.surface(), 4.0)
+                    p.text(["B", "O", "i"][flag], flag_x + 5.0, flag_y + 2.0, theme.accent() if (flag == 0 and not node.enabled) or (flag == 1 and node.id in exposed) else theme.text())
+        p.close()
+
+    func draw_port(self, p: Painter, at: Point, connected: bool) -> unit!:
+        let width = math.max(8.0, 14.0 * self.zoom)
+        let height = math.max(3.0, 4.0 * self.zoom)
+        p.rounded_rectangle(Rect(at.x - width * 0.5, at.y - height * 0.5, width, height), theme.text() if connected else theme.grey(90.0), 1.5)
+
+    func wire(self, p: Painter, a: Point, b: Point) -> unit!:
+        let reach = math.max(35.0, math.abs(b.y - a.y) * 0.5)
+        var previous = a
+        for step in 1..<21:
+            let t = float(step) / 20.0
+            let u = 1.0 - t
+            let point = Point(u * u * u * a.x + 3.0 * u * u * t * a.x + 3.0 * u * t * t * b.x + t * t * t * b.x,
+                u * u * u * a.y + 3.0 * u * u * t * (a.y + reach) + 3.0 * u * t * t * (b.y - reach) + t * t * t * b.y)
+            p.line(previous, point, math.max(1.0, 1.5 * self.zoom), theme.grey(150.0))
+            previous = point
+
+    ## [node ID, port index, output flag]. Port hit radius stays usable zoomed out.
+    pub func hit_port(self, x: float, y: float) -> list[int]:
+        for node in self.workspace.network.local_nodes().reversed():
+            let output = self.port_point(node, true)
+            if math.abs(output.x - x) <= 10.0 and math.abs(output.y - y) <= 10.0:
+                return [node.id, 0, 1]
+            for port in 0..<node.inputs.length:
+                let input = self.port_point(node, false, port)
+                if math.abs(input.x - x) <= 10.0 and math.abs(input.y - y) <= 10.0:
+                    return [node.id, port, 0]
+        return []
+
+    pub func event(self, event: Event) -> unit!:
+        self.pointer_x = event.x if event.kind == EventKind.pointer_moved or event.kind == EventKind.pointer_down else self.pointer_x
+        self.pointer_y = event.y if event.kind == EventKind.pointer_moved or event.kind == EventKind.pointer_down else self.pointer_y
+        if event.cancelled or event.kind == EventKind.focus_lost or event.kind == EventKind.overflow:
+            if self.mode == "move":
+                self.workspace.cancel()
+            self.mode = ""
+            self.space = false
+        elif event.kind == EventKind.key_down:
+            if event.key == Key.space:
+                self.space = true
+            elif event.key == Key.tab:
+                if let search = self.on_search:
+                    search()
+            elif event.key == Key.delete or event.key == Key.backspace:
+                self.actions.delete.trigger()
+            elif event.key == Key.home:
+                self.frame_all()
+            elif event.key == Key.enter:
+                if self.workspace.selected() != none:
+                    self.workspace.enter_group(self.workspace.network.selected)
+            elif event.key == Key.escape:
+                if self.mode == "move":
+                    self.workspace.cancel()
+                self.mode = ""
+        elif event.kind == EventKind.key_up and event.key == Key.space:
+            self.space = false
+        elif event.kind == EventKind.magnify:
+            self.zoom_about(math.max(0.1, 1.0 + event.scroll_y), event.x, event.y)
+        elif event.kind == EventKind.scroll:
+            if event.scroll_unit == ScrollUnit.points and not event.control and not event.meta:
+                self.pan_x += event.scroll_x
+                self.pan_y += event.scroll_y
+            else:
+                self.zoom_about(math.exp(event.scroll_y * (0.01 if event.scroll_unit == ScrollUnit.points else 0.12)), event.x, event.y)
+        elif event.kind == EventKind.pointer_down and event.inside:
+            if event.button == 1:
+                self.mode = ""
+                if let search = self.on_search:
+                    search()
+                return
+            if event.button == 0 and self.mode == "" and self.hovered >= 0:
+                if let node = self.workspace.network.find(self.hovered):
+                    let screen = self.to_screen(node.x, node.y)
+                    for flag in 0..<3:
+                        let x = screen.x - 26.0 if flag == 0 else (screen.x + node_width * self.zoom + 6.0 if flag == 1 else screen.x + node_width * self.zoom * 0.5 - 10.0)
+                        let y = screen.y + node_height * self.zoom * 0.5 - 10.0 if flag != 2 else screen.y - 27.0
+                        if event.x >= x and event.x <= x + 20.0 and event.y >= y and event.y <= y + 20.0:
+                            self.workspace.select_node(node.id)
+                            if flag == 0:
+                                self.actions.enabled.trigger()
+                            elif flag == 1:
+                                self.actions.output.trigger()
+                            elif let inspect = self.on_inspect:
+                                inspect(node.id)
+                            self.box.invalidate()
+                            return
+            self.last_x = event.x
+            self.last_y = event.y
+            self.start_x = event.x
+            self.start_y = event.y
+            if event.button == 2 or self.space:
+                self.mode = "pan"
+            elif self.mode == "wire":
+                let port = self.hit_port(event.x, event.y)
+                self.finish_wire(port)
+                self.mode = ""
+            else:
+                let port = self.hit_port(event.x, event.y)
+                if port.length > 0:
+                    if event.alt and port[2] == 0:
+                        self.workspace.disconnect(port[0], port[1])
+                    else:
+                        self.mode = "wire"
+                        self.wire_node = port[0]
+                        self.wire_port = port[1]
+                        self.from_output = port[2] == 1
+                else:
+                    let at = self.to_graph(event.x, event.y)
+                    self.mode = "pan"
+                    for node in self.workspace.network.local_nodes().reversed():
+                        if at.x >= node.x and at.x <= node.x + node_width and at.y >= node.y and at.y <= node.y + node_height:
+                            self.workspace.select_node(node.id)
+                            if at.x <= node.x + 15.0:
+                                self.actions.enabled.trigger()
+                                self.mode = ""
+                            elif at.x >= node.x + 81.0:
+                                self.actions.output.trigger()
+                                self.mode = ""
+                            else:
+                                let now = time.now()
+                                if node.kind == "Group" and self.last_node == node.id and now - self.last_click < 400000000:
+                                    self.mode = ""
+                                    self.last_node = -1
+                                    self.workspace.enter_group(node.id)
+                                    return
+                                self.last_node = node.id
+                                self.last_click = now
+                                self.mode = "move"
+                                self.moving = node.id
+                                self.node_x = node.x
+                                self.node_y = node.y
+                                self.workspace.begin("Move node")
+                            break
+        elif event.kind == EventKind.pointer_moved:
+            var retained = -1
+            if let node = self.workspace.network.find(self.hovered):
+                let screen = self.to_screen(node.x, node.y)
+                if event.inside and event.x >= screen.x - 30.0 and event.x <= screen.x + node_width * self.zoom + 30.0 and event.y >= screen.y - 30.0 and event.y <= screen.y + node_height * self.zoom + 12.0:
+                    retained = node.id
+            self.hovered = retained
+            if event.inside:
+                let at = self.to_graph(event.x, event.y)
+                for node in self.workspace.network.local_nodes().reversed():
+                    if at.x >= node.x and at.x <= node.x + node_width and at.y >= node.y and at.y <= node.y + node_height:
+                        self.hovered = node.id
+                        break
+            if self.mode == "pan":
+                self.pan_x += event.x - self.last_x
+                self.pan_y += event.y - self.last_y
+            elif self.mode == "move" and (event.x != self.start_x or event.y != self.start_y):
+                self.workspace.move_node(self.moving, self.node_x + (event.x - self.start_x) / self.zoom, self.node_y + (event.y - self.start_y) / self.zoom)
+            self.last_x = event.x
+            self.last_y = event.y
+        elif event.kind == EventKind.pointer_up:
+            if self.mode == "move":
+                self.workspace.commit()
+            elif self.mode == "wire":
+                let port = self.hit_port(event.x, event.y)
+                # A click starts a persistent wire; a drag connects on release.
+                if port.length > 0 and port[0] == self.wire_node and (port[2] == 1) == self.from_output:
+                    self.box.invalidate()
+                    return
+                self.finish_wire(port)
+            self.mode = ""
+        elif event.kind == EventKind.pointer_left:
+            self.hovered = -1
+        self.box.invalidate()
+
+    func finish_wire(self, port: list[int]) -> unit!:
+        if port.length > 0 and (port[2] == 1) != self.from_output:
+            if self.from_output:
+                self.workspace.connect(self.wire_node, port[0], port[1])
+            else:
+                self.workspace.connect(port[0], self.wire_node, self.wire_port)

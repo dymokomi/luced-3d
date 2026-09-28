@@ -1,0 +1,39 @@
+name: Correctness
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: luced-3d
+      - name: Check out pinned compiler and library sources
+        shell: bash
+        run: |
+          while read -r name revision; do
+            test -n "$name" || continue
+            git init -q "$name"
+            git -C "$name" fetch -q --depth 1 "https://github.com/dymokomi/$name.git" "$revision"
+            git -C "$name" checkout -q --detach FETCH_HEAD
+          done < luced-3d/bootstrap/PACKAGES
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libcairo2-dev fonts-dejavu-core libx11-dev libxi-dev libxrandr-dev libvulkan-dev
+      - name: Build released compilers
+        run: |
+          (cd luce-base && ./build.sh)
+          (cd luce && LUCE_BASE_COMPILER=../luce-base/build/luce-base ./build.sh)
+          echo "LUCE=$PWD/luce/build/luce" >> "$GITHUB_ENV"
+          echo "LUCE_BASE=$PWD/luce-base/build/luce-base" >> "$GITHUB_ENV"
+      - name: Native and C integration tests
+        working-directory: luced-3d
+        run: |
+          python3 tests/run.py --opt 2
+          python3 tests/run.py --opt 2 --backend c

@@ -1,0 +1,101 @@
+## Structured curved patches must remain quads, conforming and analytically lit.
+from cad import BrepModel
+from three import Vector3
+from geometry_tests import near, manifold
+from tesselator import NurbsSurface, surface_normal_checked
+
+func dome(bubble: bool, reversed: bool = false, split: bool = false) -> BrepModel!:
+    let b = BrepModel()
+    let knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    let points: list[Vector3] = []
+    for u in 0..<3:
+        for v in 0..<3:
+            let z = (4.0 if u == 1 and v == 1 else 0.0) if bubble else ((1.0 if u == 1 else 0.0) + (1.0 if v == 1 else 0.0))
+            points.append(Vector3(float(u), float(v), z))
+    for p in [points[0], points[6], points[8], points[2]]: discard(b.add_vertex(p))
+    if split: discard(b.add_vertex(Vector3(1.0, 0.0, 0.0)))
+    for edge in 0..<4:
+        if bubble:
+            if split and edge == 0:
+                discard(b.add_line(0, 4))
+                discard(b.add_line(4, 1))
+            else: discard(b.add_line(edge, (edge+1)%4))
+        else:
+            let indices = [0, 3, 6] if edge == 0 else ([6, 7, 8] if edge == 1 else ([8, 5, 2] if edge == 2 else [2, 1, 0]))
+            discard(b.add_spline_edge(edge, (edge+1)%4, [points[indices[0]], points[indices[1]], points[indices[2]]], [1.0, 1.0, 1.0], 2, knots, true))
+    let surface = b.add_spline_surface(points, [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], 3, 3, 2, 2, knots, knots)
+    discard(b.add_face(surface, [1, 2, 3, 4, 5] if split else [1, 2, 3, 4], [5] if split else [4], not reversed))
+    return b
+
+pub func mapped_cad_tests() -> unit!:
+    for bubble in [false, true]:
+        for reversed in [false, true]:
+            let model = dome(bubble, reversed)
+            let mesh = model.mesh(8)
+            assert(mesh.face_count() >= 64)
+            near(mesh.bounds().maximum.z, 1.0)
+            let normal_attribute = mesh.find_attribute("N", 1)
+            assert(normal_attribute >= 0)
+            for face in 0..<mesh.face_count():
+                assert(mesh.face_size(face) == 4)
+                let offset = mesh.face_offset(face)
+                for corner in 0..<4:
+                    let p = mesh.point(mesh.face_point(face, corner))
+                    let u = p.x / 2.0
+                    let v = p.y / 2.0
+                    let z = 16.0*u*(1.0-u)*v*(1.0-v) if bubble else 2.0*u*(1.0-u)+2.0*v*(1.0-v)
+                    near(p.z, z)
+                    let dx = 8.0*(1.0-2.0*u)*v*(1.0-v) if bubble else 1.0-p.x
+                    let dy = 8.0*(1.0-2.0*v)*u*(1.0-u) if bubble else 1.0-p.y
+                    let expected = Vector3(-dx, -dy, 1.0).normalized().multiply_scalar(-1.0 if reversed else 1.0)
+                    let n = mesh.vertex(offset+corner).normal
+                    assert(n.subtract(expected).length() < 0.000001)
+            # All internal vertices have exactly four incident quad edges.
+            let degree: list[int] = []
+            for p in 0..<mesh.point_count(): degree.append(0)
+            for edge in 0..<mesh.edge_count():
+                for end in 0..<2:
+                    let p = mesh.edge_point(edge, end)
+                    degree[p] += 1
+            for p in 0..<mesh.point_count():
+                let position = mesh.point(p)
+                if position.x > 0.000001 and position.x < 1.999999 and position.y > 0.000001 and position.y < 1.999999:
+                    assert(degree[p] == 4)
+    # One side split into two STEP edges must still form a conforming quad grid.
+    let split = dome(true, split = true)
+    let plane = split.add_surface(0, Vector3(), Vector3(0.0, 0.0, 1.0), Vector3(1.0, 0.0, 0.0))
+    discard(split.add_face(plane, [-5, -4, -3, -2, -1], [5], false))
+    let solid = split.mesh(8)
+    near(solid.bounds().maximum.z, 1.0)
+    manifold(solid)
+    let source = solid.find_attribute("cad_face",2)
+    var cap_faces = 0
+    for face in 0..<solid.face_count():
+        if solid.attribute_value(source,face,0) == 0.0: assert(solid.face_size(face) == 4)
+        else:
+            # The hard planar cap keeps boundary vertices, not the dome's rows.
+            cap_faces += 1
+            assert(solid.face_size(face) > 4)
+    assert(cap_faces <= 2)
+    # Rational quarter cylinder, including repeated endpoint knots and domains
+    # that are not [0,1]. Normals must come from the rational quotient derivative.
+    let net = [Vector3(1.0, 0.0, 0.0), Vector3(1.0, 0.0, 2.0), Vector3(1.0, 1.0, 0.0), Vector3(1.0, 1.0, 2.0), Vector3(0.0, 1.0, 0.0), Vector3(0.0, 1.0, 2.0)]
+    let weights = [1.0, 1.0, 0.7071067811865476, 0.7071067811865476, 1.0, 1.0]
+    let ku = [7.0, 7.0, 7.0, 11.0, 11.0, 11.0]
+    let kv = [-2.0, -2.0, 3.0, 3.0]
+    NurbsSurface.check(net, weights, 3, 2, 2, 1, ku, kv)
+    for u in [7.0, 8.0, 9.0, 10.0, 11.0]:
+        for v in [-2.0, 0.5, 3.0]:
+            let p = NurbsSurface.at(net, weights, 3, 2, 2, 1, ku, kv, u, v)
+            let n = surface_normal_checked(net, weights, 3, 2, 2, 1, ku, kv, u, v)
+            assert(n.subtract(Vector3(p.x, p.y, 0.0)).length() < 0.00000001)
+    let invalid_plane = BrepModel()
+    for p in [Vector3(), Vector3(2.0, 0.0, 0.0), Vector3(2.0, 2.0, 0.1), Vector3(0.0, 2.0, 0.0)]: discard(invalid_plane.add_vertex(p))
+    for edge in 0..<4: discard(invalid_plane.add_line(edge, (edge+1)%4))
+    discard(invalid_plane.add_surface(0, Vector3(), Vector3(0.0, 0.0, 1.0), Vector3(1.0, 0.0, 0.0)))
+    discard(invalid_plane.add_face(0, [1, 2, 3, 4], [4]))
+    var rejected = false
+    discard(invalid_plane.mesh(8)) catch failure:
+        rejected = true
+    assert(rejected)
+    print("PASS mapped NURBS quads, interior curvature, valence, analytic corner normals and reversed winding")

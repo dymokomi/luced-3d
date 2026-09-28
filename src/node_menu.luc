@@ -1,0 +1,160 @@
+## Cursor-anchored modal node browser. Empty query browses categories;
+## typing searches all node names, independent of the open category.
+from ui import Widget, Layout, Size, Constraints, Event, Painter, Command
+from gpu import RenderTarget, Rect
+from input import EventKind, Key
+import math
+import node_catalog
+import theme
+from tool_icons import draw_icon
+
+pub class NodeMenu: Widget:
+    let box: Layout
+    let actions: list[Command]
+    var text: str = ""
+    var category: int = 0
+    var selected: int = 0
+    var submenu: bool = false
+    var expanded: bool = false
+    var first: int = 0
+    var matches: list[int]
+
+    pub func init(self, actions: list[Command]) -> unit!:
+        self.actions = actions
+        self.matches = []
+        self.box = Layout()
+        self.box.set_popup(true)
+        self.box.set_visible(false)
+        self.box.set_focusable(true)
+        self.box.set_interactive(true)
+        self.box.set_text_input(true)
+        self.box.set_accepts_tab(true)
+        self.box.set_takes_scroll(true)
+
+    pub func layout(self) -> Layout:
+        return self.box
+    pub func is_open(self) -> bool:
+        return self.box.is_visible()
+    pub func query(self) -> str:
+        return self.text
+    pub func result_count(self) -> int:
+        return self.matches.length
+    pub func measure(self, available: Constraints) -> Size!:
+        return Size(330.0 if self.text != "" else (500.0 if self.expanded else 200.0), 400.0)
+    pub func open(self, x: float = 0.0, y: float = 0.0) -> unit!:
+        self.text = ""
+        self.category = 0
+        self.submenu = false
+        self.expanded = false
+        self.filter()
+        self.box.set_popup_point(x, y)
+        self.box.set_visible(true)
+
+    func filter(self):
+        self.matches = []
+        let kinds = node_catalog.kinds()
+        for index in 0..<kinds.length:
+            if self.text == "":
+                if self.category == 7 or node_catalog.category(kinds[index]) == node_catalog.categories()[self.category]:
+                    self.matches.append(index)
+            else:
+                var found = true
+                for word in self.text.lower().split(" "):
+                    if word != "" and not kinds[index].lower().contains(word):
+                        found = false
+                if found:
+                    self.matches.append(index)
+        self.selected = 0
+        self.first = 0
+        self.box.invalidate()
+
+    func choose(self) -> unit!:
+        if self.matches.length == 0:
+            return
+        let action = self.actions[self.matches[self.selected]]
+        self.box.set_visible(false)
+        action.trigger()
+
+    pub func draw(self, target: RenderTarget) -> unit!:
+        let size = target.size()
+        let p = Painter(target)
+        p.rectangle(Rect(0.0, 0.0, size.width, size.height), theme.surface())
+        p.rectangle(Rect(1.0, 1.0, size.width - 2.0, 30.0), theme.backdrop())
+        p.text("Create node", 10.0, 7.0, theme.text())
+        p.rectangle(Rect(5.0, 35.0, size.width - 10.0, 30.0), theme.backdrop())
+        p.text("Search" if self.text == "" else self.text + "|", 12.0, 41.0, theme.text_muted() if self.text == "" else theme.text())
+        if self.text == "":
+            for index in 0..<node_catalog.categories().length:
+                let y = 72.0 + float(index) * 30.0
+                if index == self.category:
+                    p.rectangle(Rect(4.0, y, 190.0, 29.0), theme.accent())
+                p.text(node_catalog.categories()[index], 12.0, y + 5.0, theme.grey(0.0) if index == self.category else theme.text())
+                p.text(">", 178.0, y + 5.0, theme.text_muted())
+        let left = 204.0 if self.text == "" else 8.0
+        let count = int(math.max(1.0, (size.height - 98.0) / 30.0))
+        for row in self.first..<(int(math.min(float(self.matches.length), float(self.first + count))) if self.expanded or self.text != "" else 0):
+            let y = 72.0 + float(row - self.first) * 30.0
+            if row == self.selected and (self.submenu or self.text != ""):
+                p.rectangle(Rect(left, y, size.width - left - 5.0, 29.0), theme.accent())
+            let ink = theme.grey(0.0) if row == self.selected and (self.submenu or self.text != "") else theme.text()
+            draw_icon(p, node_catalog.kinds()[self.matches[row]], left + 6.0, y + 6.0, 17.0, ink)
+            p.text(node_catalog.kinds()[self.matches[row]], left + 30.0, y + 5.0, ink)
+        if self.matches.length == 0:
+            p.text("No matching nodes", left + 8.0, 78.0, theme.text_muted())
+        p.close()
+
+    pub func event(self, event: Event) -> unit!:
+        if event.cancelled:
+            self.box.set_visible(false)
+            return
+        if event.kind == EventKind.text_input and event.codepoint >= 32 and event.codepoint <= 126 and self.text.length < 64:
+            let ascii = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+            self.text += ascii[event.codepoint - 32..<event.codepoint - 31]
+            self.filter()
+        elif event.kind == EventKind.key_down:
+            if event.key == Key.escape:
+                self.box.set_visible(false)
+            elif event.key == Key.backspace and self.text.length > 0:
+                self.text = self.text[0..<self.text.length - 1]
+                self.filter()
+            elif event.key == Key.left and self.text == "":
+                self.submenu = false
+                self.expanded = false
+            elif event.key == Key.right and self.text == "":
+                self.submenu = true
+                self.expanded = true
+            elif event.key == Key.enter:
+                if self.text == "" and not self.submenu:
+                    self.submenu = true
+                    self.expanded = true
+                else:
+                    self.choose()
+            elif event.key == Key.up or event.key == Key.down or event.key == Key.tab:
+                let delta = -1 if event.key == Key.up or event.shift else 1
+                if self.text == "" and not self.submenu:
+                    self.category = (self.category + delta + 8) % 8
+                    self.filter()
+                elif self.matches.length > 0:
+                    self.selected = (self.selected + delta + self.matches.length) % self.matches.length
+        elif (event.kind == EventKind.pointer_moved or event.kind == EventKind.pointer_down) and event.inside and event.y >= 72.0:
+            let row = int((event.y - 72.0) / 30.0)
+            if self.text == "" and event.x < 198.0:
+                if row < 8:
+                    self.expanded = true
+                if row < 8 and row != self.category:
+                    self.category = row
+                    self.filter()
+                self.submenu = false
+            elif row + self.first < self.matches.length and event.y < self.box.bounds().height - 26.0:
+                self.selected = row + self.first
+                self.submenu = true
+                if event.kind == EventKind.pointer_down and event.button == 0:
+                    self.choose()
+        elif event.kind == EventKind.scroll and self.matches.length > 0:
+            self.selected = int(math.clamp(float(self.selected) - event.scroll_y, 0.0, float(self.matches.length - 1)))
+        let visible = int(math.max(1.0, (self.box.bounds().height - 98.0) / 30.0))
+        if self.selected < self.first:
+            self.first = self.selected
+        if self.selected >= self.first + visible:
+            self.first = self.selected - visible + 1
+        self.box.invalidate()

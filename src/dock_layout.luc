@@ -1,0 +1,129 @@
+## DStack arrangement round trips using stable panel IDs, as in luced-2d.
+from ui import DStack, Panel, DockPosition
+from gpu import Rect
+import ui
+import math
+
+class Branch:
+    var split: bool = false
+    var horizontal: bool = false
+    var fraction: float = 0.5
+    var selected: int = 0
+    var ids: list[str]
+    var first: Branch? = none
+    var second: Branch? = none
+    func init(self): self.ids = []
+
+class Reading:
+    let lines: list[str]
+    var at: int = 1
+    let seen: list[str]
+    func init(self, text: str):
+        self.lines = []
+        self.seen = []
+        for line in text.split("\n"):
+            if line.trim() != "": self.lines.append(line.trim())
+
+func claim(reader: Reading, id: str) -> unit!:
+    if not (id in ["viewport", "parameters", "outliner", "network", "geometry_spreadsheet"]) or id in reader.seen:
+        error(ui.invalid, "Unknown or duplicated panel in layout")
+    reader.seen.append(id)
+
+func branch(reader: Reading, depth: int) -> Branch!:
+    if depth > 8 or reader.at >= reader.lines.length: error(ui.invalid, "Incomplete panel layout")
+    let fields = reader.lines[reader.at].split(" ")
+    reader.at += 1
+    let result = Branch()
+    if fields[0] == "group" and fields.length >= 3:
+        result.selected = int(fields[1])
+        result.ids = fields[2..]
+        if result.selected < 0 or result.selected >= result.ids.length: error(ui.invalid, "Invalid selected panel")
+        for id in result.ids: claim(reader, id)
+    elif fields.length == 3 and fields[0] == "split" and fields[1] in ["h", "v"]:
+        result.split = true
+        result.horizontal = fields[1] == "h"
+        result.fraction = float(fields[2])
+        if not math.is_finite(result.fraction) or result.fraction <= 0.0 or result.fraction >= 1.0: error(ui.invalid, "Invalid panel split")
+        result.first = branch(reader, depth + 1)
+        result.second = branch(reader, depth + 1)
+    else: error(ui.invalid, "Malformed panel layout")
+    return result
+
+func contains(node: Branch, id: str) -> bool:
+    if not node.split: return id in node.ids
+    if let first = node.first:
+        if contains(first, id): return true
+    if let second = node.second: return contains(second, id)
+    return false
+
+func anchor(node: Branch) -> str:
+    if contains(node, "viewport"): return "viewport"
+    if let first = node.first: return anchor(first)
+    return node.ids[0]
+
+## Own references even while panels are temporarily detached during restoration.
+pub class DockLayout:
+    let dock: DStack
+    let panels: list[Panel]
+    let ids: list[str]
+    pub let default_text: str
+
+    pub func init(self, dock: DStack, panels: list[Panel]) -> unit!:
+        self.dock = dock
+        self.panels = panels
+        self.ids = ["viewport", "parameters", "outliner", "network", "geometry_spreadsheet"]
+        self.default_text = dock.layout_text()
+
+    func panel(self, id: str) -> Panel!:
+        return self.panels[self.ids.index_of(id) else error(ui.invalid, "Unknown panel")]
+
+    pub func reset(self) -> unit!: self.restore(self.default_text)
+
+    ## Validate the complete plan before moving any live panel.
+    pub func restore(self, text: str) -> unit!:
+        let reader = Reading(text)
+        if reader.lines.length < 2 or reader.lines.length > 32 or reader.lines[0] != "luce-dock 1":
+            error(ui.invalid, "Unknown panel layout")
+        let root = branch(reader, 0) if not reader.lines[reader.at].starts_with("float ") else none
+        let floats: list[str] = []
+        let bounds: list[Rect] = []
+        while reader.at < reader.lines.length:
+            let fields = reader.lines[reader.at].split(" ")
+            reader.at += 1
+            if fields.length != 6 or fields[0] != "float": error(ui.invalid, "Invalid floating panel")
+            claim(reader, fields[5])
+            let box = Rect(float(fields[1]), float(fields[2]), float(fields[3]), float(fields[4]))
+            for number in [box.x, box.y, box.width, box.height]:
+                if not math.is_finite(number) or math.abs(number) > 100000.0: error(ui.invalid, "Invalid floating bounds")
+            if box.width < 32.0 or box.height < 32.0: error(ui.invalid, "Invalid floating size")
+            floats.append(fields[5])
+            bounds.append(box)
+        if reader.seen.length != self.ids.length: error(ui.invalid, "Layout is missing a panel")
+        for id in self.ids: self.dock.remove(self.panel(id))
+        if let tree = root:
+            let start = anchor(tree)
+            self.dock.add(self.panel(start))
+            self.build(tree, start)
+        for at in 0..<floats.length: self.dock.float(self.panel(floats[at]), bounds[at])
+
+    func build(self, node: Branch, start: str) -> unit!:
+        let placed = self.panel(start)
+        if not node.split:
+            for id in node.ids:
+                if id != start: self.dock.add(self.panel(id), placed, DockPosition.tab)
+            for id in node.ids:
+                if id == start: break
+                self.dock.move(self.panel(id), placed, DockPosition.tab)
+            self.dock.select(self.panel(node.ids[node.selected]))
+            return
+        let first = node.first else error(ui.invalid, "Missing layout branch")
+        let second = node.second else error(ui.invalid, "Missing layout branch")
+        let a = anchor(first)
+        let b = anchor(second)
+        if start == a:
+            self.dock.add(self.panel(b), placed, DockPosition.right if node.horizontal else DockPosition.bottom)
+        else:
+            self.dock.add(self.panel(a), placed, DockPosition.left if node.horizontal else DockPosition.top)
+        self.dock.set_fraction(self.panel(a), node.fraction)
+        self.build(first, a)
+        self.build(second, b)

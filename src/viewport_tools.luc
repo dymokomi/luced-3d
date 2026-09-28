@@ -1,0 +1,288 @@
+## Node-specific viewport UI. Topology and intersections remain in luce-3d.
+from ui import Painter, Point, Event
+from gpu import Rect
+from three import Vector3, PolygonMesh, WireRenderer
+from input import EventKind
+from workspace import Workspace
+from actions import Actions
+import math
+import theme
+import ui
+from tool_icons import draw_icon
+from node_gizmos import NodeGizmos
+
+func append_line(points: list[Point], ax: float, ay: float, bx: float, by: float, width: float):
+    let dx = bx - ax
+    let dy = by - ay
+    let length = math.sqrt(dx * dx + dy * dy)
+    if length < 0.00001:
+        return
+    let nx = -dy * width * 0.5 / length
+    let ny = dx * width * 0.5 / length
+    let a = Point(ax + nx, ay + ny)
+    let b = Point(bx + nx, by + ny)
+    let c = Point(bx - nx, by - ny)
+    let d = Point(ax - nx, ay - ny)
+    for point in [a, b, c, a, c, d]:
+        points.append(point)
+
+pub func projected(workspace: Workspace, point: Vector3, width: float, height: float) -> list[float]!:
+    let projection = workspace.camera.projection(math.max(1.0, width) / math.max(1.0, height))
+    let offset = point.subtract(projection.position)
+    let depth = -offset.dot(projection.backward)
+    if depth <= projection.near:
+        return [0.0, 0.0, -1.0]
+    return [(offset.dot(projection.right) * projection.focal / projection.aspect / depth + 1.0) * width * 0.5,
+            (1.0 - offset.dot(projection.up) * projection.focal / depth) * height * 0.5, depth]
+
+pub func view_ray(workspace: Workspace, x: float, y: float, width: float, height: float) -> Vector3!:
+    let projection = workspace.camera.projection(math.max(1.0, width) / math.max(1.0, height))
+    return projection.right.multiply_scalar((x / width * 2.0 - 1.0) * projection.aspect / projection.focal).add(
+        projection.up.multiply_scalar((1.0 - y / height * 2.0) / projection.focal)).subtract(projection.backward).normalized()
+
+pub func axis_vector(axis: int) -> Vector3:
+    return Vector3(1.0 if axis == 0 else 0.0, 1.0 if axis == 1 else 0.0, 1.0 if axis == 2 else 0.0)
+
+pub func line_distance(x: float, y: float, ax: float, ay: float, bx: float, by: float) -> float:
+    let dx = bx - ax
+    let dy = by - ay
+    let length = dx * dx + dy * dy
+    let t = math.max(0.0, math.min(1.0, ((x - ax) * dx + (y - ay) * dy) / math.max(0.00001, length)))
+    let ox = x - ax - t * dx
+    let oy = y - ay - t * dy
+    return math.sqrt(ox * ox + oy * oy)
+
+pub class ViewportTools:
+    let workspace: Workspace
+    let actions: Actions
+    pub var dragging: bool = false
+    pub let gizmos: NodeGizmos
+    pub var hovered: int = -1
+    var hover_revision: int = -1
+    var hover_tool: int = -1
+    var tool_scroll: float = 0.0
+    var cached_revision: int = -1
+    var cached_view: list[float]
+    var projected_points: list[list[float]]
+    var visible_points: list[bool]
+
+    pub func init(self, workspace: Workspace, actions: Actions):
+        self.workspace = workspace
+        self.actions = actions
+        self.gizmos = NodeGizmos(workspace)
+        self.cached_view = []
+        self.projected_points = []
+        self.visible_points = []
+
+    pub func has_gizmo(self) -> bool:
+        return self.gizmos.available()
+
+    pub func gizmo_center(self) -> Vector3!:
+        return self.gizmos.origin()
+
+    func visible(self, mesh: PolygonMesh, point: Vector3) -> bool!:
+        let origin = self.workspace.camera.position()
+        let offset = point.subtract(origin)
+        let distance = offset.length()
+        if distance < 0.00001:
+            return false
+        let nearest = mesh.ray_distance(origin, offset.multiply_scalar(1.0 / distance))
+        return nearest < 0.0 or nearest >= distance - math.max(0.002, distance * 0.0001)
+
+    ## Hover redraws reuse projection/occlusion results. Camera or model changes
+    ## invalidate the cache; pointer movement alone never rebuilds it.
+    func project_mesh(self, width: float, height: float) -> unit!:
+        let w = self.workspace
+        let signature = [w.yaw, w.pitch, w.distance, w.target.x, w.target.y, w.target.z, width, height]
+        if self.cached_revision == w.revision and self.cached_view == signature:
+            return
+        self.cached_revision = w.revision
+        self.cached_view = signature
+        self.projected_points = []
+        self.visible_points = []
+        let mesh = w.geometry else return
+        let projection = w.camera.projection(math.max(1.0, width) / math.max(1.0, height))
+        for id in 0..<mesh.point_count():
+            let point = mesh.point(id)
+            let offset = point.subtract(projection.position)
+            let depth = -offset.dot(projection.backward)
+            self.projected_points.append([(offset.dot(projection.right) * projection.focal / projection.aspect / math.max(projection.near, depth) + 1.0) * width * 0.5,
+                (1.0 - offset.dot(projection.up) * projection.focal / math.max(projection.near, depth)) * height * 0.5, depth if depth > projection.near else -1.0])
+            self.visible_points.append(depth > projection.near and (w.component_mode != 0 or self.visible(mesh, point)))
+
+    pub func draw(self, painter: Painter, width: float, height: float) -> unit!:
+        let w = self.workspace
+        for index in 0..<2:
+            let x = width - 88.0 + float(index) * 38.0
+            painter.rounded_rectangle(Rect(x, 8.0, 32.0, 30.0), theme.surface(), 4.0)
+            draw_icon(painter, "Frame" if index == 0 else "Grid", x + 6.0, 13.0, 20.0, theme.accent() if self.hover_tool == index + 100 or (index == 1 and w.grid_visible) else theme.text())
+            if self.hover_tool == index + 100:
+                painter.rounded_rectangle(Rect(width - 184.0, 43.0, 168.0, 30.0), theme.surface(), 4.0)
+                painter.text("Frame geometry (F)" if index == 0 else "Toggle grid (G)", width - 176.0, 49.0, theme.text())
+        if self.hover_revision != w.revision:
+            self.hovered = -1
+        if w.editing():
+            let mesh = w.geometry else return
+            if w.component_mode == 0:
+                self.project_mesh(width, height)
+            # Selected faces are tinted; selection edges/points remain legible.
+            if w.component_mode == 2:
+                let accent = theme.accent()
+                let face_triangles: list[Vector3] = []
+                let hover_lines: list[Vector3] = []
+                let faces = w.components.copy()
+                if self.hovered >= 0 and not (self.hovered in faces):
+                    faces.append(self.hovered)
+                for face in faces:
+                    if not (face in w.components):
+                        # Triangle primitives currently have opaque vertex color;
+                        # outline hover so it cannot look like committed selection.
+                        for corner in 0..<mesh.face_size(face):
+                            hover_lines.append(mesh.point(mesh.face_point(face, corner)))
+                            hover_lines.append(mesh.point(mesh.face_point(face, (corner + 1) % mesh.face_size(face))))
+                        continue
+                    for triangle in 0..<mesh.index_count() // 3:
+                        if mesh.triangle_face(triangle) != face:
+                            continue
+                        for corner in 0..<3:
+                            face_triangles.append(mesh.vertex(mesh.index(triangle * 3 + corner)).position)
+                WireRenderer.triangles(face_triangles, w.camera, painter.target(), accent)
+                WireRenderer.lines(hover_lines, w.camera, painter.target(), accent, 3.0)
+            let selected_points = w.selected_points()
+            let ordinary_lines: list[Vector3] = []
+            let accent_lines: list[Vector3] = []
+            for edge in 0..<mesh.edge_count():
+                let a_id = mesh.edge_point(edge, 0)
+                let b_id = mesh.edge_point(edge, 1)
+                let selected = edge in w.components if w.component_mode == 1 else (a_id in selected_points and b_id in selected_points)
+                let hover = w.component_mode == 1 and edge == self.hovered
+                let lines = accent_lines if selected or hover else ordinary_lines
+                lines.append(mesh.point(a_id))
+                lines.append(mesh.point(b_id))
+            WireRenderer.lines(ordinary_lines, w.camera, painter.target(), theme.grey(90.0))
+            WireRenderer.lines(accent_lines, w.camera, painter.target(), theme.accent(), 2.5)
+            if w.component_mode == 0:
+                let ordinary_points: list[Point] = []
+                let accent_points: list[Point] = []
+                for id in 0..<mesh.point_count():
+                    let at = self.projected_points[id]
+                    if at[2] > 0.0 and self.visible_points[id]:
+                        let radius = 4.5 if id == self.hovered else 3.0
+                        append_line(accent_points if id in w.components or id == self.hovered else ordinary_points, at[0] - radius, at[1], at[0] + radius, at[1], radius * 2.0)
+                painter.mesh(ordinary_points, theme.text())
+                painter.mesh(accent_points, theme.accent())
+            self.draw_edit_controls(painter, height)
+        self.gizmos.draw(painter, width, height)
+
+    func draw_edit_controls(self, painter: Painter, height: float) -> unit!:
+        let w = self.workspace
+        for mode in 0..<3:
+            let x = 16.0 + float(mode) * 38.0
+            painter.rounded_rectangle(Rect(x, 44.0, 32.0, 30.0), theme.accent() if mode == w.component_mode else theme.surface(), 4.0)
+            let ink = theme.grey(0.0) if mode == w.component_mode else theme.text()
+            ui.draw_icon(painter.target(), ["vertex-select", "edge-select", "face-select"][mode], Rect(x + 5.0, 48.0, 22.0, 22.0), ink)
+        painter.text(["Points", "Edges", "Faces"][w.component_mode], 134.0, 51.0, theme.text_muted())
+        let commands = self.actions.tools + [self.actions.extrude] + self.actions.modeling
+        for index in 0..<commands.length:
+            let label = "Extrude" if index == 2 else commands[index].text()
+            let y = 94.0 + float(index // 2) * 36.0 - self.tool_scroll
+            if y < 94.0 or y + 30.0 > height - 34.0:
+                continue
+            let x = 16.0 + float(index % 2) * 38.0
+            let available = commands[index].is_enabled()
+            painter.rounded_rectangle(Rect(x, y, 32.0, 30.0), theme.accent() if w.edit_tool == label else theme.surface(), 4.0)
+            draw_icon(painter, label, x + 6.0, y + 5.0, 20.0, theme.grey(0.0) if w.edit_tool == label else (theme.accent() if self.hover_tool == index and available else (theme.text() if available else theme.text_muted())))
+            if self.hover_tool == index:
+                painter.rounded_rectangle(Rect(94.0, y, 210.0, 30.0), theme.surface(), 4.0)
+                painter.text(label + ("" if available else " / select components"), 102.0, y + 6.0, theme.text())
+
+    func hit_tool(self, x: float, y: float, height: float) -> int:
+        if x < 16.0 or x > 86.0 or y < 94.0 or y > height - 34.0:
+            return -1
+        let column = int((x - 16.0) / 38.0)
+        let row = int((y - 94.0 + self.tool_scroll) / 36.0)
+        let id = row * 2 + column
+        return id if id < self.actions.modeling.length + 3 else -1
+
+    pub func pick(self, x: float, y: float, width: float, height: float) -> int!:
+        let w = self.workspace
+        let mesh = w.geometry else return -1
+        let ray = view_ray(w, x, y, width, height)
+        if w.component_mode == 2:
+            return mesh.ray_face(w.camera.position(), ray)
+        self.project_mesh(width, height)
+        var found = -1
+        var best = 11.0
+        if w.component_mode == 0:
+            for id in 0..<mesh.point_count():
+                let at = self.projected_points[id]
+                let distance = math.hypot(at[0] - x, at[1] - y)
+                if at[2] > 0.0 and distance < best and self.visible_points[id]:
+                    best = distance
+                    found = id
+        else:
+            for id in 0..<mesh.edge_count():
+                let pa = self.projected_points[mesh.edge_point(id, 0)]
+                let pb = self.projected_points[mesh.edge_point(id, 1)]
+                let distance = line_distance(x, y, pa[0], pa[1], pb[0], pb[1])
+                if pa[2] > 0.0 and pb[2] > 0.0 and distance < best:
+                    let dx = pb[0] - pa[0]
+                    let dy = pb[1] - pa[1]
+                    let length = dx * dx + dy * dy
+                    let t = math.clamp(((x - pa[0]) * dx + (y - pa[1]) * dy) / math.max(0.000001, length), 0.0, 1.0)
+                    # Perspective-correct location under the cursor, not edge midpoint.
+                    let blend = (t / pb[2]) / ((1.0 - t) / pa[2] + t / pb[2])
+                    let a = mesh.point(mesh.edge_point(id, 0))
+                    let b = mesh.point(mesh.edge_point(id, 1))
+                    if self.visible(mesh, a.add(b.subtract(a).multiply_scalar(blend))):
+                        best = distance
+                        found = id
+        return found
+
+    ## Returns true when node tools consume the input; otherwise navigation owns it.
+    pub func event(self, event: Event, width: float, height: float) -> bool!:
+        let w = self.workspace
+        let handled = self.gizmos.event(event, width, height)
+        self.dragging = self.gizmos.dragging
+        if handled:
+            return true
+        if event.kind == EventKind.scroll and w.editing() and not event.alt and event.x >= 16.0 and event.x <= 86.0 and event.y >= 94.0:
+            let maximum = math.max(0.0, float((self.actions.modeling.length + 4) // 2) * 36.0 - height + 144.0)
+            self.tool_scroll = math.max(0.0, math.min(maximum, self.tool_scroll - event.scroll_y * 12.0))
+            return true
+        if event.kind == EventKind.pointer_moved:
+            self.hovered = -1
+            self.hover_tool = -1
+            self.hover_revision = w.revision
+            if event.inside and not event.alt and event.y >= 8.0 and event.y <= 38.0 and event.x >= width - 88.0 and event.x <= width - 18.0:
+                self.hover_tool = 100 + int((event.x - width + 88.0) / 38.0)
+            elif event.inside and not event.alt and not self.dragging and w.editing():
+                if event.x >= 16.0 and event.x <= 86.0 and event.y >= 94.0:
+                    self.hover_tool = self.hit_tool(event.x, event.y, height)
+                elif not (event.y >= 44.0 and event.y <= 74.0 and event.x <= 250.0):
+                    self.hovered = self.pick(event.x, event.y, width, height)
+        if event.kind == EventKind.pointer_left or event.kind == EventKind.focus_lost or event.cancelled or event.alt:
+            self.hovered = -1
+            self.hover_tool = -1
+        if event.kind != EventKind.pointer_down or not event.inside or event.button != 0 or event.alt:
+            return false
+        if event.y >= 8.0 and event.y <= 38.0 and event.x >= width - 88.0 and event.x <= width - 18.0:
+            if event.x < width - 50.0:
+                self.actions.frame.trigger()
+            else:
+                self.actions.grid.trigger()
+            return true
+        if w.editing():
+            if event.y >= 44.0 and event.y <= 74.0 and event.x >= 16.0 and event.x <= 124.0:
+                let mode = int((event.x - 16.0) / 38.0)
+                self.actions.modes[mode].trigger()
+                return true
+            let tool = self.hit_tool(event.x, event.y, height)
+            if tool >= 0:
+                let commands = self.actions.tools + [self.actions.extrude] + self.actions.modeling
+                commands[tool].trigger()
+                return true
+        if w.editing():
+            w.choose_component(self.pick(event.x, event.y, width, height), event.shift)
+            return true
+        return false

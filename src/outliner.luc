@@ -1,0 +1,157 @@
+## Outliner projection: exposed nodes plus Group containment, never wire ancestry.
+from ui import Widget, Layout, Constraints, Size, Painter, Event
+from gpu import RenderTarget, Rect
+from input import EventKind, Key
+from workspace import Workspace
+import theme
+import math
+import time
+from tool_icons import draw_icon
+
+pub class OutlineRow:
+    pub let id: int
+    pub let depth: int
+    pub let visible: bool
+    pub let path: str
+    pub let branch: bool
+    pub func init(self, id: int, depth: int, visible: bool, path: str = "", branch: bool = false):
+        self.id = id
+        self.depth = depth
+        self.visible = visible
+        self.path = path
+        self.branch = branch
+
+pub class Outliner: Widget:
+    let box: Layout
+    let workspace: Workspace
+    pub var rows: list[OutlineRow]
+    var collapsed: list[int]
+    var collapsed_paths: list[str]
+    var scroll: float = 0.0
+    var hovered: int = -1
+    var last_node: int = -1
+    var last_click: int = 0
+
+    pub func init(self, workspace: Workspace) -> unit!:
+        self.workspace = workspace
+        self.rows = []
+        self.collapsed = []
+        self.collapsed_paths = []
+        self.box = Layout()
+        self.box.set_flex()
+        self.box.set_interactive(true)
+        self.box.set_focusable(true)
+        self.box.set_takes_scroll(true)
+
+    pub func layout(self) -> Layout:
+        return self.box
+    pub func measure(self, available: Constraints) -> Size!:
+        return Size(300.0, 210.0)
+
+    pub func refresh(self) -> unit!:
+        self.rows = []
+        self.append_scope(-1, 0, true)
+        self.scroll = math.clamp(self.scroll, 0.0, math.max(0.0, float(self.rows.length) * 28.0 - self.box.bounds().height))
+        self.box.invalidate()
+
+    func append_scope(self, parent: int, depth: int, visible: bool) -> unit!:
+        for node in self.workspace.network.outputs(parent):
+            let shown = visible and node.visible
+            self.rows.append(OutlineRow(node.id, depth, shown))
+            if node.kind == "Group" and not (node.id in self.collapsed):
+                self.append_scope(node.id, depth + 1, shown and node.enabled)
+            elif node.kind != "Group":
+                self.append_paths(node.id, node.group_paths, "", depth + 1, shown)
+
+    func append_paths(self, id: int, paths: list[str], parent: str, depth: int, visible: bool):
+        let children: list[str] = []
+        for path in paths:
+            if parent != "" and not path.starts_with(parent + "/"): continue
+            let remainder = path[parent.length + 1..<path.length] if parent != "" else path
+            let component = remainder.split("/")[0]
+            if not (component in children): children.append(component)
+        for component in children:
+            let path = parent + "/" + component if parent != "" else component
+            var branch = false
+            for candidate in paths:
+                if candidate.starts_with(path + "/"): branch = true
+            self.rows.append(OutlineRow(id, depth, visible, path, branch))
+            if branch and not (f"{id}:{path}" in self.collapsed_paths):
+                self.append_paths(id, paths, path, depth + 1, visible)
+
+    pub func draw(self, target: RenderTarget) -> unit!:
+        let size = target.size()
+        let p = Painter(target)
+        p.rectangle(Rect(0.0, 0.0, size.width, size.height), theme.backdrop())
+        for index in 0..<self.rows.length:
+            let row = self.rows[index]
+            let y = float(index) * 28.0 - self.scroll
+            if y + 28.0 < 0.0 or y > size.height:
+                continue
+            let node = self.workspace.network.require(row.id)
+            let selected = row.path == "" and node.id == self.workspace.network.selected
+            if selected or self.hovered == index:
+                p.rectangle(Rect(0.0, y, size.width, 27.0), theme.surface() if not selected else theme.grey(74.0))
+            if selected:
+                p.rectangle(Rect(0.0, y, 3.0, 27.0), theme.accent())
+            let x = 10.0 + float(row.depth) * 18.0
+            let ink = theme.text() if row.visible else theme.text_muted()
+            if row.path != "" and row.branch:
+                p.text(">" if f"{node.id}:{row.path}" in self.collapsed_paths else "v", x, y + 5.0, ink)
+            elif row.path == "" and node.kind == "Group":
+                p.text(">" if node.id in self.collapsed else "v", x, y + 5.0, ink)
+            draw_icon(p, ("Group" if row.branch else "Cube") if row.path != "" else node.kind, x + 17.0, y + 6.0, 16.0, ink)
+            let limit = int(math.max(1.0, (size.width - x - 75.0) / 8.0))
+            let label = row.path.split("/")[-1] if row.path != "" else node.name
+            p.text(label if label.length <= limit else label[0..<limit] + "…", x + 40.0, y + 5.0, ink)
+            if row.path == "": p.text("o" if node.visible else "-", size.width - 23.0, y + 5.0, ink)
+        if self.rows.length == 0:
+            p.text("No exposed outputs", 12.0, 12.0, theme.text_muted())
+        p.close()
+
+    pub func event(self, event: Event) -> unit!:
+        if event.cancelled:
+            self.last_node = -1
+            return
+        if event.kind == EventKind.scroll:
+            self.scroll = math.clamp(self.scroll - event.scroll_y * 24.0, 0.0, math.max(0.0, float(self.rows.length) * 28.0 - self.box.bounds().height))
+        elif event.kind == EventKind.key_down and event.key == Key.enter:
+            self.workspace.enter_group(self.workspace.network.selected)
+        elif event.kind == EventKind.pointer_down and event.button == 0 and event.inside:
+            let index = int((event.y + self.scroll) / 28.0)
+            if index >= 0 and index < self.rows.length:
+                let row = self.rows[index]
+                let node = self.workspace.network.require(row.id)
+                let x = 10.0 + float(row.depth) * 18.0
+                if row.path != "":
+                    if row.branch and event.x >= x and event.x < x + 16.0:
+                        let key = f"{row.id}:{row.path}"
+                        if let at = self.collapsed_paths.index_of(key): discard(self.collapsed_paths.remove_at(at))
+                        else: self.collapsed_paths.append(key)
+                    else:
+                        self.workspace.reveal_node(node.id)
+                    self.refresh()
+                    return
+                if node.kind == "Group" and event.x >= x and event.x < x + 16.0:
+                    if let at = self.collapsed.index_of(node.id):
+                        discard(self.collapsed.remove_at(at))
+                    else:
+                        self.collapsed.append(node.id)
+                elif event.x > self.box.bounds().width - 32.0:
+                    self.workspace.select_node(node.id)
+                    self.workspace.toggle_visible()
+                else:
+                    let now = time.now()
+                    let double = self.last_node == node.id and now - self.last_click < 400000000
+                    self.workspace.reveal_node(node.id)
+                    if double and node.kind == "Group":
+                        self.workspace.enter_group(node.id)
+                    self.last_node = -1 if double else node.id
+                    self.last_click = now
+                self.refresh()
+        elif event.kind == EventKind.pointer_moved:
+            let index = int((event.y + self.scroll) / 28.0)
+            self.hovered = index if event.inside and index >= 0 and index < self.rows.length else -1
+        elif event.kind == EventKind.pointer_left:
+            self.hovered = -1
+        self.box.invalidate()

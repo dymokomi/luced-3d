@@ -1,0 +1,60 @@
+## Strict typed Prism reads for project and UI-state schemas.
+from prism import Document, Value, DType
+from ui import TextField
+import ui
+import math
+
+pub func scalar(doc: Document, path: str, key: str) -> float!:
+    let value = doc.get(path, key)
+    if value.rank() != 0:
+        error(ui.invalid, "Expected a scalar project property: " + key)
+    let number = value.number_at()
+    if not math.is_finite(number):
+        error(ui.invalid, "Non-finite project property: " + key)
+    return number
+
+pub func integer(doc: Document, path: str, key: str, low: int, high: int) -> int!:
+    let number = scalar(doc, path, key)
+    if number < float(low) or number > float(high) or math.floor(number) != number:
+        error(ui.invalid, "Out-of-range project property: " + key)
+    return int(number)
+
+pub func flag(doc: Document, path: str, key: str) -> bool!:
+    return integer(doc, path, key, 0, 1) == 1
+
+pub func text(doc: Document, path: str, key: str) -> str!:
+    let value = doc.get(path, key)
+    if value.rank() != 0 or value.dtype() != DType.string:
+        error(ui.invalid, "Expected a text project property: " + key)
+    return value.text_at()
+
+## Use the inspector's exact Unicode/length/control-character contract, before
+## installing the document; a later property refresh must not reject its text.
+pub func line(value: str) -> str!:
+    let field = TextField(value)
+    field.close()
+    return value
+
+pub func numbers(doc: Document, path: str, key: str, minimum: int, maximum: int) -> list[float]!:
+    let value = doc.get(path, key)
+    if value.rank() != 1 or value.count() < minimum or value.count() > maximum:
+        error(ui.invalid, "Invalid project array: " + key)
+    let result: list[float] = []
+    for at in 0..<value.count():
+        let number = value.number_at(at)
+        if not math.is_finite(number): error(ui.invalid, "Non-finite project array: " + key)
+        result.append(number)
+    return result
+
+pub func ids(doc: Document, path: str, key: str, maximum: int, low: int = -1) -> list[int]!:
+    let result: list[int] = []
+    for number in numbers(doc, path, key, 0, maximum):
+        if number < float(low) or number > 2147483647.0 or math.floor(number) != number:
+            error(ui.invalid, "Invalid integer project array: " + key)
+        result.append(int(number))
+    return result
+
+pub func put_ids(doc: Document, path: str, key: str, values: list[int]) -> unit!:
+    let converted: list[float] = []
+    for value in values: converted.append(float(value))
+    doc.set(path, key, Value.numbers([converted.length], converted))

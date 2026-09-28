@@ -1,0 +1,56 @@
+import time
+import cad_probe_output
+from step import Step
+
+pub func main(arguments: list[str]) -> int!:
+    let model = Step.load_model(arguments[0])
+    let start = time.now()
+    let divisions = int(cad_probe_output.number(arguments[1])) if arguments.length > 1 else 16
+    let edge_size = cad_probe_output.number(arguments[2]) if arguments.length > 2 else 0.0
+    if arguments.length > 3 and arguments[3] == "preview":
+        print(f"analytic_faces={model.face_count()} shared_edges={model.edge_count()}")
+        var points = 0
+        var polygons = 0
+        let patch = int(cad_probe_output.number(arguments[4])) if arguments.length > 4 else -1
+        if patch >= 0: print(f"patch_path={model.face_path(patch)}")
+        for face in (patch if patch >= 0 else 0)..<(patch + 1 if patch >= 0 else model.face_count()):
+            let before = time.now()
+            let part = model.preview_face(face, divisions) catch failure:
+                print(f"failure {face} {failure.message}")
+                print(f"timing {face} {time.now() - before}")
+                continue
+            print(f"timing {face} {time.now() - before}")
+            points += part.point_count()
+            polygons += part.face_count()
+        print(f"preview_points={points} polygons={polygons} time_ns={time.now() - start}")
+        return 0
+    let mesh = model.tessellate(divisions, edge_size)
+    print(f"# analytic_faces={model.face_count()} shared_edges={model.edge_count()} tessellation_ns={time.now() - start}")
+    if arguments.length > 3 and arguments[3] == "stats":
+        let nonquads: list[int] = []
+        let quads: list[int] = []
+        for parent in 0..<model.face_count():
+            nonquads.append(0)
+            quads.append(0)
+        let attribute = mesh.find_attribute("cad_face", 2)
+        let layout = mesh.find_attribute("cad_trim_grid", 2)
+        var clipped = 0
+        for face in 0..<mesh.face_count():
+            if layout >= 0 and mesh.attribute_value(layout,face,0) > 0.0: clipped += 1
+            let parent = int(mesh.attribute_value(attribute, face, 0))
+            if mesh.face_size(face) == 4: quads[parent] += 1
+            else: nonquads[parent] += 1
+        for parent in 0..<model.face_count():
+            print(f"patch {parent} {model.face_edge_count(parent)} {quads[parent]} {nonquads[parent]} {model.face_path(parent)}")
+        print(f"trim_grid_polygons={clipped} total_polygons={mesh.face_count()}")
+        return 0
+    cad_probe_output.metrics(mesh)
+    for index in 0..<mesh.point_count():
+        let p = mesh.point(index)
+        cad_probe_output.point(p.x, p.y, p.z)
+    for face in 0..<mesh.face_count():
+        var line = "f"
+        for corner in 0..<mesh.face_size(face):
+            line += f" {mesh.face_point(face, corner) + 1}"
+        print(line)
+    return 0

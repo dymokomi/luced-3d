@@ -1,0 +1,62 @@
+## Import grouping and Blast operate on the same CAD/polygon primitive paths.
+from geometry_data import GeometryData, GeometryInstance
+from geometry_groups import GeometryGroup, patterns, matches
+from cad import CadModel
+from three import PolygonMesh, MeshOps
+
+pub func imported_cad(model: CadModel) -> GeometryData!:
+    let names: list[str] = []
+    let members: list[list[int]] = []
+    for face in 0..<model.face_count():
+        let path = model.face_path(face)
+        if path == "": continue
+        var index = names.index_of(path) else -1
+        if index < 0:
+            index = names.length
+            names.append(path)
+            members.append([])
+        members[index].append(face)
+    let groups: list[GeometryGroup] = []
+    for index in 0..<names.length:
+        groups.append(GeometryGroup(names[index], members[index], 0))
+    return GeometryData(surfaces = [model], groups = groups)
+
+pub func blast(data: GeometryData, expression: str, keep: bool) -> GeometryData!:
+    let selectors = patterns(expression)
+    let models: list[CadModel] = []
+    let groups: list[GeometryGroup] = []
+    var polygons: PolygonMesh? = none
+    var polygon_count = 0
+    if let mesh = data.mesh: polygon_count = mesh.face_count()
+    for domain in -1..<data.surfaces.length:
+        let count = polygon_count if domain < 0 else data.surfaces[domain].face_count()
+        let selected: set[int] = {}
+        if selectors.length == 0:
+            for face in 0..<count: selected.insert(face)
+        for group in data.groups:
+            if group.model == domain and matches(group.path, selectors):
+                for face in group.faces: selected.insert(face)
+        let retained: list[int] = []
+        let deleted: list[int] = []
+        let remap: list[int] = []
+        for face in 0..<count:
+            let retain = (face in selected) == keep
+            remap.append(retained.length if retain else -1)
+            if retain: retained.append(face)
+            else: deleted.append(face)
+        let target = -1 if domain < 0 else models.length
+        if domain < 0:
+            if let mesh = data.mesh:
+                polygons = mesh if deleted.length == 0 else MeshOps.compact(MeshOps.faces(mesh, deleted, 0))
+        elif retained.length > 0:
+            models.append(data.surfaces[domain] if deleted.length == 0 else data.surfaces[domain].subset(retained))
+        for group in data.groups:
+            if group.model != domain: continue
+            let faces: list[int] = []
+            for face in group.faces:
+                if remap[face] >= 0: faces.append(remap[face])
+            if faces.length > 0: groups.append(GeometryGroup(group.path, faces, target))
+    let instances: list[GeometryInstance] = []
+    for instance in data.instances:
+        instances.append(GeometryInstance(blast(instance.data, expression, keep), instance.translation, instance.rotation, instance.scale, instance.visible))
+    return GeometryData(polygons, models, instances, groups)

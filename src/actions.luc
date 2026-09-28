@@ -1,0 +1,126 @@
+## The same Command instances drive toolbar buttons, menus and shortcuts.
+from ui import Command, Shortcut
+from input import Key
+from interop import Connection
+from workspace import Workspace
+from network import kinds
+
+pub class Actions:
+    pub let new_project: Command
+    pub let open_project: Command
+    pub let save: Command
+    pub let save_as: Command
+    pub let reset_layout: Command
+    pub let undo: Command
+    pub let redo: Command
+    pub let frame: Command
+    pub let grid: Command
+    pub let display: Command
+    pub let output: Command
+    pub let auto_output: Command
+    pub let visibility: Command
+    pub let parent: Command
+    pub let enabled: Command
+    pub let delete: Command
+    pub let extrude: Command
+    pub let clear_edits: Command
+    pub let select_all: Command
+    pub let modes: list[Command]
+    pub let tools: list[Command]
+    pub let add: list[Command]
+    pub let modeling: list[Command]
+    pub let all: list[Command]
+    let connections: list[Connection]
+    let workspace: Workspace
+
+    pub func init(self, workspace: Workspace) -> unit!:
+        self.workspace = workspace
+        self.new_project = Command("New project", Shortcut(Key.n, primary = true), id = "new_project")
+        self.open_project = Command("Open project…", Shortcut(Key.o, primary = true), id = "open_project")
+        self.save = Command("Save", Shortcut(Key.s, primary = true), id = "save_project")
+        self.save_as = Command("Save As…", Shortcut(Key.s, primary = true, shift = true), id = "save_project_as")
+        self.reset_layout = Command("Reset layout", id = "reset_layout")
+        self.undo = Command("Undo", Shortcut(Key.z, primary = true), id = "undo")
+        self.redo = Command("Redo", Shortcut(Key.z, primary = true, shift = true), id = "redo")
+        self.frame = Command("Frame geometry", Shortcut(Key.f), id = "frame")
+        self.grid = Command("Grid", Shortcut(Key.g), id = "grid")
+        self.display = Command("Preview selected", Shortcut(Key.d), id = "display_node")
+        self.output = Command("Out", Shortcut(Key.o), id = "output_node")
+        self.auto_output = Command("Auto Out", id = "auto_output")
+        self.visibility = Command("Visible", id = "visible_node")
+        self.parent = Command("Up", id = "parent_group")
+        self.enabled = Command("Enable / bypass", Shortcut(Key.b), id = "toggle_node")
+        self.delete = Command("Delete node", id = "delete_node")
+        self.extrude = Command("Extrude faces", Shortcut(Key.e), id = "extrude_faces")
+        self.clear_edits = Command("Clear edits", id = "clear_edits")
+        self.select_all = Command("Select all", Shortcut(Key.a, primary = true), id = "select_all")
+        self.connections = [self.undo.on_trigger(workspace.undo), self.redo.on_trigger(workspace.redo),
+            self.output.on_trigger(workspace.toggle_output), self.auto_output.on_trigger(workspace.auto_output),
+            self.visibility.on_trigger(workspace.toggle_visible), self.parent.on_trigger(workspace.leave_group),
+            self.frame.on_trigger(workspace.frame_cube), self.grid.on_trigger(workspace.toggle_grid),
+            self.display.on_trigger(workspace.display_selected), self.enabled.on_trigger(workspace.toggle_enabled),
+            self.delete.on_trigger(workspace.delete_selected), self.extrude.on_trigger(workspace.extrude),
+            self.clear_edits.on_trigger(workspace.clear_edits), self.select_all.on_trigger(workspace.select_all)]
+        self.add = []
+        self.modeling = []
+        for operation in ["Inset", "Delete", "Reverse", "Triangulate", "Duplicate", "Split", "Fuse", "Smooth", "Peak", "Flatten", "Rotate", "Scale", "Snap", "Noise", "Subdivide", "Bevel", "Fill", "Dissolve", "Clean"]:
+            let name = operation
+            let command = Command(operation, id = "edit_" + operation)
+            self.modeling.append(command)
+            self.connections.append(command.on_trigger(func () -> unit!: workspace.model(name)))
+        self.modes = [Command("Points", Shortcut(Key.digit_1), id = "select_points"),
+            Command("Edges", Shortcut(Key.digit_2), id = "select_edges"), Command("Faces", Shortcut(Key.digit_3), id = "select_faces")]
+        for index in 0..<3:
+            let mode = index
+            self.connections.append(self.modes[index].on_trigger(func () -> unit!:
+                workspace.set_mode(mode)))
+        self.tools = [Command("Select", Shortcut(Key.q), id = "tool_select"), Command("Move", Shortcut(Key.m), id = "tool_move")]
+        self.connections.append(self.tools[0].on_trigger(func (): workspace.choose_tool("Select")))
+        self.connections.append(self.tools[1].on_trigger(func (): workspace.choose_tool("Move")))
+        for kind in kinds():
+            self.add.append(Command(kind, id = "add_" + kind))
+        self.all = [self.undo, self.redo, self.frame, self.grid, self.display, self.output, self.auto_output, self.visibility, self.parent, self.enabled, self.delete, self.extrude, self.clear_edits, self.select_all] + self.add + self.modes + self.tools + self.modeling
+        self.all += [self.new_project, self.open_project, self.save, self.save_as, self.reset_layout]
+        self.refresh()
+
+    pub func refresh(self) -> unit!:
+        let w = self.workspace
+        self.undo.set_enabled(w.history.can_undo() or w.in_transaction())
+        self.redo.set_enabled(w.history.can_redo())
+        self.undo.set_text(w.history.undo_label())
+        self.redo.set_text(w.history.redo_label())
+        let node = w.selected()
+        self.delete.set_enabled(node != none)
+        self.enabled.set_enabled(node != none)
+        self.display.set_enabled(node != none)
+        self.output.set_enabled(node != none)
+        self.auto_output.set_enabled(node != none)
+        self.visibility.set_enabled(node != none)
+        self.parent.set_enabled(w.network.scope >= 0)
+        if let selected = node:
+            self.enabled.set_checked(selected.enabled)
+            self.display.set_checked(w.network.preview and selected.id == w.network.display)
+            self.output.set_checked(w.network.is_output(selected.id))
+            self.auto_output.set_checked(selected.output == 0)
+            self.visibility.set_checked(selected.visible)
+            self.clear_edits.set_enabled(selected.kind == "Edit" and selected.edits.length > 0)
+        else:
+            self.clear_edits.set_enabled(false)
+        self.extrude.set_enabled(w.editing() and w.component_mode == 2 and w.components.length > 0)
+        self.select_all.set_enabled(w.editing())
+        for index in 0..<3:
+            self.modes[index].set_enabled(w.editing())
+            self.modes[index].set_checked(index == w.component_mode)
+        for tool in self.tools:
+            tool.set_enabled(w.editing())
+            tool.set_checked(tool.text() == w.edit_tool)
+        for command in self.modeling:
+            let face_tool = command.text() in ["Reverse", "Triangulate", "Inset", "Duplicate", "Split"]
+            let edge_tool = command.text() in ["Fill", "Dissolve"]
+            command.set_enabled(w.editing() and (command.text() in ["Subdivide", "Bevel", "Clean"] or (w.components.length > 0 and (not face_tool or w.component_mode == 2) and (not edge_tool or w.component_mode == 1))))
+        self.grid.set_checked(w.grid_visible)
+
+    pub func close(self):
+        for connection in self.connections:
+            connection.disconnect()
+        self.connections.clear()

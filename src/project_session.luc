@@ -1,0 +1,134 @@
+## Project lifecycle and unsaved-change prompts, separate from file serialization.
+from ui import Application, ConfirmDialog, Font, Text
+from interop import Connection
+from workspace import Workspace
+from network import Network
+from network_view import NetworkView
+from actions import Actions
+from three import Vector3
+import project_file
+import paths
+
+pub class ProjectSession:
+    pub let confirm: ConfirmDialog
+    pub let caption: Text
+    pub var app: Application? = none
+    pub var refreshed: func() -> unit!? = none
+    pub var path: str = ""
+    let workspace: Workspace
+    let graph_view: NetworkView
+    var saved: Network
+    var pending: str = ""
+    var pending_path: str = ""
+    let connections: list[Connection]
+
+    pub func init(self, workspace: Workspace, graph_view: NetworkView, actions: Actions, font: Font) -> unit!:
+        self.workspace = workspace
+        self.graph_view = graph_view
+        self.saved = workspace.network.copy()
+        self.confirm = ConfirmDialog(font = font)
+        self.caption = Text("Untitled.prisma", font = font, muted = true)
+        self.connections = [self.confirm.on_choose(self.choose), actions.new_project.on_trigger(self.new_project),
+            actions.open_project.on_trigger(self.open_project), actions.save.on_trigger(self.save),
+            actions.save_as.on_trigger(self.save_as)]
+
+    pub func dirty(self) -> bool:
+        return self.workspace.in_transaction() or not project_file.same_graph(self.workspace.network, self.saved)
+
+    pub func refresh(self) -> unit!:
+        self.caption.set_text((paths.base(self.path) if self.path != "" else "Untitled.prisma") + (" *" if self.dirty() else ""))
+
+    func remember(self) -> unit!:
+        self.saved = self.workspace.network.copy()
+        for node in self.saved.nodes: node.cache = none
+        self.refresh()
+
+    pub func save_to(self, path: str) -> unit!:
+        # Finish authored drags before serializing. A cancelled dialog does not.
+        self.workspace.commit()
+        let destination = project_file.filename(path if path.lower().ends_with(".prisma") else path + ".prisma")
+        project_file.save(destination, self.workspace, [self.graph_view.zoom, self.graph_view.pan_x, self.graph_view.pan_y])
+        self.path = destination
+        self.remember()
+
+    pub func save(self) -> unit!: discard(self.try_save(false))
+    pub func save_as(self) -> unit!: discard(self.try_save(true))
+
+    func try_save(self, choose: bool) -> bool!:
+        var path = self.path
+        if choose or path == "":
+            let app = self.app else return false
+            path = app.save_file("Save Luced 3D project", paths.base(self.path) if self.path != "" else "Untitled.prisma")
+        if path == "": return false
+        self.save_to(path)
+        return true
+
+    pub func load_from(self, path: str) -> unit!:
+        let project = project_file.load(path)
+        # Parsing/reference validation above cannot alter the running document.
+        self.workspace.replace_network(project.graph)
+        self.path = project_file.filename(path)
+        let camera = project.camera
+        self.workspace.yaw = camera[0]
+        self.workspace.pitch = camera[1]
+        self.workspace.distance = camera[2]
+        self.workspace.target = Vector3(camera[3], camera[4], camera[5])
+        self.workspace.update_camera()
+        if let refresh = self.refreshed: refresh()
+        self.graph_view.zoom = project.graph_view[0]
+        self.graph_view.pan_x = project.graph_view[1]
+        self.graph_view.pan_y = project.graph_view[2]
+        self.graph_view.layout().invalidate()
+        self.remember()
+
+    pub func new_project(self) -> unit!: self.request("new", "")
+
+    pub func open_project(self) -> unit!:
+        let app = self.app else return
+        let path = app.open_file("Open Luced 3D project (.prisma)")
+        if path != "": self.request("open", path)
+
+    func request(self, action: str, path: str) -> unit!:
+        if self.confirm.is_open(): return
+        self.pending = action
+        self.pending_path = path
+        if not self.dirty():
+            self.finish()
+            return
+        self.confirm.open("Save changes to this project?", "Save", "Don't Save")
+
+    pub func can_quit(self) -> bool!:
+        if not self.dirty(): return true
+        self.request("quit", "")
+        return false
+
+    func choose(self, role: int) -> unit!:
+        if role == 2:
+            self.pending = ""
+            return
+        if role == 0 and not self.try_save(false):
+            self.pending = ""
+            return
+        self.finish()
+
+    func finish(self) -> unit!:
+        let action = self.pending
+        let path = self.pending_path
+        self.pending = ""
+        self.pending_path = ""
+        if action == "open": self.load_from(path)
+        elif action == "new":
+            self.workspace.replace_network(Network())
+            self.path = ""
+            self.workspace.reset_view()
+            self.graph_view.reset_scope()
+            self.remember()
+            if let refresh = self.refreshed: refresh()
+        elif action == "quit":
+            if let app = self.app: app.stop()
+
+    pub func close(self):
+        self.refreshed = none
+        self.app = none
+        for connection in self.connections: connection.disconnect()
+        self.connections.clear()

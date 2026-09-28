@@ -1,0 +1,261 @@
+## Virtualized geometry inspection. Reads the selected node, not just display.
+from ui import Widget, Layout, Constraints, Size, Painter, Event
+from gpu import RenderTarget, Rect
+from three import PolygonMesh
+from input import EventKind, ScrollUnit
+from workspace import Workspace
+from component_groups import group_indices
+import math
+import theme
+
+pub class Column:
+    pub let title: str
+    pub let attribute: int
+    pub let component: int
+    pub func init(self, title: str, attribute: int, component: int = 0):
+        self.title = title
+        self.attribute = attribute
+        self.component = component
+
+pub class GeometrySheet: Widget:
+    let box: Layout
+    let workspace: Workspace
+    pub var domain: int = 0
+    pub var mesh: PolygonMesh? = none
+    pub var columns: list[Column]
+    pub var rows: list[int]
+    pub var pinned: int = -1
+    pub var selected_only: bool = false
+    var node_id: int = -1
+    var title: str = ""
+    var failure: str = ""
+    var scroll_x: float = 0.0
+    var scroll_y: float = 0.0
+    var hovered: int = -1
+    var descending: bool = false
+    var sort_column: int = -1
+    var attribute_filter: str = ""
+    var row_filter: str = ""
+
+    pub func init(self, workspace: Workspace) -> unit!:
+        self.workspace = workspace
+        self.box = Layout()
+        self.box.set_flex()
+        self.box.set_interactive(true)
+        self.box.set_focusable(true)
+        self.box.set_takes_scroll(true)
+        self.columns = []
+        self.rows = []
+
+    pub func layout(self) -> Layout:
+        return self.box
+    pub func measure(self, available: Constraints) -> Size!:
+        return Size(460.0, 190.0)
+
+    pub func refresh(self) -> unit!:
+        let w = self.workspace
+        let id = self.pinned if self.pinned >= 0 else w.network.selected
+        self.failure = ""
+        self.mesh = none
+        self.columns = []
+        self.rows = []
+        if w.network.find(id) == none:
+            self.title = "No node" if self.pinned < 0 else "Pinned node was deleted"
+            self.node_id = -1
+            self.box.invalidate()
+            return
+        let node = w.network.find(id) else return
+        if self.node_id != id:
+            self.scroll_x = 0.0
+            self.scroll_y = 0.0
+        self.node_id = id
+        self.title = node.name + (" / pinned" if self.pinned >= 0 else " / selected node")
+        let data = w.network.evaluate_data(id) catch failure:
+            self.failure = failure.message
+            self.box.invalidate()
+            return
+        self.mesh = data.mesh
+        if data.surfaces.length > 0 or data.instances.length > 0:
+            self.title += " / " + data.description()
+        self.box.invalidate()
+        let mesh = self.mesh else return
+        let names = ["P.x", "P.y", "P.z"] if self.domain == 0 else (["point", "primitive"] if self.domain == 1 else (["vertices", "N.x", "N.y", "N.z"] if self.domain == 2 else ["points", "vertices", "primitives", "edges"]))
+        for index in 0..<names.length:
+            if self.attribute_filter == "" or names[index].contains(self.attribute_filter):
+                self.columns.append(Column(names[index], -1, index))
+        for attribute in 0..<mesh.attribute_count():
+            if mesh.attribute_domain(attribute) != self.domain:
+                continue
+            let width = mesh.attribute_width(attribute)
+            if self.attribute_filter != "" and not mesh.attribute_name(attribute).contains(self.attribute_filter):
+                continue
+            for component in 0..<width:
+                let suffix = ("." + ["x", "y", "z", "w"][component]) if width > 1 else ""
+                self.columns.append(Column(mesh.attribute_name(attribute) + suffix, attribute, component))
+        let filtered = group_indices(mesh, self.domain, self.row_filter) catch failure:
+            self.failure = failure.message
+            self.box.invalidate()
+            return
+        for row in filtered:
+            if not self.selected_only or self.row_selected(row):
+                self.rows.append(row)
+        if self.sort_column >= self.columns.length:
+            self.sort_column = -1
+        self.sort_rows()
+        self.clamp_scroll()
+        self.box.invalidate()
+
+    pub func set_domain(self, domain: int) -> unit!:
+        self.domain = domain
+        self.scroll_x = 0.0
+        self.scroll_y = 0.0
+        self.refresh()
+
+    pub func filter_attributes(self, text: str) -> unit!:
+        self.attribute_filter = text.trim()
+        self.sort_column = -1
+        self.refresh()
+
+    pub func filter_rows(self, text: str) -> unit!:
+        self.row_filter = text.trim()
+        self.refresh()
+
+    ## Stable bottom-up merge sort. Values are read once, not once per compare.
+    func sort_rows(self) -> unit!:
+        let keys: list[float] = []
+        for row in self.rows:
+            keys.append(float(row) if self.sort_column < 0 else self.value(row, self.sort_column))
+        var order: list[int] = []
+        for index in 0..<self.rows.length:
+            order.append(index)
+        var span = 1
+        while span < order.length:
+            let next: list[int] = []
+            var base = 0
+            while base < order.length:
+                let middle = int(math.min(float(base + span), float(order.length)))
+                let end = int(math.min(float(base + span * 2), float(order.length)))
+                var a = base
+                var b = middle
+                while a < middle or b < end:
+                    let left = a < middle and (b >= end or (keys[order[a]] >= keys[order[b]] if self.descending else keys[order[a]] <= keys[order[b]]))
+                    next.append(order[a] if left else order[b])
+                    if left:
+                        a += 1
+                    else:
+                        b += 1
+                base += span * 2
+            order = next
+            span *= 2
+        let sorted: list[int] = []
+        for index in order:
+            sorted.append(self.rows[index])
+        self.rows = sorted
+
+    func row_selected(self, row: int) -> bool!:
+        if self.node_id != self.workspace.network.display:
+            return false
+        if self.domain == 2 and self.workspace.component_mode == 2:
+            return row in self.workspace.components
+        if self.domain == 0 and self.workspace.component_mode == 0:
+            return row in self.workspace.components
+        return false
+
+    pub func value(self, row: int, column: int) -> float!:
+        let mesh = self.mesh else return 0.0
+        let field = self.columns[column]
+        if field.attribute >= 0:
+            return mesh.attribute_value(field.attribute, row, field.component)
+        let component = field.component
+        if self.domain == 0:
+            let point = mesh.point(row)
+            return point.x if component == 0 else (point.y if component == 1 else point.z)
+        if self.domain == 1:
+            return float(mesh.corner_point(row) if component == 0 else mesh.corner_face(row))
+        if self.domain == 2:
+            if component == 0:
+                return float(mesh.face_size(row))
+            let normal = mesh.face_normal(row)
+            return normal.x if component == 1 else (normal.y if component == 2 else normal.z)
+        return float([mesh.point_count(), mesh.vertex_count(), mesh.face_count(), mesh.edge_count()][component])
+
+    pub func draw(self, target: RenderTarget) -> unit!:
+        let size = target.size()
+        let p = Painter(target)
+        p.rectangle(Rect(0.0, 0.0, size.width, size.height), theme.backdrop())
+        for domain in 0..<4:
+            let x = 6.0 + float(domain) * 84.0
+            p.rounded_rectangle(Rect(x, 5.0, 80.0, 26.0), theme.accent() if domain == self.domain else theme.surface(), 3.0)
+            p.text(["Points", "Vertices", "Faces", "Detail"][domain], x + 5.0, 10.0, theme.grey(0.0) if domain == self.domain else theme.text())
+        p.rounded_rectangle(Rect(346.0, 5.0, 45.0, 26.0), theme.accent() if self.pinned >= 0 else theme.surface(), 3.0)
+        p.text("Pin", 354.0, 10.0, theme.grey(0.0) if self.pinned >= 0 else theme.text())
+        if size.width >= 490.0:
+            p.rounded_rectangle(Rect(397.0, 5.0, 85.0, 26.0), theme.accent() if self.selected_only else theme.surface(), 3.0)
+            p.text("Selected", 402.0, 10.0, theme.grey(0.0) if self.selected_only else theme.text())
+        p.text(self.failure if self.failure != "" else self.title + f" / {self.rows.length} rows", 8.0, 39.0, theme.accent() if self.failure != "" else theme.text_muted())
+        let first = int(self.scroll_y / 24.0)
+        let visible = int(math.max(0.0, size.height - 88.0) / 24.0) + 2
+        for at in first..<int(math.min(float(self.rows.length), float(first + visible))):
+            let row = self.rows[at]
+            let y = 88.0 + float(at) * 24.0 - self.scroll_y
+            if y < 64.0:
+                continue
+            p.rectangle(Rect(0.0, y, size.width, 23.0), theme.surface() if self.row_selected(row) else (theme.surface_raised() if self.hovered == row else (theme.tab_strip() if at % 2 == 0 else theme.backdrop())))
+            for column in 0..<self.columns.length:
+                let x = 70.0 + float(column) * 110.0 - self.scroll_x
+                if x < 60.0 or x > size.width:
+                    continue
+                let value = self.value(row, column)
+                let label = f"{math.floor(value * 10000.0 + 0.5) / 10000.0}" if math.abs(value) < 1.0e10 else f"{value}"
+                p.text(label[0..<int(math.min(12.0, float(label.length)))], x + 6.0, y + 4.0, theme.text())
+            p.rectangle(Rect(0.0, y, 66.0, 23.0), theme.surface())
+            p.text(f"{row}", 8.0, y + 4.0, theme.accent() if self.row_selected(row) else theme.text_muted())
+        p.rectangle(Rect(0.0, 62.0, size.width, 26.0), theme.surface())
+        p.text(("ID ↓" if self.descending else "ID ↑") if self.sort_column < 0 else "ID", 8.0, 68.0, theme.text())
+        for column in 0..<self.columns.length:
+            let x = 70.0 + float(column) * 110.0 - self.scroll_x
+            if x < 60.0 or x > size.width:
+                continue
+            let title = self.columns[column].title + ((" ↓" if self.descending else " ↑") if self.sort_column == column else "")
+            p.text(title[0..<int(math.min(13.0, float(title.length)))], x + 6.0, 68.0, theme.text())
+        p.close()
+
+    func clamp_scroll(self):
+        let size = self.box.bounds()
+        self.scroll_y = math.max(0.0, math.min(self.scroll_y, float(self.rows.length) * 24.0 - math.max(0.0, size.height - 88.0)))
+        self.scroll_x = math.max(0.0, math.min(self.scroll_x, float(self.columns.length) * 110.0 + 70.0 - size.width))
+
+    pub func event(self, event: Event) -> unit!:
+        if event.kind == EventKind.scroll:
+            let factor = 1.0 if event.scroll_unit == ScrollUnit.points else 24.0
+            self.scroll_y -= event.scroll_y * factor if not event.shift else 0.0
+            self.scroll_x -= (event.scroll_y if event.shift else event.scroll_x) * factor
+            self.clamp_scroll()
+        elif event.kind == EventKind.pointer_down and event.button == 0 and event.inside:
+            if event.y >= 5.0 and event.y <= 31.0:
+                if event.x >= 6.0 and event.x < 342.0:
+                    self.set_domain(int((event.x - 6.0) / 84.0))
+                elif event.x >= 346.0 and event.x <= 391.0:
+                    self.pinned = self.node_id if self.pinned < 0 else -1
+                    self.refresh()
+                elif event.x >= 397.0 and event.x <= 482.0:
+                    self.selected_only = not self.selected_only
+                    self.refresh()
+            elif event.y >= 62.0 and event.y < 88.0:
+                let column = -1 if event.x < 66.0 else int((event.x - 70.0 + self.scroll_x) / 110.0)
+                self.descending = not self.descending if column == self.sort_column else false
+                self.sort_column = column
+                self.refresh()
+            elif event.y >= 88.0 and self.workspace.editing() and self.node_id == self.workspace.network.display:
+                let index = int((event.y - 88.0 + self.scroll_y) / 24.0)
+                if index >= 0 and index < self.rows.length and self.domain != 3:
+                    self.workspace.set_mode(2 if self.domain == 2 else 0)
+                    let id = (self.mesh else return).corner_point(self.rows[index]) if self.domain == 1 else self.rows[index]
+                    self.workspace.choose_component(id, event.shift)
+                    self.refresh()
+        elif event.kind == EventKind.pointer_moved:
+            let index = int((event.y - 88.0 + self.scroll_y) / 24.0)
+            self.hovered = self.rows[index] if event.inside and event.y >= 88.0 and index >= 0 and index < self.rows.length else -1
+        elif event.kind == EventKind.pointer_left:
+            self.hovered = -1
+        self.box.invalidate()

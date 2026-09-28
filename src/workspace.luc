@@ -1,0 +1,693 @@
+from three import Scene, Group, PolygonMesh, Vector3, Matrix4, PerspectiveCamera, AmbientLight, DirectionalLight, WireBatch
+from network import Network, Node
+from edit_operations import EditOperation
+from history import History, Snapshot
+from scene_projection import append_scene, append_bounds, append_overlays, append_patch_boundaries
+from compute_session import ComputeSession
+from geometry_data import GeometryData
+import math
+import node_catalog
+import ui
+
+pub class Workspace:
+    pub var network: Network
+    pub let history: History
+    pub let scene: Scene
+    let objects: Group
+    pub let camera: PerspectiveCamera
+    pub var geometry: PolygonMesh? = none
+    pub var components: list[int]
+    ## 0 points, 1 edges, 2 faces. Node selection and display are independent.
+    pub var component_mode: int = 2
+    pub var edit_tool: str = "Select"
+    pub var revision: int = 0
+    pub var notice: str = ""
+    var pending: Snapshot? = none
+    var pending_label: str = ""
+    var pending_changed: bool = false
+    pub var yaw: float = 0.7
+    pub var pitch: float = 0.5
+    pub var distance: float = 9.0
+    pub var target: Vector3
+    pub var grid_visible: bool = true
+    pub var display_mode: int = 3
+    pub var normals_visible: bool = false
+    pub let wire_points: list[Vector3]
+    pub let normal_points: list[Vector3]
+    pub var compute: ComputeSession? = none
+    pub var wire_batch: WireBatch? = none
+    pub var normal_batch: WireBatch? = none
+    pub var patch_batch: WireBatch? = none
+    let display_bounds: list[Vector3]
+    var pending_frame: bool = false
+    var project_epoch: int = 0
+
+    pub func init(self) -> unit!:
+        self.target = Vector3(0.0, 0.8, 0.0)
+        self.wire_points = []
+        self.normal_points = []
+        self.display_bounds = []
+        self.network = Network()
+        self.history = History()
+        self.components = []
+        self.scene = Scene()
+        self.objects = Group()
+        self.scene.add(self.objects)
+        self.scene.add(AmbientLight(intensity = 0.35))
+        self.scene.add(DirectionalLight(direction = Vector3(3.0, 5.0, 2.0), intensity = 0.85))
+        self.camera = PerspectiveCamera(45.0, near = 0.05, far = 500.0)
+        self.update_camera()
+        self.rebuild()
+
+    ## Install a validated document. Old worker generations cannot overwrite it;
+    ## the source epoch also prevents reusing stale imports with recycled IDs.
+    pub func replace_network(self, graph: Network) -> unit!:
+        self.pending = none
+        self.pending_changed = false
+        self.pending_frame = false
+        for node in self.network.nodes:
+            if node.source_revision > self.project_epoch: self.project_epoch = node.source_revision
+        self.project_epoch += 1
+        for node in graph.nodes:
+            node.source_revision = self.project_epoch
+        self.network = graph
+        self.network.background = self.compute != none
+        self.history.changes.clear()
+        self.history.cursor = 0
+        self.components.clear()
+        self.component_mode = 2
+        self.notice = ""
+        self.rebuild()
+
+    pub func update_camera(self) -> unit!:
+        # Keep useful depth precision across CAD units and avoid a fixed far clip
+        # slicing large parts. Lens planes follow the orbit's working scale.
+        self.camera.set_projection(45.0, math.max(0.00001, self.distance * 0.01), math.min(1000000000.0, math.max(500.0, self.distance * 20.0)))
+        let horizontal = math.cos(self.pitch) * self.distance
+        self.camera.set_position(self.target.add(Vector3(math.sin(self.yaw) * horizontal, math.sin(self.pitch) * self.distance, math.cos(self.yaw) * horizontal)))
+        self.camera.look_at(self.target)
+
+    pub func orbit(self, dx: float, dy: float) -> unit!:
+        self.yaw -= dx * 0.008
+        self.pitch = math.max(-1.5, math.min(1.5, self.pitch + dy * 0.008))
+        self.update_camera()
+
+    pub func zoom(self, delta: float) -> unit!:
+        self.distance = math.max(0.001, math.min(10000000.0, self.distance * math.exp(math.max(-2.0, math.min(2.0, -delta * 0.08)))))
+        self.update_camera()
+
+    pub func pan(self, dx: float, dy: float, height: float) -> unit!:
+        let scale = self.distance * 0.828427 / math.max(1.0, height)
+        let right = Vector3(math.cos(self.yaw), 0.0, -math.sin(self.yaw))
+        let up = Vector3(-math.sin(self.yaw) * math.sin(self.pitch), math.cos(self.pitch), -math.cos(self.yaw) * math.sin(self.pitch))
+        self.target = self.target.add(right.multiply_scalar(-dx * scale)).add(up.multiply_scalar(dy * scale))
+        self.update_camera()
+
+    pub func frame_cube(self) -> unit!:
+        let points: list[Vector3] = []
+        if let session = self.compute:
+            if session.busy:
+                self.pending_frame = true
+                return
+            for point in self.display_bounds:
+                points.append(point)
+        var candidates = self.network.outputs(self.network.scope)
+        if let node = self.network.find(self.network.display):
+            if self.network.preview or node.kind == "Group":
+                candidates = [node]
+        if self.compute != none:
+            candidates = []
+        for node in candidates:
+            if not node.visible:
+                continue
+            let data = self.network.evaluate_data(node.id) catch failure:
+                continue
+            append_bounds(data, Matrix4(), points)
+        if points.length > 0:
+            var minimum = points[0]
+            var maximum = points[0]
+            for point in points:
+                minimum = Vector3(math.min(minimum.x, point.x), math.min(minimum.y, point.y), math.min(minimum.z, point.z))
+                maximum = Vector3(math.max(maximum.x, point.x), math.max(maximum.y, point.y), math.max(maximum.z, point.z))
+            self.target = minimum.add(maximum).multiply_scalar(0.5)
+            self.distance = math.max(1.0, maximum.subtract(minimum).length() * 1.8)
+        else:
+            self.target = Vector3(0.0, 1.0, 0.0)
+            self.distance = 9.0
+        self.update_camera()
+        self.revision += 1
+
+    pub func reset_view(self) -> unit!:
+        self.yaw = 0.7
+        self.pitch = 0.5
+        self.frame_cube()
+
+    pub func toggle_grid(self) -> unit!:
+        self.grid_visible = not self.grid_visible
+        self.revision += 1
+
+    pub func set_display_mode(self, mode: int) -> unit!:
+        if mode < 0 or mode > 4 or mode == self.display_mode:
+            return
+        self.display_mode = mode
+        self.revision += 1
+
+    pub func set_size(self, size: float) -> unit!:
+        self.set_parameter(0, size)
+
+    pub func selected(self) -> Node?:
+        return self.network.find(self.network.selected)
+
+    pub func editing(self) -> bool:
+        let node = self.selected() else return false
+        return node.kind == "Edit" and node.enabled and not node.dirty and node.id == self.network.display and self.geometry != none
+
+    pub func transforming(self) -> bool:
+        let node = self.selected() else return false
+        return node.kind in ["Transform", "Group"] and node.enabled
+
+    ## Parameter gizmos submit absolute gesture values; no mesh work on UI thread.
+    pub func preview_parameters(self, values: list[float]) -> unit!:
+        let before = self.pending else return
+        let original = before.graph.require(self.network.selected)
+        let node = self.selected() else return
+        node.values = values.copy()
+        self.pending_changed = values != original.values
+        self.network.invalidate(node.id)
+        self.rebuild()
+
+    pub func snapshot(self) -> Snapshot!:
+        return Snapshot(self.network, self.components, self.component_mode)
+
+    pub func begin(self, label: str) -> unit!:
+        if self.pending != none:
+            return
+        self.pending = self.snapshot()
+        self.pending_label = label
+        self.pending_changed = false
+
+    pub func commit(self) -> unit!:
+        let before = self.pending else return
+        if self.pending_changed:
+            self.history.push(self.pending_label, before, self.snapshot())
+        self.pending = none
+        self.pending_changed = false
+        self.revision += 1
+
+    pub func cancel(self) -> unit!:
+        let before = self.pending else return
+        self.pending = none
+        self.pending_changed = false
+        self.restore(before)
+
+    pub func in_transaction(self) -> bool:
+        return self.pending != none
+
+    pub func restore(self, snapshot: Snapshot) -> unit!:
+        self.network = snapshot.graph.copy()
+        self.network.background = self.compute != none
+        self.components = snapshot.components.copy()
+        self.component_mode = snapshot.mode
+        self.rebuild()
+
+    pub func undo(self) -> unit!:
+        if self.pending != none:
+            self.cancel()
+            return
+        if self.history.can_undo():
+            self.history.cursor -= 1
+            self.restore(self.history.changes[self.history.cursor].before)
+
+    pub func redo(self) -> unit!:
+        if self.pending != none:
+            self.cancel()
+        if self.history.can_redo():
+            let snapshot = self.history.changes[self.history.cursor].after
+            self.history.cursor += 1
+            self.restore(snapshot)
+
+    ## Every mutation enters this command transaction path, including scripts
+    ## and UI gestures. Invalid topology/links roll back without losing history.
+    pub func perform(self, label: str, action: func() -> unit!) -> unit!:
+        let owns = self.pending == none
+        if owns:
+            self.begin(label)
+        action() catch failure:
+            self.cancel()
+            self.notice = failure.message
+            self.revision += 1
+            return
+        self.pending_changed = true
+        self.revision += 1
+        if owns:
+            self.commit()
+
+    pub func rebuild(self) -> unit!:
+        if let session = self.compute:
+            session.submit(self.network, self.display_mode)
+            self.revision += 1
+            return
+        self.objects.clear()
+        self.wire_points.clear()
+        self.normal_points.clear()
+        self.geometry = none
+        self.notice = ""
+        let graph = self.network
+        var outputs = graph.outputs(graph.scope)
+        if graph.preview:
+            if let node = graph.find(graph.display):
+                outputs = [node]
+        var analytic = 0
+        let patches: list[Vector3] = []
+        for node in outputs:
+            if not node.visible:
+                continue
+            let data = graph.evaluate_data(node.id) catch failure:
+                self.notice = failure.message
+                continue
+            if node.id == graph.display:
+                self.geometry = data.mesh
+            let branch = Group()
+            analytic += append_scene(data, branch, mode = self.display_mode) catch failure:
+                self.notice = failure.message
+                continue
+            self.objects.add(branch)
+            append_overlays(data, Matrix4(), self.wire_points, self.normal_points, self.display_mode)
+            append_patch_boundaries(data, Matrix4(), patches)
+        if analytic > 0 and self.notice == "":
+            self.notice = f"CAD preview: {analytic} patches could not be meshed; boundaries remain visible"
+        self.wire_batch = WireBatch(self.wire_points)
+        self.normal_batch = WireBatch(self.normal_points)
+        self.patch_batch = WireBatch(patches)
+        self.revision += 1
+
+    ## Runtime UI uses a persistent worker; deterministic tests/scripts may cook
+    ## synchronously. Published scenes remain visible while replacements compute.
+    pub func enable_compute(self) -> unit!:
+        if self.compute == none:
+            self.compute = ComputeSession()
+            self.network.background = true
+            self.rebuild()
+
+    pub func poll_compute(self) -> bool!:
+        let session = self.compute else return false
+        let progress = session.poll_progress(self.network)
+        let completed = session.service.completed()
+        if completed == 0:
+            return progress
+        if completed != session.generation:
+            session.service.release_result()
+            return progress
+        self.notice = session.read_report(self.network) catch failure:
+            session.service.release_result()
+            session.busy = false
+            self.notice = failure.message
+            self.revision += 1
+            return true
+        if session.service.failed():
+            session.service.release_result()
+            self.revision += 1
+            return true
+        self.objects.clear()
+        self.display_bounds.clear()
+        self.geometry = none
+        for index in 0..<session.service.mesh_count():
+            let mesh = session.service.take_mesh(index)
+            let node = session.service.mesh_node(index)
+            let data = GeometryData(mesh)
+            if session.service.mesh_display(index):
+                discard(append_scene(data, self.objects, mode = self.display_mode))
+                self.display_bounds.append(mesh.bounds().minimum)
+                self.display_bounds.append(mesh.bounds().maximum)
+            if session.service.mesh_inspect(index):
+                if let selected = self.network.find(node):
+                    selected.cache = data
+                if node == self.network.display:
+                    self.geometry = mesh
+        self.wire_points.clear()
+        self.normal_points.clear()
+        self.wire_batch = session.service.wires()
+        self.normal_batch = session.service.normals()
+        self.patch_batch = session.service.patches()
+        session.service.release_result()
+        self.revision += 1
+        if self.pending_frame:
+            self.pending_frame = false
+            self.frame_cube()
+        return true
+
+    pub func select_node(self, id: int) -> unit!:
+        discard(self.network.require(id))
+        if self.network.selected != id:
+            self.network.selected = id
+            self.components = []
+            self.edit_tool = "Select"
+            self.revision += 1
+            if self.compute != none:
+                self.rebuild()
+
+    pub func display_selected(self) -> unit!:
+        let node = self.selected() else return
+        self.perform("Preview node", func () -> unit!:
+            self.network.preview = not (self.network.preview and self.network.display == node.id)
+            self.network.display = node.id
+            self.components = []
+            self.rebuild())
+
+    pub func toggle_output(self) -> unit!:
+        let node = self.selected() else return
+        let output = not self.network.is_output(node.id)
+        self.set_output(node.id, 1 if output else -1)
+
+    pub func auto_output(self) -> unit!:
+        let node = self.selected() else return
+        self.set_output(node.id, 0)
+
+    pub func set_output(self, id: int, state: int) -> unit!:
+        if state < -1 or state > 1:
+            return
+        self.perform("Change Out flag", func () -> unit!:
+            let node = self.network.require(id)
+            node.output = state
+            self.network.invalidate(id)
+            self.rebuild())
+
+    pub func toggle_visible(self) -> unit!:
+        let node = self.selected() else return
+        self.perform("Toggle visibility", func () -> unit!:
+            node.visible = not node.visible
+            if node.parent >= 0:
+                self.network.invalidate(node.parent)
+            self.rebuild())
+
+    pub func enter_group(self, id: int) -> unit!:
+        let node = self.network.require(id)
+        if node.kind != "Group":
+            return
+        if self.pending != none:
+            self.commit()
+        self.network.scope = id
+        let children = self.network.local_nodes()
+        self.network.selected = children[0].id if children.length > 0 else -1
+        self.network.display = self.network.selected
+        self.network.preview = false
+        self.components = []
+        self.rebuild()
+
+    pub func leave_group(self) -> unit!:
+        if self.network.scope < 0:
+            return
+        let node = self.network.require(self.network.scope)
+        if self.pending != none:
+            self.commit()
+        self.network.scope = node.parent
+        self.network.selected = node.id
+        self.network.display = node.id
+        self.network.preview = false
+        self.components = []
+        self.rebuild()
+
+    pub func reveal_node(self, id: int) -> unit!:
+        let node = self.network.require(id)
+        self.network.scope = node.parent
+        self.network.preview = false
+        self.network.display = id
+        self.network.selected = -1
+        self.select_node(id)
+        self.rebuild()
+
+    pub func toggle_enabled(self) -> unit!:
+        let node = self.selected() else return
+        self.perform("Toggle node", func () -> unit!:
+            node.enabled = not node.enabled
+            self.network.invalidate(node.id)
+            self.components = []
+            self.rebuild())
+
+    pub func add_node(self, kind: str, x: float, y: float) -> unit!:
+        self.perform("Add " + kind, func () -> unit!:
+            let source = self.network.selected
+            let node = self.network.add(kind, x, y)
+            if node.inputs.length > 0 and source >= 0 and self.network.require(source).parent == node.parent:
+                self.network.connect(source, node.id, 0)
+            self.network.selected = node.id
+            self.network.display = node.id
+            self.network.preview = false
+            self.components = []
+            self.edit_tool = "Select"
+            self.rebuild())
+
+    pub func delete_selected(self) -> unit!:
+        if self.selected() == none:
+            return
+        self.perform("Delete node", func () -> unit!:
+            self.network.remove(self.network.selected)
+            self.components = []
+            self.rebuild())
+
+    pub func connect(self, source: int, target: int, port: int) -> unit!:
+        self.perform("Connect nodes", func () -> unit!:
+            self.network.connect(source, target, port)
+            self.components = []
+            self.rebuild())
+
+    pub func disconnect(self, target: int, port: int) -> unit!:
+        self.perform("Disconnect nodes", func () -> unit!:
+            self.network.disconnect(target, port)
+            self.components = []
+            self.rebuild())
+
+    pub func move_node(self, id: int, x: float, y: float) -> unit!:
+        self.perform("Move node", func () -> unit!:
+            let node = self.network.require(id)
+            node.x = x
+            node.y = y)
+
+    pub func rename(self, name: str) -> unit!:
+        let node = self.selected() else return
+        if name == "" or name == node.name:
+            return
+        self.perform("Rename node", func () -> unit!:
+            node.name = name)
+
+    pub func set_parameter(self, slot: int, value: float) -> unit!:
+        let node = self.selected() else return
+        if slot < 0 or slot >= node.values.length or not math.is_finite(value):
+            return
+        if node.values[slot] == value:
+            return
+        self.perform("Change " + node.kind, func () -> unit!:
+            if node.kind in ["Transform", "Group"] and slot >= 7 and math.abs(value) < 0.000001:
+                error(ui.invalid, "Scale cannot be zero")
+            var accepted = value
+            for parameter in node_catalog.parameters(node.kind):
+                if parameter.slot == slot:
+                    accepted = math.max(parameter.minimum, math.min(parameter.maximum, accepted))
+                    if parameter.integer:
+                        accepted = math.floor(accepted + 0.5)
+            node.values[slot] = accepted
+            self.network.invalidate(node.id)
+            self.rebuild())
+
+    pub func set_text(self, slot: int, value: str) -> unit!:
+        let node = self.selected() else return
+        if slot < 0 or slot >= node.texts.length or node.texts[slot] == value:
+            return
+        self.perform("Change " + node.kind, func () -> unit!:
+            node.texts[slot] = value
+            self.network.invalidate(node.id)
+            self.rebuild())
+
+    pub func reload_file(self) -> unit!:
+        let node = self.selected() else return
+        if node.kind != "File":
+            return
+        self.perform("Reload geometry file", func () -> unit!:
+            node.source_revision += 1
+            self.network.invalidate(node.id)
+            self.rebuild())
+
+    pub func model(self, operation: str) -> unit!:
+        if not self.editing():
+            return
+        let mesh = self.geometry else return
+        let node = self.selected() else return
+        let face_tool = operation in ["Reverse", "Triangulate", "Inset", "Duplicate", "Split"]
+        if face_tool and self.component_mode != 2:
+            self.notice = "This operation needs face selection (3)"
+            self.revision += 1
+            return
+        let edge_tool = operation in ["Fill", "Dissolve"]
+        if edge_tool and self.component_mode != 1:
+            self.notice = "This operation needs edge selection (2)"
+            self.revision += 1
+            return
+        if self.components.length == 0 and not (operation in ["Subdivide", "Bevel", "Clean"]):
+            return
+        self.perform(operation + " components", func () -> unit!:
+            var ids = self.components.copy() if face_tool or edge_tool or operation == "Delete" else self.selected_points()
+            if operation == "Delete" and self.component_mode == 1:
+                ids = []
+                for face in 0..<mesh.face_count():
+                    for at in 0..<mesh.face_size(face):
+                        if mesh.corner_edge(mesh.face_offset(face) + at) in self.components:
+                            ids.append(face)
+                            break
+            let amount = node.values[0]
+            let vector = Vector3(0.0, amount * 0.017453292519943295, 0.0) if operation == "Rotate" else (Vector3(amount, amount, amount) if operation == "Scale" else Vector3())
+            let recipe = "DeletePoints" if operation == "Delete" and self.component_mode == 0 else operation
+            let edit = EditOperation(recipe, ids, mesh, vector, amount)
+            if self.compute == none:
+                discard(edit.evaluate(mesh))
+            node.edits.append(edit)
+            self.network.invalidate(node.id)
+            # Topology-changing operations invalidate old component IDs.
+            if face_tool or edge_tool or operation in ["Fuse", "Subdivide", "Bevel", "Delete", "Clean"]:
+                self.components = []
+            self.rebuild())
+
+    pub func invert_selection(self) -> unit!:
+        if not self.editing():
+            return
+        let mesh = self.geometry else return
+        let count = mesh.point_count() if self.component_mode == 0 else (mesh.edge_count() if self.component_mode == 1 else mesh.face_count())
+        self.perform("Invert selection", func ():
+            let previous = self.components
+            self.components = []
+            for id in 0..<count:
+                if not (id in previous):
+                    self.components.append(id))
+
+    pub func set_mode(self, mode: int) -> unit!:
+        if mode != self.component_mode:
+            self.component_mode = mode
+            self.components = []
+            self.revision += 1
+
+    pub func choose_component(self, id: int, extend: bool) -> unit!:
+        if not self.editing():
+            return
+        self.perform("Select components", func () -> unit!:
+            if not extend:
+                self.components = []
+            if id >= 0:
+                let found = self.components.index_of(id)
+                if let index = found:
+                    discard(self.components.remove_at(index))
+                else:
+                    self.components.append(id))
+
+    pub func select_all(self) -> unit!:
+        if not self.editing():
+            return
+        let mesh = self.geometry else return
+        self.perform("Select all", func () -> unit!:
+            self.components = []
+            let count = mesh.point_count() if self.component_mode == 0 else (mesh.edge_count() if self.component_mode == 1 else mesh.face_count())
+            for id in 0..<count:
+                self.components.append(id))
+
+    pub func selected_points(self) -> list[int]!:
+        let mesh = self.geometry else return []
+        let result: list[int] = []
+        for id in self.components:
+            if self.component_mode == 0:
+                if id >= 0 and id < mesh.point_count() and not (id in result):
+                    result.append(id)
+            else:
+                let count = 2 if self.component_mode == 1 else mesh.face_size(id)
+                for at in 0..<count:
+                    let point = mesh.edge_point(id, at) if self.component_mode == 1 else mesh.face_point(id, at)
+                    if not (point in result):
+                        result.append(point)
+        return result
+
+    pub func selection_center(self) -> Vector3!:
+        let mesh = self.geometry else return Vector3()
+        let points = self.selected_points()
+        if points.length == 0:
+            return mesh.bounds().minimum.add(mesh.bounds().maximum).multiply_scalar(0.5)
+        var sum = Vector3()
+        for id in points:
+            sum = sum.add(mesh.point(id))
+        return sum.multiply_scalar(1.0 / float(points.length))
+
+    pub func move_selection(self, delta: Vector3) -> unit!:
+        if not self.editing() or self.components.length == 0:
+            return
+        let mesh = self.geometry else return
+        let node = self.selected() else return
+        self.perform("Move components", func () -> unit!:
+            let edit = EditOperation("Move", self.selected_points(), mesh, delta, 0.0)
+            if self.compute == none:
+                discard(edit.evaluate(mesh))
+            node.edits.append(edit)
+            self.network.invalidate(node.id)
+            self.rebuild())
+
+    pub func extrude(self) -> unit!:
+        if not self.editing() or self.component_mode != 2 or self.components.length == 0:
+            self.notice = "Select faces on the displayed Edit node to extrude"
+            self.revision += 1
+            return
+        let mesh = self.geometry else return
+        let node = self.selected() else return
+        self.perform("Extrude faces", func () -> unit!:
+            let edit = EditOperation("Extrude", self.components, mesh, Vector3(), node.values[0])
+            if self.compute == none:
+                discard(edit.evaluate(mesh))
+            node.edits.append(edit)
+            self.network.invalidate(node.id)
+            self.rebuild())
+
+    pub func set_last_extrusion(self, distance: float) -> unit!:
+        let node = self.selected() else return
+        if node.kind != "Edit" or node.edits.length == 0 or node.edits[-1].kind != "Extrude" or node.edits[-1].distance == distance:
+            return
+        self.perform("Change extrusion", func () -> unit!:
+            if self.compute != none:
+                let original = node.edits[-1]
+                node.edits[-1] = EditOperation("Extrude", original.elements, PolygonMesh.empty(), Vector3(), distance, original.topology)
+                self.network.invalidate(node.id)
+                self.rebuild()
+                return
+            var input = self.network.evaluate(node.inputs[0])
+            for index in 0..<node.edits.length - 1:
+                input = node.edits[index].evaluate(input)
+            let edit = EditOperation("Extrude", node.edits[-1].elements, input, Vector3(), distance)
+            discard(edit.evaluate(input))
+            node.edits[-1] = edit
+            self.network.invalidate(node.id)
+            self.rebuild())
+
+    pub func choose_tool(self, tool: str):
+        self.edit_tool = tool
+        self.revision += 1
+
+    pub func clear_edits(self) -> unit!:
+        let node = self.selected() else return
+        if node.kind != "Edit" or node.edits.length == 0:
+            return
+        self.perform("Clear edits", func () -> unit!:
+            node.edits = []
+            self.components = []
+            self.network.invalidate(node.id)
+            self.rebuild())
+
+    ## Preview each gizmo delta against the original gesture snapshot, not
+    ## against the last frame. A whole drag becomes one undo entry.
+    pub func preview_move(self, delta: Vector3) -> unit!:
+        let before = self.pending else return
+        self.network = before.graph.copy()
+        self.components = before.components.copy()
+        self.rebuild()
+        if self.transforming():
+            let node = self.selected() else return
+            node.values[1] += delta.x
+            node.values[2] += delta.y
+            node.values[3] += delta.z
+            self.network.invalidate(node.id)
+            self.rebuild()
+            self.pending_changed = true
+        elif self.editing():
+            self.move_selection(delta)

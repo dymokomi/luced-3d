@@ -1,0 +1,80 @@
+## Disposable, cached CAD display data. Never replaces the DAG's analytic payload.
+from cad import CadModel
+from three import PolygonMesh, Vector3, Matrix4
+
+pub class CadPreview:
+    pub let meshes: list[PolygonMesh]
+    pub let boundaries: list[Vector3]
+    pub let normal_guides: list[Vector3]
+    pub var failed_faces: int = 0
+    pub var first_error: str = ""
+    pub func init(self, models: list[CadModel], source: CadPreview? = none, matrix: Matrix4? = none, progress: func(float) -> unit!? = none) -> unit!:
+        self.meshes = []
+        self.boundaries = []
+        self.normal_guides = []
+        if let original = source:
+            let placement = matrix else Matrix4()
+            self.failed_faces = original.failed_faces
+            self.first_error = original.first_error
+            for mesh in original.meshes:
+                self.meshes.append(mesh.placed(placement))
+            for point in original.boundaries:
+                self.boundaries.append(placement.transform_point(point))
+            for at in 0..<original.normal_guides.length // 2:
+                let start = original.normal_guides[at * 2]
+                let delta = original.normal_guides[at * 2 + 1].subtract(start)
+                let p = placement.transform_point(start)
+                self.normal_guides.append(p)
+                self.normal_guides.append(p.add(placement.transform_normal(delta).multiply_scalar(delta.length())))
+            return
+        var batch: PolygonMesh? = none
+        for model in models:
+            var shown_edges: set[int] = {}
+            for face in 0..<model.face_count():
+                if let report = progress:
+                    report(float(face) / float(model.face_count()))
+                for edge in 0..<model.face_edge_count(face):
+                    let id = model.face_edge_id(face, edge)
+                    if id in shown_edges:
+                        continue
+                    shown_edges.insert(id)
+                    # Match the default full-circle display resolution. A coarse
+                    # independent boundary chord can sink into the shaded mesh
+                    # and make an otherwise smooth CAD edge look dashed/faceted.
+                    let divisions = 1 if model.face_edge_linear(face, edge) else 64
+                    var previous = model.face_edge_point(face, edge, 0.0)
+                    for step in 1..<divisions + 1:
+                        let point = model.face_edge_point(face, edge, float(step) / float(divisions))
+                        self.boundaries.append(previous)
+                        self.boundaries.append(point)
+                        previous = point
+                let part = preview_patch(model, face) catch failure:
+                    self.failed_faces += 1
+                    if self.first_error == "":
+                        self.first_error = f"Patch {face + 1}: {failure.message}"
+                    continue
+                if part.face_count() > 0:
+                    let middle = part.face_count() // 2
+                    let center = part.face_center(middle)
+                    let length = part.bounds().maximum.subtract(part.bounds().minimum).length() * 0.03
+                    self.normal_guides.append(center)
+                    self.normal_guides.append(center.add(part.face_normal(middle).multiply_scalar(length)))
+                if let current = batch:
+                    let same_color_schema = (current.find_attribute("Cd", 2) >= 0) == (part.find_attribute("Cd", 2) >= 0)
+                    if same_color_schema and current.point_count() + part.point_count() < 4096 and current.vertex_count() + part.vertex_count() < 16000:
+                        batch = current.merged(part)
+                    else:
+                        self.meshes.append(current)
+                        batch = part
+                else:
+                    batch = part
+        if let current = batch:
+            self.meshes.append(current)
+
+func preview_patch(model: CadModel, face: int) -> PolygonMesh!:
+    let divisions = 8 if model.face_edge_count(face) > 32 else 16
+    let result = model.preview_face(face, divisions) catch failure:
+        let coarse = model.preview_face(face, 4) catch coarse_failure:
+            recover model.preview_face(face, 16)
+        recover coarse
+    return result

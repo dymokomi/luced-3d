@@ -1,0 +1,92 @@
+## Hierarchical display submission. Group transforms never bake child meshes.
+from geometry_data import GeometryData
+from three import Group, Mesh, MeshLambertMaterial, Matrix4, Vector3
+import theme
+import ui
+
+pub func append_scene(data: GeometryData, parent: Group, depth: int = 0, mode: int = 3) -> int!:
+    if depth > 48:
+        error(ui.invalid, "Scene hierarchy exceeds the display depth budget")
+    var analytic = 0
+    if data.surfaces.length > 0:
+        let preview = data.preview()
+        analytic = preview.failed_faces
+        for mesh in preview.meshes:
+            discard(append_scene(GeometryData(mesh), parent, depth, mode))
+    if let mesh = data.mesh:
+        if mesh.face_count() > 0:
+            let display = mesh
+            let colored = mesh.find_attribute("Cd", 2) >= 0 or mesh.find_attribute("Cd", 1) >= 0 or mesh.find_attribute("Cd", 0) >= 0 or mesh.find_attribute("Cd", 3) >= 0
+            parent.add(Mesh(display, MeshLambertMaterial(theme.grey(255.0 if colored else 180.0))))
+    for instance in data.instances:
+        if not instance.visible:
+            continue
+        let branch = Group()
+        branch.set_position(instance.translation)
+        branch.set_rotation(instance.rotation)
+        branch.set_scale(instance.scale)
+        analytic += append_scene(instance.data, branch, depth + 1, mode)
+        parent.add(branch)
+    return analytic
+
+## Cache overlays in world space when geometry or display mode changes.
+pub func append_overlays(data: GeometryData, matrix: Matrix4, wires: list[Vector3], normals: list[Vector3], mode: int, depth: int = 0, polygons: bool = true) -> unit!:
+    if depth > 48:
+        error(ui.invalid, "Scene hierarchy exceeds overlay depth budget")
+    if data.surfaces.length > 0:
+        let preview = data.preview()
+        for point in preview.boundaries:
+            wires.append(matrix.transform_point(point))
+        for at in 0..<preview.normal_guides.length // 2:
+            let a = preview.normal_guides[at * 2]
+            let delta = preview.normal_guides[at * 2 + 1].subtract(a)
+            let p = matrix.transform_point(a)
+            normals.append(p)
+            normals.append(p.add(matrix.transform_normal(delta).multiply_scalar(delta.length())))
+    if let mesh = data.mesh if polygons else none:
+        for edge in 0..<mesh.edge_count():
+            wires.append(matrix.transform_point(mesh.point(mesh.edge_point(edge, 0))))
+            wires.append(matrix.transform_point(mesh.point(mesh.edge_point(edge, 1))))
+        let length = mesh.bounds().maximum.subtract(mesh.bounds().minimum).length() * 0.015
+        for face in 0..<mesh.face_count():
+            let start = matrix.transform_point(mesh.face_center(face))
+            var n = Vector3()
+            for corner in 0..<mesh.face_size(face):
+                n = n.add(mesh.vertex(mesh.face_offset(face) + corner).normal)
+            n = n.normalized() if n.length() > 0.000000001 else mesh.face_normal(face)
+            normals.append(start)
+            normals.append(start.add(matrix.transform_normal(n).multiply_scalar(length)))
+    for instance in data.instances:
+        if instance.visible:
+            append_overlays(instance.data, matrix.multiply(Matrix4.compose(instance.translation, instance.rotation, instance.scale)), wires, normals, mode, depth + 1, polygons)
+
+## Analytic patch borders stay visible independently of polygon wire overlays.
+pub func append_patch_boundaries(data: GeometryData, matrix: Matrix4, points: list[Vector3]) -> unit!:
+    if data.surfaces.length > 0:
+        for point in data.preview().boundaries:
+            points.append(matrix.transform_point(point))
+    for instance in data.instances:
+        if instance.visible:
+            append_patch_boundaries(instance.data, matrix.multiply(Matrix4.compose(instance.translation, instance.rotation, instance.scale)), points)
+
+## Transform bounding-box corners, not geometry, when framing an assembly.
+pub func append_bounds(data: GeometryData, matrix: Matrix4, points: list[Vector3], depth: int = 0) -> unit!:
+    if depth > 48:
+        error(ui.invalid, "Scene hierarchy exceeds the display depth budget")
+    if data.surfaces.length > 0:
+        let preview = data.preview()
+        for mesh in preview.meshes:
+            append_bounds(GeometryData(mesh), matrix, points, depth)
+        # Failed preview patches still have visible analytic boundary curves.
+        for point in preview.boundaries:
+            points.append(matrix.transform_point(point))
+    if let mesh = data.mesh:
+        if mesh.point_count() > 0:
+            let box = mesh.bounds()
+            for x in [box.minimum.x, box.maximum.x]:
+                for y in [box.minimum.y, box.maximum.y]:
+                    for z in [box.minimum.z, box.maximum.z]:
+                        points.append(matrix.transform_point(Vector3(x, y, z)))
+    for instance in data.instances:
+        if instance.visible:
+            append_bounds(instance.data, matrix.multiply(Matrix4.compose(instance.translation, instance.rotation, instance.scale)), points, depth + 1)

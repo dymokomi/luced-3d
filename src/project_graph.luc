@@ -1,0 +1,102 @@
+## Versioned graph schema: authored nodes and Edit recipes, never cooked caches.
+from prism import Document, Value
+from network import Network, Node
+from edit_operations import EditOperation
+from three import Vector3, PolygonMesh
+import project_values as values
+import ui
+
+pub func write_graph(doc: Document, graph: Network) -> unit!:
+    doc.add("/scene", "luced3d")
+    doc.set("/scene", "version", Value.integer(1))
+    doc.set("/scene", "next_id", Value.integer(graph.next_id))
+    doc.set("/scene", "selected", Value.integer(graph.selected))
+    doc.set("/scene", "display", Value.integer(graph.display))
+    doc.set("/scene", "scope", Value.integer(graph.scope))
+    doc.set("/scene", "preview", Value.boolean(graph.preview))
+    doc.add("/scene/nodes", "network")
+    for node in graph.nodes:
+        let path = f"/scene/nodes/n{node.id}"
+        doc.add(path, node.kind)
+        doc.set(path, "id", Value.integer(node.id))
+        doc.set(path, "name", Value.text(node.name))
+        doc.set(path, "parent", Value.integer(node.parent))
+        doc.set(path, "output", Value.integer(node.output))
+        doc.set(path, "enabled", Value.boolean(node.enabled))
+        doc.set(path, "visible", Value.boolean(node.visible))
+        doc.set(path, "position", Value.numbers([2], [node.x, node.y]))
+        doc.set(path, "parameters", Value.numbers([node.values.length], node.values))
+        doc.set(path, "texts", Value.strings([node.texts.length], node.texts))
+        values.put_ids(doc, path, "inputs", node.inputs)
+        doc.add(path + "/edits", "recipes")
+        doc.set(path, "edit_count", Value.integer(node.edits.length))
+        for at in 0..<node.edits.length:
+            let edit = node.edits[at]
+            let recipe = path + f"/edits/e{at}"
+            doc.add(recipe, edit.kind)
+            values.put_ids(doc, recipe, "elements", edit.elements)
+            values.put_ids(doc, recipe, "topology", edit.topology)
+            doc.set(recipe, "delta", Value.numbers([3], [edit.delta.x, edit.delta.y, edit.delta.z]))
+            doc.set(recipe, "distance", Value.number(edit.distance))
+
+## Parse fully and check references/cycles before a caller replaces live state.
+pub func read_graph(doc: Document) -> Network!:
+    if not doc.contains("/scene") or doc.type_at("/scene") != "luced3d" or values.integer(doc, "/scene", "version", 1, 1) != 1:
+        error(ui.invalid, "Not a supported Luced 3D project")
+    let graph = Network(false)
+    if doc.type_at("/scene/nodes") != "network": error(ui.invalid, "Missing project network")
+    if doc.child_count("/scene/nodes") > 128:
+        error(ui.invalid, "Project exceeds 128 nodes")
+    for index in 0..<doc.child_count("/scene/nodes"):
+        let path = doc.child_at("/scene/nodes", index) else error(ui.invalid, "Missing project node")
+        let id = values.integer(doc, path, "id", 1, 2147483646)
+        if graph.find(id) != none: error(ui.invalid, "Duplicate project node ID")
+        let position = values.numbers(doc, path, "position", 2, 2)
+        let node = Node(id, doc.type_at(path), position[0], position[1])
+        node.name = values.line(values.text(doc, path, "name"))
+        node.parent = values.integer(doc, path, "parent", -1, 2147483646)
+        node.output = values.integer(doc, path, "output", -1, 1)
+        node.enabled = values.flag(doc, path, "enabled")
+        node.visible = values.flag(doc, path, "visible")
+        node.values = values.numbers(doc, path, "parameters", node.values.length, node.values.length)
+        let inputs = values.ids(doc, path, "inputs", node.inputs.length)
+        if inputs.length != node.inputs.length: error(ui.invalid, "Invalid input port count")
+        node.inputs = inputs
+        let texts = doc.get(path, "texts")
+        if texts.rank() != 1 or texts.count() != node.texts.length: error(ui.invalid, "Invalid text parameter count")
+        for at in 0..<texts.count(): node.texts[at] = values.line(texts.text_at(at))
+        let count = values.integer(doc, path, "edit_count", 0, 100000)
+        if count != doc.child_count(path + "/edits") or (node.kind != "Edit" and count != 0):
+            error(ui.invalid, "Invalid Edit recipe collection")
+        for at in 0..<count:
+            let recipe = path + f"/edits/e{at}"
+            let kind = doc.type_at(recipe)
+            if not (kind in ["Extrude", "DeletePoints", "Clean", "Delete", "Reverse", "Triangulate", "Inset", "Duplicate", "Split", "Fuse", "Subdivide", "Bevel", "Fill", "Dissolve", "Smooth", "Noise", "Peak", "Flatten", "Rotate", "Scale", "Snap", "Move"]):
+                error(ui.invalid, "Unknown Edit recipe")
+            let delta = values.numbers(doc, recipe, "delta", 3, 3)
+            node.edits.append(EditOperation(kind, values.ids(doc, recipe, "elements", 16000000, 0), PolygonMesh.empty(),
+                Vector3(delta[0], delta[1], delta[2]), values.scalar(doc, recipe, "distance"), values.ids(doc, recipe, "topology", 64000000, 0)))
+        graph.nodes.append(node)
+    graph.next_id = values.integer(doc, "/scene", "next_id", 1, 2147483647)
+    for node in graph.nodes:
+        if node.id >= graph.next_id: error(ui.invalid, "Invalid next node ID")
+        let ancestors: list[int] = [node.id]
+        var parent = node.parent
+        while parent >= 0:
+            if parent in ancestors or ancestors.length > 16: error(ui.invalid, "Invalid Group hierarchy")
+            ancestors.append(parent)
+            let group = graph.require(parent)
+            if group.kind != "Group": error(ui.invalid, "A node parent must be a Group")
+            parent = group.parent
+        for input in node.inputs:
+            if input == -1: continue
+            if graph.require(input).parent != node.parent or graph.depends_on(input, node.id):
+                error(ui.invalid, "Invalid or cyclic project connection")
+    graph.selected = values.integer(doc, "/scene", "selected", -1, 2147483646)
+    graph.display = values.integer(doc, "/scene", "display", -1, 2147483646)
+    graph.scope = values.integer(doc, "/scene", "scope", -1, 2147483646)
+    graph.preview = values.flag(doc, "/scene", "preview")
+    if graph.scope != -1 and graph.require(graph.scope).kind != "Group": error(ui.invalid, "Invalid network scope")
+    for id in [graph.selected, graph.display]:
+        if id != -1 and graph.require(id).parent != graph.scope: error(ui.invalid, "Selection outside network scope")
+    return graph

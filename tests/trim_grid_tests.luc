@@ -1,0 +1,75 @@
+## Cut cells preserve all seam samples and do not fan across intact grid cells.
+from three import Vector3, PolygonMesh
+from tesselator import TrimGrid
+from geometry_tests import near
+import math
+
+func area(mesh: PolygonMesh) -> float!:
+    var result = 0.0
+    for triangle in 0..<mesh.index_count()//3:
+        let a = mesh.vertex(mesh.index(triangle*3)).position
+        let b = mesh.vertex(mesh.index(triangle*3+1)).position
+        let c = mesh.vertex(mesh.index(triangle*3+2)).position
+        result += b.subtract(a).cross(c.subtract(a)).z*0.5
+    return result
+
+func subdivide(loop: list[Vector3], output: list[Vector3]) -> unit!:
+    for at in 0..<loop.length:
+        output.append(loop[at])
+        output.append(loop[at].add(loop[(at+1)%loop.length]).multiply_scalar(0.5))
+
+pub func trim_grid_tests() -> unit!:
+    let points = [Vector3(0.0,0.0,0.0),Vector3(1.0,0.0,0.0),Vector3(2.0,0.0,0.0),Vector3(2.0,1.0,0.0),Vector3(1.5,1.5,0.0),Vector3(1.0,2.0,0.0),Vector3(0.0,2.0,0.0),Vector3(0.0,1.0,0.0)]
+    let mesh = TrimGrid.clip(points,[8],[0.0,1.0,2.0],[0.0,1.0,2.0])
+    assert(mesh.face_count() == 4)
+    var quads = 0
+    for face in 0..<mesh.face_count():
+        if mesh.face_size(face) == 4: quads += 1
+    assert(quads == 4)
+    # Hole contained in a cell must remain a hole, not be filled by a quad.
+    let hole = [Vector3(0.0,0.0,0.0),Vector3(3.0,0.0,0.0),Vector3(3.0,3.0,0.0),Vector3(0.0,3.0,0.0),Vector3(1.0,1.0,0.0),Vector3(1.0,2.0,0.0),Vector3(2.0,2.0,0.0),Vector3(2.0,1.0,0.0)]
+    let cut = TrimGrid.clip(hole,[4,4],[0.0,3.0],[0.0,3.0])
+    near(area(cut),8.0)
+    # A hole intersects grid lines on all four sides. No cell can fill it, and
+    # every supplied shared seam ID must remain exactly where the caller put it.
+    let crossing: list[Vector3] = []
+    subdivide([Vector3(),Vector3(3.0,0.0,0.0),Vector3(3.0,3.0,0.0),Vector3(0.0,3.0,0.0)],crossing)
+    subdivide([Vector3(1.0,1.0,0.0),Vector3(1.0,2.0,0.0),Vector3(2.0,2.0,0.0),Vector3(2.0,1.0,0.0)],crossing)
+    let crossed = TrimGrid.clip(crossing,[8,8],[0.0,1.5,3.0],[0.0,1.5,3.0])
+    near(area(crossed),8.0)
+    assert(crossed.ray_face(Vector3(1.5,1.5,1.0),Vector3(0.0,0.0,-1.0)) == -1)
+    for i in 0..<crossing.length: near(crossed.point(i).subtract(crossing[i]).length(),0.0)
+    # Oversized cut-cell boundaries triangulate locally instead of overflowing
+    # the polygon engine's 256-corner limit.
+    let ring: list[Vector3] = []
+    for at in 0..<300:
+        let angle = float(at)*2.0*math.pi/300.0
+        ring.append(Vector3(math.cos(angle),math.sin(angle),0.0))
+    let dense = TrimGrid.clip(ring,[300],[-2.0,2.0],[-2.0,2.0])
+    near(area(dense),150.0*math.sin(2.0*math.pi/300.0))
+    # Two lobes meet at one explicitly shared CAD vertex. A repeated boundary
+    # occurrence is not a second vertex and must not reject the grid corner.
+    let pinched = [Vector3(),Vector3(1.0,0.0,0.0),Vector3(1.0,1.0,0.0),Vector3(0.0,1.0,0.0),Vector3(),Vector3(-1.0,0.0,0.0),Vector3(-1.0,-1.0,0.0),Vector3(0.0,-1.0,0.0)]
+    let identified = TrimGrid.clip_identified(pinched,[8],[-1.0,0.0,1.0],[-1.0,0.0,1.0],[8,9,10,11,8,12,13,14])
+    near(area(identified),2.0)
+    assert(identified.face_count() == 2)
+    for face in 0..<identified.face_count():
+        assert(identified.face_size(face) == 4)
+        for at in 0..<identified.face_size(face): assert(identified.face_point(face,at) != 4)
+    # Position equality alone cannot confer CAD identity.
+    var unowned = false
+    discard(TrimGrid.clip(pinched,[8],[-1.0,0.0,1.0],[-1.0,0.0,1.0])) catch failure:
+        unowned = true
+    assert(unowned)
+    # A genuine thin strip alongside a grid line is not a coincident edge.
+    # Fuzzy incidence used to collapse these distinct corners or lose a cell.
+    let d = 0.00000003
+    let narrow = [Vector3(),Vector3(1.0,0.0,0.0),Vector3(1.0+d,0.0,0.0),Vector3(1.0+d,1.0,0.0),Vector3(1.0+d,2.0,0.0),Vector3(1.0,2.0,0.0),Vector3(0.0,2.0,0.0),Vector3(0.0,1.0,0.0)]
+    let strips = TrimGrid.clip(narrow,[8],[0.0,1.0,2.0],[0.0,1.0,2.0])
+    assert(strips.face_count() == 4)
+    assert(math.abs(area(strips)-(2.0+2.0*d)) < 0.000000000001)
+    var rejected = false
+    discard(TrimGrid.clip(hole,[4,4],[0.0,1.5,3.0],[0.0,1.5,3.0])) catch failure:
+        rejected = true
+    assert(rejected)
+    print("PASS grid-first polygon clipping, shared trim vertices and enclosed holes")

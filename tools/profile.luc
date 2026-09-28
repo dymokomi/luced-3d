@@ -1,0 +1,89 @@
+from app import Luce3D
+from gpu import Frame
+from step import Step
+from geometry_data import GeometryData
+from scene_projection import append_scene, append_overlays, append_patch_boundaries
+from three import Group, Matrix4, WireBatch, Vector3
+from obj import Obj
+import window
+import timing
+
+func recording(recorder: timing.GpuRecorder?) -> Frame!:
+    if let found = recorder: return found.frame()
+    return Frame(window.Size(1400.0, 900.0, 1400.0, 900.0, 1.0))
+
+pub func main(arguments: list[str]) -> int!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let gpu_recorder = timing.GpuRecorder() if "gpu" in arguments else none
+    editor.app.layout(1400.0, 900.0)
+    if arguments.length > 1 and arguments[0] in ["camera", "mesh", "obj"]:
+        var data = GeometryData(Obj.load(arguments[1])) if arguments[0] == "obj" else GeometryData(surfaces = [Step.load_model(arguments[1])])
+        if arguments[0] == "mesh": data = data.tessellated(16)
+        let group = Group()
+        discard(append_scene(data, group))
+        w.scene.add(group)
+        append_overlays(data, Matrix4(), w.wire_points, w.normal_points, 3)
+        w.wire_batch = WireBatch(w.wire_points)
+        let patches: list[Vector3] = []
+        append_patch_boundaries(data, Matrix4(), patches)
+        w.patch_batch = WireBatch(patches)
+        w.distance = 300.0
+        if arguments.length > 2 and arguments[2] == "wire": w.set_display_mode(4)
+        print(f"CAD fixture: {data.description()} / {w.wire_points.length // 2} boundary segments")
+    if arguments.length > 0 and arguments[0] == "dense":
+        w.add_node("Sphere", 0.0, 0.0)
+        w.set_parameter(1, 64.0)
+        editor.panels.refresh()
+        let mesh = w.geometry else trap("mesh")
+        print(f"Dense fixture: {mesh.point_count()} points / {mesh.face_count()} faces / {mesh.index_count() // 3} triangles")
+    if "native" in arguments:
+        var count = 0
+        var total = 0.0
+        var worst = 0.0
+        let timer = editor.app.every(0.001, func () -> unit!:
+            w.orbit(0.5, 0.0)
+            editor.panels.view.layout().invalidate())
+        let connection = editor.app.on_frame(func (elapsed: float) -> unit!:
+            count += 1
+            if count > 30:
+                total += elapsed * 1000.0
+                if elapsed * 1000.0 > worst:
+                    worst = elapsed * 1000.0
+            if count >= 330:
+                editor.app.stop())
+        editor.app.run()
+        connection.disconnect()
+        editor.app.cancel(timer)
+        print(f"Native orbit: mean frame interval {total / 300.0} ms, worst {worst} ms (includes event loop and presentation; not input-to-photon)")
+        editor.close()
+        return 0
+    for phase in 0..<(1 if arguments.length > 0 and arguments[0] in ["camera", "mesh", "obj"] else 3):
+        if phase == 1:
+            w.add_node("Edit", 40.0, 330.0)
+            if arguments.length == 0 or arguments[0] != "dense":
+                w.choose_component(2, false)
+                w.extrude()
+        if phase == 2:
+            w.toggle_grid()
+        var render_ms = 0.0
+        var pick_ms = 0.0
+        var camera_ms = 0.0
+        for iteration in 0..<120:
+            let start = timing.now()
+            w.orbit(0.5, 0.0)
+            let camera_end = timing.now()
+            let frame = recording(gpu_recorder)
+            editor.app.render(frame.target())
+            frame.close()
+            let render_end = timing.now()
+            discard(editor.panels.view.tools.pick(500.0, 220.0, 1000.0, 500.0))
+            let end = timing.now()
+            if iteration >= 20:
+                camera_ms += camera_end - start
+                render_ms += render_end - camera_end
+                pick_ms += end - render_end
+        print(f"phase {phase}: camera {camera_ms / 100.0} ms; CPU full UI record {render_ms / 100.0} ms; face pick {pick_ms / 100.0} ms")
+    editor.close()
+    if let found = gpu_recorder: found.close()
+    return 0

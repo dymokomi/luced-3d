@@ -1,0 +1,57 @@
+## Immutable per-node modeling recipes and exact topology guards.
+from three import PolygonMesh, Vector3, MeshOps, TopologyTools
+import ui
+
+pub class EditOperation:
+    pub let kind: str
+    pub let elements: list[int]
+    pub let delta: Vector3
+    pub let distance: float
+    # Exact ordered topology guard: upstream transforms are fine; different
+    # connectivity must not silently send edits to unrelated components.
+    pub let topology: list[int]
+
+    pub func init(self, kind: str, elements: list[int], mesh: PolygonMesh, delta: Vector3, distance: float, recipe: list[int]? = none) -> unit!:
+        self.kind = kind
+        self.elements = elements.copy()
+        self.delta = delta
+        self.distance = distance
+        self.topology = (recipe else topology_of(mesh)).copy()
+
+    pub func evaluate(self, mesh: PolygonMesh) -> PolygonMesh!:
+        if self.topology != topology_of(mesh):
+            error(ui.invalid, "Edit input topology changed. Undo the upstream change or clear this node's edits.")
+        if self.kind == "Extrude":
+            return mesh.extruded_faces(self.elements, self.distance)
+        if self.kind == "DeletePoints":
+            return MeshOps.delete_points(mesh, self.elements)
+        if self.kind == "Clean":
+            return MeshOps.compact(mesh)
+        if self.kind in ["Delete", "Reverse", "Triangulate", "Inset", "Duplicate", "Split"]:
+            return MeshOps.faces(mesh, self.elements, ["Delete", "Reverse", "Triangulate", "Inset", "Duplicate", "Split"].index_of(self.kind) else 0, self.distance)
+        if self.kind == "Fuse":
+            return MeshOps.fuse(mesh, self.elements, self.distance)
+        if self.kind == "Subdivide":
+            return MeshOps.subdivide(mesh, true)
+        if self.kind == "Bevel":
+            return TopologyTools.bevel(mesh, self.distance)
+        if self.kind == "Fill":
+            return TopologyTools.fill(mesh, self.elements)
+        if self.kind == "Dissolve":
+            if self.elements.length != 1:
+                error(ui.invalid, "Dissolve currently joins across one selected edge")
+            return TopologyTools.dissolve(mesh, self.elements[0])
+        if self.kind in ["Smooth", "Noise", "Peak", "Flatten", "Rotate", "Scale", "Snap"]:
+            return MeshOps.points(mesh, self.elements, ["Smooth", "Noise", "Peak", "Flatten", "Rotate", "Scale", "Snap"].index_of(self.kind) else 0, self.distance, self.delta)
+        if self.kind == "Move":
+            return mesh.moved_points(self.elements, self.delta)
+        error(ui.invalid, "Unknown edit operation")
+
+func topology_of(mesh: PolygonMesh) -> list[int]!:
+    let result: list[int] = [mesh.point_count(), mesh.face_count()]
+    for face in 0..<mesh.face_count():
+        let count = mesh.face_size(face)
+        result.append(count)
+        for at in 0..<count:
+            result.append(mesh.face_point(face, at))
+    return result

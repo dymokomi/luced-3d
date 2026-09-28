@@ -1,0 +1,41 @@
+## Appended to luce-gpu's test observer; this is test-only Metal readback.
+import files
+import memory
+import strings
+
+pub func parse_value(input_value: str) -> f64!:
+    return try strings.parse_f64(input_value)
+
+pub func save(path: str) -> !:
+    let texture = captured_texture else trap("no captured frame")
+    let width = uint(texture, sel("width"))
+    let height = uint(texture, sel("height"))
+    let device = msg(texture, sel("device"))
+    let queue = msg(device, sel("newCommandQueue"))
+    defer invoke(queue, sel("release"))
+    let row_bytes = (width * 4 + 255) & ~(u64)255
+    let storage = buffer(device, sel("newBufferWithLength:options:"), row_bytes * height, 0)
+    defer invoke(storage, sel("release"))
+    let command = msg(queue, sel("commandBuffer"))
+    let encoder = msg(command, sel("blitCommandEncoder"))
+    blit(encoder, sel("copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:"), texture, 0, 0, GpuProbeOrigin(), GpuProbeExtent(width = width, height = height, depth = 1), storage, 0, row_bytes, row_bytes * height)
+    invoke(encoder, sel("endEncoding"))
+    invoke(command, sel("commit"))
+    invoke(command, sel("waitUntilCompleted"))
+    assert(uint(command, sel("status")) == 4)
+    let bytes = (const u8*)msg(storage, sel("contents"))
+    var header: u8[100]
+    let prefix = try format(header, f"P6\n{width} {height}\n255\n")
+    let output = try alloc u8[prefix.length + (usize)(width * height * 3)]
+    defer free(output)
+    memory.copy(output, prefix.bytes, prefix.length)
+    for y in 0..<height:
+        for x in 0..<width:
+            let source = y * row_bytes + x * 4
+            let destination = prefix.length + (usize)((y * width + x) * 3)
+            output[destination] = bytes[source + 2]
+            output[destination + 1] = bytes[source + 1]
+            output[destination + 2] = bytes[source]
+    let name = try strings.copy(path)
+    defer strings.release(name)
+    try files.write((c.str)name, output)

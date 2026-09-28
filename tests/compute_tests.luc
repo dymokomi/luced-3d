@@ -1,0 +1,61 @@
+## Headless worker integration: real isolated Luce heap, progress and stale jobs.
+from workspace import Workspace
+from compute_protocol import snapshot, Reader, read_graph
+from network import Network
+import time
+
+func settle(workspace: Workspace) -> unit!:
+    let session = workspace.compute else trap("compute")
+    let deadline = time.now() + 20000000000
+    while session.busy and time.now() < deadline:
+        discard(workspace.poll_compute())
+    assert(not session.busy)
+
+pub func compute_tests() -> unit!:
+    let workspace = Workspace()
+    workspace.rename("Cube %\n雪")
+    let copied = read_graph(Reader(snapshot(workspace.network, 3)), Network(false))
+    assert(copied.require(1).name == workspace.network.require(1).name)
+    workspace.enable_compute()
+    settle(workspace)
+    assert(workspace.notice == "")
+    assert((workspace.geometry else trap("worker mesh")).face_count() == 6)
+    workspace.set_size(3.0)
+    workspace.set_size(4.0)
+    workspace.set_size(5.0)
+    settle(workspace)
+    assert((workspace.geometry else trap("latest mesh")).bounds().maximum.y == 5.0)
+    let generation = (workspace.compute else trap("compute")).generation
+    for mode in [4, 0, 1, 2, 3]:
+        workspace.set_display_mode(mode)
+        assert(not (workspace.compute else trap("compute")).busy)
+        assert((workspace.compute else trap("compute")).generation == generation)
+        assert((workspace.geometry else trap("cached geometry")).bounds().maximum.y == 5.0)
+    workspace.undo()
+    settle(workspace)
+    assert((workspace.geometry else trap("undo mesh")).bounds().maximum.y == 4.0)
+    workspace.add_node("File", 0.0, 0.0)
+    workspace.set_text(0, "tests/fixtures/assembly.step")
+    settle(workspace)
+    assert(workspace.notice == "")
+    assert((workspace.wire_batch else trap("CAD boundaries")).count() > 0)
+    assert((workspace.patch_batch else trap("persistent CAD patch boundaries")).count() > 0)
+    assert((workspace.selected() else trap("File")).group_paths == ["Camera test/Lens:1/solid_37"])
+    workspace.add_node("Tessellate", 0.0, 100.0)
+    settle(workspace)
+    assert(workspace.notice == "")
+    assert((workspace.geometry else trap("tessellated worker mesh")).face_count() > 0)
+    assert((workspace.selected() else trap("Tessellate")).group_paths == ["Camera test/Lens:1/solid_37"])
+    workspace.add_node("Blast", 0.0, 200.0)
+    workspace.set_text(0, "*/solid_37")
+    workspace.set_parameter(0, 1.0)
+    settle(workspace)
+    assert((workspace.selected() else trap("Blast")).group_paths == ["Camera test/Lens:1/solid_37"])
+    workspace.set_parameter(0, 0.0)
+    settle(workspace)
+    assert((workspace.selected() else trap("Blast")).group_paths.length == 0)
+    workspace.undo()
+    settle(workspace)
+    assert((workspace.selected() else trap("Blast")).group_paths.length == 1)
+    (workspace.compute else trap("compute")).close()
+    print("PASS background DAG computation, copied snapshots, latest-wins requests, undo and CAD preview/tessellation")

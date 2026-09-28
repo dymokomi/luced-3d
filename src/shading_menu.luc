@@ -1,0 +1,73 @@
+## Modal viewport display flyout. The grouped square keeps its selected mode.
+from ui import Widget, Layout, Constraints, Size, Painter, Event
+from gpu import RenderTarget, Rect
+from input import EventKind, Key
+from workspace import Workspace
+import theme
+import ui
+
+pub func mode_names() -> list[str]:
+    return ["Wireframe", "Flat + Wireframe", "Flat", "Shaded", "Shaded + Wireframe", "Rendered (not available)", "Show normals"]
+
+pub func mode_asset(mode: int) -> str:
+    return ["wireframe", "solid-wireframe", "solid-view", "material", "shaded-wireframe", "render", "surface-normal"][mode]
+
+pub func mode_icon(p: Painter, mode: int, x: float, y: float) -> unit!:
+    ui.draw_icon(p.target(), mode_asset(mode), Rect(x, y, 24.0, 24.0), theme.text_muted() if mode == 5 else theme.text())
+
+pub class ShadingMenu: Widget:
+    let box: Layout
+    let workspace: Workspace
+    var hovered: int = -1
+    var held: bool = false
+    pub func init(self, workspace: Workspace) -> unit!:
+        self.workspace = workspace
+        self.box = Layout()
+        self.box.set_popup(true)
+        self.box.set_visible(false)
+        self.box.set_focusable(true)
+        self.box.set_interactive(true)
+    pub func layout(self) -> Layout:
+        return self.box
+    pub func measure(self, available: Constraints) -> Size!:
+        return Size(268.0, 258.0)
+    pub func open(self, x: float, y: float, held: bool) -> unit!:
+        self.held = held
+        self.hovered = -1
+        self.box.set_popup_point(x, y)
+        self.box.set_visible(true)
+    pub func choose(self, index: int) -> unit!:
+        if index == 5 or index < 0 or index > 6:
+            return
+        if index == 6:
+            self.workspace.normals_visible = not self.workspace.normals_visible
+            self.workspace.revision += 1
+        else:
+            self.workspace.set_display_mode(index)
+        self.box.set_visible(false)
+    pub func draw(self, target: RenderTarget) -> unit!:
+        let p = Painter(target)
+        p.rectangle(Rect(0.0, 0.0, target.size().width, target.size().height), theme.surface())
+        let names = mode_names()
+        for index in 0..<names.length:
+            let y = 6.0 + float(index) * 35.0
+            let selected = index == self.workspace.display_mode or (index == 6 and self.workspace.normals_visible)
+            if self.hovered == index and index != 5:
+                p.rectangle(Rect(4.0, y, 260.0, 34.0), theme.grey(72.0))
+            if selected:
+                p.rectangle(Rect(4.0, y, 3.0, 34.0), theme.accent())
+            mode_icon(p, index, 12.0, y + 4.0)
+            p.text(names[index], 44.0, y + 8.0, theme.text_muted() if index == 5 else theme.text())
+        p.close()
+    pub func event(self, event: Event) -> unit!:
+        if event.cancelled or event.kind == EventKind.focus_lost or (event.kind == EventKind.key_down and event.key == Key.escape):
+            self.box.set_visible(false)
+            self.held = false
+            return
+        if event.kind == EventKind.pointer_moved:
+            self.hovered = int((event.y - 6.0) / 35.0) if event.inside and event.y >= 6.0 and event.y < 251.0 else -1
+            self.box.invalidate()
+        if (event.kind == EventKind.pointer_down and not self.held) or (event.kind == EventKind.pointer_up and self.held):
+            self.held = false
+            if event.inside and event.y >= 6.0 and event.y < 251.0:
+                self.choose(int((event.y - 6.0) / 35.0))

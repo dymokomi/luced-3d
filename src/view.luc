@@ -1,0 +1,152 @@
+from ui import Widget, Layout, Constraints, Size, Event, Painter
+from three_ui import SceneView
+from three import WireRenderer, Vector3, Renderer
+from gpu import RenderTarget, Rect
+from input import EventKind, Key, ScrollUnit
+from workspace import Workspace
+from viewport_tools import ViewportTools
+from actions import Actions
+import theme
+import time
+import math
+from shading_menu import mode_icon
+
+pub class SceneViewport: Widget:
+    let view: SceneView
+    let workspace: Workspace
+    pub let tools: ViewportTools
+    var dragging: bool = false
+    var navigation_button: int = 0
+    var pending_right: bool = false
+    var last_x: float = 0.0
+    var last_y: float = 0.0
+    var mode_press: int = -1
+    pub var on_shading: func(bool) -> unit!? = none
+
+    pub func poll_hold(self) -> unit!:
+        if self.mode_press >= 0 and time.now() - self.mode_press >= 350000000:
+            self.mode_press = -1
+            if let open = self.on_shading:
+                open(true)
+
+    pub func init(self, workspace: Workspace, actions: Actions) -> unit!:
+        self.workspace = workspace
+        self.tools = ViewportTools(workspace, actions)
+        self.view = SceneView(workspace.scene, workspace.camera, Renderer(true))
+        self.view.layout().set_interactive(true)
+        self.view.layout().set_focusable(true)
+
+    pub func layout(self) -> Layout:
+        return self.view.layout()
+
+    pub func measure(self, available: Constraints) -> Size!:
+        return self.view.measure(available)
+
+    pub func draw(self, target: RenderTarget) -> unit!:
+        let size = target.size()
+        let painter = Painter(target)
+        painter.rectangle(Rect(0.0, 0.0, size.width, size.height), theme.backdrop())
+        painter.close()
+        let w = self.workspace
+        self.view.renderer().set_flat(w.display_mode in [1, 2])
+        if w.display_mode != 0:
+            self.view.draw(target)
+        if w.display_mode in [0, 1, 4]:
+            if let batch = w.wire_batch:
+                batch.draw(w.camera, target, theme.grey(175.0) if w.display_mode == 0 else theme.grey(55.0))
+        else:
+            if let batch = w.patch_batch:
+                batch.draw(w.camera, target, theme.grey(55.0))
+        if w.normals_visible:
+            if let batch = w.normal_batch:
+                batch.draw(w.camera, target, theme.accent())
+        var start = 0
+        while w.display_mode in [0, 1, 4] and w.wire_batch == none and start < w.wire_points.length:
+            WireRenderer.lines(w.wire_points[start..<int(math.min(float(start + 131072), float(w.wire_points.length)))], w.camera, target, theme.grey(175.0) if w.display_mode == 0 else theme.grey(55.0), 1.0)
+            start += 131072
+        if w.normals_visible:
+            start = 0
+            while w.normal_batch == none and start < w.normal_points.length:
+                WireRenderer.lines(w.normal_points[start..<int(math.min(float(start + 131072), float(w.normal_points.length)))], w.camera, target, theme.accent(), 1.0)
+                start += 131072
+        if self.workspace.grid_visible:
+            for category in 0..<3:
+                let lines: list[Vector3] = []
+                for index in -10..<11:
+                    if (2 if index == 0 else (1 if index % 5 == 0 else 0)) != category:
+                        continue
+                    let at = float(index)
+                    lines.append(Vector3(-10.0, -0.008, at))
+                    lines.append(Vector3(10.0, -0.008, at))
+                    lines.append(Vector3(at, -0.008, -10.0))
+                    lines.append(Vector3(at, -0.008, 10.0))
+                WireRenderer.lines(lines, self.workspace.camera, target, theme.accent() if category == 2 else theme.grey(80.0 if category == 1 else 58.0), 1.0, 0.0)
+        let overlay = Painter(target)
+        overlay.text("PREVIEW" if self.workspace.network.preview else ("GROUP / LOCAL" if self.workspace.network.scope >= 0 else "PERSPECTIVE"), 16.0, 14.0, theme.text_muted())
+        overlay.text("Y up  /  grid: 1 unit", 16.0, size.height - 28.0, theme.text_muted())
+        self.tools.draw(overlay, size.width, size.height)
+        overlay.rounded_rectangle(Rect(size.width - 126.0, 8.0, 32.0, 30.0), theme.surface(), 4.0)
+        mode_icon(overlay, w.display_mode, size.width - 122.0, 11.0)
+        overlay.rectangle(Rect(size.width - 98.0, 34.0, 3.0, 3.0), theme.accent())
+        overlay.close()
+
+    pub func event(self, event: Event) -> unit!:
+        let bounds = self.layout().bounds()
+        if event.cancelled or event.kind == EventKind.focus_lost:
+            self.mode_press = -1
+        if event.kind == EventKind.pointer_down and event.inside and not event.alt and event.x >= bounds.width - 126.0 and event.x <= bounds.width - 94.0 and event.y >= 8.0 and event.y <= 38.0:
+            if event.button == 1:
+                if let open = self.on_shading:
+                    open(false)
+            else:
+                self.mode_press = time.now()
+            return
+        if event.kind == EventKind.pointer_up and self.mode_press >= 0:
+            self.mode_press = -1
+            if let open = self.on_shading:
+                open(false)
+            return
+        if event.cancelled:
+            self.dragging = false
+            self.pending_right = false
+        if self.tools.event(event, bounds.width, bounds.height):
+            self.layout().invalidate()
+            return
+        # luce-ui currently drops modifiers on its special right-press route.
+        # Arm only; the first move must confirm Alt before any camera change.
+        if event.kind == EventKind.pointer_down and event.inside and event.button == 1:
+            self.pending_right = true
+            self.last_x = event.x
+            self.last_y = event.y
+        if event.kind == EventKind.pointer_moved and self.pending_right:
+            self.pending_right = false
+            if event.alt:
+                self.dragging = true
+                self.navigation_button = 1
+        if event.kind == EventKind.pointer_down and event.inside and event.alt and (event.button == 0 or event.button == 1 or event.button == 2):
+            self.dragging = true
+            self.navigation_button = event.button
+            self.last_x = event.x
+            self.last_y = event.y
+        elif event.kind == EventKind.pointer_moved and self.dragging:
+            let dx = event.x - self.last_x
+            let dy = event.y - self.last_y
+            if self.navigation_button == 2:
+                self.workspace.pan(dx, dy, self.layout().bounds().height)
+            elif self.navigation_button == 1:
+                self.workspace.zoom((dx - dy) * 0.1)
+            else:
+                self.workspace.orbit(dx, dy)
+            self.last_x = event.x
+            self.last_y = event.y
+        elif event.kind == EventKind.pointer_up or event.kind == EventKind.focus_lost or event.kind == EventKind.overflow:
+            self.dragging = false
+            self.pending_right = false
+        elif event.kind == EventKind.scroll:
+            self.workspace.zoom(event.scroll_y * (0.05 if event.scroll_unit == ScrollUnit.points else 1.0))
+        elif event.kind == EventKind.magnify:
+            self.workspace.zoom(event.scroll_y * 12.0)
+        elif event.kind == EventKind.key_down:
+            if event.key == Key.escape:
+                self.dragging = false
+        self.layout().invalidate()

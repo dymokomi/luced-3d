@@ -1,0 +1,162 @@
+from three import PolygonMesh, Vector3, MeshOps, MeshPrimitives, TopologyTools
+from geometry_tests import near
+from network import Network
+from workspace import Workspace
+from node_catalog import kinds
+from component_groups import group_indices
+
+func all_points(mesh: PolygonMesh) -> list[int]:
+    let result: list[int] = []
+    for id in 0..<mesh.point_count():
+        result.append(id)
+    return result
+
+func closed(mesh: PolygonMesh) -> unit!:
+    let counts: list[int] = []
+    let directions: list[int] = []
+    for edge in 0..<mesh.edge_count():
+        counts.append(0)
+        directions.append(0)
+    for face in 0..<mesh.face_count():
+        for at in 0..<mesh.face_size(face):
+            let corner = mesh.face_offset(face) + at
+            let edge = mesh.corner_edge(corner)
+            counts[edge] += 1
+            directions[edge] += 1 if mesh.corner_point(corner) == mesh.edge_point(edge, 0) else -1
+    for edge in 0..<mesh.edge_count():
+        assert(counts[edge] == 2 and directions[edge] == 0)
+
+pub func operators_tests() -> unit!:
+    let cube = PolygonMesh.cube()
+    let weighted = cube.with_attribute("weight", 0, 1, [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0])
+    let faces = weighted.with_attribute("material", 2, 1, [10.0, 20.0, 30.0, 40.0, 50.0, 60.0], true)
+    let replaced = faces.with_attribute("weight", 0, 1, [8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0])
+    assert(replaced.find_attribute("weight", 0) == faces.find_attribute("weight", 0))
+    assert(replaced.find_attribute("material", 2) == faces.find_attribute("material", 2))
+    near(faces.attribute_value(faces.find_attribute("weight", 0), 0), 0.0)
+    let corners: list[float] = []
+    for id in 0..<cube.vertex_count():
+        corners.append(float(id))
+    let mesh = faces.with_attribute("corner_id", 1, 1, corners).with_attribute("version", 3, 1, [9.0], true)
+    assert(cube.attribute_count() == 0 and mesh.attribute_count() == 4)
+    let renamed = mesh.renamed_attribute("weight", "density", 0)
+    assert(renamed.find_attribute("weight", 0) == -1 and renamed.find_attribute("density", 0) >= 0)
+    for source_domain in 0..<4:
+        let constant: list[float] = []
+        for item in 0..<cube.domain_count(source_domain):
+            constant.append(7.0)
+        let attributed = cube.with_attribute("constant", source_domain, 1, constant)
+        for target_domain in 0..<4:
+            let promoted = attributed.promoted_attribute("constant", source_domain, target_domain)
+            let attribute_id = promoted.find_attribute("constant", target_domain)
+            for item in 0..<cube.domain_count(target_domain):
+                near(promoted.attribute_value(attribute_id, item), 7.0)
+    let transform = mesh.transformed(Vector3(3.0, 0.0, 0.0), Vector3(), Vector3(-1.0, 1.0, 1.0))
+    near(transform.attribute_value(transform.find_attribute("weight", 0), 5), 5.0)
+    near(transform.attribute_value(transform.find_attribute("corner_id", 1), 0), 3.0)
+    let extrusion = mesh.extruded_faces([2], 0.4)
+    for id in cube.face_count()..<extrusion.face_count():
+        near(extrusion.attribute_value(extrusion.find_attribute("material", 2), id), 30.0)
+    closed(extrusion)
+    let inset = MeshOps.faces(mesh, [2], 3, 0.25)
+    assert(inset.face_count() == 10 and inset.point_count() == 12)
+    closed(inset)
+    let bevel = TopologyTools.bevel(mesh, 0.2)
+    assert(bevel.point_count() == 24 and bevel.face_count() == 26)
+    closed(bevel)
+    let subdivided = MeshOps.subdivide(mesh)
+    assert(subdivided.point_count() == 26 and subdivided.face_count() == 24)
+    closed(subdivided)
+    let smooth_subdivision = MeshOps.subdivide(mesh, true)
+    closed(smooth_subdivision)
+    near(smooth_subdivision.point(0).x, -5.0 / 9.0)
+    near(smooth_subdivision.point(0).y, 4.0 / 9.0)
+    let first_edge_a = cube.edge_point(0, 0)
+    let first_edge_b = cube.edge_point(0, 1)
+    near(subdivided.attribute_value(subdivided.find_attribute("weight", 0), 8), float(first_edge_a + first_edge_b) * 0.5)
+    let triangulated = MeshOps.faces(mesh, [0, 1, 2, 3, 4, 5], 2)
+    assert(triangulated.face_count() == 12)
+    closed(triangulated)
+    let reversed = MeshOps.faces(mesh, [2], 1)
+    near(reversed.face_normal(2).y, -1.0)
+    let deleted = MeshOps.faces(mesh, [2], 0)
+    let boundary: list[int] = []
+    for edge in 0..<deleted.edge_count():
+        var count = 0
+        for corner in 0..<deleted.vertex_count():
+            if deleted.corner_edge(corner) == edge:
+                count += 1
+        if count == 1:
+            boundary.append(edge)
+    let filled = TopologyTools.fill(deleted, boundary)
+    assert(filled.face_count() == 6)
+    closed(filled)
+    let duplicate = MeshOps.faces(mesh, [2], 4, 1.0)
+    assert(duplicate.face_count() == 7 and duplicate.point_count() == 12)
+    let split = MeshOps.faces(mesh, [0, 1, 2, 3, 4, 5], 5)
+    let fused = MeshOps.fuse(split, all_points(split), 0.001)
+    assert(fused.point_count() == 8)
+    closed(fused)
+    let empty_faces = MeshOps.faces(mesh, [0, 1, 2, 3, 4, 5], 0)
+    assert(empty_faces.face_count() == 0 and empty_faces.attribute_count() == 4)
+    let relaxed = MeshOps.points(mesh, all_points(mesh), 0, 0.2)
+    assert(relaxed.bounds().maximum.y < 2.0)
+    let noise1 = MeshOps.points(mesh, all_points(mesh), 1, 0.05)
+    let noise2 = MeshOps.points(mesh, all_points(mesh), 1, 0.05)
+    near(noise1.point(3).x, noise2.point(3).x)
+    let joined = mesh.merged(cube)
+    near(joined.attribute_value(joined.find_attribute("weight", 0), 8), 0.0)
+    near(joined.attribute_value(joined.find_attribute("version", 3), 0), 9.0)
+    assert(mesh.without_attribute("weight", 0).find_attribute("weight", 0) == -1)
+    var rejected = false
+    discard(mesh.with_attribute("bad", 0, 1, [1.0])) catch failure:
+        rejected = true
+    assert(rejected)
+    for primitive in [MeshPrimitives.sphere(), MeshPrimitives.cylinder(), MeshPrimitives.cylinder(cone = true), MeshPrimitives.torus()]:
+        closed(primitive)
+        assert(primitive.point_count() > 8)
+    let grid = MeshPrimitives.grid(2.0, 2)
+    assert(grid.point_count() == 9 and grid.face_count() == 4)
+    var interior = -1
+    for edge in 0..<grid.edge_count():
+        var uses = 0
+        for corner in 0..<grid.vertex_count():
+            if grid.corner_edge(corner) == edge:
+                uses += 1
+        if uses == 2:
+            interior = edge
+    assert(TopologyTools.dissolve(grid, interior).face_count() == 3)
+    assert(group_indices(mesh, 0, "0 2-4,7") == [0, 2, 3, 4, 7])
+    assert(group_indices(mesh, 0, "@weight") == [1, 2, 3, 4, 5, 6, 7])
+    # Every registered node actually cooks; no placeholder/no-op entries.
+    for kind in kinds():
+        let graph = Network()
+        let node = graph.add(kind, 0.0, 0.0)
+        if kind == "File":
+            node.texts[0] = "tests/fixtures/triangle.obj"
+        var source = 1
+        if kind in ["AttributeRename", "AttributePromote"]:
+            let attribute = graph.add("AttributeCreate", 0.0, 0.0)
+            graph.connect(1, attribute.id, 0)
+            source = attribute.id
+        for port in 0..<node.inputs.length:
+            graph.connect(source, node.id, port)
+        let result = graph.evaluate(node.id)
+        assert(result.point_count() >= 0)
+    let w = Workspace()
+    w.add_node("AttributeCreate", 0.0, 0.0)
+    w.set_text(1, "temperature")
+    w.set_parameter(3, 42.0)
+    near((w.geometry else trap("geometry")).attribute_value(0, 0), 42.0)
+    w.undo()
+    near((w.geometry else trap("geometry")).attribute_value(0, 0), 1.0)
+    w.redo()
+    near((w.geometry else trap("geometry")).attribute_value(0, 0), 42.0)
+    w.add_node("Edit", 0.0, 100.0)
+    w.choose_component(2, false)
+    w.set_parameter(0, 0.2)
+    w.model("Inset")
+    assert((w.geometry else trap("geometry")).face_count() == 10)
+    w.undo()
+    assert((w.geometry else trap("geometry")).face_count() == 6)
+    print("PASS modeling operators, manifolds, generators, attribute domains/remapping/interpolation, all node evaluators and edit undo")

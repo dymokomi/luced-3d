@@ -1,0 +1,71 @@
+from network import Network
+from node_catalog import parameters
+from geometry_tests import near
+from workspace import Workspace
+from three import Vector3
+
+pub func payload_tests() -> unit!:
+    assert(parameters("File").length == 0)
+    let graph = Network(false)
+    let file = graph.add("File", 0.0, 0.0)
+    file.texts[0] = "tests/fixtures/plane.step"
+    let original = graph.evaluate_data(file.id)
+    assert(original.transformed(Vector3(), Vector3(), Vector3(1.0, 1.0, 1.0)) is original)
+    assert(original.mesh == none and original.surfaces.length == 1)
+    let transform = graph.add("Transform", 0.0, 100.0)
+    graph.connect(file.id, transform.id, 0)
+    transform.values[1] = 3.0
+    transform.values[7] = 2.0
+    let analytic = graph.evaluate_data(transform.id)
+    assert(analytic.mesh == none and analytic.surfaces[0].face_count() == 1)
+    near(original.surfaces[0].tessellate(1).bounds().maximum.x, 2.0)
+    let tessellate = graph.add("Tessellate", 0.0, 200.0)
+    graph.connect(transform.id, tessellate.id, 0)
+    tessellate.values[0] = 2.0
+    let mesh = graph.evaluate(tessellate.id)
+    assert(mesh.face_count() == 4 and graph.evaluate_data(tessellate.id).surfaces.length == 0)
+    near(mesh.bounds().minimum.x, 3.0)
+    near(mesh.bounds().maximum.x, 7.0)
+    let cube = graph.add("Cube", 200.0, 0.0)
+    let merge = graph.add("Merge", 0.0, 300.0)
+    graph.connect(file.id, merge.id, 0)
+    graph.connect(cube.id, merge.id, 1)
+    let mixed = graph.evaluate_data(merge.id)
+    assert(mixed.surfaces.length == 1 and (mixed.mesh else trap("mixed polygons")).face_count() == 6)
+    graph.connect(merge.id, tessellate.id, 0)
+    assert(graph.evaluate(tessellate.id).face_count() == 10)
+    let edit = graph.add("Edit", 0.0, 400.0)
+    graph.connect(file.id, edit.id, 0)
+    var rejected = false
+    discard(graph.evaluate_data(edit.id)) catch failure:
+        rejected = failure.message.contains("Tessellate")
+    assert(rejected)
+    edit.enabled = false
+    graph.invalidate(edit.id)
+    assert(graph.evaluate_data(edit.id).surfaces.length == 1)
+    let base = original.surfaces[0]
+    base.trim_rectangle(0, 0.25, 0.75, 0.0, 1.0)
+    let reflected = base.transformed(Vector3(), Vector3(), Vector3(-2.0, 1.0, 1.0)).tessellate(2)
+    near(reflected.bounds().minimum.x, -3.0)
+    near(reflected.bounds().maximum.x, -1.0)
+    near(reflected.face_normal(0).y, base.tessellate(2).face_normal(0).y)
+    let workspace = Workspace()
+    workspace.add_node("File", 0.0, 0.0)
+    workspace.set_text(0, "tests/fixtures/plane.step")
+    assert(workspace.geometry == none and (workspace.selected() else trap("File")).failure == "")
+    let file_data = workspace.network.evaluate_data(workspace.network.selected)
+    let preview = file_data.preview()
+    assert(preview.meshes.length > 0 and preview.failed_faces == 0 and preview.boundaries.length > 0)
+    preview.first_error = "cache identity probe"
+    assert(file_data.preview().first_error == "cache identity probe" and file_data.mesh == none)
+    preview.first_error = ""
+    let placed_preview = file_data.transformed(Vector3(5.0, 0.0, 0.0), Vector3(), Vector3(-2.0, 1.0, 1.0)).preview()
+    near(placed_preview.meshes[0].bounds().minimum.x, 1.0)
+    workspace.frame_cube()
+    assert(workspace.distance > 1.0 and workspace.notice == "")
+    workspace.add_node("Tessellate", 0.0, 100.0)
+    workspace.set_parameter(0, 2.0)
+    assert((workspace.geometry else trap("Tessellate")).face_count() == 4)
+    workspace.undo()
+    assert((workspace.geometry else trap("Undo tessellation")).face_count() == 256)
+    print("PASS typed CAD/polygon DAG, explicit tessellation, analytic Transform, mixed Merge and bypass")

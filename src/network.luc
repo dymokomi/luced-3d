@@ -1,0 +1,385 @@
+## Editor-owned geometry DAG. IDs survive history restores; meshes are immutable.
+from three import PolygonMesh, Vector3, Matrix4
+from geometry_data import GeometryData, GeometryInstance
+from edit_operations import EditOperation
+import node_catalog
+from node_evaluation import source_geometry, evaluate_operator, load_geometry
+from group_operations import blast
+import ui
+
+pub func kinds() -> list[str]:
+    return node_catalog.kinds()
+
+
+pub class Node:
+    pub let id: int
+    pub let kind: str
+    pub var name: str
+    pub var enabled: bool = true
+    pub var parent: int = -1
+    ## 0 = automatic terminal, 1 = explicitly exposed, -1 = explicitly off.
+    pub var output: int = 0
+    pub var visible: bool = true
+    pub var x: float
+    pub var y: float
+    pub var inputs: list[int]
+    # Size, translate XYZ, rotate XYZ in degrees, scale XYZ.
+    pub var values: list[float]
+    pub var texts: list[str]
+    pub var edits: list[EditOperation]
+    pub var cache: GeometryData? = none
+    pub var dirty: bool = true
+    pub var failure: str = ""
+    pub var evaluations: int = 0
+    pub var source_revision: int = 0
+    pub var computing: bool = false
+    pub var progress: float = 0.0
+    pub var phase: str = ""
+    pub var summary: str = ""
+    pub var group_paths: list[str]
+
+    pub func init(self, id: int, kind: str, x: float, y: float) -> unit!:
+        if not (kind in kinds()):
+            error(ui.invalid, "Unknown node type")
+        self.id = id
+        self.kind = kind
+        self.name = f"{kind} {id}"
+        self.x = x
+        self.y = y
+        self.inputs = []
+        for port in 0..<node_catalog.input_count(kind):
+            self.inputs.append(-1)
+        self.values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        for parameter in node_catalog.parameters(kind):
+            self.values[parameter.slot] = parameter.initial
+        self.texts = ["0" if kind == "PolyExtrude" else "", "group" if kind == "Selection Group" else "weight", "renamed"]
+        if kind == "Edit":
+            self.values[0] = 0.5
+        self.edits = []
+        self.group_paths = []
+
+    pub func copy(self) -> Node!:
+        let result = Node(self.id, self.kind, self.x, self.y)
+        result.name = self.name
+        result.enabled = self.enabled
+        result.parent = self.parent
+        result.output = self.output
+        result.visible = self.visible
+        result.inputs = self.inputs.copy()
+        result.values = self.values.copy()
+        result.texts = self.texts.copy()
+        result.edits = self.edits.copy()
+        result.cache = self.cache
+        result.dirty = self.dirty
+        result.failure = self.failure
+        result.evaluations = self.evaluations
+        result.source_revision = self.source_revision
+        result.summary = self.summary
+        result.group_paths = self.group_paths.copy()
+        return result
+
+    ## Pure node computation over resolved immutable inputs. Runtime invokes this
+    ## only on the compute worker; synchronous callers use the same contract.
+    pub func compute(self, data: GeometryData, second: GeometryData? = none, progress: func(float) -> unit!? = none) -> GeometryData!:
+        let v = self.values
+        let rotation = Vector3(v[4], v[5], v[6]).multiply_scalar(0.017453292519943295)
+        let scale = Vector3(v[7], v[8], v[9])
+        let pivot = Vector3(v[10], v[11], v[12])
+        let translation = Vector3(v[1], v[2], v[3]).add(pivot).subtract(Matrix4.compose(Vector3(), rotation, scale).transform_point(pivot))
+        if self.kind == "Group":
+            return GeometryData(instances = [GeometryInstance(data, translation, rotation, scale)])
+        if self.kind in node_catalog.sources():
+            if not self.enabled:
+                return GeometryData()
+            if self.kind == "File":
+                return load_geometry(self.texts[0].trim())
+            return GeometryData(source_geometry(self.kind, v))
+        if not self.enabled or self.kind in ["Switch", "Null"]:
+            return data
+        if self.kind == "Blast":
+            return blast(data, self.texts[0], v[0] != 0.0)
+        if self.kind == "Tessellate":
+            return data.tessellated(int(v[0]), v[1], progress)
+        if self.kind == "Transform":
+            return data.transformed(translation, rotation, scale)
+        if self.kind == "Merge":
+            return data.merged(second else error(ui.invalid, "Connect the second geometry input"))
+        var mesh = data.require_mesh()
+        if self.kind == "Edit":
+            for edit in self.edits:
+                mesh = edit.evaluate(mesh)
+            return GeometryData(mesh)
+        var other: PolygonMesh? = none
+        if let input = second:
+            other = input.require_mesh()
+        return GeometryData(evaluate_operator(self.kind, v, self.texts, mesh, other))
+
+pub class Network:
+    pub var nodes: list[Node]
+    pub var next_id: int = 1
+    pub var selected: int = 1
+    pub var display: int = 1
+    pub var scope: int = -1
+    pub var preview: bool = false
+    pub var background: bool = false
+    pub var compute_mode: int = 3
+    pub var on_progress: func(int, float, str) -> unit!? = none
+
+    pub func init(self, seed: bool = true) -> unit!:
+        self.nodes = []
+        if seed:
+            discard(self.add("Cube", 40.0, 70.0))
+
+    pub func find(self, id: int) -> Node?:
+        for node in self.nodes:
+            if node.id == id:
+                return node
+        return none
+
+    pub func require(self, id: int) -> Node!:
+        return self.find(id) else error(ui.invalid, "Node no longer exists")
+
+    pub func add(self, kind: str, x: float, y: float) -> Node!:
+        if self.nodes.length >= 128:
+            error(ui.invalid, "This workspace supports up to 128 nodes")
+        var ancestor = self.scope
+        var depth = 0
+        while ancestor >= 0:
+            let group = self.require(ancestor)
+            if group.kind != "Group":
+                error(ui.invalid, "Only a Group can contain nodes")
+            ancestor = group.parent
+            depth += 1
+        if depth >= 16:
+            error(ui.invalid, "Group nesting is limited to 16 levels")
+        let node = Node(self.next_id, kind, x, y)
+        node.parent = self.scope
+        self.next_id += 1
+        self.nodes.append(node)
+        if self.scope >= 0:
+            self.invalidate(self.scope)
+        return node
+
+    pub func copy(self) -> Network!:
+        let result = Network(false)
+        result.next_id = self.next_id
+        result.selected = self.selected
+        result.display = self.display
+        result.scope = self.scope
+        result.preview = self.preview
+        result.background = self.background
+        for node in self.nodes:
+            result.nodes.append(node.copy())
+        return result
+
+    pub func local_nodes(self) -> list[Node]:
+        return self.children(self.scope)
+
+    pub func children(self, parent: int) -> list[Node]:
+        let result: list[Node] = []
+        for node in self.nodes:
+            if node.parent == parent:
+                result.append(node)
+        return result
+
+    ## Connected components are local to a scope. Wires never imply parenting.
+    pub func outputs(self, parent: int) -> list[Node]:
+        let local = self.children(parent)
+        let visited: list[int] = []
+        let result: list[Node] = []
+        for seed in local:
+            if seed.id in visited:
+                continue
+            let island: list[Node] = []
+            let pending = [seed.id]
+            var explicit = false
+            while pending.length > 0:
+                let id = pending.pop()
+                if id in visited:
+                    continue
+                visited.append(id)
+                for node in local:
+                    if node.id == id:
+                        island.append(node)
+                        explicit = explicit or node.output == 1
+                        for source in node.inputs:
+                            if source >= 0:
+                                pending.append(source)
+                    elif id in node.inputs:
+                        pending.append(node.id)
+            for node in island:
+                var terminal = true
+                for other in local:
+                    if node.id in other.inputs:
+                        terminal = false
+                if node.output == 1 or (not explicit and node.output == 0 and terminal):
+                    result.append(node)
+        # Stable authoring order, independent of traversal and graph wiring.
+        let ordered: list[Node] = []
+        for node in local:
+            for exposed in result:
+                if exposed.id == node.id:
+                    ordered.append(node)
+        return ordered
+
+    pub func is_output(self, id: int) -> bool!:
+        let node = self.require(id)
+        for exposed in self.outputs(node.parent):
+            if exposed.id == id:
+                return true
+        return false
+
+    pub func path(self) -> str!:
+        var id = self.scope
+        var path = ""
+        while id >= 0:
+            let node = self.require(id)
+            path = "/ " + node.name + " " + path
+            id = node.parent
+        return "/ scene " + path
+
+    pub func depends_on(self, source: int, ancestor: int) -> bool!:
+        let pending: list[int] = [source]
+        let visited: list[int] = []
+        while pending.length > 0:
+            let id = pending.pop()
+            if id == ancestor:
+                return true
+            if id < 0 or id in visited:
+                continue
+            visited.append(id)
+            let node = self.require(id)
+            for input in node.inputs:
+                pending.append(input)
+        return false
+
+    pub func connect(self, source: int, target: int, port: int) -> unit!:
+        let upstream = self.require(source)
+        let node = self.require(target)
+        if upstream.parent != node.parent:
+            error(ui.invalid, "Connections must stay inside one Group; connect the Group's result instead")
+        if port < 0 or port >= node.inputs.length:
+            error(ui.invalid, "That node has no such geometry input")
+        if self.depends_on(source, target):
+            error(ui.invalid, "Connection rejected: it would create a cycle")
+        node.inputs[port] = source
+        self.invalidate(target)
+
+    pub func disconnect(self, target: int, port: int) -> unit!:
+        let node = self.require(target)
+        if port < 0 or port >= node.inputs.length:
+            error(ui.invalid, "That node has no such geometry input")
+        node.inputs[port] = -1
+        self.invalidate(target)
+
+    pub func remove(self, id: int) -> unit!:
+        let parent = self.require(id).parent
+        let removed = [id]
+        var at = 0
+        while at < removed.length:
+            for node in self.nodes:
+                if node.parent == removed[at]:
+                    removed.append(node.id)
+            at += 1
+        self.invalidate(id)
+        let remaining: list[Node] = []
+        for node in self.nodes:
+            if not (node.id in removed):
+                for port in 0..<node.inputs.length:
+                    if node.inputs[port] in removed:
+                        node.inputs[port] = -1
+                remaining.append(node)
+        self.nodes = remaining
+        if self.scope in removed:
+            self.scope = parent
+        if self.selected in removed:
+            let local = self.local_nodes()
+            self.selected = local[0].id if local.length > 0 else -1
+        if self.display in removed:
+            self.display = self.selected
+        if parent >= 0:
+            self.invalidate(parent)
+
+    pub func invalidate(self, id: int):
+        let pending: list[int] = [id]
+        let visited: list[int] = []
+        while pending.length > 0:
+            let next = pending.pop()
+            if next in visited:
+                continue
+            visited.append(next)
+            for node in self.nodes:
+                if node.id == next:
+                    node.dirty = true
+                    node.failure = ""
+                    if node.parent >= 0:
+                        pending.append(node.parent)
+                if next in node.inputs:
+                    pending.append(node.id)
+
+    pub func evaluate(self, id: int) -> PolygonMesh!:
+        return self.evaluate_data(id).require_mesh()
+
+    pub func evaluate_data(self, id: int) -> GeometryData!:
+        if self.background:
+            let node = self.require(id)
+            if node.dirty or node.computing:
+                error(ui.invalid, "Computing geometry…")
+            if node.failure != "":
+                error(ui.invalid, node.failure)
+            return node.cache else GeometryData()
+        let visiting: list[int] = []
+        return self.evaluate_node(id, visiting)
+
+    func evaluate_node(self, id: int, visiting: list[int]) -> GeometryData!:
+        let node = self.require(id)
+        if id in visiting:
+            error(ui.invalid, "Cycle detected during evaluation")
+        if not node.dirty:
+            if node.failure != "":
+                error(ui.invalid, node.failure)
+            return node.cache else error(ui.invalid, "Missing cached node result")
+        visiting.append(id)
+        if let report = self.on_progress:
+            report(id, 0.0, "Computing")
+        let result = self.cook(node, visiting) catch failure:
+            discard(visiting.pop())
+            node.cache = none
+            node.group_paths = []
+            node.failure = f"{node.name}: {failure.message}"
+            node.dirty = false
+            error(ui.invalid, node.failure)
+        discard(visiting.pop())
+        node.cache = result
+        node.failure = ""
+        node.dirty = false
+        node.evaluations += 1
+        node.summary = result.description()
+        node.group_paths = result.paths()
+        if let report = self.on_progress:
+            report(id, 1.0, "Complete")
+        return result
+
+    func cook(self, node: Node, visiting: list[int]) -> GeometryData!:
+        if node.kind == "Group":
+            let children: list[GeometryInstance] = []
+            if node.enabled:
+                for child in self.outputs(node.id):
+                    children.append(GeometryInstance(self.evaluate_node(child.id, visiting), visible = child.visible))
+            return node.compute(GeometryData(instances = children))
+        if node.kind in node_catalog.sources():
+            return node.compute(GeometryData())
+        let port = int(node.values[0]) if node.kind == "Switch" and node.enabled else 0
+        if port < 0 or port >= node.inputs.length or node.inputs[port] < 0:
+            error(ui.invalid, "Connect a geometry input")
+        let data = self.evaluate_node(node.inputs[port], visiting)
+        if not node.enabled or node.kind in ["Switch", "Null"]:
+            return data
+        var second: GeometryData? = none
+        if node.inputs.length == 2:
+            if node.inputs[1] < 0:
+                error(ui.invalid, "Connect the second geometry input")
+            second = self.evaluate_node(node.inputs[1], visiting)
+        return node.compute(data, second, func (fraction: float) -> unit!:
+            if let report = self.on_progress:
+                report(node.id, fraction, "Tessellating" if node.kind == "Tessellate" else "Computing"))

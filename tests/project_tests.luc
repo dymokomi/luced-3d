@@ -1,0 +1,171 @@
+## Project round trips, validation, unsaved protection and isolated UI settings.
+from app import Luce3D
+from prism import Document, Value, Encoding
+from network import Network
+from ui import DockPosition, Event
+from gpu import Rect
+from input import EventKind, Key
+from ui_state import UIState
+from project_graph import write_graph, read_graph
+from geometry_tests import near
+import project_file
+import files
+import paths
+
+pub func project_tests() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    let session = editor.panels.projects
+    assert(not session.dirty())
+    w.add_node("Edit", 80.0, 190.0)
+    w.choose_component(2, false)
+    w.extrude()
+    w.rename("Quoted \"name\" / Unicode Ω")
+    let expected = (w.geometry else trap("mesh")).face_count()
+    w.yaw = 1.2
+    w.distance = 12.3
+    editor.panels.graph.zoom = 1.3
+    editor.panels.graph.pan_x = -91.25
+    session.save_to("scene.prisma")
+    assert(not session.dirty())
+    let authored = files.read_text("scene.prisma")
+    assert(authored.starts_with("#prisma 4.0"))
+    let saved_path = session.path
+    var failed_save = false
+    session.save_to("nonexistent-directory/failed.prisma") catch failure: failed_save = true
+    assert(failed_save and session.path == saved_path and files.read_text("scene.prisma") == authored)
+    w.set_parameter(0, 0.7)
+    assert(session.dirty())
+    w.undo()
+    assert(not session.dirty())
+    w.redo()
+    assert(session.dirty())
+    assert(not session.can_quit())
+    assert(session.confirm.is_open())
+    session.confirm.event(Event(kind = EventKind.key_down, key = Key.escape))
+    assert(not session.confirm.is_open() and session.dirty())
+    session.load_from("scene.prisma")
+    assert(not session.dirty() and w.history.cursor == 0)
+    assert((w.geometry else trap("mesh")).face_count() == expected)
+    assert((w.selected() else trap("node")).name == "Quoted \"name\" / Unicode Ω")
+    near(w.yaw, 1.2)
+    near(w.distance, 12.3)
+    near(editor.panels.graph.zoom, 1.3)
+    near(editor.panels.graph.pan_x, -91.25)
+    # Failed loads leave both the current document and its path untouched.
+    files.write_text("invalid.prisma", "#prisma 4.0\ndef junk \"scene\" {}")
+    let previous = w.network.copy()
+    let path = session.path
+    var rejected = false
+    session.load_from("invalid.prisma") catch failure: rejected = true
+    assert(rejected and session.path == path and project_file.same_graph(previous, w.network))
+    invalid_graphs()
+    group_round_trip()
+    relative_file_round_trip(editor)
+    layout_round_trip(editor)
+    editor.close()
+    print("PASS Prism projects, Edit recipes, Unicode, undo dirty state, invalid-load atomicity, Groups and UI layout persistence")
+
+func invalid_graphs() -> unit!:
+    let graph = Network()
+    discard(graph.add("Transform", 0.0, 90.0))
+    let doc = Document()
+    write_graph(doc, graph)
+    doc.set("/scene/nodes/n2", "parent", Value.integer(2))
+    assert(rejects_graph(doc))
+    doc.set("/scene/nodes/n2", "inputs", Value.numbers([1], [1.0]))
+    doc.set("/scene/nodes/n2", "name", Value.text("invalid\nname"))
+    assert(rejects_graph(doc))
+    doc.set("/scene/nodes/n2", "parent", Value.integer(-1))
+    doc.set("/scene/nodes/n2", "inputs", Value.numbers([1], [2.0]))
+    assert(rejects_graph(doc))
+
+func rejects_graph(doc: Document) -> bool:
+    discard(read_graph(doc) catch failure: return true)
+    return false
+
+func group_round_trip() -> unit!:
+    let graph = Network(false)
+    let group = graph.add("Group", 5.0, 8.0)
+    group.values[1] = 7.0
+    group.output = 1
+    graph.scope = group.id
+    let file = graph.add("File", 30.0, 40.0)
+    file.texts[0] = "tests/fixtures/does-not-exist.step"
+    file.enabled = false
+    let transform = graph.add("Transform", 40.0, 110.0)
+    graph.connect(file.id, transform.id, 0)
+    transform.visible = false
+    graph.selected = transform.id
+    graph.display = transform.id
+    let doc = Document()
+    write_graph(doc, graph)
+    doc.save("groups.prisma", Encoding.text)
+    let restored = read_graph(Document.load("groups.prisma"))
+    assert(project_file.same_graph(graph, restored))
+    assert(restored.scope == group.id and restored.selected == transform.id)
+    near(restored.require(group.id).values[1], 7.0)
+    assert(project_file.relative("/projects/model/camera.step", "/projects/scenes") == "../model/camera.step")
+
+func layout_round_trip(editor: Luce3D) -> unit!:
+    let dock = editor.panels.dock
+    let viewport = dock.find("viewport") else trap("viewport")
+    let graph = dock.find("network") else trap("network")
+    let sheet = dock.find("geometry_spreadsheet") else trap("sheet")
+    let parameters = dock.find("parameters") else trap("parameters")
+    dock.move(graph, viewport, DockPosition.tab)
+    dock.move(sheet, graph, DockPosition.tab)
+    dock.move(graph, viewport, DockPosition.tab)
+    dock.set_fraction(viewport, 0.69)
+    dock.float(parameters, Rect(150.0, 180.0, 400.0, 350.0))
+    dock.select(sheet)
+    let text = dock.layout_text()
+    editor.workspace.set_display_mode(4)
+    editor.workspace.grid_visible = false
+    let settings = UIState("ui-test.prisma")
+    settings.save(editor.panels)
+    editor.panels.dock_layout.reset()
+    assert(dock.layout_text() != text)
+    let restored = UIState("ui-test.prisma")
+    restored.restore(editor.panels)
+    assert(dock.layout_text() == text)
+    assert(restored.width == 1600 and restored.height == 1000)
+    assert(editor.workspace.display_mode == 4 and not editor.workspace.grid_visible)
+    var rejected = false
+    editor.panels.dock_layout.restore("luce-dock 1\ngroup 0 viewport viewport") catch failure: rejected = true
+    assert(rejected and dock.layout_text() == text)
+    # Viewport can float too, including a layout with no docked panels at all.
+    dock.float(viewport, Rect(15.0, 25.0, 800.0, 650.0))
+    let floating = dock.layout_text()
+    editor.panels.dock_layout.reset()
+    editor.panels.dock_layout.restore(floating)
+    assert(dock.layout_text() == floating)
+    for id in ["network", "geometry_spreadsheet", "outliner"]:
+        let panel = dock.find(id) else trap("panel")
+        dock.float(panel, Rect(20.0, 30.0, 350.0, 300.0))
+    let all_floating = dock.layout_text()
+    editor.panels.dock_layout.reset()
+    editor.panels.dock_layout.restore(all_floating)
+    assert(dock.layout_text() == all_floating)
+    editor.panels.dock_layout.reset()
+    files.write_text("broken-ui.prisma", "broken settings")
+    let broken = UIState("broken-ui.prisma")
+    assert(broken.warning != "")
+    broken.save(editor.panels)
+    assert(files.read_text("broken-ui.prisma") == "broken settings")
+
+func relative_file_round_trip(editor: Luce3D) -> unit!:
+    files.ensure_directory("projects")
+    let w = editor.workspace
+    w.replace_network(Network(false))
+    w.add_node("File", 0.0, 0.0)
+    w.toggle_enabled()
+    w.set_text(0, "tests/fixtures/does-not-exist.step")
+    editor.panels.projects.save_to("projects/external.prisma")
+    let doc = Document.load("projects/external.prisma")
+    assert(doc.get("/scene/nodes/n1", "texts").text_at(0) == "../tests/fixtures/does-not-exist.step")
+    editor.panels.projects.load_from("projects/external.prisma")
+    assert((w.selected() else trap("File")).texts[0] == paths.join(files.absolute_path("."), "tests/fixtures/does-not-exist.step"))
+    editor.panels.projects.save_to("external-moved.prisma")
+    assert(Document.load("external-moved.prisma").get("/scene/nodes/n1", "texts").text_at(0) == "tests/fixtures/does-not-exist.step")

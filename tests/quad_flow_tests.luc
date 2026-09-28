@@ -1,0 +1,177 @@
+## Curvature-supported rows must survive an oblique trim and a U/V axis swap.
+from cad import BrepModel
+from three import Vector3
+from geometry_tests import near, manifold
+import math
+
+func position(x: float,y: float) -> Vector3:
+    return Vector3(x,y,y*(1.0-y))
+
+func edge(model: BrepModel, start: int, end: int, a: Vector3, b: Vector3) -> unit!:
+    let middle = a.add(b).multiply_scalar(0.5)
+    let control = Vector3(middle.x,middle.y,middle.z+(a.y-b.y)*(a.y-b.y)*0.5)
+    discard(model.add_spline_edge(start,end,[a,control,b],[1.0,1.0,1.0],2,[0.0,0.0,0.0,1.0,1.0,1.0],true))
+
+pub func quad_flow_tests() -> unit!:
+    let model = BrepModel()
+    let corners = [position(0.0,0.0),position(1.0,0.0),position(1.0,1.0),position(0.0,1.0),position(2.0,0.0),position(2.0,0.6),position(1.6,1.0)]
+    for p in corners: discard(model.add_vertex(p))
+    for at in 0..<4: edge(model,at,(at+1)%4,corners[at],corners[(at+1)%4])
+    for pair in [[1,4],[4,5],[5,6],[6,2]]: edge(model,pair[0],pair[1],corners[pair[0]],corners[pair[1]])
+    let linear = [0.0,0.0,1.0,1.0]
+    let quadratic = [0.0,0.0,0.0,1.0,1.0,1.0]
+    let left: list[Vector3] = []
+    for x in [0.0,1.0]:
+        left.append(Vector3(x,0.0,0.0))
+        left.append(Vector3(x,0.5,0.5))
+        left.append(Vector3(x,1.0,0.0))
+    let right: list[Vector3] = []
+    for row in 0..<3:
+        for x in [1.0,2.0]: right.append(Vector3(x,1.0-float(row)*0.5,0.5 if row == 1 else 0.0))
+    discard(model.add_spline_surface(left,[1.0,1.0,1.0,1.0,1.0,1.0],2,3,1,2,linear,quadratic))
+    discard(model.add_spline_surface(right,[1.0,1.0,1.0,1.0,1.0,1.0],3,2,2,1,quadratic,linear))
+    discard(model.add_face(0,[1,2,3,4],[4]))
+    discard(model.add_face(1,[5,6,7,8,-2],[5]))
+    let mesh = model.mesh(8)
+    let provenance = mesh.find_attribute("cad_trim_grid",2)
+    assert(provenance >= 0)
+    let parents = mesh.find_attribute("cad_face",2)
+    for face in 0..<mesh.face_count():
+        if mesh.attribute_value(parents,face,0) == 1.0: assert(mesh.attribute_value(provenance,face,0) == 1.0)
+    var seam_points = 0
+    for id in 0..<mesh.point_count():
+        let p = mesh.point(id)
+        near(p.z,p.y*(1.0-p.y))
+        if math.abs(p.x-1.0) > 0.000001 or p.y <= 0.000001 or p.y >= 0.999999: continue
+        seam_points += 1
+        var degree = 0
+        for e in 0..<mesh.edge_count():
+            if mesh.edge_point(e,0) == id or mesh.edge_point(e,1) == id: degree += 1
+        assert(degree == 4)
+    assert(seam_points >= 8)
+    # No split seam edge may have only one face; the outer perimeter may.
+    for e in 0..<mesh.edge_count():
+        let a = mesh.point(mesh.edge_point(e,0))
+        let b = mesh.point(mesh.edge_point(e,1))
+        if math.abs(a.x-1.0) > 0.000001 or math.abs(b.x-1.0) > 0.000001: continue
+        var uses = 0
+        for f in 0..<mesh.face_count():
+            for c in 0..<mesh.face_size(f):
+                if mesh.face_edge(f,c) == e: uses += 1
+        assert(uses == 2)
+    print("PASS cross-patch row continuity, swapped/reversed UV axes, oblique trim and shared seam topology")
+    fillet_phase_test(false)
+    fillet_phase_test(true)
+    hard_oblique_quad()
+
+func hard_oblique_quad() -> unit!:
+    # Four CAD edges still describe an oblique trim, not a rectangular UV map.
+    # Its hard cap shares every cut vertex but must not pull diagonal rows into
+    # the curved surface. The old mapped-first path failed this contract.
+    let model = BrepModel()
+    let p = [position(0.0,0.0),position(1.0,0.0),position(1.0,0.6),position(0.0,1.0),Vector3(1.0,0.6,0.0)]
+    for point in p: discard(model.add_vertex(point))
+    for at in 0..<4: edge(model,at,(at+1)%4,p[at],p[(at+1)%4])
+    discard(model.add_line(3,4))
+    discard(model.add_line(4,2))
+    let controls: list[Vector3] = []
+    for x in [0.0,1.0]:
+        controls.append(Vector3(x,0.0,0.0))
+        controls.append(Vector3(x,0.5,0.5))
+        controls.append(Vector3(x,1.0,0.0))
+    discard(model.add_spline_surface(controls,[1.0,1.0,1.0,1.0,1.0,1.0],2,3,1,2,[0.0,0.0,1.0,1.0],[0.0,0.0,0.0,1.0,1.0,1.0]))
+    discard(model.add_surface(0,p[3],Vector3(0.4,1.0,0.0).normalized(),Vector3(0.0,0.0,1.0)))
+    discard(model.add_face(0,[1,2,3,4],[4]))
+    discard(model.add_face(1,[-3,-6,-5],[3]))
+    let mesh = model.mesh(8)
+    let parents = mesh.find_attribute("cad_face",2)
+    let clipped = mesh.find_attribute("cad_trim_grid",2)
+    var checked = 0
+    for f in 0..<mesh.face_count():
+        if mesh.attribute_value(parents,f,0) != 0.0: continue
+        assert(mesh.attribute_value(clipped,f,0) == 1.0)
+        for at in 0..<mesh.face_size(f):
+            let a = mesh.point(mesh.face_point(f,at))
+            let b = mesh.point(mesh.face_point(f,(at+1)%mesh.face_size(f)))
+            near(a.z,a.y*(1.0-a.y))
+            if math.abs(a.y+0.4*a.x-1.0)+math.abs(b.y+0.4*b.x-1.0) < 0.000001:
+                let e = mesh.face_edge(f,at)
+                var uses = 0
+                for other in 0..<mesh.face_count():
+                    for c in 0..<mesh.face_size(other):
+                        if mesh.face_edge(other,c) == e: uses += 1
+                assert(uses == 2)
+                checked += 1
+            else:
+                assert(math.abs(a.x-b.x) < 0.000001 or math.abs(a.y-b.y) < 0.000001)
+    assert(checked >= 8)
+
+func fillet_phase_test(split: bool) -> unit!:
+    let model = BrepModel()
+    let x = Vector3(1.0,0.0,0.0)
+    let z = Vector3(0.0,0.0,1.0)
+    for p in [Vector3(4.0,0.0,0.0),Vector3(3.0,0.0,1.0),Vector3(2.0,0.0,0.0),Vector3(2.0,0.0,1.0)]:
+        discard(model.add_vertex(p))
+    discard(model.add_circle(0,0,Vector3(),z,x,4.0))
+    if split:
+        discard(model.add_vertex(Vector3(3.0*math.cos(2.1),3.0*math.sin(2.1),1.0)))
+        discard(model.add_circle(1,4,z,z.multiply_scalar(-1.0),x,3.0,false))
+        discard(model.add_circle(4,1,z,z.multiply_scalar(-1.0),x,3.0,false))
+    else:
+        discard(model.add_circle(1,1,z,z.multiply_scalar(-1.0),x,3.0,false))
+    discard(model.add_circle(0,1,Vector3(3.0,0.0,0.0),Vector3(0.0,-1.0,0.0),x,1.0))
+    discard(model.add_circle(2,2,Vector3(),z,x,2.0))
+    discard(model.add_circle(3,3,z,z,x,2.0))
+    discard(model.add_line(2,3))
+    discard(model.add_surface(5,Vector3(),z,x,3.0,1.0))
+    discard(model.add_surface(1,Vector3(),z,x,2.0))
+    discard(model.add_surface(0,Vector3(),z,x))
+    discard(model.add_surface(0,z,z,x))
+    if split:
+        discard(model.add_face(0,[1,4,-3,-2,-4],[5]))
+        discard(model.add_face(1,[5,7,-6,-7],[4],false))
+        discard(model.add_face(2,[1,-5],[1,1],false))
+        discard(model.add_face(3,[2,3,-6],[2,1]))
+    else:
+        discard(model.add_face(0,[1,3,-2,-3],[4]))
+        discard(model.add_face(1,[4,6,-5,-6],[4],false))
+        discard(model.add_face(2,[1,-4],[1,1],false))
+        discard(model.add_face(3,[2,-5],[1,1]))
+    let mesh = model.mesh(8)
+    manifold(mesh)
+    let parent = mesh.find_attribute("cad_face",2)
+    let islands = mesh.find_attribute("cad_flow_island",2)
+    assert(islands >= 0)
+    var fillet_quads = 0
+    for face in 0..<mesh.face_count():
+        # A circular G1 fillet/Cartesian-plane trim is not a flow seam, even
+        # though their tangent planes agree. The hard bottom cap also stops.
+        near(mesh.attribute_value(islands,face,0),mesh.attribute_value(parent,face,0))
+        if mesh.attribute_value(parent,face,0) != 0.0: continue
+        if split:
+            for at in 0..<mesh.face_size(face):
+                let p = mesh.point(mesh.face_point(face,at))
+                let radius = math.sqrt(p.x*p.x+p.y*p.y)-3.0
+                near(radius*radius+p.z*p.z,1.0)
+            continue
+        # Incompatible planar cap rows end on the circular boundary. Interior
+        # fillet cells stay quads; only ring-adjacent cells may acquire corners.
+        assert(mesh.face_size(face) >= 4)
+        if mesh.face_size(face) > 4:
+            var ring_points = 0
+            for at in 0..<mesh.face_size(face):
+                let p = mesh.point(mesh.face_point(face,at))
+                if math.abs(p.z) < 0.000001 or math.abs(p.z-1.0) < 0.000001: ring_points += 1
+            assert(ring_points >= mesh.face_size(face)-2)
+            continue
+        fillet_quads += 1
+        for at in 0..<4:
+            let p = mesh.point(mesh.face_point(face,at))
+            let radial = Vector3(p.x,p.y,0.0).normalized()
+            var paired = false
+            for other in 0..<4:
+                if other == at: continue
+                let q = mesh.point(mesh.face_point(face,other))
+                if radial.subtract(Vector3(q.x,q.y,0.0).normalized()).length() < 0.000001: paired = true
+            assert(paired)
+    if not split: assert(fillet_quads > 64)

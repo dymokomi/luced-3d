@@ -1,0 +1,40 @@
+## Deterministic bidirectional surface samples; not a Hausdorff certificate.
+from step import Step
+from obj import Obj
+from three import PolygonMesh
+from cad import CadModel
+import time
+
+func compare(source: PolygonMesh, target: PolygonMesh, label: str, model: CadModel) -> unit!:
+    let count = 2048
+    var sum = 0.0
+    var maximum = 0.0
+    var samples = 0
+    for index in 0..<count:
+        let point = source.point(index * source.point_count() // count)
+        let triangle = index * (source.index_count() // 3) // count
+        let a = source.vertex(source.index(triangle * 3)).position
+        let b = source.vertex(source.index(triangle * 3 + 1)).position
+        let c = source.vertex(source.index(triangle * 3 + 2)).position
+        for p in [point, a.add(b).add(c).multiply_scalar(1.0 / 3.0)]:
+            let distance = target.surface_distance(p)
+            sum += distance * distance
+            if distance > maximum:
+                maximum = distance
+                let face = target.closest_face(p)
+                let attribute = target.find_attribute("cad_face", 2)
+                let parent = int(target.attribute_value(attribute, face, 0)) if attribute >= 0 else -1
+                print(f"worst {label}: distance={distance} at=({p.x},{p.y},{p.z}) face={face} cad_face={parent}")
+                if parent >= 0: print(model.face_path(parent))
+            samples += 1
+    print(f"{label}: samples={samples} max={maximum} mean_squared={sum / float(samples)}")
+
+pub func main(arguments: list[str]) -> int!:
+    let start = time.now()
+    let model = Step.load_model(arguments[0])
+    let mesh = model.tessellate(16)
+    let reference = Obj.load(arguments[1])
+    print(f"STEP faces={mesh.face_count()} OBJ faces={reference.face_count()} prepare_ms={float(time.now() - start) / 1000000.0}")
+    compare(mesh, reference, "STEP-to-OBJ", model)
+    compare(reference, mesh, "OBJ-to-STEP", model)
+    return 0

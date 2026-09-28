@@ -1,0 +1,83 @@
+## Per-user panel/window/display preferences. Tests and captures opt out by default.
+from prism import Document, Value, Encoding
+from panels import Panels
+import project_values as values
+import files
+import paths
+import ui
+
+pub func settings_path() -> str!:
+    return paths.join(paths.join(files.home_directory(), ".luced-3d"), "ui.prisma")
+
+pub class UIState:
+    pub var width: int = 1400
+    pub var height: int = 900
+    pub var warning: str = ""
+    var path: str = ""
+    var restored: Document? = none
+    var written: Document? = none
+    var elapsed: float = 0.0
+    var writable: bool = true
+
+    pub func init(self, path: str = "") -> unit!:
+        self.path = path
+        if path == "": return
+        let text = files.read_text(path, limit = 65536) catch failure:
+            return
+        self.read(text) catch failure:
+            self.warning = "Could not restore UI layout: " + failure.message
+            self.writable = false
+            return
+
+    func read(self, text: str) -> unit!:
+        let doc = Document.parse(text)
+        if doc.type_at("/ui") != "luced3d_ui" or values.integer(doc, "/ui", "version", 1, 1) != 1:
+            error(ui.invalid, "Unknown UI settings version")
+        self.width = values.integer(doc, "/ui", "width", 800, 8192)
+        self.height = values.integer(doc, "/ui", "height", 600, 8192)
+        discard(values.integer(doc, "/ui", "shading", 0, 4))
+        discard(values.flag(doc, "/ui", "grid"))
+        discard(values.flag(doc, "/ui", "normals"))
+        discard(values.text(doc, "/ui", "dock"))
+        self.restored = doc
+
+    pub func restore(self, panels: Panels) -> unit!:
+        let doc = self.restored else return
+        panels.dock_layout.restore(values.text(doc, "/ui", "dock")) catch failure:
+            self.warning = "Could not restore panel layout: " + failure.message
+            self.writable = false
+            return
+        let w = panels.workspace
+        w.set_display_mode(values.integer(doc, "/ui", "shading", 0, 4))
+        w.grid_visible = values.flag(doc, "/ui", "grid")
+        w.normals_visible = values.flag(doc, "/ui", "normals")
+        w.revision += 1
+        self.written = doc
+
+    ## The timer avoids per-frame disk reads and writes only changed settings.
+    pub func poll(self, panels: Panels, elapsed: float) -> unit!:
+        if self.path == "" or not self.writable: return
+        self.elapsed += elapsed
+        if self.elapsed < 0.5: return
+        self.elapsed = 0.0
+        self.save(panels)
+
+    pub func save(self, panels: Panels) -> unit!:
+        if self.path == "" or not self.writable: return
+        let bounds = panels.body.layout().bounds()
+        if bounds.width < 800.0 or bounds.height < 600.0: return
+        let doc = Document()
+        doc.add("/ui", "luced3d_ui")
+        doc.set("/ui", "version", Value.integer(1))
+        doc.set("/ui", "width", Value.integer(int(bounds.width)))
+        doc.set("/ui", "height", Value.integer(int(bounds.height)))
+        doc.set("/ui", "dock", Value.text(panels.dock.layout_text()))
+        let w = panels.workspace
+        doc.set("/ui", "shading", Value.integer(w.display_mode))
+        doc.set("/ui", "grid", Value.boolean(w.grid_visible))
+        doc.set("/ui", "normals", Value.boolean(w.normals_visible))
+        if let previous = self.written:
+            if previous.equals(doc): return
+        files.ensure_directory(paths.directory(self.path))
+        doc.save(self.path, Encoding.text)
+        self.written = doc

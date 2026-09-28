@@ -1,0 +1,89 @@
+## Atomic .prisma project files. Relative geometry references resolve at the file.
+from prism import Document, Value, Encoding, write_durable
+from network import Network
+from workspace import Workspace
+from project_graph import write_graph, read_graph
+import project_values as values
+import files
+import paths
+import ui
+import platform
+
+pub class Project:
+    pub let graph: Network
+    pub let camera: list[float]
+    pub let graph_view: list[float]
+
+    pub func init(self, graph: Network, camera: list[float], graph_view: list[float]):
+        self.graph = graph
+        self.camera = camera
+        self.graph_view = graph_view
+
+## Absolute lexical filename; the containing directory must exist, not the file.
+pub func filename(path: str) -> str!:
+    if path.trim() == "": error(ui.invalid, "Choose a project filename")
+    return paths.join(files.absolute_path(paths.directory(path)), paths.base(path))
+
+## Prefer a relative file path when both files share a filesystem root.
+pub func relative(source: str, directory: str) -> str!:
+    let normalized = paths.normalize(source)
+    if paths.root(normalized) != paths.root(directory): return normalized
+    # normalize uses forward separators after the root, even on Windows;
+    # retain literal backslashes in POSIX filenames.
+    let a = (normalized.replace("\\", "/") if platform.windows else normalized).split("/")
+    let base = paths.normalize(directory)
+    let b = (base.replace("\\", "/") if platform.windows else base).split("/")
+    var common = 0
+    while common < a.length and common < b.length and a[common] == b[common]: common += 1
+    let parts: list[str] = []
+    for at in common..<b.length:
+        if b[at] != "": parts.append("..")
+    for at in common..<a.length: parts.append(a[at])
+    return parts.join("/")
+
+pub func save(path: str, workspace: Workspace, graph_view: list[float]) -> unit!:
+    let destination = filename(path)
+    let graph = workspace.network.copy()
+    for node in graph.nodes:
+        if node.kind != "File" or node.texts[0] == "": continue
+        let absolute = paths.normalize(paths.join(files.absolute_path("."), node.texts[0]))
+        node.texts[0] = relative(absolute, paths.directory(destination))
+    let doc = Document()
+    write_graph(doc, graph)
+    doc.add("/scene/view", "editor_view")
+    let w = workspace
+    doc.set("/scene/view", "camera", Value.numbers([6], [w.yaw, w.pitch, w.distance, w.target.x, w.target.y, w.target.z]))
+    doc.set("/scene/view", "network", Value.numbers([3], graph_view))
+    # Never produce a project our bounded loader would refuse to open. Encode
+    # once; Prism's durable writer still uses synchronized atomic replacement.
+    let encoded = doc.encode(Encoding.text)
+    if encoded.size() > 67108864: error(ui.invalid, "Project exceeds the 64 MiB file limit")
+    write_durable(destination, encoded.bytes())
+
+pub func load(path: str) -> Project!:
+    let source = filename(path)
+    let doc = Document.parse(files.read_text(source, limit = 67108864))
+    let graph = read_graph(doc)
+    let camera = values.numbers(doc, "/scene/view", "camera", 6, 6)
+    let graph_view = values.numbers(doc, "/scene/view", "network", 3, 3)
+    if camera[1] < -1.5 or camera[1] > 1.5 or camera[2] < 0.001 or camera[2] > 10000000.0 or graph_view[0] < 0.25 or graph_view[0] > 2.5:
+        error(ui.invalid, "Invalid project camera or network zoom")
+    for node in graph.nodes:
+        if node.kind == "File" and node.texts[0] != "":
+            node.texts[0] = values.line(paths.normalize(paths.join(paths.directory(source), node.texts[0])))
+    return Project(graph, camera, graph_view)
+
+## Authored edits only: selection, cooked caches and background progress aren't dirty.
+pub func same_graph(a: Network, b: Network) -> bool:
+    if a.nodes.length != b.nodes.length: return false
+    for at in 0..<a.nodes.length:
+        let left = a.nodes[at]
+        let right = b.nodes[at]
+        if left.id != right.id or left.kind != right.kind or left.name != right.name or left.parent != right.parent or left.output != right.output or left.enabled != right.enabled or left.visible != right.visible or left.x != right.x or left.y != right.y or left.inputs != right.inputs or left.values != right.values or left.texts != right.texts or left.edits.length != right.edits.length:
+            return false
+        for index in 0..<left.edits.length:
+            let a_edit = left.edits[index]
+            let b_edit = right.edits[index]
+            if a_edit.kind != b_edit.kind or a_edit.elements != b_edit.elements or a_edit.topology != b_edit.topology or a_edit.distance != b_edit.distance or a_edit.delta.x != b_edit.delta.x or a_edit.delta.y != b_edit.delta.y or a_edit.delta.z != b_edit.delta.z:
+                return false
+    return true

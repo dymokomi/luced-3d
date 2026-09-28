@@ -1,0 +1,54 @@
+from group_operations import imported_cad, blast
+from geometry_groups import GeometryGroup, patterns, matches
+from geometry_data import GeometryData
+from step import Step
+from network import Network
+from geometry_tests import near
+from app import Luce3D
+
+pub func group_tests() -> unit!:
+    let path = "Camera test/Lens:1/solid_37"
+    let data = imported_cad(Step.load_model("tests/fixtures/assembly.step"))
+    assert(data.paths() == [path] and data.groups[0].faces == [0, 1, 2])
+    assert(matches(path, patterns("'Camera test/Lens:1'")))
+    assert(matches(path, patterns("*/Lens:1/*")))
+    assert(not matches(path, patterns("* ^*/solid_37")))
+    assert(not matches(path, patterns("'Camera test/Lens'")))
+    let kept = blast(data, "*/solid_37", true)
+    assert(kept.mesh == none and kept.surfaces.length == 1 and kept.paths() == [path])
+    let tessellated = kept.tessellated(4)
+    let mesh = tessellated.require_mesh()
+    assert(tessellated.paths() == [path] and tessellated.groups[0].faces.length == mesh.face_count())
+    near(mesh.bounds().minimum.x, 8.0)
+    assert(mesh.find_attribute("Cd", 2) >= 0 and mesh.find_attribute("N", 1) >= 0)
+    assert(blast(data, "*", false).surfaces.length == 0)
+    let empty = blast(tessellated, "*", false).require_mesh()
+    assert(empty.face_count() == 0 and empty.point_count() == 0)
+    let after = blast(tessellated, "'Camera test'", true)
+    assert(after.paths() == [path] and after.require_mesh().face_count() == mesh.face_count())
+    let partitioned = GeometryData(surfaces = data.surfaces, groups = [GeometryGroup("root/body", [0, 1], 0), GeometryGroup("root/cap", [2], 0)])
+    let cap = blast(partitioned, "root/cap", true)
+    assert(cap.surfaces[0].face_count() == 1 and cap.groups[0].faces == [0])
+    let cap_mesh = cap.tessellated(4).require_mesh()
+    near(cap_mesh.bounds().minimum.x, 8.0)
+    assert(cap_mesh.find_attribute("Cd", 2) >= 0)
+    let removed = blast(partitioned.tessellated(4), "root/body", false)
+    assert(removed.paths() == ["root/cap"] and removed.require_mesh().face_count() == cap_mesh.face_count())
+    near(removed.require_mesh().bounds().minimum.z, cap_mesh.bounds().minimum.z)
+    let graph = Network(false)
+    let file = graph.add("File", 0.0, 0.0)
+    file.texts[0] = "tests/fixtures/assembly.step"
+    let node = graph.add("Blast", 0.0, 100.0)
+    graph.connect(file.id, node.id, 0)
+    node.texts[0] = "*/solid_37"
+    node.values[0] = 1.0
+    assert(graph.evaluate_data(node.id).paths() == [path] and node.group_paths == [path])
+    let editor = Luce3D()
+    editor.workspace.add_node("File", 0.0, 0.0)
+    editor.workspace.set_text(0, "tests/fixtures/assembly.step")
+    editor.panels.refresh()
+    let rows = editor.panels.outliner.rows
+    assert(rows[-1].path == path and rows[-1].depth == 3)
+    assert(rows[-2].branch and rows[-2].path == "Camera test/Lens:1")
+    editor.close()
+    print("PASS STEP hierarchy, CAD/polygon Blast, quoted parent paths, wildcards and Outliner projection")
