@@ -26,7 +26,9 @@ def prepare(project):
 
 
 def build(project, binary, optimization="0", backend="native"):
-    environment = dict(os.environ, LUCE_CACHE=str(ROOT / "build/test-cache"))
+    cache = Path(os.environ.get("LUCE_TEST_CACHE", str(ROOT / "build/test-cache")))
+    cache.mkdir(parents=True, exist_ok=True)
+    environment = dict(os.environ, LUCE_CACHE=str(cache))
     flags = ["--native", "--opt", optimization] if backend == "native" else ["--backend=c"] + (["--release"] if int(optimization) >= 2 else [])
     subprocess.run([os.environ.get("LUCE", "luce"), "build", str(project / "src/main.luc"),
                     *flags, "-o", str(binary)],
