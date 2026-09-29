@@ -10,7 +10,7 @@ No placeholder nodes are listed: every registered node evaluates geometry.
 | Family | Nodes |
 | --- | --- |
 | Sources | Cube, Grid, Sphere, Cylinder, Cone, Torus, File |
-| Graph | Edit Mesh, Merge, Null, Switch, Tessellate, Group, Blast, Cache |
+| Graph | Edit Mesh, Edit CAD, Edit SDF, Edit Sketch, Merge, Null, Switch, Tessellate, Group, Blast, Cache |
 | Transforms/copies | Transform, Mirror, CopyTransform, CopyToPoints, MatchSize |
 | Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Loop Cut, Bridge, Fill, Dissolve, Merge Points; Subdivision (display) and Crease |
 | Deformation (verbs) | Transform Components, Smooth, Mountain, Peak, Flatten, Snap |
@@ -163,14 +163,20 @@ An Edit node is a modeling engine in one node: while it is displayed and
 selected, every tool appends a step to its recipe instead of creating a node,
 and each tool (or each drag) is one undo. There is no operation list to edit.
 There is one Edit node per kind of geometry, so each keeps its own levels and
-tools: **Edit Mesh** (polygons) and **Edit CAD** (analytic models), with Edit
-SDF and Edit Sketch to come. They share one framework (`edit_types.luc`,
+tools: **Edit Mesh** (polygons), **Edit CAD** (analytic models), **Edit SDF**
+(signed distance fields) and **Edit Sketch** (planar curves). They share one
+framework (`edit_types.luc`,
 `edit_kinds.luc`): a kind supplies its selection levels, its tools and
 primitives, the geometry each level picks on, the geometry its recipe starts
 from, and the step executor that gives its verbs meaning; the recipe, undo,
 checkpoints, the selection and its hand-off, the tool amount, symmetry, soft
 selection and Keep selection, Tool → Select, the inspector rows, the level
-switcher and the tool strip are the framework's.
+switcher and the tool strip are the framework's. The tool strip and the
+Create entries come from the kinds themselves: the strip shows what the
+active kind offers (Edit Mesh's on other nodes). A kind may also draw guides
+while displayed (Edit Sketch's plane grid, keyed by the set's detail
+attributes so a drag keeps the batch) and show its selection through
+surfaces (Edit SDF).
 
 Edit Mesh's levels are Object, Polygons, Edges, Vertices and Corners. At the
 Object level a pick selects a whole piece, and moves, rotations, scales and
@@ -190,6 +196,35 @@ change. A moved boundary CV takes its trims along: they are re-projected
 onto the edited surface, and a face whose trims fold is left out with a
 warning instead of failing the node. Edges have no tools yet. Its primitives
 are luce-cad's analytic solids: Box, Cylinder, Cone, Sphere and Torus.
+
+Edit SDF's one level, Object, picks whole primitives of the SDF program. It
+picks on proxies: each primitive's own shape placed by the transforms around
+it, tagged `sdf_prim` (luce-geocore's `SdfEdits`). Their topology depends
+only on the shapes, so a drag keeps the selection and consecutive moves
+merge, and a subtracted primitive stays pickable; the selection also shows,
+dimmed, through the surface. Primitives (Sphere, Box, Torus, Capsule,
+Cylinder) are steps added to the program by Add. The gizmo moves, rotates
+and scales primitives (the move composes into the transform placing each
+one); **Add**, **Subtract** and **Intersect** set the boolean joining a
+primitive to the shapes before it, **Blend** rounds that join by the tool
+amount, and **Delete** removes primitives. A drag's frames show a coarse
+surface (40 voxels across); the release shows the full one (128).
+
+Edit Sketch draws planar sketches as curves (luce-geocore's `Sketches`). The
+sketch plane is the set's detail attributes `sketch.plane_origin` and
+`sketch.plane_normal`, set by **Plane XY**, **Plane YZ** and **Plane ZX**
+before or between shapes (a step may give any origin and normal, such as a
+face's), so later nodes can read it; it shows as a light grid. Shapes are
+**Line**, **Polyline**, **Arc**, **Circle** (exact NURBS), **Rectangle** and
+**Spline** (cubic NURBS), each a step on the plane selected as its Object.
+Levels: Object (whole curves) and Segments pick on samples along the curves,
+Points on the control points, both faceless clouds picked by screen
+distance. Moves keep their translation in the plane. **Delete** removes
+points, segments (an open curve splits, a closed one opens) or curves;
+**Close** and **Open** change closure; **Snap** snaps points to a grid of
+the tool amount; **Join Ends** moves open ends onto the nearest other end
+within the tool amount. Constraints are not in yet: every move goes through
+one Base entry (`placed_curves`) where a solver would adjust the targets.
 
 - A step is one verb run: the verb, the group expression and its type, the
   parameter values, the connectivity hash the group was selected on, and the

@@ -1,0 +1,166 @@
+## Edit Sketch: the Edit framework's kind for planar sketches, drawn as
+## curves (luce-geocore Sketches). The sketch plane (XY, YZ or ZX, or any
+## origin and normal a step gives) is the set's detail attributes, set by
+## the Plane entries before or between shapes. Shapes (line, polyline, arc,
+## circle, rectangle, spline) are recipe steps on the plane. Levels: Object
+## (whole curves) and Segments pick on samples along the curves, Points on
+## the control points, all faceless clouds picked by screen distance. The
+## gizmo moves them in the plane; tools delete, close and open curves, snap
+## points to a grid (the tool amount is its spacing) and snap open ends onto
+## other ends (the amount is the reach). The plane shows as a light grid.
+## Constraints would go in Sketches' placed_curves, which every move uses.
+from geocore import Mesh, Groups, Domain, GroupType, Sketches, Vector3
+from geometry_data import GeometryData
+from edit_operations import EditStep
+from edit_types import EditKind, EditLevel, EditTool
+from overlay_lines import OverlayLines
+import ui
+
+pub let kind_name = "Edit Sketch"
+
+## Level indices.
+let points_level = 2
+
+pub func shape_names() -> list[str]:
+    return ["Line", "Polyline", "Arc", "Circle", "Rectangle", "Spline"]
+
+pub func primitive_names() -> list[str]:
+    return ["Plane XY", "Plane YZ", "Plane ZX"] + shape_names()
+
+pub func kind() -> EditKind:
+    return EditKind(kind_name, levels(), tool_list(), primitive_names(), start, pick, run, create, guides)
+
+## Object and Segments select samples of whole curves or segments (Group
+## Types primitives and edges tell steps which); Points the control points.
+func levels() -> list[EditLevel]:
+    return [EditLevel("Object", "path-tool", Domain.point, GroupType.faces, curve_piece),
+            EditLevel("Segments", "edge-select", Domain.point, GroupType.edges, segment_piece),
+            EditLevel("Points", "vertex-select", Domain.point, GroupType.points)]
+
+func tool_list() -> list[EditTool]:
+    return [EditTool("Delete", "Sketch Delete", [], numbers_of([])), EditTool("Close", "Sketch Close", [], numbers_of([])),
+            EditTool("Open", "Sketch Open", [], numbers_of([])), EditTool("Snap", "Sketch Snap", [], amount_numbers),
+            EditTool("Join Ends", "Sketch Join", [], amount_numbers)]
+
+## A tool's numbers whatever the amount.
+func numbers_of(values: list[float]) -> func(float) -> list[float]:
+    return func (amount: float) -> list[float]:
+        discard(amount)
+        return values
+
+## The grid spacing or reach: the tool amount (a tenth when not positive).
+func amount_numbers(amount: float) -> list[float]:
+    return [amount if amount > 0.0 else 0.1]
+
+func curve_piece(mesh: Mesh, point: int) -> str!:
+    return f"@curve={int(mesh.attribute_value(mesh.find_attribute("curve", 0), point))}"
+
+func segment_piece(mesh: Mesh, point: int) -> str!:
+    let segment = int(mesh.attribute_value(mesh.find_attribute("segment", 0), point))
+    return f"@segment={segment}" if segment >= 0 else f"{point}"
+
+## The input as it is (its curves edited, other components passing
+## through), in a wrapper of this node's own so its pick cache is this
+## kind's.
+func start(data: GeometryData) -> GeometryData!:
+    let result = GeometryData(geometry = data.geometry)
+    result.warning = data.warning
+    return result
+
+## Points: the control points; Object and Segments: the samples (made once
+## per result), with what the last step created as `.selection`.
+func pick(data: GeometryData, level: int) -> Mesh?!:
+    if level == points_level:
+        return Sketches.pick(data.geometry, 2)
+    return sampled(data)
+
+## The samples as picked; steps read their groups on this same mesh (a
+## selection may be written as `.selection`).
+func sampled(data: GeometryData) -> Mesh!:
+    let shown = samples(data)
+    if data.created != "":
+        return Groups.with_group(shown, ".selection", 0, data.created)
+    return shown
+
+func samples(data: GeometryData) -> Mesh!:
+    if let cached = data.pick_cache:
+        return cached
+    let made = Sketches.pick(data.geometry, 0)
+    data.pick_cache = made
+    return made
+
+## The cloud a step's group names elements of: control points for Group
+## Type points, else the samples.
+func picked_for(step: EditStep, data: GeometryData) -> Mesh!:
+    let shown = Sketches.pick(data.geometry, 2) if step.group_type == 1 else sampled(data)
+    if step.topology != 0 and step.topology != shown.topology_hash():
+        error(ui.invalid, "The sketch changed upstream. Undo the upstream change or clear this node's edits.")
+    return shown
+
+func run(step: EditStep, data: GeometryData) -> GeometryData!:
+    if step.verb.starts_with("Create "):
+        return created(step, data)
+    if Sketches.curve_count(data.geometry) == 0:
+        error(ui.invalid, "Edit Sketch has no curves to edit yet: draw a shape, or connect curves")
+    let shown = picked_for(step, data)
+    let geometry = data.geometry
+    if step.verb == "Transform Components":
+        return GeometryData(geometry = Sketches.moved(geometry, shown, step.group, step.group_type, step.numbers))
+    if step.verb == "Sketch Delete":
+        return GeometryData(geometry = Sketches.without(geometry, shown, step.group, step.group_type))
+    if step.verb == "Sketch Close" or step.verb == "Sketch Open":
+        return GeometryData(geometry = Sketches.with_closure(geometry, shown, step.group, step.group_type, step.verb == "Sketch Close"))
+    if step.verb == "Sketch Snap":
+        return GeometryData(geometry = Sketches.snapped(geometry, shown, step.group, step.group_type, step.numbers[0]))
+    if step.verb == "Sketch Join":
+        return GeometryData(geometry = Sketches.joined(geometry, shown, step.group, step.group_type, step.numbers[0]))
+    error(ui.invalid, f"{step.verb} does not apply to sketches")
+
+## The step for entry `name`. A plane's numbers: its origin and normal
+## (any plane, such as a face's, is a step like these). A shape's: three
+## sizes (line length; polyline, rectangle and spline width and height; arc
+## radius, start and end degrees; circle radius), then its centre in plane
+## coordinates.
+func create(name: str) -> EditStep?!:
+    if name == "Plane XY":
+        return EditStep("Create Plane", "", 0, [0.0, 0.0, 0.0, 0.0, 0.0, 1.0], 0)
+    if name == "Plane YZ":
+        return EditStep("Create Plane", "", 0, [0.0, 0.0, 0.0, 1.0, 0.0, 0.0], 0)
+    if name == "Plane ZX":
+        return EditStep("Create Plane", "", 0, [0.0, 0.0, 0.0, 0.0, 1.0, 0.0], 0)
+    let shape = shape_of(name)
+    if shape < 0:
+        return none
+    let sizes = [[2.0, 0.0, 0.0], [3.0, 1.0, 0.0], [1.0, 0.0, 90.0], [1.0, 0.0, 0.0], [2.0, 1.0, 0.0], [3.0, 1.0, 0.0]][shape]
+    return EditStep("Create " + name, "", 0, sizes + [0.0, 0.0], 0)
+
+## Shape `name`'s number (Sketches.with_shape), or -1.
+func shape_of(name: str) -> int:
+    let names = shape_names()
+    for index in 0..<names.length:
+        if names[index] == name: return index
+    return -1
+
+## `data` with the plane or shape of `step`; a new curve is selected as
+## what the step created.
+func created(step: EditStep, data: GeometryData) -> GeometryData!:
+    let v = step.numbers
+    if step.verb == "Create Plane":
+        if v.length < 6:
+            error(ui.invalid, "a sketch plane needs an origin and a normal")
+        return GeometryData(geometry = Sketches.with_plane(data.geometry, Vector3(v[0], v[1], v[2]), Vector3(v[3], v[4], v[5])))
+    let shape = shape_of(step.verb[7..])
+    if shape < 0:
+        error(ui.invalid, f"Edit Sketch cannot create {step.verb[7..]}")
+    if v.length < 5:
+        error(ui.invalid, f"{step.verb} needs five numbers")
+    let index = Sketches.curve_count(data.geometry)
+    let result = GeometryData(geometry = Sketches.with_shape(data.geometry, shape, v[..<3], v[3], v[4]))
+    result.created = f"@curve={index}"
+    return result
+
+## The sketch plane as a light grid while the node is displayed: ten units
+## across, a line every half unit.
+func guides(data: GeometryData, lines: OverlayLines) -> unit!:
+    let geometry = data.geometry
+    lines.add_grid(Sketches.plane_origin(geometry), Sketches.plane_u(geometry), Sketches.plane_v(geometry), 5.0, 20)

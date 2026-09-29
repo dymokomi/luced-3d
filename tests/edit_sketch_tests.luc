@@ -1,0 +1,71 @@
+## Edit Sketch: a plane step before any curve, shapes as steps selected as
+## their Object, moves kept in the plane, the Points and Segments levels,
+## the kind's tools (Delete opens a closed curve at a segment, Snap, Close),
+## and the plane's guide grid.
+from workspace import Workspace
+from geometry_data import GeometryData
+from geocore import Sketches, Vector3
+from overlay_lines import OverlayLines
+import edit_sketch
+import math
+
+func near(a: float, b: float, tolerance: float = 0.00001):
+    assert(math.abs(a - b) < tolerance)
+
+func data_of(w: Workspace) -> GeometryData!:
+    let node = w.selected() else trap("node")
+    return w.network.evaluate_data(node.id)
+
+pub func edit_sketch_tests() -> unit!:
+    let w = Workspace()
+    w.delete_selected()
+    w.add_node("Edit Sketch", 0.0, 0.0)
+    assert(w.editing())
+    let names: list[str] = []
+    for level in w.levels():
+        names.append(level.name)
+    assert(names == ["Object", "Segments", "Points"])
+    # The XY plane first: a detail attribute, with no curves yet.
+    w.create("Plane XY")
+    let planed = data_of(w)
+    assert(Sketches.curve_count(planed.geometry) == 0 and planed.geometry.has_detail("sketch.plane_normal"))
+    near(Sketches.plane_normal(planed.geometry).z, 1.0)
+    # A rectangle on it, selected as its Object; a move stays in the plane.
+    w.create("Rectangle")
+    assert(Sketches.curve_count(data_of(w).geometry) == 1 and w.component_mode == 0 and w.selected_count() > 4)
+    w.move_selection(Vector3(1.0, 0.0, 5.0))
+    let moved = data_of(w).geometry.bounds()
+    near(moved.maximum.x, 2.0)
+    near(moved.minimum.z, 0.0)
+    near(moved.maximum.z, 0.0)
+    # Points: one control point moves alone.
+    w.set_mode(2)
+    w.choose_component(0, false)
+    assert(w.selected_count() == 1)
+    w.move_selection(Vector3(0.0, -1.2, 0.0))
+    near(data_of(w).geometry.bounds().minimum.y, -1.7)
+    # Snap is the kind's own tool: the point lands on the tool-amount grid.
+    let node = w.selected() else trap("node")
+    node.values[0] = 1.0
+    w.model("Snap")
+    assert(node.edits[-1].verb == "Sketch Snap")
+    near(data_of(w).geometry.bounds().minimum.y, -2.0)
+    # Segments: deleting one opens the rectangle into one open curve.
+    w.set_mode(1)
+    w.choose_component(0, false)
+    assert(w.selected_count() > 1)
+    w.model("Delete")
+    assert(Sketches.curve_count(data_of(w).geometry) == 1)
+    # Close joins it again; the plane survives every step.
+    w.set_mode(0)
+    w.choose_component(0, false)
+    w.model("Close")
+    assert(node.edits[-1].verb == "Sketch Close")
+    near(Sketches.plane_normal(data_of(w).geometry).z, 1.0)
+    # The plane's guide grid: 21 lines each way.
+    let kind = edit_sketch.kind()
+    let guides = kind.guides else trap("guides")
+    let lines = OverlayLines.make()
+    guides(data_of(w), lines)
+    assert(lines.count() == 42)
+    print("PASS Edit Sketch: plane before curves, shapes as steps, moves in the plane, Points and Segments, Snap, Delete, Close, the plane grid")

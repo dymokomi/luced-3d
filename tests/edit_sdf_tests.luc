@@ -1,0 +1,78 @@
+## Edit SDF: primitives are steps selected as their Object on proxies; the
+## gizmo moves them with the selection kept (proxy topology is stable);
+## the kind's own tools (Subtract, Blend, Delete) run through the framework
+## and keep a selection that still fits; other components pass through.
+from workspace import Workspace
+from geometry_data import GeometryData
+from geocore import SdfEdits
+from three import Vector3
+import math
+
+func near(a: float, b: float, tolerance: float = 0.00001):
+    assert(math.abs(a - b) < tolerance)
+
+func data_of(w: Workspace) -> GeometryData!:
+    let node = w.selected() else trap("node")
+    return w.network.evaluate_data(node.id)
+
+func primitives(w: Workspace) -> int!:
+    return SdfEdits.count(data_of(w).geometry)
+
+## The SDF surface's largest x.
+func surface_right(w: Workspace) -> float!:
+    let surface = data_of(w).field_preview() else trap("surface")
+    return surface.bounds().maximum.x
+
+pub func edit_sdf_tests() -> unit!:
+    let w = Workspace()
+    w.delete_selected()
+    w.add_node("Edit SDF", 0.0, 0.0)
+    assert(w.editing() and (w.geometry else trap("empty")).face_count() == 0)
+    assert(w.levels().length == 1 and w.levels()[0].name == "Object")
+    # Primitives: each a step, its proxy selected as the Object.
+    w.create("Sphere")
+    let sphere = (w.geometry else trap("sphere")).face_count()
+    assert(primitives(w) == 1 and sphere > 0 and w.selected_count() == sphere and w.component_mode == 0)
+    w.create("Box")
+    assert(primitives(w) == 2 and w.selected_count() == 6)
+    # The gizmo moves the box: its proxy follows, the selection stays.
+    w.move_selection(Vector3(3.0, 0.0, 0.0))
+    near((w.geometry else trap("moved")).bounds().maximum.x, 4.0)
+    assert(w.selected_count() == 6)
+    near(surface_right(w), 4.0, 0.1)
+    # Subtract is Edit SDF's own tool: the box now carves nothing, so the
+    # surface is the sphere's; the box stays selected.
+    let node = w.selected() else trap("node")
+    w.model("Subtract")
+    assert(node.edits.length == 4 and node.edits[-1].verb == "SDF Mode" and w.selected_count() == 6)
+    near(surface_right(w), 1.0, 0.1)
+    # Back to Add, blended by the tool amount: the seam fills in.
+    w.model("Add")
+    node.values[0] = 0.8
+    w.model("Blend")
+    assert(node.edits[-1].verb == "SDF Blend" and near_ok(node.edits[-1].numbers[0], 0.8))
+    # A drag's frames show a coarse surface; the release asks for the full
+    # one. A primitive not yet shown in full: the quick surface is coarser.
+    let placed = SdfEdits.with_primitive(data_of(w).geometry, 0, [0.5], Vector3(0.0, 3.0, 0.0), 0, 0.0)
+    let fresh = GeometryData(geometry = placed)
+    let quick = (fresh.field_preview(true) else trap("quick")).face_count()
+    assert((fresh.field_preview() else trap("full")).face_count() > quick * 4)
+    # Picking the sphere selects its whole proxy; Delete removes it.
+    w.choose_component(0, false)
+    assert(w.selected_count() == sphere)
+    w.model("Delete")
+    assert(primitives(w) == 1)
+    w.undo()
+    assert(primitives(w) == 2)
+    # Other components pass through: a grid below an Edit SDF keeps its mesh.
+    let g = Workspace()
+    g.delete_selected()
+    g.add_node("Grid", 0.0, 0.0)
+    g.add_node("Edit SDF", 0.0, 100.0)
+    g.create("Torus")
+    let data = data_of(g)
+    assert(data.geometry.has_mesh() and SdfEdits.count(data.geometry) == 1)
+    print("PASS Edit SDF: primitives as steps on proxies, moves keeping the selection, Subtract/Add/Blend/Delete through the framework, pass-through")
+
+func near_ok(a: float, b: float) -> bool:
+    return math.abs(a - b) < 0.00001

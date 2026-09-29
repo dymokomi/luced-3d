@@ -124,7 +124,7 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
 - Disabling Transform, an Edit node or Merge passes its first input through.
   Disabling Cube produces empty geometry. Delete/Backspace in Network deletes
   the selected node and disconnects its consumers.
-- Edit tools appear when the selected Edit node (Edit Mesh, Edit CAD) is enabled and displayed.
+- Edit tools appear when the selected Edit node (Edit Mesh, Edit CAD, Edit SDF, Edit Sketch) is enabled and displayed.
   Display it with D before modeling. Incomplete nodes show an error instead of
   stale geometry; connect their inputs or undo the change.
 
