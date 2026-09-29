@@ -3,6 +3,8 @@
 This is a substantial initial operator set, not Houdini or Blender feature parity.
 No placeholder nodes are listed: every registered node evaluates geometry.
 
+![Cube → AttributeRandomize → Bevel → Edit, with an inset and extruded face](preview_modeling.png)
+
 ## Forty-two geometry nodes
 
 | Family | Nodes |
@@ -60,8 +62,8 @@ detail value wins. Promotion averages contributing floating values; integer
 promotion chooses the first contributor. Original-domain attributes are retained.
 
 `Cd` and `uv` are consumed by rendering with corner > point > primitive > detail
-precedence. Stored `N` is inspectable metadata; shading currently uses geometric
-face normals. Generic numeric vector attributes are not automatically transformed
+precedence. Shaded display consumes corner `N` when present (CAD tessellation
+writes analytic normals); Flat uses face normals. Generic numeric vector attributes are not automatically transformed
 as directions/normals. UVProject is planar XZ projection, not UV unwrapping.
 
 The Geometry Spreadsheet is virtualized, horizontally/vertically scrollable,
@@ -69,9 +71,24 @@ sortable, filterable and pinnable. It displays selected-node geometry separately
 from the display flag. It is an inspector/selection surface, not a direct cell
 editor; modify attributes with nodes.
 
+## Operator fidelity
+
+Houdini's [Subdivide](https://www.sidefx.com/docs/houdini/nodes/sop/subdivide.html),
+[Fuse](https://www.sidefx.com/docs/houdini/nodes/sop/fuse.html),
+[PolyBevel](https://www.sidefx.com/docs/houdini/nodes/sop/polybevel.html) and
+[Smooth](https://www.sidefx.com/docs/houdini/nodes/sop/smooth.html) are the
+references for these operators, and each is broader than ours: Subdivide
+motivated separate topology/position handling and linear attribute interpolation;
+Fuse shows that merging points needs explicit attribute ownership (ours keeps the
+first representative, and Clean is separate); PolyBevel covers selected edges,
+constant distance, segments and corners, where ours is a closed-mesh fractional
+chamfer; Smooth has more controls than our one-step neighbor relaxation. The
+limits above document these differences rather than claiming SOP equivalence.
+Fields should arrive as a deliberate type-system addition, not ad-hoc
+expressions inside widgets.
+
 ## Remaining modeling milestones
 
 Selected-edge bevel and fillets, knife/loop cuts, multi-edge dissolve, bridge
 loops, robust booleans, remeshing, UV unwrap, instancing, general fields, multi-node
-selection, wire insertion and subnets remain future work. Project persistence is
-also not implemented: this is still an experimental session-based editor.
+selection, wire insertion and subnets remain future work.

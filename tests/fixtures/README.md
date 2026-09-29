@@ -1,8 +1,6 @@
-# Import fixtures
+# Editor fixtures
 
-`triangle.obj` is an original minimal fixture.
-
-`blender_279_default_7400_binary.fbx` comes from
-https://github.com/ufbx/ufbx/blob/v0.20.0/data/blender_279_default_7400_binary.fbx
-under the accompanying UFBX-LICENSE.txt (MIT alternative). It verifies a real
-binary FBX mesh with the Base reader. No ufbx implementation is linked or shipped.
+`triangle.obj`, `plane.step`, `cylinder.step` and `assembly.step` are original
+minimal fixtures for the File node, worker, cache and Group tests. The format
+packages keep their own fixtures (FBX: luce-fbx, which carries the ufbx Blender
+sample and its license; STEP: luce-step).

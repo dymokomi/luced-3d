@@ -13,45 +13,31 @@ Use the current installed Luce toolchain and sibling checkouts. `luc build --rel
 creates `build/Luced 3D.app` on macOS. `luc run -- --smoke` renders three frames
 and exits. Runtime code is Luce for the editor and Luce Base for its libraries.
 
-For large-file performance, use the optimized build above. The latest
-[engine audit](docs/ENGINE_AUDIT_2026-09-27.md) records the retained Metal/Vulkan
-geometry path, OBJ crash fix, camera surface comparisons, large-car tests and
-remaining STEP/tessellation limitations. No full-CAD or cross-platform performance
-parity is implied by the current subset.
+For large files, use the optimized build above. Current timings and the
+caching design are in [PERFORMANCE.md](docs/PERFORMANCE.md).
 
-The [trim-grid follow-up](docs/CAD_TRIM_GRID_2026-09-27.md) records cross-patch
-row continuation, UV cell clipping, final camera wireframes and measured
-quality/performance tradeoffs. It is not a universal all-quad CAD mesher.
-The [seam-flow follow-up](docs/CAD_SEAM_FLOW_2026-09-27.md) separates hard-edge
-stitching from interior row flow, with native wireframe captures and regression
-results for G0 creases and incompatible smooth trims.
-The [endpoint and layout correction](docs/CAD_ENDPOINT_LAYOUT_2026-09-27.md)
-supersedes the later phase-mismatch workaround: it fixes erroneous spline-end
-wrapping, reconciles mapped/clipped rows together, and records four new native
-camera close-ups plus topology and surface-distance checks.
-The [affine rail checkpoint](docs/CAD_IMPORT_UNCERTAINTY_RAILS_2026-09-28.md),
-[notched cut-chart correction](docs/CAD_NOTCHED_CUT_OWNERSHIP_2026-09-28.md)
-and [physical curved-row admission](docs/CAD_CURVED_FLOW_ADMISSION_2026-09-28.md)
-record the latest local engine changes, matched large native captures,
-native/C regressions and the remaining crowded rows and import blockers.
-The [circular endpoint checkpoint](docs/CAD_CIRCULAR_ENDPOINTS_2026-09-28.md)
-adds a complete, watertight Camera 2 cook with an explicit File tolerance of
-0.02; its original tolerance failure and remaining density issues are documented.
-The [mapped-count feasibility correction](docs/CAD_COUNT_FEASIBILITY_2026-09-28.md)
-stops a proved cyclic constraint, reducing Camera 2 polygons by 20.9% while
-preserving closed topology; it includes matched captures and remaining defects.
-The [wire-depth correction](docs/CAD_WIRE_DEPTH_2026-09-28.md) fixes broken
-coplanar wire overlays with slope-aware Metal/Vulkan fill depth, preserving
-actual mesh edges and checking foreground occlusion with real GPU pixels.
-The [lazy query-index checkpoint](docs/CAD_LAZY_QUERY_INDEX_2026-09-28.md)
-removes repeated spatial-index builds from unqueried intermediate meshes, with
-concurrent-reader and allocation-failure checks and unchanged patch diagnostics.
-The [local dissolve checkpoint](docs/CAD_LOCAL_DISSOLVES_2026-09-28.md)
-removes repeated whole-patch rebuilds during optional trim-sliver cleanup,
-preserving the existing merge decisions and display surface.
-The [spherical chart-fit checkpoint](docs/CAD_SPHERICAL_CAP_FIT_2026-09-28.md)
-gets Car 2 through a full cook at an explicit File tolerance of 0.000025;
-the report also records its substantial remaining tire/fold and density defects.
+## Documentation
+
+- [DESIGN.md](docs/DESIGN.md): module boundaries, background computation and
+  result caching, Edit recipes and undo, gizmos, viewport rendering, imports.
+- [MODELING.md](docs/MODELING.md): the node set, Edit tools, attribute contracts
+  and limits.
+- [CAD_TESSELLATION.md](docs/CAD_TESSELLATION.md): STEP to polygons: pipeline,
+  invariants, heuristics, tolerances, probing tools and known limitations.
+- [PERFORMANCE.md](docs/PERFORMANCE.md): current numbers, what makes them fast,
+  how to measure and open work.
+- [GROUPS.md](docs/GROUPS.md): imported STEP hierarchy and Blast.
+- [OUTLINER.md](docs/OUTLINER.md): output rules, Groups and nested networks.
+- [PROJECTS.md](docs/PROJECTS.md): the project schema and UI persistence.
+
+Related packages: CAD modeling and tessellation live in
+[luce-cad](https://github.com/dymokomi/luce-cad) (its `tessellation` modules
+hold NURBS evaluation and trim/grid meshing, formerly luce-tesselator), geometry
+and rendering in [luce-3d](https://github.com/dymokomi/luce-3d), and the formats
+in [luce-step](https://github.com/dymokomi/luce-step),
+[luce-obj](https://github.com/dymokomi/luce-obj) and
+[luce-fbx](https://github.com/dymokomi/luce-fbx). Each format owns its read and
+write; the OBJ writer is `Obj.write` in luce-obj.
 
 ![Procedural modeling with shared LuciaOS SVG icons](docs/preview_shared_icons.png)
 
@@ -108,11 +94,9 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   adds **STEP tolerance / 0 = file**: zero uses the source uncertainty; a positive
   value overrides it in source units. This per-node setting is saved in projects,
   supports undo, and reloads the analytic model off-main when changed. OBJ and FBX
-  do not show this setting. It is separate from tessellation density. See the precise
-  [import contracts and viewport research](docs/VIEWPORT-AND-IMPORTS.md).
-  Shared-edge CAD tessellation now supports planar holes, circular bands and
-  ruled spline faces, with quads where suitable; see the
-  [STEP validation and research notes](docs/CAD_TESSELLATION.md).
+  do not show this setting. It is separate from tessellation density. See the
+  [import contracts](docs/DESIGN.md#imports) and the
+  [CAD tessellation reference](docs/CAD_TESSELLATION.md).
 - Tessellate's **Target edge length / 0 = off** refines boundaries and inserts
   interior grids. Smaller positive values give denser geometry; quads are used
   where suitable. Meshes include corner normals and STEP face colors as `Cd`.
@@ -171,14 +155,15 @@ The graph has stable node IDs, geometry ports, shared cached results, downstream
 invalidation and demand-driven evaluation of exposed outputs or preview. Edit nodes
 store ordered operations against immutable mesh snapshots. A 64-bit topology
 hash guard rejects incompatible upstream changes instead of applying edits to
-wrong IDs. Results are cached by content stamp (docs/COMPUTE-AND-GIZMOS.md).
+wrong IDs. Results are cached by content stamp ([design](docs/DESIGN.md#background-computation)).
 Undo covers graph changes, nested deletion, parameters, Out/visibility/preview/bypass, selections and modeling;
 history retains 64 transactions.
 
 Geometry storage, transforms, merge, triangulation, ray intersections and region
-extrusion live in `luce-3d`'s `PolygonMesh`. Editor state, graph evaluation,
-commands and tools stay in this project. Rendering uses `luce-gpu`; geometry
-preparation is still on the CPU.
+extrusion live in `luce-3d`'s `PolygonMesh`; luce-3d has no UI dependency.
+Editor state, graph evaluation, commands, tools and the `SceneView` viewport
+widget (`src/scene_view.lucb`) stay in this project. Rendering uses `luce-gpu`
+with retained geometry buffers; first-draw preparation is still on the CPU.
 
 This is an experimental modeling foundation. Extrusion currently operates on
 face regions with a boundary, not isolated vertices/edges or an entire closed
@@ -201,15 +186,18 @@ python3 tools/profile.py native      # native orbit frame intervals
 Tests cover topology and concave triangulation, region extrusion, ray picking,
 branching DAGs, invalid links, caching, bypass, topology guards, transactions,
 Tab search, actual wire and parameter gestures, face picking, extrusion,
-translation handles and resized UI rendering.
+translation handles, File/Tessellate and background cooking, and resized UI
+rendering. `python3 tests/run.py --backend c` runs the same suite through the C
+backend. CAD-only tessellation regressions live in luce-cad (`./test.sh` there);
+format tests live in luce-step, luce-obj and luce-fbx.
 
 See [DESIGN.md](docs/DESIGN.md) for module boundaries and architectural references.
-See [PERFORMANCE.md](docs/PERFORMANCE.md) for measured timings and shared-library proposals.
+See [PERFORMANCE.md](docs/PERFORMANCE.md) for measured timings and how to reproduce them.
 
 ## Licenses
 
 Code: MIT OR Apache-2.0. Rounded icons by
 [Dy Mokomi / luciaos-assets](https://github.com/dymokomi/luciaos-assets),
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), including new modeling
-and shading glyphs contributed in the same style. Third-party test fixture
-attribution is in `tests/fixtures/README.md`; Desktop CAD models are not included.
+and shading glyphs contributed in the same style. The test fixtures are original
+(`tests/fixtures/README.md`); Desktop CAD models are not included.

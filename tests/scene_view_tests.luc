@@ -1,0 +1,68 @@
+## The SceneView widget (moved here from luce-3d's former three_ui export):
+## composition inside a luce-ui tree, and a renderer closed from inside its
+## own render while the widget draws it.
+from three import Geometry, Vertex, Bounds, Vector3, Color, Mesh, Scene, Renderer, PerspectiveCamera, SphereGeometry, MeshLambertMaterial, AmbientLight, DirectionalLight
+from scene_view import SceneView
+from ui import Application
+from gpu import Frame
+import window
+
+## A triangle that closes its renderer the next time it is visited.
+class Closing: Geometry:
+    var renderer: Renderer? = none
+    var close_renderer: bool = false
+
+    pub func vertex_count(self) -> int:
+        return 3
+
+    pub func index_count(self) -> int:
+        return 3
+
+    pub func vertex(self, index: int) -> Vertex!:
+        if self.close_renderer:
+            self.close_renderer = false
+            let renderer = self.renderer else trap("missing renderer")
+            renderer.close()
+        if index == 0:
+            return Vertex(Vector3(-1.0, -1.0, 0.0), Vector3(0.0, 0.0, 1.0))
+        if index == 1:
+            return Vertex(Vector3(1.0, -1.0, 0.0), Vector3(0.0, 0.0, 1.0))
+        return Vertex(Vector3(0.0, 1.0, 0.0), Vector3(0.0, 0.0, 1.0))
+
+    pub func index(self, offset: int) -> int!:
+        return offset
+
+    pub func bounds(self) -> Bounds:
+        return Bounds(Vector3(-1.0, -1.0, 0.0), Vector3(1.0, 1.0, 0.0))
+
+pub func scene_view_tests() -> unit!:
+    let frame = Frame(window.Size(200.0, 160.0, 200.0, 160.0, 1.0))
+    let target = frame.target()
+    # Composition: the widget renders its own region and leaves the camera's aspect alone.
+    let scene = Scene()
+    scene.add(Mesh(SphereGeometry(1.0, 16, 8), MeshLambertMaterial(Color(0.1, 0.4, 1.0))))
+    scene.add(AmbientLight(intensity = 0.2))
+    scene.add(DirectionalLight(intensity = 0.8))
+    let camera = PerspectiveCamera(50.0, 1.0, 0.1, 100.0)
+    let renderer = Renderer()
+    let view = SceneView(scene, camera, renderer, width = 80.0, height = 60.0)
+    Application(view).render(target)
+    assert(camera.aspect() == 1.0)
+    # A geometry closing the renderer mid-render: the binding keeps the native
+    # storage alive until the draw returns, then later draws fail cleanly.
+    let closing = Closing()
+    let doomed = Renderer()
+    closing.renderer = doomed
+    let small = Scene()
+    small.add(Mesh(closing, MeshLambertMaterial(Color(0.0, 0.0, 1.0))))
+    let app = Application(SceneView(small, PerspectiveCamera(), doomed))
+    closing.close_renderer = true
+    app.render(target)
+    assert(doomed.is_closed())
+    var rejected = false
+    app.render(target) catch failure:
+        rejected = true
+    assert(rejected)
+    closing.renderer = none
+    frame.close()
+    print("PASS SceneView composition and deferred renderer close")

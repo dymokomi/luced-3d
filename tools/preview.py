@@ -65,6 +65,8 @@ with tempfile.TemporaryDirectory(prefix="luced-3d-preview-") as temporary:
     png = b"\x89PNG\r\n\x1a\n"
     png += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
     png += chunk(b"IDAT", zlib.compress(rows, 9)) + chunk(b"IEND", b"")
-    output = arguments.output or ROOT / (f"docs/preview_{arguments.scene}.png" if arguments.scene != "default" else "docs/preview.png")
+    # Captures go to build/; copy a hero image into docs/ by hand when a doc needs it.
+    output = arguments.output or ROOT / (f"build/preview_{arguments.scene}.png" if arguments.scene != "default" else "build/preview.png")
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(png)
     print(f"{output} ({width} × {height} actual pixels)")

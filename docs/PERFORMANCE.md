@@ -1,134 +1,111 @@
-# Performance investigation — 2026-09-26
+# Performance
 
-**Latest:** [large-file engine audit](ENGINE_AUDIT_2026-09-27.md) documents the
-retained GPU path, 171.5 → 0.48 ms recording comparison, large OBJ imports and
-remaining bottlenecks. The entries below are historical; their CPU-projection
-and “GPU buffers remain future work” statements no longer describe device frames.
+Current interactive numbers, the caching design behind them, how to measure,
+and the open work. Numbers are local observations on the development Mac with
+optimized native builds, not controlled cross-platform benchmarks. CPU timings
+are not GPU completion or input-to-photon latency.
 
-## Update 2026-09-27: camera model and background compute
+## Current numbers
 
-The 2,710-surface camera fixture's CPU full-UI recording fell from **468.93 ms**
-to **19.68 ms** at `--opt 0`, then measured **14.25 ms** at `--opt 2`.
-Run `LUCE_PROFILE_OPT=2 python3 tools/profile.py camera /path/to/camera.step`.
-These are local 100-frame averages after 20 warmups, not GPU timings or
-input-to-photon latency. They do not establish 120 Hz performance.
+Fixture: `camera.step` tessellated at 16 divisions, 707k points and 655k faces.
 
-The renderer now caches immutable world-space positions and lighting, gathers
-active lights once, and invalidates on scene epoch changes. Native retained wire
-batches eliminate per-frame Luce-to-Base endpoint copies. Camera projection and
-frame recording remain CPU work. No vsync or shared UI change was made.
-The GPU canvas now has an opt-in larger frame budget: luce-3d requests up to
-8,388,608 vertices; ordinary UI frames retain the 1,048,576 default. Allocation
-still grows on demand. This removes the camera's frame rejection, not the cost
-of expanding indexed geometry into triangles.
-Retained indexed GPU geometry and camera uniforms remain the next large gain.
+| Action | Time |
+| --- | ---: |
+| Edit-mode hover | 1.2 ms |
+| Shift-click with 1,000 faces selected | 2.8 ms |
+| Move | 0.3 ms UI + 1.2 s worker |
+| Gizmo drag step | 0.2 ms UI + 0.4 s worker |
+| Undo | 12–13 ms |
+| Node select | under 1 ms |
+| Tessellate 16 → 8 divisions | 4.5 s |
+| First draw of a changed mesh (CPU prep) | ~1.8 s — open |
+| File-node preview | 8.5 s — open |
+| Tessellate (16 divisions) | 7.7 s — open |
 
-Node computation, CAD display meshing and overlay preparation now run on a worker;
-the UI retains the old scene and displays per-node progress. The complete camera
-at 16 divisions passes a closed-manifold audit and native background-compute
-viewport capture. See [compute architecture](COMPUTE-AND-GIZMOS.md).
+Worker times run off the UI thread; the previous scene stays visible and
+interactive while they cook.
 
-Historical measurements below describe earlier implementations.
+## What makes it fast
 
-## Update 2026-09-27: depth-tested wires
+- **Nodes cache by content stamp.** Every node gets a 64-bit stamp of what its
+  cook reads (kind, bypass, parameters, texts, Edit recipe keys, file epoch and
+  input stamps). Names, positions, display/output flags, visibility, selection
+  and the Edit tool amount are not in it, so renames, visibility toggles,
+  selection and undo/redo to an earlier state never recook: they hit the
+  worker's stamp-keyed result store (LRU, a quarter of physical memory, pinning
+  the displayed and selected stamps and their inputs).
+- **Delta requests.** The UI sends node bodies only when the worker's copy is
+  stale, and each Edit element list once by content key. Only the newest queued
+  request is cooked; a still-wanted cook is never cancelled.
+- **Incremental Edit.** An Edit node applies only the recipes after its longest
+  stored prefix; a gizmo drag previews by applying one recipe per pointer move.
+  Recipes guard their input with the mesh's 64-bit topology hash instead of
+  serializing connectivity.
+- **Position edits share topology.** Move and drag create meshes that share the
+  input's topology and display triangles; only positions change.
+- **Shared storage across threads.** A published mesh is a new owner of the
+  worker's immutable storage and query index (atomic owner counts), not a copy.
+  Meshes are published by content key, and a key the UI still holds is
+  republished with no work.
+- **Renderer keeps prepared data per geometry.** Unchanged objects survive scene
+  changes; display-mode and wire toggles never evaluate the DAG. Geometry lives in
+  retained GPU buffers; camera motion updates a small uniform block per batch.
+- **Edit overlays in Base.** Retained wire, point and selection batches;
+  picking uses the retained screen projection plus one confirming ray, and the
+  query BVH is built lazily and warmed on the worker.
+- **Process-level source caches.** Parsed files (path, size, mtime, content hash,
+  tolerance) and tessellations (parsed model and options) are reused on reload.
+- **CAD.** Face jobs run on four native workers; intermediate CAD meshes skip
+  query-index construction; sliver dissolves update a native workspace instead
+  of rebuilding the patch per edit.
 
-The same dense fixture now records the full UI in **9.49 ms in Edit mode**
-(9.54 ms with grid hidden), versus the earlier 48.23/43.97 ms. Object mode is
-6.56 ms; face picking 0.004–0.008 ms. These use the same 100-sample/20-warmup CPU
-harness, not GPU timestamps or input-to-photon measurements. The comparison is
-indicative local data, not a controlled cross-platform benchmark.
+See [DESIGN.md](DESIGN.md#background-computation) for the full design.
 
-Per-edge midpoint ray tests and whole-mesh projection were removed from face-mode
-drawing. Native homogeneous pixel-width wires use scene depth; ray tests remain
-for picking. This fixes partial-edge occlusion and perspective grid thickness.
-See [viewport research](VIEWPORT-AND-IMPORTS.md) for Blender findings and GPU proposals.
+## How to measure
 
-The measurements and dense-orbit warning below describe the earlier baseline.
+Always measure optimized builds (`--opt 2`, or `luc build --release` for the app);
+debug builds are several times slower and not representative.
 
-## Measurements
+```sh
+# CPU recording of the full UI (100 samples after 20 warm-ups) on a model
+LUCE_PROFILE_OPT=2 python3 tools/profile.py camera /path/camera.step
+LUCE_PROFILE_OPT=2 python3 tools/profile.py mesh /path/camera.step wire
+# ...recording through the GPU recorder, or native orbit callback intervals
+LUCE_PROFILE_OPT=2 python3 tools/profile.py mesh /path/camera.step wire gpu
+LUCE_PROFILE_OPT=2 python3 tools/profile.py mesh /path/camera.step wire native
+# Small built-in scenes: cube, Edit/extrusion, grid hidden; or a dense sphere
+LUCE_PROFILE_OPT=2 python3 tools/profile.py
+LUCE_PROFILE_OPT=2 python3 tools/profile.py dense
+# Tessellation time and counts
+python3 tools/cad_probe.py /path/camera.step --opt 2
+# Background cook through the real app, with 300 orbit callbacks after warm-up
+python3 tools/preview.py --scene cad_wire --file /path/camera.step --background --opt 2 --orbit
+```
 
-`python3 tools/profile.py` uses a monotonic nanosecond clock, reports milliseconds,
-warms 20 iterations and averages 100. Native compilation uses the same `--opt 0`
-as the current test harness. Full UI recording includes Frame creation, drawing
-and closure at 1400×900 logical pixels. It does NOT submit work to a GPU.
-These small-scene measurements do not establish dense-mesh performance.
+`tools/profile.py` builds `tools/profile.luc` with the test harness's
+`prepare`/`build` and times phases with `tools/timing.lucb` (monotonic
+nanosecond clock, reported in milliseconds). `mesh` tessellates at 16 divisions;
+`camera` shows the analytic preview; `obj` loads an OBJ. `native` measures
+callback-to-callback intervals in a real window, which include the event loop and
+presentation.
 
-| Phase | Before grid batching | After grid batching |
-| --- | ---: | ---: |
-| Cube, CPU full UI recording | 0.836 ms | 0.539 ms |
-| Edit/extrusion, CPU full UI recording | 0.996 ms | 0.696 ms |
-| Edit, grid hidden | 0.730 ms | 0.662 ms |
+The Edit-mode and worker numbers above come from driving the real `Workspace`,
+compute worker and `app.render` on the camera fixture and timing each call on
+the UI thread and the worker separately. Report UI and worker time separately,
+warm up first, and note concurrent load; single runs are indicative only.
 
-Camera update: approximately 0.0005–0.0008 ms. Face ray-picking: approximately
-0.002–0.003 ms on this tiny scene. Differences in the grid-hidden control show
-run-to-run noise: these are not statistically controlled laboratory results.
+## Open work
 
-Grid changed from 42 separate box meshes / 504 triangles to 3 material batches /
-84 triangles, constructed once. No shared UI/GPU changes were needed.
-
-`python3 tools/profile.py native` drives orbit through a 1 ms timer in a real
-Metal window, excludes 30 warm-up intervals and observes 300 subsequent intervals.
-Observed mean 16.665 ms, worst 18.507 ms. This measures callback-to-callback pacing
-including the application loop and presentation; it is NOT GPU timestamp timing,
-display scanout measurement, input-to-photon latency, or proof of 120 Hz readiness.
-Do not equate nanosecond clock units with nanosecond measurement accuracy.
-
-## Shared-library proposals (not applied)
-
-1. **luce-ui modifier/capture correctness.** `layout/tree.lucb`'s special secondary
-   press route constructs an Event without modifiers. Preserve all pointer metadata
-   and route right-drag movement to the secondary holder, including outside its
-   bounds. The editor currently arms right drag and confirms Alt on its first move.
-   This supports dolly without changing the shared package, but is not a substitute
-   for proper secondary capture across pane boundaries.
-2. **Instrument luce-gpu presentation phases.** `gpu/metal/surface.lucb` explicitly
-   sets `setDisplaySyncEnabled:false`, despite a nearby comment saying synchronized.
-   Every `metal_render` first calls `metal_surface_wait` (`waitUntilCompleted`), then
-   acquires `nextDrawable`, records and commits. Measure those phases separately,
-   together with command-buffer GPU start/end timestamps, before attributing the
-   observed 60 Hz pacing to any one of them. CPU recording is not the current
-   small-scene frame-interval bottleneck.
-3. **Bounded frames in flight.** Evaluate a two-slot resource ring/completion
-   callbacks instead of an unconditional main-thread wait. Audit ownership and
-   mutable upload buffers first; never remove the wait without fixing lifetimes.
-   Prefer newest camera state over queuing stale frames. Compare latency as well as
-   throughput; deeper queues can make mouse interaction worse.
-4. **Explicit presentation policy.** Offer low-latency interactive and synchronized
-   animation policies, selected per surface. Compare 60/120 Hz displays using
-   p50/p95/p99 frame intervals, missed refreshes, and input-to-submit age. Do not
-   globally re-enable vsync to hide irregular pacing.
-5. **luce-ui event budget / render invalidation.** The loop processes up to 512
-   events before rendering. Profile long bursts; consider a time budget and
-   coalescing consecutive hover/camera moves only (never drawing samples, presses,
-   releases or modifier boundaries). Separate view redraw from inspector/graph
-   refresh and cache unchanged panel rendering where safe.
-
-## Next engine work
-
-The current renderer CPU-transforms indexed vertices and illuminates them every
-frame. Polygon picking scans triangles; edit overlays perform visibility rays for
-points/edges. Dense meshes need a cached BVH, projected selection caches, retained
-GPU vertex/index buffers and GPU transforms. Benchmark 1k/10k/100k triangles before
-choosing thresholds. Current component overlays can become quadratic; the small
-cube timings must not be presented as a scalable engine benchmark.
-
-No changes were made to luce-ui, luce-gpu or luced-2d during this investigation.
-# Modeling expansion measurements
-
-The expanded engine now builds an immutable triangle BVH for picking/occlusion.
-Viewport projections and visibility are cached across pointer-only redraws.
-Edit edges, points and selected triangles use batched Painter meshes; individual
-draws previously exceeded the canvas's 4096-draw limit on the dense fixture.
-No shared luce-ui or luce-gpu changes were required for that fix.
-
-`python3 tools/profile.py dense`, current debug/test toolchain, 100 samples after
-20 warmups, 1400×900 logical UI: sphere with 1,986 points, 2,048 faces and 3,968
-triangles. Object-mode full CPU UI recording averaged 7.43 ms; Edit averaged
-48.23 ms (43.97 ms without grid), while face picking averaged 0.009–0.010 ms.
-These are CPU recordings, not GPU timings or input-to-photon latency. Concurrent
-development/build load makes them diagnostic, not a controlled benchmark.
-
-**Dense Edit orbit is not yet sufficiently smooth.** The next engine work should
-batch projection/occlusion queries across the native boundary and retain overlay
-buffers; avoid interpreting the BVH improvement as a solved frame-time problem.
-The existing shared-library proposals below remain proposals, not applied fixes.
+- **First draw of a changed mesh** spends ~1.8 s of main-thread CPU in
+  `Renderer.prepare` (reading expanded vertices, transforming normals, computing
+  flat/smooth colors). Indexed GPU buffers and shader lighting should replace it.
+- **File-node preview (8.5 s)** of a large STEP file: make per-patch preview lazy
+  or parallel.
+- **Tessellation (7.7 s)**: parallelize trim layout planning and surface-trim
+  projection (planning is a serial prepass today); inline the vector math.
+- Large models: `car2.step` (4.1M polygons) takes minutes from File to viewport;
+  imports are whole-file, not streaming.
+- Vulkan is cross-compiled and linked but not runtime-measured here.
+- Presentation: measure Metal/Vulkan wait, drawable acquisition and GPU time
+  separately before changing frames-in-flight or vsync policy; consider a time
+  budget and coalescing of hover/camera events in the UI loop.

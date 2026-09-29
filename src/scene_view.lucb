@@ -1,0 +1,105 @@
+## The luce-ui widget hosting a luce-3d scene: a Viewport whose render
+## callback hands its region to the renderer. luce-3d itself has no UI
+## dependency; this adapter belongs to the application.
+import gpu
+import interop
+import memory
+import ownership
+from ui import Widget, Viewport, Layout, Size, Constraints, Event, viewport_type
+from three import Object3D, PerspectiveCamera, Renderer, renderer_type
+
+func failed[T](code: ErrorCode, message: str) -> interop.Outcome[T]:
+    let copied = interop.copy_text(message) catch exhausted:
+        return interop.Outcome[T].failure(memory.exhausted, interop.Owned[str]("out of memory copying a 3D error"))
+    return interop.Outcome[T].failure(code, copied)
+
+struct RenderBinding:
+    let scene: interop.Interface[Object3D]
+    let camera: interop.Reference[PerspectiveCamera]
+    let renderer: interop.Reference[Renderer]
+
+    func init(scene: interop.Interface[Object3D], camera: interop.Reference[PerspectiveCamera], renderer: interop.Reference[Renderer]):
+        self.scene = scene.clone()
+        self.camera = camera.clone()
+        self.renderer = renderer.clone()
+
+    mutating func draw(target: interop.View[gpu.RenderTarget]) -> interop.Outcome[unit]:
+        let renderer = self.renderer.get() catch failure:
+            return failed[unit](failure.code, failure.message)
+        # A custom geometry/material may close its renderer while being visited.
+        # Keep the native storage alive until this entire invocation has returned.
+        self.renderer.enter()
+        defer self.renderer.leave()
+        return renderer.render(self.scene, self.camera, target, fit_aspect = true)
+
+    mutating func close():
+        self.scene.release()
+        self.camera.release()
+        self.renderer.release()
+
+    func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        self.scene.trace(visit, context)
+        self.camera.trace(visit, context)
+        self.renderer.trace(visit, context)
+
+let render_binding_type: interop.Type[RenderBinding] = interop.Type[RenderBinding]("scene viewport binding", RenderBinding.close, RenderBinding.trace, main_thread = true)
+
+pub struct SceneView: Widget:
+    let viewport: interop.Reference[Viewport]
+    let binding: interop.Reference[RenderBinding]
+    let connection: interop.Reference[interop.Connection]
+
+    pub func init(scene: interop.Interface[Object3D], camera: interop.Reference[PerspectiveCamera],
+                  renderer: interop.Reference[Renderer]? = none, width: f64 = 320.0, height: f64 = 240.0) -> !:
+        let viewport = try interop.Reference[Viewport].adopt(new Viewport(width, height) in memory.heap, viewport_type, memory.heap)
+        errdefer viewport.release()
+        let selected = try select_renderer(renderer)
+        defer selected.release()
+        let binding = try interop.Reference[RenderBinding].adopt(new RenderBinding(scene, camera, selected) in memory.heap, render_binding_type, memory.heap)
+        errdefer binding.release()
+        let callback = try interop.Callback[interop.View[gpu.RenderTarget], unit].bind_mutating(binding, RenderBinding.draw)
+        defer callback.release()
+        let connection = try viewport.value().on_render(callback)
+        self.viewport = viewport
+        self.binding = binding
+        self.connection = connection
+
+    pub func scene() -> interop.Interface[Object3D]:
+        return self.binding.value().scene.clone()
+
+    pub func camera() -> interop.Reference[PerspectiveCamera]:
+        return self.binding.value().camera.clone()
+
+    pub func renderer() -> interop.Reference[Renderer]:
+        return self.binding.value().renderer.clone()
+
+    pub func layout() -> interop.Reference[Layout]:
+        return self.viewport.value().layout()
+
+    pub func measure(available: Constraints) -> interop.Outcome[Size]:
+        return self.viewport.value().measure(available)
+
+    pub mutating func draw(target: interop.View[gpu.RenderTarget]) -> interop.Outcome[unit]:
+        return self.viewport.value().draw(target)
+
+    pub mutating func event(event: Event) -> interop.Outcome[unit]:
+        return self.viewport.value().event(event)
+
+    pub mutating func close():
+        self.connection.value().disconnect()
+        self.connection.release()
+        self.viewport.release()
+        self.binding.release()
+
+    func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        self.viewport.trace(visit, context)
+        self.binding.trace(visit, context)
+        self.connection.trace(visit, context)
+
+pub let scene_view_type: interop.Type[SceneView] = interop.Type[SceneView]("SceneView", SceneView.close, SceneView.trace, closeable = true, main_thread = true)
+
+func select_renderer(renderer: interop.Reference[Renderer]?) -> interop.Reference[Renderer]!:
+    if let provided = renderer:
+        discard(try provided.get())
+        return provided.clone()
+    return try interop.Reference[Renderer].adopt(new Renderer() in memory.heap, renderer_type, memory.heap)

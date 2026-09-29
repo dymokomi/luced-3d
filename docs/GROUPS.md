@@ -39,5 +39,9 @@ but does not implement its complete selection-expression language.
 
 Verified by the portable assembly fixture (including transformed colored CAD,
 partial subsets, conversion, wildcard selection, Outliner and async undo), and by
-native camera screenshots `preview_camera_hierarchy.png` and
-`preview_camera_blast.png`. The latter uses File → Blast → Tessellate → Transform.
+native camera captures: the imported hierarchy, and File → Blast → Tessellate →
+Transform.
+
+![Imported camera hierarchy in the Outliner](preview_camera_hierarchy.png)
+
+![Blast isolating part of the camera](preview_camera_blast.png)

@@ -70,4 +70,6 @@ not remove geometry from that realization. CAD is never silently tessellated.
 Tests cover island terminal rules, multiple explicit outputs, hidden rows,
 nested evaluation, transform cache reuse, cross-scope rejection, deletion/undo,
 preview independence, graph/Outliner double-click navigation and collapse.
-`tools/preview.py --scene outliner` captures the native multi-output scene.
+`tools/preview.py --scene outliner` captures the native multi-output scene:
+
+![Multi-output scene with nested Groups in the Outliner](preview_outliner.png)

@@ -1,86 +1,9 @@
-from obj import Obj
-from step import Step
-from fbx import Fbx
-from tesselator import NurbsSurface
-from cad import CadModel
-from three import Vector3
+## The File node imports through the format packages, reloads and undoes.
+## The formats' own decoding tests live in luce-obj, luce-step and luce-fbx.
 from geometry_tests import near
 from workspace import Workspace
 
 pub func import_tests() -> unit!:
-    let large = Obj.load("tests/fixtures/large.obj")
-    assert(large.face_count() == 22000 and large.vertex_count() == 66000)
-    near(large.attribute_value(large.find_attribute("N", 1), 65999, 2), 1.0)
-    let mesh = Obj.decode("v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nf -4/1 -3/2 -2/3 -1/4\n")
-    assert(mesh.point_count() == 4 and mesh.face_count() == 1)
-    let step_mesh = Step.decode("ISO-10303-21;\nHEADER;ENDSEC;DATA;#1=CARTESIAN_POINT('',(0.,0.,0.));#2=CARTESIAN_POINT('',(1.,0.,0.));#3=CARTESIAN_POINT('',(0.,1.,0.));#4=POLY_LOOP('',(#1,#2,#3));#5=FACE_OUTER_BOUND('',#4,.T.);#6=FACE('',(#5));ENDSEC;END-ISO-10303-21;")
-    assert(step_mesh.point_count() == 3 and step_mesh.face_count() == 1)
-    let step_model = Step.decode_model("ISO-10303-21;HEADER;ENDSEC;DATA;#1=CARTESIAN_POINT('',(0.,0.,0.));#2=CARTESIAN_POINT('',(1.,0.,0.));#3=CARTESIAN_POINT('',(0.,1.,0.));#4=POLY_LOOP('',(#1,#2,#3));#5=FACE_OUTER_BOUND('',#4,.T.);#6=FACE('',(#5));ENDSEC;END-ISO-10303-21;")
-    assert(step_model.face_count() == 1 and step_model.tessellate(4).face_count() == 1)
-    let fbx_mesh = Fbx.decode_ascii("; FBX 7.4.0 project file\nObjects: { Geometry: 1, \"Geometry::Triangle\", \"Mesh\" { Vertices: *9 { a: 0,0,0,1,0,0,0,1,0 } PolygonVertexIndex: *3 { a: 0,1,-3 } } }")
-    assert(fbx_mesh.point_count() == 3 and fbx_mesh.face_count() == 1)
-    let binary_fbx = Fbx.load("tests/fixtures/blender_279_default_7400_binary.fbx")
-    assert(binary_fbx.point_count() == 8 and binary_fbx.face_count() == 6)
-    assert(binary_fbx.index_count() == 36)
-    near(binary_fbx.bounds().minimum.x, -1.0)
-    near(binary_fbx.bounds().maximum.x, 1.0)
-    for version in [7400, 7500]:
-        for compressed in [0, 1]:
-            let generated = Fbx.load(f"tests/fixtures/generated_{version}_{compressed}.fbx")
-            assert(generated.point_count() == 3 and generated.face_count() == 1)
-    for name in ["bad_offset", "truncated"]:
-        var failed = false
-        discard(Fbx.load(f"tests/fixtures/generated_{name}.fbx")) catch failure:
-            failed = true
-        assert(failed)
-    near(mesh.attribute_value(mesh.find_attribute("uv", 1), 2, 1), 1.0)
-    var rejected = false
-    discard(Obj.decode("v 0 0 0\nf 0 1 2\n")) catch failure:
-        rejected = true
-    assert(rejected)
-    let patch = NurbsSurface.tessellate([Vector3(), Vector3(0.0, 0.0, 2.0), Vector3(2.0, 0.0, 0.0), Vector3(2.0, 0.0, 2.0)], [1.0, 1.0, 1.0, 1.0], 2, 2, 1, 1, [0.0, 0.0, 1.0, 1.0], [0.0, 0.0, 1.0, 1.0], 2)
-    assert(patch.point_count() == 9 and patch.face_count() == 4)
-    near(patch.point(4).x, 1.0)
-    near(patch.point(4).z, 1.0)
-    let cad = CadModel()
-    cad.add_nurbs([Vector3(), Vector3(0.0, 0.0, 2.0), Vector3(2.0, 0.0, 0.0), Vector3(2.0, 0.0, 2.0)], [1.0, 1.0, 1.0, 1.0], 2, 2, 1, 1, [0.0, 0.0, 1.0, 1.0], [0.0, 0.0, 1.0, 1.0])
-    cad.trim_rectangle(0, 0.25, 0.75, 0.0, 0.5)
-    let trimmed = cad.tessellate(2)
-    assert(cad.face_count() == 1 and trimmed.face_count() == 4)
-    near(trimmed.bounds().minimum.x, 0.5)
-    near(trimmed.bounds().maximum.x, 1.5)
-    near(trimmed.bounds().maximum.z, 1.0)
-    assert(cad.tessellate(4).face_count() == 16 and cad.face_count() == 1)
-    var bad_trim = false
-    cad.trim_rectangle(0, -0.1, 0.75, 0.0, 0.5) catch failure:
-        bad_trim = true
-    assert(bad_trim)
-    near(cad.tessellate(2).bounds().minimum.x, 0.5)
-    var nonplanar = false
-    cad.add_planar([Vector3(), Vector3(1.0, 0.0, 0.0), Vector3(1.0, 1.0, 1.0), Vector3(0.0, 1.0, 0.0)]) catch failure:
-        nonplanar = true
-    assert(nonplanar and cad.face_count() == 1)
-    let points = "#1=CARTESIAN_POINT('',(0.,0.,0.));#2=CARTESIAN_POINT('',(0.,0.,2.));#3=CARTESIAN_POINT('',(2.,0.,0.));#4=CARTESIAN_POINT('',(2.,0.,2.));"
-    let rational = Step.decode("ISO-10303-21;HEADER;ENDSEC;DATA;" + points + "#5=(BOUNDED_SURFACE() B_SPLINE_SURFACE(1,1,((#1,#2),(#3,#4)),.UNSPECIFIED.,.F.,.F.,.F.) B_SPLINE_SURFACE_WITH_KNOTS((2,2),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.) GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_SURFACE(((1.,1.),(1.,1.))) REPRESENTATION_ITEM('') SURFACE());ENDSEC;END-ISO-10303-21;", 2)
-    near(rational.point(4).x, 1.0)
-    near(rational.point(4).z, 1.0)
-    let curved = NurbsSurface.tessellate([Vector3(1.0, 0.0, 0.0), Vector3(1.0, 1.0, 0.0), Vector3(1.0, 0.0, 1.0), Vector3(1.0, 1.0, 1.0), Vector3(0.0, 0.0, 1.0), Vector3(0.0, 1.0, 1.0)], [1.0, 1.0, 0.7071067811865476, 0.7071067811865476, 1.0, 1.0], 3, 2, 2, 1, [0.0, 0.0, 0.0, 1.0, 1.0, 1.0], [0.0, 0.0, 1.0, 1.0], 2)
-    near(curved.point(4).x, 0.7071067811865476)
-    near(curved.point(4).z, 0.7071067811865476)
-    # Local-support evaluation spans large nets and handles both knot endpoints.
-    let net: list[Vector3] = []
-    let weights: list[float] = []
-    let knots: list[float] = [0.0]
-    for u in 0..<65:
-        knots.append(float(u))
-        for v in 0..<2:
-            net.append(Vector3(float(u), float(v), 0.0))
-            weights.append(1.0)
-    knots.append(64.0)
-    for u in [0.0, 12.25, 64.0]:
-        let point = NurbsSurface.at(net, weights, 65, 2, 1, 1, knots, [0.0, 0.0, 1.0, 1.0], u, 0.75)
-        near(point.x, u)
-        near(point.y, 0.75)
     let w = Workspace()
     w.add_node("File", 0.0, 0.0)
     w.set_text(0, "tests/fixtures/triangle.obj")
@@ -94,4 +17,4 @@ pub func import_tests() -> unit!:
     near((w.geometry else trap("scaled file")).bounds().maximum.x, 2.0)
     w.undo()
     near((w.geometry else trap("undo import scale")).bounds().maximum.x, 1.0)
-    print("PASS Base OBJ/FBX, STEP-to-CAD, analytic retention, rectangular trims, rational tessellation and File reload/undo")
+    print("PASS File node import, reload and undo")
