@@ -1,25 +1,34 @@
-## Cached CAD display data: the models' tessellations (kept in the models),
-## their analytic boundaries, normal guides and hulls (control nets, point
-## pairs). Never replaces the DAG's analytic payload.
-from cad import CadModel
+## Cached CAD display data: the models' tessellations (kept in the models)
+## and their overlays (analytic boundaries, control hulls and normal
+## guides), held as luce-cad's Base objects and placed by `matrix`; the
+## overlay points reach the viewport through OverlayLines without passing
+## through Luce. A model that cannot be tessellated shows independent
+## per-face previews instead. Never replaces the DAG's analytic payload.
+from cad import CadModel, CadOverlay, CadPreviewSet
 from cad_geometry import CadGeometry
 from geocore import Mesh
-from three import Vector3, Matrix4
+from three import Matrix4
+from overlay_lines import OverlayLines
 
 pub class CadPreview:
     pub let meshes: list[Mesh]
-    pub let boundaries: list[Vector3]
-    pub let normal_guides: list[Vector3]
-    pub let hull: list[Vector3]
+    ## The models' overlays, and the per-face previews of models that did
+    ## not tessellate, both before `matrix`.
+    let overlays: list[CadOverlay]
+    let fallbacks: list[CadPreviewSet]
+    pub let matrix: Matrix4
     pub var failed_faces: int = 0
     pub var first_error: str = ""
     ## Why some faces do not follow their moved control vertices ("": all do).
     pub var cv_warning: str = ""
+
+    ## The preview of `models`; or `source`'s placed by `matrix` (its meshes
+    ## placed, its overlays shared).
     pub func init(self, models: list[CadModel], source: CadPreview? = none, matrix: Matrix4? = none, progress: func(float) -> unit!? = none) -> unit!:
         self.meshes = []
-        self.boundaries = []
-        self.normal_guides = []
-        self.hull = []
+        self.overlays = []
+        self.fallbacks = []
+        self.matrix = Matrix4()
         if let original = source:
             let placement = matrix else Matrix4()
             self.failed_faces = original.failed_faces
@@ -27,16 +36,9 @@ pub class CadPreview:
             self.cv_warning = original.cv_warning
             for mesh in original.meshes:
                 self.meshes.append(mesh.placed(placement))
-            for point in original.boundaries:
-                self.boundaries.append(placement.transform_point(point))
-            for point in original.hull:
-                self.hull.append(placement.transform_point(point))
-            for at in 0..<original.normal_guides.length // 2:
-                let start = original.normal_guides[at * 2]
-                let delta = original.normal_guides[at * 2 + 1].subtract(start)
-                let p = placement.transform_point(start)
-                self.normal_guides.append(p)
-                self.normal_guides.append(p.add(placement.transform_normal(delta).multiply_scalar(delta.length())))
+            self.overlays = original.overlays
+            self.fallbacks = original.fallbacks
+            self.matrix = placement.multiply(original.matrix)
             return
         # A CAD model shows its tessellation at the Tessellate node's defaults,
         # kept in the model: a Tessellate node with those settings places the
@@ -56,13 +58,7 @@ pub class CadPreview:
             self.meshes.append(mesh)
             if self.cv_warning == "":
                 self.cv_warning = tessellation_warning(mesh)
-            let lines = model.overlay(mesh)
-            for at in 0..<lines.boundary_count():
-                self.boundaries.append(lines.boundary(at))
-            for at in 0..<lines.guide_count():
-                self.normal_guides.append(lines.guide(at))
-            for at in 0..<lines.hull_count():
-                self.hull.append(lines.hull_point(at))
+            self.overlays.append(model.overlay(mesh))
 
     ## Independent per-face previews of `model`, in display batches.
     func append_previews(self, model: CadModel, progress: func(float) -> unit!) -> unit!:
@@ -70,10 +66,26 @@ pub class CadPreview:
             return
         for at in 0..<part.mesh_count():
             self.meshes.append(part.mesh(at))
-        for at in 0..<part.boundary_count():
-            self.boundaries.append(part.boundary(at))
-        for at in 0..<part.guide_count():
-            self.normal_guides.append(part.guide(at))
+        self.fallbacks.append(part)
+
+    ## Part `part` of the overlays (0 boundaries, 1 control hulls, 2 normal
+    ## guides), placed by `matrix` after this preview's own placement, added
+    ## to `lines`.
+    pub func lines(self, part: int, matrix: Matrix4, lines: OverlayLines) -> unit!:
+        let place = matrix.multiply(self.matrix)
+        for overlay in self.overlays:
+            lines.add_cad(overlay, part, place)
+        for previews in self.fallbacks:
+            lines.add_preview(previews, part, place)
+
+    ## Overlay endpoints held (the result store's footprint).
+    pub func point_count(self) -> int:
+        var total = 0
+        for overlay in self.overlays:
+            total += overlay.boundary_count() + overlay.hull_count() + overlay.guide_count()
+        for previews in self.fallbacks:
+            total += previews.boundary_count() + previews.guide_count()
+        return total
 
 ## What a CAD tessellation could not follow: faces left out because their
 ## moved control vertices folded their trims ("" when there were none).

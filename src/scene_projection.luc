@@ -3,6 +3,7 @@ from geometry_data import GeometryData
 import geocore
 from three import Group, Mesh, MeshLambertMaterial, Matrix4, Vector3
 import theme
+from overlay_lines import OverlayLines
 import ui
 
 pub func append_scene(data: GeometryData, parent: Group, depth: int = 0, mode: int = 3) -> int!:
@@ -36,55 +37,40 @@ pub func display_mesh(mesh: geocore.Mesh) -> Mesh!:
     let colored = mesh.find_attribute("Cd", 2) >= 0 or mesh.find_attribute("Cd", 1) >= 0 or mesh.find_attribute("Cd", 0) >= 0 or mesh.find_attribute("Cd", 3) >= 0
     return Mesh.of(mesh, MeshLambertMaterial(theme.grey(255.0 if colored else 180.0)))
 
-## Cache overlays in world space when geometry or display mode changes: CAD
-## boundaries and normal guides. Polygon wires come from the renderer, which
-## draws them from each mesh's GPU arrays.
-pub func append_overlays(data: GeometryData, matrix: Matrix4, wires: list[Vector3], normals: list[Vector3], mode: int, depth: int = 0, polygons: bool = true) -> unit!:
+## Overlays in world space, gathered in Base (OverlayLines): CAD
+## boundaries into `wires`, CAD normal guides and (with `polygons`) a
+## polygon normal guide per face into `normals`. Polygon wires come from the
+## renderer, which draws them from each mesh's GPU arrays.
+pub func append_overlays(data: GeometryData, matrix: Matrix4, wires: OverlayLines, normals: OverlayLines, depth: int = 0, polygons: bool = true) -> unit!:
     if depth > 48:
         error(ui.invalid, "Scene hierarchy exceeds overlay depth budget")
     if data.has_cad():
         let preview = data.preview()
-        for point in preview.boundaries:
-            wires.append(matrix.transform_point(point))
-        for at in 0..<preview.normal_guides.length // 2:
-            let a = preview.normal_guides[at * 2]
-            let delta = preview.normal_guides[at * 2 + 1].subtract(a)
-            let p = matrix.transform_point(a)
-            normals.append(p)
-            normals.append(p.add(matrix.transform_normal(delta).multiply_scalar(delta.length())))
+        preview.lines(0, matrix, wires)
+        preview.lines(2, matrix, normals)
     if let mesh = data.mesh if polygons else none:
-        let length = mesh.bounds().maximum.subtract(mesh.bounds().minimum).length() * 0.015
-        for face in 0..<mesh.face_count():
-            let start = matrix.transform_point(mesh.face_center(face))
-            var n = Vector3()
-            for corner in 0..<mesh.face_size(face):
-                n = n.add(mesh.vertex(mesh.face_offset(face) + corner).normal)
-            n = n.normalized() if n.length() > 0.000000001 else mesh.face_normal(face)
-            normals.append(start)
-            normals.append(start.add(matrix.transform_normal(n).multiply_scalar(length)))
+        normals.add_face_guides(mesh, matrix)
     for index in 0..<data.instance_count():
         if data.instance_visible(index):
-            append_overlays(data.instance(index), matrix.multiply(data.instance_matrix(index)), wires, normals, mode, depth + 1, polygons)
+            append_overlays(data.instance(index), matrix.multiply(data.instance_matrix(index)), wires, normals, depth + 1, polygons)
 
 ## Analytic patch borders stay visible independently of polygon wire overlays.
-pub func append_patch_boundaries(data: GeometryData, matrix: Matrix4, points: list[Vector3]) -> unit!:
+pub func append_patch_boundaries(data: GeometryData, matrix: Matrix4, lines: OverlayLines) -> unit!:
     if data.has_cad():
-        for point in data.preview().boundaries:
-            points.append(matrix.transform_point(point))
+        data.preview().lines(0, matrix, lines)
     for index in 0..<data.instance_count():
         if data.instance_visible(index):
-            append_patch_boundaries(data.instance(index), matrix.multiply(data.instance_matrix(index)), points)
+            append_patch_boundaries(data.instance(index), matrix.multiply(data.instance_matrix(index)), lines)
 
 ## CAD control nets (the hull), as world-space point pairs.
-pub func append_cad_hulls(data: GeometryData, matrix: Matrix4, points: list[Vector3], depth: int = 0) -> unit!:
+pub func append_cad_hulls(data: GeometryData, matrix: Matrix4, lines: OverlayLines, depth: int = 0) -> unit!:
     if depth > 48:
         error(ui.invalid, "Scene hierarchy exceeds overlay depth budget")
     if data.has_cad():
-        for point in data.preview().hull:
-            points.append(matrix.transform_point(point))
+        data.preview().lines(1, matrix, lines)
     for index in 0..<data.instance_count():
         if data.instance_visible(index):
-            append_cad_hulls(data.instance(index), matrix.multiply(data.instance_matrix(index)), points, depth + 1)
+            append_cad_hulls(data.instance(index), matrix.multiply(data.instance_matrix(index)), lines, depth + 1)
 
 ## Transform bounding-box corners, not geometry, when framing an assembly.
 pub func append_bounds(data: GeometryData, matrix: Matrix4, points: list[Vector3], depth: int = 0) -> unit!:
@@ -95,8 +81,12 @@ pub func append_bounds(data: GeometryData, matrix: Matrix4, points: list[Vector3
         for mesh in preview.meshes:
             append_bounds(GeometryData(mesh), matrix, points, depth)
         # Failed preview patches still have visible analytic boundary curves.
-        for point in preview.boundaries:
-            points.append(matrix.transform_point(point))
+        let boundaries = OverlayLines.make()
+        preview.lines(0, matrix, boundaries)
+        if boundaries.count() > 0:
+            let box = boundaries.bounds()
+            points.append(box.minimum)
+            points.append(box.maximum)
     for shown in [data.mesh, data.field_preview()]:
         let mesh = shown else continue
         if mesh.point_count() > 0:

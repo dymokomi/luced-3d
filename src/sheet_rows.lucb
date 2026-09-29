@@ -6,7 +6,7 @@ import interop
 import memory
 import ownership
 from geocore import Mesh
-from geocore_kernel import group_bits_of, Domain, popcount
+from geocore_kernel import group_bits_of, Domain, popcount, Selection, selection_bits, trailing_zeros
 from three import invalid
 
 pub struct SheetRows:
@@ -52,12 +52,6 @@ pub struct SheetRows:
         self.identity = true
         self.total = (usize)count
 
-    pub mutating func assign(rows: const i64[]) -> !:
-        try self.reserve(rows.length)
-        if rows.length > 0: memory.copy(self.order, rows, rows.length)
-        self.identity = false
-        self.total = rows.length
-
     ## The rows a group expression names (luce-geocore's group language).
     pub mutating func select(mesh: interop.Reference[Mesh], expression: str, domain: i64) -> !:
         let geometry = try mesh.get()
@@ -75,6 +69,28 @@ pub struct SheetRows:
             if (words[element >> 6] >> (u64)(element & 63)) & 1 != 0:
                 self.order[self.total] = (i64)element
                 self.total += 1
+
+    ## The rows of `selection` (on `domain`) that `expression` also names
+    ## ("" or "*": every selected row), in ID order.
+    pub mutating func selected(mesh: interop.Reference[Mesh], selection: interop.Reference[Selection], expression: str, domain: i64) -> !:
+        let geometry = try mesh.get()
+        if domain < 0 or domain > 4: error(invalid, "unknown spreadsheet domain")
+        let chosen = selection_bits(try selection.get()).words
+        var result = try group_bits_of(geometry, expression if expression != "" else "*", Domain((u8)domain))
+        defer result.bits.release()
+        let named = result.bits.view()
+        let words = chosen.length if chosen.length < named.length else named.length
+        var total: usize = 0
+        for word in 0..<words: total += (usize)popcount(chosen[word] & named[word])
+        try self.reserve(total)
+        self.identity = false
+        self.total = 0
+        for word in 0..<words:
+            var pending = chosen[word] & named[word]
+            while pending != 0:
+                self.order[self.total] = (i64)(word * 64 + (usize)trailing_zeros(pending))
+                self.total += 1
+                pending = pending & (pending - 1)
 
     ## Rows whose value of `attribute` (component 0) is nonzero: `@name` groups.
     pub mutating func nonzero(mesh: interop.Reference[Mesh], domain: i64, attribute: i64) -> !:

@@ -1,0 +1,102 @@
+## Viewport overlay lines gathered in Base: world-space endpoint pairs of
+## CAD boundaries, control hulls and normal guides, and polygon normal
+## guides. The Luce side hands over a whole CAD overlay or mesh with its
+## placement in one call; the points never pass through Luce lists. The
+## worker publishes the lines (ComputeChannel.overlay_lines, .hull_lines),
+## and without the worker they become a WireBatch directly.
+import interop
+import memory
+import math
+from geocore import Vector3, Matrix4, Bounds, Mesh, invalid, mesh_overlay_points
+from geocore_growing import Growing
+from three import WireBatch, wire_batch_type
+from cad import CadOverlay, CadPreviewSet
+
+pub struct OverlayLines:
+    var points: Growing[Vector3]
+
+    pub func init():
+        self.points = Growing[Vector3]()
+
+    ## Empty lines, owned by the caller.
+    pub static func make() -> interop.Reference[OverlayLines]!:
+        return try interop.Reference[OverlayLines].adopt(new OverlayLines() in memory.heap, overlay_lines_type, memory.heap)
+
+    ## Segments held.
+    pub func count() -> i64:
+        return (i64)self.points.count // 2
+
+    ## The box around every endpoint (a zero box when there are none).
+    pub func bounds() -> Bounds:
+        if self.points.count == 0: return Bounds(Vector3(), Vector3())
+        var low = self.points.items[0]
+        var high = low
+        for point in self.points.view():
+            low = Vector3(math.min(low.x, point.x), math.min(low.y, point.y), math.min(low.z, point.z))
+            high = Vector3(math.max(high.x, point.x), math.max(high.y, point.y), math.max(high.z, point.z))
+        return Bounds(low, high)
+
+    ## Part `part` of `overlay` (0 its boundaries, 1 its hull, 2 its normal
+    ## guides) placed by `matrix`; a guide keeps its length.
+    pub mutating func add_cad(overlay: interop.Reference[CadOverlay], part: i64, matrix: Matrix4) -> !:
+        let source = try overlay.get()
+        let count = source.boundary_count() if part == 0 else (source.hull_count() if part == 1 else source.guide_count())
+        try self.points.reserve(self.points.count + (usize)count)
+        if part == 2:
+            for at in 0..<count // 2:
+                let start = try source.guide(at * 2)
+                let delta = (try source.guide(at * 2 + 1)).subtract(start)
+                let placed = matrix.transform_point(start)
+                self.points.items[self.points.count] = placed
+                self.points.items[self.points.count + 1] = placed.add((try matrix.transform_normal(delta)).multiply_scalar(delta.length()))
+                self.points.count += 2
+            return
+        for at in 0..<count:
+            let point = (try source.boundary(at)) if part == 0 else (try source.hull_point(at))
+            self.points.items[self.points.count] = matrix.transform_point(point)
+            self.points.count += 1
+
+    ## Part `part` of per-face previews (0 their boundaries, 2 their normal
+    ## guides; they have no hull) placed by `matrix`.
+    pub mutating func add_preview(previews: interop.Reference[CadPreviewSet], part: i64, matrix: Matrix4) -> !:
+        let source = try previews.get()
+        if part == 1: return
+        let count = source.boundary_count() if part == 0 else source.guide_count()
+        try self.points.reserve(self.points.count + (usize)count)
+        for at in 0..<(count if part == 0 else count // 2 * 2):
+            let point = (try source.boundary(at)) if part == 0 else (try source.guide(at))
+            if part == 2 and at % 2 == 1:
+                let start = try source.guide(at - 1)
+                let delta = point.subtract(start)
+                self.points.items[self.points.count] = self.points.items[self.points.count - 1].add((try matrix.transform_normal(delta)).multiply_scalar(delta.length()))
+            else:
+                self.points.items[self.points.count] = matrix.transform_point(point)
+            self.points.count += 1
+
+    ## A normal guide per polygon of `mesh` placed by `matrix`.
+    pub mutating func add_face_guides(mesh: interop.Reference[Mesh], matrix: Matrix4) -> !:
+        let guides = try mesh_overlay_points(try mesh.get(), matrix, true)
+        defer:
+            if guides.length > 0: free(guides) in memory.heap
+        for point in guides: try self.points.push(point)
+
+    ## `other`'s segments placed by `matrix`.
+    pub mutating func add_lines(other: interop.Reference[OverlayLines], matrix: Matrix4) -> !:
+        let source = try other.get()
+        try self.points.reserve(self.points.count + source.points.count)
+        for point in source.points.view():
+            self.points.items[self.points.count] = matrix.transform_point(point)
+            self.points.count += 1
+
+    ## A GPU batch of the segments.
+    pub func batch() -> interop.Reference[WireBatch]!:
+        return try interop.Reference[WireBatch].adopt(try new WireBatch(self.points.view()) in memory.heap, wire_batch_type, memory.heap)
+
+    pub mutating func close():
+        self.points.close()
+
+## The endpoints of `lines`, for Base consumers (the worker channel).
+pub func line_points(lines: const OverlayLines*) -> const Vector3[]:
+    return lines.points.view()
+
+pub let overlay_lines_type: interop.Type[OverlayLines] = interop.Type[OverlayLines]("OverlayLines", OverlayLines.close, closeable = true)

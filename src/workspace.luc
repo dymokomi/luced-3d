@@ -4,7 +4,8 @@ from network import Network, Node
 from edit_operations import EditStep
 from tools import ToolRun, tool_run, verb_defaults
 from history import History, Snapshot
-from scene_projection import append_scene, append_bounds, append_overlays, append_patch_boundaries
+from scene_projection import append_scene, append_bounds, append_overlays, append_patch_boundaries, append_cad_hulls
+from overlay_lines import OverlayLines
 from compute_session import ComputeSession
 from display_publisher import DisplayPublisher
 from node_evaluation import SourceCache
@@ -69,8 +70,6 @@ pub class Workspace:
     pub var curvature_kind: int = 0
     pub var curvature_range: float = 0.0
     pub var normals_visible: bool = false
-    pub let wire_points: list[Vector3]
-    pub let normal_points: list[Vector3]
     pub var compute: ComputeSession? = none
     pub var wire_batch: WireBatch? = none
     pub var normal_batch: WireBatch? = none
@@ -88,10 +87,8 @@ pub class Workspace:
 
     pub func init(self) -> unit!:
         self.target = Vector3(0.0, 0.8, 0.0)
-        self.wire_points = []
         self.curve_batches = []
         self.hull_batches = []
-        self.normal_points = []
         self.sources = SourceCache()
         self.edit_kinds = {}
         self.mesh_levels = edit_mesh.levels()
@@ -160,13 +157,10 @@ pub class Workspace:
         if self.selected_count() > 0:
             let mesh = self.geometry else return
             let chosen = self.selection else return
-            let around = chosen.points(mesh)
-            var at = around.next(-1)
-            while at >= 0:
-                points.append(mesh.point(at))
-                at = around.next(at)
+            # The selection's box, in Base.
+            let box = chosen.bounds(mesh)
             let bounds = mesh.bounds()
-            self.frame_points(points, bounds.maximum.subtract(bounds.minimum).length() * 0.01)
+            self.frame_points([box.minimum, box.maximum], bounds.maximum.subtract(bounds.minimum).length() * 0.01)
             return
         if let session = self.compute:
             if session.busy:
@@ -427,8 +421,6 @@ pub class Workspace:
         self.objects.clear()
         self.curve_batches.clear()
         self.hull_batches.clear()
-        self.wire_points.clear()
-        self.normal_points.clear()
         self.geometry = none
         self.notice = ""
         let graph = self.network
@@ -437,7 +429,10 @@ pub class Workspace:
             if let node = graph.find(graph.display):
                 outputs = [node]
         var analytic = 0
-        let patches: list[Vector3] = []
+        let wires = OverlayLines.make()
+        let normals = OverlayLines.make()
+        let patches = OverlayLines.make()
+        let hulls = OverlayLines.make()
         for node in outputs:
             if not node.visible:
                 continue
@@ -452,16 +447,18 @@ pub class Workspace:
                 self.notice = failure.message
                 continue
             self.objects.add(branch)
-            append_overlays(data, Matrix4(), self.wire_points, self.normal_points, self.display_mode if self.display_mode <= 4 else 3)
+            append_overlays(data, Matrix4(), wires, normals)
+            append_cad_hulls(data, Matrix4(), hulls)
             if CurveLines.count(data.geometry) > 0:
                 self.curve_batches.append(CurveLines.batch(data.geometry))
                 self.hull_batches.append(CurveLines.batch(data.geometry, true))
             append_patch_boundaries(data, Matrix4(), patches)
         if analytic > 0 and self.notice == "":
             self.notice = f"CAD preview: {analytic} patches could not be meshed; boundaries remain visible"
-        self.wire_batch = WireBatch(self.wire_points)
-        self.normal_batch = WireBatch(self.normal_points)
-        self.patch_batch = WireBatch(patches)
+        self.wire_batch = wires.batch()
+        self.normal_batch = normals.batch()
+        self.patch_batch = patches.batch()
+        self.hull_batches.append(hulls.batch())
         self.revision += 1
 
     ## What the viewport picks on for displayed `node`: its Edit kind's
@@ -504,8 +501,6 @@ pub class Workspace:
             self.revision += 1
             return true
         if self.publisher.adopt(session.service, self.network):
-            self.wire_points.clear()
-            self.normal_points.clear()
             self.wire_batch = session.service.wires()
             self.normal_batch = session.service.normals()
             self.patch_batch = session.service.patches()
