@@ -1,0 +1,156 @@
+## Geometry spreadsheet rows kept in Base. Unfiltered rows are an identity
+## range with no storage; a permutation exists only for a filter or a sort,
+## and is sorted when the sort changes, not on every refresh. A Luce list of
+## a CAD mesh's 707k rows and its merge sort cost 313 ms per click.
+import interop
+import memory
+import ownership
+from three import PolygonMesh, invalid
+
+pub struct SheetRows:
+    var order: i64[]
+    var total: usize = 0
+    var identity: bool = true
+    var source: interop.Reference[PolygonMesh]?
+
+    pub func init():
+        var empty: i64[]
+        self.order = empty
+        self.total = 0
+        self.identity = true
+        self.source = none
+
+    pub func count() -> i64:
+        return (i64)self.total
+
+    pub func row(at: i64) -> i64!:
+        if at < 0 or (usize)at >= self.total: error(invalid, "spreadsheet row is out of range")
+        return at if self.identity else self.order[(usize)at]
+
+    ## True when `mesh` differs from the mesh these rows were built for. The
+    ## previous mesh stays retained, so its address cannot be reused meanwhile.
+    pub mutating func retarget(mesh: interop.Reference[PolygonMesh]?) -> bool!:
+        var changed = false
+        if let next = mesh:
+            if let current = self.source:
+                changed = current.value() != (try next.get())
+            else:
+                changed = true
+            if changed:
+                if let current = self.source: current.release()
+                self.source = next.clone()
+        elif let current = self.source:
+            current.release()
+            self.source = none
+            changed = true
+        return changed
+
+    ## Every row, in ID order.
+    pub mutating func all(count: i64):
+        self.identity = true
+        self.total = (usize)count
+
+    pub mutating func assign(rows: const i64[]) -> !:
+        try self.reserve(rows.length)
+        if rows.length > 0: memory.copy(self.order, rows, rows.length)
+        self.identity = false
+        self.total = rows.length
+
+    ## Rows whose value of `attribute` (component 0) is nonzero: `@name` groups.
+    pub mutating func nonzero(mesh: interop.Reference[PolygonMesh], domain: i64, attribute: i64) -> !:
+        let geometry = try mesh.get()
+        let count = (usize)(try geometry.domain_count(domain))
+        try self.reserve(count)
+        self.identity = false
+        self.total = 0
+        for id in 0..<count:
+            if (try geometry.attribute_value(attribute, (i64)id)) != 0.0:
+                self.order[self.total] = (i64)id
+                self.total += 1
+
+    ## Stable sort by a column; attribute -1 is a built-in column, and
+    ## `by_id` sorts by the row ID itself.
+    pub mutating func sort(mesh: interop.Reference[PolygonMesh], domain: i64, attribute: i64, component: i64, by_id: bool, descending: bool) -> !:
+        if by_id and not descending and self.identity: return
+        let geometry = try mesh.get()
+        let count = self.total
+        if self.identity:
+            try self.reserve(count)
+            for at in 0..<count: self.order[at] = (i64)at
+            self.identity = false
+        let keys = try alloc f64[count * 2] in memory.heap
+        defer free(keys) in memory.heap
+        let scratch = try alloc i64[count] in memory.heap
+        defer free(scratch) in memory.heap
+        for at in 0..<count:
+            let row = self.order[at]
+            keys[at] = (f64)row if by_id else (try cell(geometry, domain, attribute, component, row))
+        # Bottom-up merge sort of (key, row) pairs; ties keep their order.
+        let rows = self.order[..<count]
+        let values = keys[..<count]
+        let spare = keys[count..<count * 2]
+        var width: usize = 1
+        var from_rows = rows
+        var from_keys = values
+        var to_rows = scratch
+        var to_keys = spare
+        while width < count:
+            var base: usize = 0
+            while base < count:
+                let middle = base + width if count - base > width else count
+                let end = middle + width if count - middle > width else count
+                var a = base
+                var b = middle
+                for out in base..<end:
+                    let left = a < middle and (b >= end or (from_keys[a] >= from_keys[b] if descending else from_keys[a] <= from_keys[b]))
+                    to_rows[out] = from_rows[a] if left else from_rows[b]
+                    to_keys[out] = from_keys[a] if left else from_keys[b]
+                    if left: a += 1
+                    else: b += 1
+                base = end
+            let rows_swap = from_rows
+            from_rows = to_rows
+            to_rows = rows_swap
+            let keys_swap = from_keys
+            from_keys = to_keys
+            to_keys = keys_swap
+            width *= 2
+        if from_rows.data != rows.data: memory.copy(rows, from_rows, count)
+
+    mutating func reserve(count: usize) -> !:
+        if count <= self.order.length: return
+        let grown = try alloc i64[count] in memory.heap
+        if self.order.length > 0: free(self.order) in memory.heap
+        self.order = grown
+
+    pub mutating func close():
+        if self.order.length > 0: free(self.order) in memory.heap
+        var empty: i64[]
+        self.order = empty
+        self.total = 0
+        if let current = self.source: current.release()
+        self.source = none
+
+    func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        if let current = self.source: current.trace(visit, context)
+
+pub let sheet_rows_type: interop.Type[SheetRows] = interop.Type[SheetRows]("SheetRows", SheetRows.close, SheetRows.trace, closeable = true, main_thread = true)
+
+## One spreadsheet cell. Built-in columns: points P.x/P.y/P.z; vertices point,
+## primitive; faces vertices, N.x/N.y/N.z; detail the four element counts.
+pub func sheet_value(mesh: interop.Reference[PolygonMesh], domain: i64, attribute: i64, component: i64, row: i64) -> f64!:
+    return try cell(try mesh.get(), domain, attribute, component, row)
+
+func cell(mesh: const PolygonMesh*, domain: i64, attribute: i64, component: i64, row: i64) -> f64!:
+    if attribute >= 0: return try mesh.attribute_value(attribute, row, component)
+    if domain == 0:
+        let point = try mesh.point(row)
+        return point.x if component == 0 else (point.y if component == 1 else point.z)
+    if domain == 1:
+        return (f64)(try mesh.corner_point(row) if component == 0 else try mesh.corner_face(row))
+    if domain == 2:
+        if component == 0: return (f64)(try mesh.face_size(row))
+        let normal = try mesh.face_normal(row)
+        return normal.x if component == 1 else (normal.y if component == 2 else normal.z)
+    let counts: i64[4] = [mesh.point_count(), mesh.vertex_count(), mesh.face_count(), mesh.edge_count()]
+    return (f64)counts[(usize)component]

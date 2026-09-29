@@ -1,10 +1,13 @@
 ## Virtualized geometry inspection. Reads the selected node, not just display.
+## Rows live in Base (sheet_rows) and are rebuilt only when drawn or read and
+## their mesh, filter, sort or shown selection changed; refresh stays cheap.
 from ui import Widget, Layout, Constraints, Size, Painter, Event
 from gpu import RenderTarget, Rect
 from three import PolygonMesh
 from input import EventKind, ScrollUnit
 from workspace import Workspace
 from component_groups import group_indices
+from sheet_rows import SheetRows, sheet_value
 import math
 import theme
 
@@ -23,7 +26,11 @@ pub class GeometrySheet: Widget:
     pub var domain: int = 0
     pub var mesh: PolygonMesh? = none
     pub var columns: list[Column]
-    pub var rows: list[int]
+    let rows: SheetRows
+    var rows_key: str = ""
+    var rows_selection: list[int]
+    ## Row rebuilds so far; refreshes that change nothing must not add any.
+    pub var builds: int = 0
     pub var pinned: int = -1
     pub var selected_only: bool = false
     var node_id: int = -1
@@ -45,7 +52,8 @@ pub class GeometrySheet: Widget:
         self.box.set_focusable(true)
         self.box.set_takes_scroll(true)
         self.columns = []
-        self.rows = []
+        self.rows = SheetRows()
+        self.rows_selection = []
 
     pub func layout(self) -> Layout:
         return self.box
@@ -58,7 +66,6 @@ pub class GeometrySheet: Widget:
         self.failure = ""
         self.mesh = none
         self.columns = []
-        self.rows = []
         if w.network.find(id) == none:
             self.title = "No node" if self.pinned < 0 else "Pinned node was deleted"
             self.node_id = -1
@@ -92,18 +99,65 @@ pub class GeometrySheet: Widget:
             for component in 0..<width:
                 let suffix = ("." + ["x", "y", "z", "w"][component]) if width > 1 else ""
                 self.columns.append(Column(mesh.attribute_name(attribute) + suffix, attribute, component))
-        let filtered = group_indices(mesh, self.domain, self.row_filter) catch failure:
-            self.failure = failure.message
-            self.box.invalidate()
-            return
-        for row in filtered:
-            if not self.selected_only or self.row_selected(row):
-                self.rows.append(row)
         if self.sort_column >= self.columns.length:
             self.sort_column = -1
-        self.sort_rows()
-        self.clamp_scroll()
-        self.box.invalidate()
+
+    ## Rows for the current mesh, filter, sort and (for "Selected") selection.
+    ## Cheap when none of them changed: one identity compare and a key.
+    func ensure_rows(self) -> unit!:
+        let changed = self.rows.retarget(self.mesh)
+        if self.mesh == none:
+            self.rows.all(0)
+            return
+        let mesh = self.mesh else return
+        let column = self.columns[self.sort_column] if self.sort_column >= 0 else Column("", -1, 0)
+        let key = f"{self.domain}|{self.row_filter}|{self.sort_column >= 0}|{column.attribute}|{column.component}|{self.descending}|{self.selected_only}|{self.node_id == self.workspace.network.display}|{self.workspace.component_mode}"
+        let selection = self.workspace.components if self.selected_only else []
+        if not changed and key == self.rows_key and selection == self.rows_selection:
+            return
+        self.rows_key = key
+        self.rows_selection = selection.copy()
+        self.builds += 1
+        let expression = self.row_filter
+        if self.selected_only:
+            let chosen: list[int] = []
+            let count = mesh.domain_count(self.domain)
+            let allowed = group_indices(mesh, self.domain, expression) if expression != "" and expression != "*" else []
+            for row in selection:
+                if row >= 0 and row < count and self.row_selected(row) and not (row in chosen) and (allowed.length == 0 or row in allowed):
+                    chosen.append(row)
+            chosen.sort()
+            self.rows.assign(chosen)
+        elif expression == "" or expression == "*":
+            self.rows.all(mesh.domain_count(self.domain))
+        elif expression.starts_with("@"):
+            let attribute = mesh.find_attribute(expression[1..<expression.length], self.domain)
+            if attribute < 0:
+                self.failure = "Group attribute does not exist on this domain"
+                self.rows.all(0)
+                self.rows_key = ""
+                return
+            self.rows.nonzero(mesh, self.domain, attribute)
+        else:
+            self.rows.assign(group_indices(mesh, self.domain, expression)) catch failure:
+                self.failure = failure.message
+                self.rows.all(0)
+                self.rows_key = ""
+                return
+        if self.sort_column >= 0 or self.descending:
+            self.rows.sort(mesh, self.domain, column.attribute, column.component, self.sort_column < 0, self.descending)
+
+    pub func row_count(self) -> int!:
+        self.ensure_rows()
+        return self.rows.count()
+
+    ## The shown row IDs in order. Tests and small tools only: O(rows) Luce list.
+    pub func row_ids(self) -> list[int]!:
+        self.ensure_rows()
+        let result: list[int] = []
+        for at in 0..<self.rows.count():
+            result.append(self.rows.row(at))
+        return result
 
     pub func set_domain(self, domain: int) -> unit!:
         self.domain = domain
@@ -120,38 +174,6 @@ pub class GeometrySheet: Widget:
         self.row_filter = text.trim()
         self.refresh()
 
-    ## Stable bottom-up merge sort. Values are read once, not once per compare.
-    func sort_rows(self) -> unit!:
-        let keys: list[float] = []
-        for row in self.rows:
-            keys.append(float(row) if self.sort_column < 0 else self.value(row, self.sort_column))
-        var order: list[int] = []
-        for index in 0..<self.rows.length:
-            order.append(index)
-        var span = 1
-        while span < order.length:
-            let next: list[int] = []
-            var base = 0
-            while base < order.length:
-                let middle = int(math.min(float(base + span), float(order.length)))
-                let end = int(math.min(float(base + span * 2), float(order.length)))
-                var a = base
-                var b = middle
-                while a < middle or b < end:
-                    let left = a < middle and (b >= end or (keys[order[a]] >= keys[order[b]] if self.descending else keys[order[a]] <= keys[order[b]]))
-                    next.append(order[a] if left else order[b])
-                    if left:
-                        a += 1
-                    else:
-                        b += 1
-                base += span * 2
-            order = next
-            span *= 2
-        let sorted: list[int] = []
-        for index in order:
-            sorted.append(self.rows[index])
-        self.rows = sorted
-
     func row_selected(self, row: int) -> bool!:
         if self.node_id != self.workspace.network.display:
             return false
@@ -164,23 +186,13 @@ pub class GeometrySheet: Widget:
     pub func value(self, row: int, column: int) -> float!:
         let mesh = self.mesh else return 0.0
         let field = self.columns[column]
-        if field.attribute >= 0:
-            return mesh.attribute_value(field.attribute, row, field.component)
-        let component = field.component
-        if self.domain == 0:
-            let point = mesh.point(row)
-            return point.x if component == 0 else (point.y if component == 1 else point.z)
-        if self.domain == 1:
-            return float(mesh.corner_point(row) if component == 0 else mesh.corner_face(row))
-        if self.domain == 2:
-            if component == 0:
-                return float(mesh.face_size(row))
-            let normal = mesh.face_normal(row)
-            return normal.x if component == 1 else (normal.y if component == 2 else normal.z)
-        return float([mesh.point_count(), mesh.vertex_count(), mesh.face_count(), mesh.edge_count()][component])
+        return sheet_value(mesh, self.domain, field.attribute, field.component, row)
 
     pub func draw(self, target: RenderTarget) -> unit!:
         let size = target.size()
+        self.ensure_rows()
+        self.clamp_scroll()
+        let total = self.rows.count()
         let p = Painter(target)
         p.rectangle(Rect(0.0, 0.0, size.width, size.height), theme.backdrop())
         for domain in 0..<4:
@@ -192,11 +204,11 @@ pub class GeometrySheet: Widget:
         if size.width >= 490.0:
             p.rounded_rectangle(Rect(397.0, 5.0, 85.0, 26.0), theme.accent() if self.selected_only else theme.surface(), 3.0)
             p.text("Selected", 402.0, 10.0, theme.grey(0.0) if self.selected_only else theme.text())
-        p.text(self.failure if self.failure != "" else self.title + f" / {self.rows.length} rows", 8.0, 39.0, theme.accent() if self.failure != "" else theme.text_muted())
+        p.text(self.failure if self.failure != "" else self.title + f" / {total} rows", 8.0, 39.0, theme.accent() if self.failure != "" else theme.text_muted())
         let first = int(self.scroll_y / 24.0)
         let visible = int(math.max(0.0, size.height - 88.0) / 24.0) + 2
-        for at in first..<int(math.min(float(self.rows.length), float(first + visible))):
-            let row = self.rows[at]
+        for at in first..<int(math.min(float(total), float(first + visible))):
+            let row = self.rows.row(at)
             let y = 88.0 + float(at) * 24.0 - self.scroll_y
             if y < 64.0:
                 continue
@@ -222,7 +234,7 @@ pub class GeometrySheet: Widget:
 
     func clamp_scroll(self):
         let size = self.box.bounds()
-        self.scroll_y = math.max(0.0, math.min(self.scroll_y, float(self.rows.length) * 24.0 - math.max(0.0, size.height - 88.0)))
+        self.scroll_y = math.max(0.0, math.min(self.scroll_y, float(self.rows.count()) * 24.0 - math.max(0.0, size.height - 88.0)))
         self.scroll_x = math.max(0.0, math.min(self.scroll_x, float(self.columns.length) * 110.0 + 70.0 - size.width))
 
     pub func event(self, event: Event) -> unit!:
@@ -248,14 +260,14 @@ pub class GeometrySheet: Widget:
                 self.refresh()
             elif event.y >= 88.0 and self.workspace.editing() and self.node_id == self.workspace.network.display:
                 let index = int((event.y - 88.0 + self.scroll_y) / 24.0)
-                if index >= 0 and index < self.rows.length and self.domain != 3:
+                if index >= 0 and index < self.row_count() and self.domain != 3:
                     self.workspace.set_mode(2 if self.domain == 2 else 0)
-                    let id = (self.mesh else return).corner_point(self.rows[index]) if self.domain == 1 else self.rows[index]
+                    let id = (self.mesh else return).corner_point(self.rows.row(index)) if self.domain == 1 else self.rows.row(index)
                     self.workspace.choose_component(id, event.shift)
                     self.refresh()
         elif event.kind == EventKind.pointer_moved:
             let index = int((event.y - 88.0 + self.scroll_y) / 24.0)
-            self.hovered = self.rows[index] if event.inside and event.y >= 88.0 and index >= 0 and index < self.rows.length else -1
+            self.hovered = self.rows.row(index) if event.inside and event.y >= 88.0 and index >= 0 and index < self.row_count() else -1
         elif event.kind == EventKind.pointer_left:
             self.hovered = -1
         self.box.invalidate()
