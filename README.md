@@ -143,7 +143,9 @@ Grid spacing is one unit; +Y is up.
 
 The lower dock also contains **Geometry Spreadsheet**. It follows the selected
 node, independently of the viewport output, or can be pinned. Switch between
-points, vertices (polygon corners), primitives (faces), and detail (whole mesh).
+points, vertices (polygon corners), primitives (faces), and detail (the mesh's
+counts and detail attributes, and the geometry's own detail attributes, such
+as a sketch plane, even without a mesh).
 Filter attributes or rows, click headers to sort, and click rows to select
 components on the displayed Edit node. Numeric scalar/vector attributes survive
 topology operations; `Cd` affects rendering and corner `uv` supports seams.

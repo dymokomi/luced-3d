@@ -293,8 +293,10 @@ as directions/normals. UVProject is planar XZ projection, not UV unwrapping.
 
 The Geometry Spreadsheet is virtualized, horizontally/vertically scrollable,
 sortable, filterable and pinnable. It displays selected-node geometry separately
-from the display flag. It is an inspector/selection surface, not a direct cell
-editor; modify attributes with nodes.
+from the display flag. Its Detail tab shows the mesh's counts and detail
+attributes and the set's own detail attributes (one row, with or without a
+mesh). It is an inspector/selection surface, not a direct cell editor;
+modify attributes with nodes.
 
 ## Operator fidelity
 
