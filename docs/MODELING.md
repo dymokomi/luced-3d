@@ -5,39 +5,49 @@ No placeholder nodes are listed: every registered node evaluates geometry.
 
 ![Cube → AttributeRandomize → Bevel → Edit, with an inset and extruded face](preview_modeling.png)
 
-## Forty-two geometry nodes
+## Geometry nodes
 
 | Family | Nodes |
 | --- | --- |
 | Sources | Cube, Grid, Sphere, Cylinder, Cone, Torus, File |
-| Graph | Edit, Merge, Null, Switch, Tessellate, Group |
+| Graph | Edit, Merge, Null, Switch, Tessellate, Group, Blast |
 | Transforms/copies | Transform, Mirror, CopyTransform, CopyToPoints, MatchSize |
-| Topology | Reverse, Triangulate, Subdivide, Fuse, Inset, Bevel, PolyExtrude, Duplicate, Split, Delete, Clean |
-| Deformation | Smooth, Mountain, Peak |
+| Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, Bevel, Fill, Dissolve |
+| Deformation (verbs) | Transform Components, Smooth, Mountain, Peak, Flatten, Snap |
 | Attributes | AttributeCreate, AttributeRandomize, AttributeDelete, AttributeRename, AttributePromote, Selection Group, Normal, Measure, UVProject, Color |
 
-Groups accept `*`, space/comma-separated IDs, inclusive ranges (`2-5`), or
-`@name` for nonzero values of an attribute in the applicable domain. This is not
-an expression language. Invalid IDs and incompatible attribute schemas fail
-atomically and appear as node errors.
+Modeling and deformation nodes are luce-geocore verbs (after Houdini's SOP
+verbs): one Base kernel per operation, shared with the Edit node. The node
+catalog is generated from the verb registry, so each has the verb's
+parameters plus Houdini's **Group** (text) and **Group Type** (Guess from group,
+Points, Edges, Primitives, Vertices). An empty group is every element. Groups
+use Houdini's group syntax with our functions (see luce-geocore's API):
+`0 2-5`, `0-99:2`, `top ^left`, `@P.y>0`, `@name=piece*`, `p3-4-5`,
+`grow(top, 2)`, `loop(p5-6)`. A group of another component type converts
+(a face is in a point group when all its points are; Delete removes every face
+using a deleted point, like Blast). Numbers naming no element match nothing.
+
+A verb carries every attribute and group through its provenance: an element
+with one parent copies it; an interpolated one (a subdivision edge point, a
+new corner inside a face) averages floats, renormalizes normals, takes the
+heaviest parent's integer or text, and keeps group membership only when every
+parent is a member. New elements are zero, empty and in no group. Each verb
+also returns an output selection (Extrude's front faces, Inset's inner faces,
+Fuse's merged points), which the tool flow adopts.
 
 ## Edit tools and important limits
 
-- XYZ movement uses the translation gizmo. Rotate currently rotates around Y
-  in degrees; Scale is uniform about the selection center. Flatten targets Y.
-- Extrude operates on selected face regions with boundary walls. It does not
-  extrude isolated edges/points or an entire closed surface.
+- Extrude operates on face regions with boundary walls; not isolated edges or
+  points, nor a whole closed surface.
 - Inset is an individual-face centroid fraction, not an exact-distance offset.
 - Bevel chamfers all edges of a closed oriented manifold, using a fractional
   width. It is not a selected-edge, constant-width, multi-segment fillet.
-- Subdivide operates on the whole mesh, with Catmull–Clark positioning or linear
-  quads in the procedural node. There are no crease weights yet.
-- Fill accepts one selected boundary loop. Dissolve accepts one internal edge.
-- Delete handles points, faces, or the faces incident to selected edges. Clean
-  removes unused points; deleting faces alone deliberately preserves points.
-- Duplicate offsets selected faces along their normals; Split unshares them.
-- Fuse uses spatial hashing and deterministic first-point attribute ownership.
-- Smooth, Noise, Peak, Snap, Reverse and Triangulate are selection-aware.
+- Subdivide operates on the whole mesh, Catmull–Clark or linear, with edges used
+  by more than two faces kept as creases. There are no crease weights yet.
+- Fill caps one boundary loop of the group's edges. Dissolve joins faces across
+  up to 128 edges.
+- Fuse merges the group's points within a distance into the first of them,
+  dropping faces that collapse.
 - CopyToPoints realizes copies at target positions, with a 256-copy limit. It
   does not yet interpret orientation/scale attributes or retain instances.
 
@@ -47,16 +57,14 @@ Undo/redo includes modeling, groups, attribute parameters and graph changes.
 
 ## Attribute contracts
 
-Domains are point=0, vertex/corner=1, primitive/face=2 and detail=3. Numeric tuples
-have 1–4 components, float or integral values. Names are unique within a domain;
-`P` is reserved for built-in positions. Limits: 32 named attributes per mesh and
-262,144 numeric values per attribute. Strings, matrices and arbitrary field
-sockets are not implemented.
+Domains are point=0, vertex/corner=1, primitive/face=2, detail=3 and edge=4.
+Numeric tuples have 1–4 components, float or integral values; text attributes
+index a shared string table; groups are flagged boolean attributes. Names are
+unique within a domain; `P` is reserved for built-in positions. Matrices and
+arbitrary field sockets are not implemented.
 
-Topology builders carry output-to-input parent maps. Retained/duplicated elements
-inherit values; newly created elements without parents receive zero. Extrusion
-walls inherit the originating face. Subdivision interpolates floating point
-point/corner values; integer values retain deterministic parents. Merge unions
+Topology builders carry output-to-input parent maps (see the verbs above).
+Extrusion walls inherit the originating face. Merge unions
 schemas and zero-fills absent attributes; conflicting types fail and the left
 detail value wins. Promotion averages contributing floating values; integer
 promotion chooses the first contributor. Original-domain attributes are retained.

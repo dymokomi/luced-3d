@@ -1,8 +1,9 @@
-## Operator dispatch only. Mesh algorithms and attribute storage belong to three.
+## Operator dispatch only: modeling nodes run luce-geocore verbs; the rest
+## call whole-mesh Base kernels.
 import geocore
-from geocore import MeshOps, MeshPrimitives, TopologyTools, AttributeKernels
+from geocore import MeshPrimitives, AttributeKernels, Groups, Verbs
 from three import Vector3
-from geocore import Selection, Groups
+import node_catalog
 import math
 import ui
 from obj import Obj
@@ -88,24 +89,9 @@ pub func source_geometry(kind: str, v: list[float]) -> geocore.Mesh!:
 
 pub func evaluate_operator(kind: str, v: list[float], text: list[str], input: geocore.Mesh, second: geocore.Mesh?) -> geocore.Mesh!:
     var mesh = input
-    if kind in ["Reverse", "Triangulate", "Inset", "Duplicate", "Split", "Delete"]:
-        let operation = ["Delete", "Reverse", "Triangulate", "Inset", "Duplicate", "Split"].index_of(kind) else 0
-        return MeshOps.faces(mesh, group_members(mesh, 2, text[0]), operation, v[0])
-    if kind == "PolyExtrude":
-        return mesh.extruded_faces(group_members(mesh, 2, text[0]), v[0])
-    if kind in ["Smooth", "Mountain", "Peak"]:
-        let operation = ["Smooth", "Mountain", "Peak"].index_of(kind) else 0
-        return MeshOps.points(mesh, group_members(mesh, 0, text[0]), operation, v[0])
-    if kind == "Fuse":
-        return MeshOps.fuse(mesh, group_members(mesh, 0, text[0]), v[0])
-    if kind == "Clean":
-        return MeshOps.compact(mesh)
-    if kind == "Subdivide":
-        for level in 0..<int(v[0]):
-            mesh = MeshOps.subdivide(mesh, v[1] != 0.0)
-        return mesh
-    if kind == "Bevel":
-        return TopologyTools.bevel(mesh, v[0])
+    # Modeling nodes run their luce-geocore verb: group, group type, values.
+    if node_catalog.is_verb(kind):
+        return Verbs.run(kind, mesh, text[0], int(v[node_catalog.group_type_slot]), v[..<node_catalog.group_type_slot]).mesh()
     if kind == "Mirror":
         let axis = int(v[0])
         let mirrored = mesh.transformed(Vector3(), Vector3(), Vector3(-1.0 if axis == 0 else 1.0, -1.0 if axis == 1 else 1.0, -1.0 if axis == 2 else 1.0))
@@ -154,15 +140,3 @@ pub func evaluate_operator(kind: str, v: list[float], text: list[str], input: ge
     if kind == "Measure":
         return AttributeKernels.face_areas(mesh)
     error(ui.invalid, "Operator has no evaluator")
-
-## The elements a Group parameter names (luce-geocore's group language; an
-## empty group is every element, as in Houdini), as a list for the kernels
-## that still take one.
-pub func group_members(mesh: geocore.Mesh, domain: int, expression: str) -> list[int]!:
-    let selection = Selection.of(mesh, expression if expression.trim() != "" else "*", domain)
-    let ids: list[int] = []
-    var at = selection.next(-1)
-    while at >= 0:
-        ids.append(at)
-        at = selection.next(at)
-    return ids
