@@ -1,0 +1,49 @@
+## The Cache node: writes its input to a .prism file, and with Load from
+## disk reads it back without cooking upstream; its stamp follows the file,
+## so downstream results survive the switch. The file is a prism crate that
+## luce-prism opens as a document.
+from network import Network
+from stamps import stamp_graph
+from geocore import GeometryFile
+from prism import Document
+import node_catalog
+
+pub func cache_node_tests() -> unit!:
+    assert("Cache" in node_catalog.kinds() and node_catalog.category("Cache") == "File I/O")
+    let graph = Network(false)
+    let sphere = graph.add("Sphere", 0.0, 0.0)
+    let cache = graph.add("Cache", 0.0, 60.0)
+    cache.texts[0] = "cache.prism"
+    let moved = graph.add("Transform", 0.0, 120.0)
+    graph.connect(sphere.id, cache.id, 0)
+    graph.connect(cache.id, moved.id, 0)
+    stamp_graph(graph)
+    let written = graph.evaluate(moved.id)
+    assert(GeometryFile.key("cache.prism") == cache.stamp and cache.stamp != 0)
+    let downstream = moved.stamp
+    # Load from disk: the same stamps, so every downstream result is kept.
+    cache.values[0] = 1.0
+    stamp_graph(graph)
+    assert(cache.stamp == GeometryFile.key("cache.prism") and moved.stamp == downstream)
+    # Upstream edits stop at the cache while it reads.
+    sphere.values[0] = 3.0
+    stamp_graph(graph)
+    assert(moved.stamp == downstream)
+    for node in graph.nodes:
+        node.dirty = true
+    let loaded = graph.evaluate(moved.id)
+    assert(loaded.point_count() == written.point_count() and loaded.bounds().maximum.x == written.bounds().maximum.x)
+    # Writing again after the upstream edit gives a new stamp and file.
+    cache.values[0] = 0.0
+    stamp_graph(graph)
+    assert(moved.stamp != downstream)
+    for node in graph.nodes:
+        node.dirty = true
+    let bigger = graph.evaluate(moved.id)
+    assert(bigger.bounds().maximum.x > written.bounds().maximum.x and GeometryFile.key("cache.prism") == cache.stamp)
+    # luce-prism reads the crate: the mesh element and its point column.
+    let document = Document.load("cache.prism")
+    let points = document.get("/geometry/mesh", "P")
+    assert(points.rank() == 2 and points.count() == bigger.point_count() * 3)
+    let key = document.get("/geometry", "key")
+    assert(key.rank() == 0 and key.number_at() == float(cache.stamp))

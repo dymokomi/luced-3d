@@ -10,7 +10,7 @@ No placeholder nodes are listed: every registered node evaluates geometry.
 | Family | Nodes |
 | --- | --- |
 | Sources | Cube, Grid, Sphere, Cylinder, Cone, Torus, File |
-| Graph | Edit, Merge, Null, Switch, Tessellate, Group, Blast |
+| Graph | Edit, Merge, Null, Switch, Tessellate, Group, Blast, Cache |
 | Transforms/copies | Transform, Mirror, CopyTransform, CopyToPoints, MatchSize |
 | Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Loop Cut, Bridge, Fill, Dissolve, Merge Points |
 | Deformation (verbs) | Transform Components, Smooth, Mountain, Peak, Flatten, Snap |
@@ -44,6 +44,19 @@ evaluated curves in every shading mode, and their control hulls (control
 polygons, Bezier handles, control points) behind the **Control hulls** toggle;
 the hull overlay is generic, for any family's control nets. Curve to Mesh
 takes an optional profile curve on its second input.
+
+The **Cache** node (Houdini's File Cache) writes its input's cooked geometry
+to a `.prism` file and passes it through. It uses luce-geocore's geometry
+codec, which writes every component, attribute and group exactly. With
+**Load from disk** it reads the file instead, and nothing upstream cooks.
+
+The file records the node's stamp, and in read mode the node takes the stamp
+recorded there. Two things follow:
+
+- switching to read mode keeps every downstream result;
+- while it reads, upstream edits stop at the node.
+
+A 700k-face mesh saves in about 4 ms and loads in about 17 ms.
 
 ## Selection and tools
 

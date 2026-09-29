@@ -1,0 +1,43 @@
+## The Cache node (Houdini's File Cache): writes its input's cooked geometry
+## to a .prism file and passes it through; with Load from disk it reads the
+## file instead and never cooks upstream. The file records the node's stamp,
+## and in read mode the node's stamp is the one recorded, so switching to
+## read mode keeps every downstream result, and upstream edits no longer
+## reach downstream nodes.
+from geocore import GeometryFile
+from geometry_data import GeometryData
+import ui
+
+## Whether a node reads its cache file (and not its input).
+pub func reads_file(kind: str, enabled: bool, values: list[float]) -> bool:
+    return kind == "Cache" and enabled and values[0] != 0.0
+
+## A Cache node's stamp: in write mode the one its input gives it
+## (`written`); in read mode the one its file was written with.
+pub func cache_stamp(reads: bool, path: str, revision: int, written: int) -> int!:
+    if not reads:
+        return written
+    let file = path.trim()
+    let key = GeometryFile.key(file) if file != "" else 0
+    if key != 0:
+        return key
+    return nonzero(hash(("Cache", "unwritten", file, revision)))
+
+## Cook: load the file, or save the input when the file does not hold it
+## (`stamp` is the node's, which the file records).
+pub func cook_cache(reads: bool, path: str, stamp: int, data: GeometryData) -> GeometryData!:
+    let file = path.trim()
+    if reads:
+        if file == "":
+            error(ui.invalid, "Choose a cache file to load")
+        return GeometryData(geometry = GeometryFile.load(file))
+    if file == "":
+        let passed = GeometryData(geometry = data.geometry)
+        passed.warning = "No cache file: nothing is written"
+        return passed
+    if stamp == 0 or GeometryFile.key(file) != stamp:
+        discard(GeometryFile.save(data.geometry, file, stamp))
+    return data
+
+func nonzero(value: int) -> int:
+    return value if value != 0 else 1

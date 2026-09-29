@@ -3,6 +3,8 @@
 ## times importing and cooking a mesh, its first display, selecting 1k faces,
 ## and a Move round trip (request, cook, hand-off, adopt, redraw).
 from workspace import Workspace
+from network import Network
+from geocore import GeometryFile
 from three import Vector3, Renderer, EditOverlay, Color
 from offscreen import OffscreenView
 import theme
@@ -110,10 +112,32 @@ func run_case(label: str, path: str, tessellate: bool, view: OffscreenView) -> u
     report(f"{label}: redraw with the inverted selection", frame(view, w, renderer, overlay))
     (w.compute else trap("compute")).close()
 
+## `label`'s cooked result (File, and Tessellate for STEP) saved to a .prism
+## file by the codec and loaded back: what a Cache node writes and reads.
+func codec_case(label: str, path: str, tessellate: bool) -> unit!:
+    let graph = Network(false)
+    let file = graph.add("File", 0.0, 0.0)
+    file.texts[0] = path
+    var last = file
+    if tessellate:
+        let tessellated = graph.add("Tessellate", 0.0, 60.0)
+        graph.connect(file.id, tessellated.id, 0)
+        last = tessellated
+    let data = graph.evaluate_data(last.id)
+    var start = time.now()
+    let size = GeometryFile.save(data.geometry, "codec.prism", 1)
+    report(f"{label}: save to .prism", since(start))
+    start = time.now()
+    let loaded = GeometryFile.load("codec.prism")
+    report(f"{label}: load from .prism", since(start))
+    print(f"# {label}: .prism of {size} bytes, {loaded.description()}")
+
 pub func main(arguments: list[str]) -> int!:
     let view = OffscreenView()
     run_case("grid 700k", arguments[0], false, view)
+    codec_case("grid 700k", arguments[0], false)
     if arguments.length > 1 and arguments[1] != "":
         run_case("camera.step", arguments[1], true, view)
+        codec_case("camera.step", arguments[1], true)
     view.close()
     return 0
