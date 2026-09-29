@@ -52,8 +52,15 @@ cannot be tessellated falls back to the independent per-patch preview
 The tessellation also keeps each face's result (luce-cad `face_cache.lucb`),
 keyed by everything the face job reads, with boundary points named by their
 place in the face's boundary table. A copy of the model with moved control
-vertices (`CadModel.with_cvs_moved`) re-plans the layout and re-meshes only the
-faces whose inputs changed.
+vertices (`CadModel.with_cvs_moved`, or Edit CAD's CV steps) re-plans the
+layout and re-meshes only the faces whose inputs changed. The edges stay
+where they are, so moving a trimmed surface's boundary control vertices takes
+its trims off it: such a surface is marked edited, its boundary points take
+their nearest parameters on it (the face follows its CVs and stays joined to
+its neighbours along the unmoved edges), and a face whose trims fold into a
+shape no mesher accepts is left out and counted (`CadGeometry.dropped_faces`)
+instead of failing the model. A cone's side that closes at its apex meshes as
+rings and an apex fan (`conical_fan.lucb`).
 
 A full tessellation (`CadModel.tessellate(segments, edge_size)`) runs:
 

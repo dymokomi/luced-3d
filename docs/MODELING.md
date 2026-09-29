@@ -163,8 +163,8 @@ An Edit node is a modeling engine in one node: while it is displayed and
 selected, every tool appends a step to its recipe instead of creating a node,
 and each tool (or each drag) is one undo. There is no operation list to edit.
 There is one Edit node per kind of geometry, so each keeps its own levels and
-tools: **Edit Mesh** (polygons), with Edit CAD, Edit SDF and Edit Sketch to
-come. They share one framework (`edit_types.luc`,
+tools: **Edit Mesh** (polygons) and **Edit CAD** (analytic models), with Edit
+SDF and Edit Sketch to come. They share one framework (`edit_types.luc`,
 `edit_kinds.luc`): a kind supplies its selection levels, its tools and
 primitives, the geometry each level picks on, the geometry its recipe starts
 from, and the step executor that gives its verbs meaning; the recipe, undo,
@@ -178,6 +178,18 @@ Delete act on whole pieces. It creates primitives (Box, Sphere, Cylinder,
 Cone, Torus, Grid, Plane) as recipe steps: each new piece gets its own `path`
 (`/box1`, `/box2`, …), becomes the selected Object and undoes like any step.
 Unconnected, an Edit Mesh starts from nothing.
+
+Edit CAD's levels are Object (a whole model), Faces (a B-rep face), Edges (a
+B-rep edge) and CVs (control vertices). Object, Faces and Edges pick on the
+models' display tessellations, tagged with their model, face and edge
+(luce-cad's `CadEdits.pick_mesh`), so a pick selects a whole model, face or
+edge; CVs pick on the control-vertex cloud. Whole models move, rotate, scale
+and delete; faces delete (a model losing every face goes); CVs move with the
+gizmo, Rotate, Scale, Noise, Flatten and Snap, and only the moved ones
+change. A moved boundary CV takes its trims along: they are re-projected
+onto the edited surface, and a face whose trims fold is left out with a
+warning instead of failing the node. Edges have no tools yet. Its primitives
+are luce-cad's analytic solids: Box, Cylinder, Cone, Sphere and Torus.
 
 - A step is one verb run: the verb, the group expression and its type, the
   parameter values, the connectivity hash the group was selected on, and the

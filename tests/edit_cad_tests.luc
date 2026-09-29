@@ -1,0 +1,71 @@
+## Edit CAD: Object, Faces, Edges and CVs levels on analytic models.
+## Primitives are recipe steps selected as their Object; whole models move
+## and go, faces go, a B-rep edge is picked whole, and CV steps move control
+## vertices (the other CVs keep their exact positions).
+from workspace import Workspace
+from geometry_data import cad_data
+from edit_operations import EditStep
+from cad_display_tests import dome_model
+from cad_geometry import CadGeometry
+from three import Vector3
+import edit_cad
+import math
+
+func near(a: float, b: float):
+    assert(math.abs(a - b) < 0.00001)
+
+func models(w: Workspace) -> int!:
+    let node = w.selected() else trap("node")
+    return CadGeometry.model_count(w.network.evaluate_data(node.id).geometry)
+
+pub func edit_cad_tests() -> unit!:
+    let w = Workspace()
+    w.delete_selected()
+    w.add_node("Edit CAD", 0.0, 0.0)
+    assert(w.editing())
+    let names: list[str] = []
+    for level in w.levels():
+        names.append(level.name)
+    assert(names == ["Object", "Faces", "Edges", "CVs"])
+    # A solid is a step, selected as its Object.
+    w.create("Box")
+    assert(models(w) == 1 and w.component_mode == 0 and w.selected_count() == 6)
+    w.move_selection(Vector3(3.0, 0.0, 0.0))
+    near((w.geometry else trap("moved")).bounds().maximum.x, 4.0)
+    w.create("Sphere")
+    let both = w.geometry else trap("both")
+    assert(models(w) == 2 and w.selected_count() == both.face_count() - 6)
+    # Object picks select a whole model; Faces picks a B-rep face.
+    w.choose_component(0, false)
+    assert(w.selected_count() == 6)
+    w.set_mode(1)
+    w.choose_component(0, false)
+    assert(w.selected_count() == 1)
+    w.model("Delete")
+    let node = w.selected() else trap("node")
+    let data = w.network.evaluate_data(node.id)
+    assert(CadGeometry.model(data.geometry, 0).face_count() == 5)
+    # Edges picks every mesh edge of one B-rep edge.
+    w.set_mode(2)
+    let mesh = w.geometry else trap("edges")
+    let tag = mesh.find_attribute("cad_edge", 4)
+    var edge = -1
+    for at in 0..<(try mesh.edge_count()):
+        if edge < 0 and mesh.attribute_value(tag, at) >= 0.0: edge = at
+    w.choose_component(edge, false)
+    assert(w.selected_count() >= 1)
+    # Whole models go at the Object level.
+    w.set_mode(0)
+    w.choose_component(0, false)
+    w.model("Delete")
+    assert(models(w) == 1)
+    # A CV step moves one control vertex of a NURBS dome.
+    let kind = edit_cad.kind()
+    let dome = cad_data(dome_model())
+    let cloud = kind.pick(dome, 3) else trap("cloud")
+    assert(cloud.point_count() == 9 and cloud.face_count() == 0)
+    let moved = kind.run(EditStep("Transform Components", "4", 1, [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0], cloud.topology_hash()), dome)
+    let model = CadGeometry.model(moved.geometry, 0)
+    near(model.cv_position(4).z, 5.0)
+    near(model.cv_position(0).z, 0.0)
+    print("PASS Edit CAD: Object, Faces, Edges and CVs levels; solids as steps; models moved and deleted, faces deleted, edges picked whole, CVs moved")
