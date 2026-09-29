@@ -161,8 +161,8 @@ history retains 64 transactions.
 
 Geometry storage, transforms, merge, triangulation, ray intersections and region
 extrusion live in `luce-3d`'s `PolygonMesh`; luce-3d has no UI dependency.
-Editor state, graph evaluation, commands, tools and the `SceneView` viewport
-widget (`src/scene_view.lucb`) stay in this project. Rendering uses `luce-gpu`
+Editor state, graph evaluation, commands and tools stay in this project; the
+viewport is `luce-ui`'s `SceneView` widget. Rendering uses `luce-gpu`
 with retained geometry buffers; first-draw preparation is still on the CPU.
 
 This is an experimental modeling foundation. Extrusion currently operates on

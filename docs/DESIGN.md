@@ -6,7 +6,7 @@ instances drive keyboard and button actions. Signal connections are retained
 and disconnected at shutdown. The theme reproduces its grey/orange palette using
 the same linear-light conversion in `luce-color`.
 
-    luced-3d → luce-ui
+    luced-3d → luce-ui   → luce-3d (SceneView)
              → luce-3d  → luce-gpu
              → luce-cad  → luce-3d
              → luce-step → luce-cad
@@ -16,9 +16,9 @@ the same linear-light conversion in `luce-color`.
 The application implements no native graphics backend. `luce-gpu` owns GPU
 resources and submission. `luce-3d` owns topology, geometry operations, cameras,
 materials, picking and rendering; it has no UI dependency. `luced-3d` owns the
-graph, evaluation policy, operation recipes, selection, interaction, history and
-the `SceneView` widget (`src/scene_view.lucb`) that connects a `luce-ui`
-`Viewport` to a `luce-3d` `Renderer`. The Metal observer under `tools/` is only
+graph, evaluation policy, operation recipes, selection, interaction and history.
+The viewport hosts `luce-ui`'s `SceneView` widget, which connects a `Viewport`
+to a `luce-3d` `Renderer`. The Metal observer under `tools/` is only
 for test captures, following `luced-2d`'s preview workflow.
 
 ![Transform gizmo on a Cube → Transform network](preview_gizmo_move.png)
@@ -174,8 +174,8 @@ click dismisses.
   without replacing an active field's value while typing.
 - `viewport_tools.luc`: component controls, selection overlays and handles,
   enabled by the selected/displayed node's capabilities.
-- `view.luc` / `scene_view.lucb`: navigation, and composition of the scene into a
-  `luce-ui` viewport.
+- `view.luc`: navigation, and composition of the scene through `luce-ui`'s
+  `SceneView`.
 - `panels.luc` / `app.luc`: composition, search palette, refresh and lifecycle.
 - `node_catalog.luc`: node kinds, arity, parameter defaults/ranges and inspector
   metadata. `node_evaluation.luc` dispatches operators; `component_groups.luc`
