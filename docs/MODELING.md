@@ -12,7 +12,7 @@ No placeholder nodes are listed: every registered node evaluates geometry.
 | Sources | Cube, Grid, Sphere, Cylinder, Cone, Torus, File |
 | Graph | Edit, Merge, Null, Switch, Tessellate, Group, Blast |
 | Transforms/copies | Transform, Mirror, CopyTransform, CopyToPoints, MatchSize |
-| Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Fill, Dissolve |
+| Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Loop Cut, Fill, Dissolve |
 | Deformation (verbs) | Transform Components, Smooth, Mountain, Peak, Flatten, Snap |
 | Attributes | AttributeCreate, AttributeRandomize, AttributeDelete, AttributeRename, AttributePromote, Selection Group, Normal, Measure, UVProject, Color |
 
@@ -75,6 +75,10 @@ guarded. Very large selections show as a summary in the Group field.
 - Inset moves the rim of each region (or face) inward by a distance, with an
   optional depth; inner corners blend their face's corners so UVs follow.
   Clamp keeps each move within half of the boundary edges beside it.
+- Loop Cut cuts 1–64 loops across the quads of each group edge's ring (or
+  only between the group's edges), slid together toward one side; other faces
+  on the ring take the new points, and a quad already cut by one ring stops a
+  crossing ring. The new loop edges are selected.
 - PolyBevel bevels the group's interior edges by a constant offset measured in
   the faces beside them, with 1–64 segments along a profile (0.5 round, 0
   flat) and overlap clamping. Where three or more beveled edges meet, the hole
