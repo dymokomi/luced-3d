@@ -1,0 +1,42 @@
+## CAD in the viewport: a File's CAD shows the model's kept tessellation
+## (a Tessellate node with the same settings places the same mesh), its
+## edges and normal guides, and its control nets as hulls.
+from cad import BrepModel, CadModel
+from geocore import Vector3
+from geometry_data import cad_data
+from scene_projection import append_cad_hulls, append_patch_boundaries
+from three import Matrix4
+
+## A raised B-spline dome over a planar cap: a closed solid.
+func dome_model() -> CadModel!:
+    let b = BrepModel()
+    let knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    let points: list[Vector3] = []
+    for u in 0..<3:
+        for v in 0..<3:
+            points.append(Vector3(float(u), float(v), 4.0 if u == 1 and v == 1 else 0.0))
+    for p in [points[0], points[6], points[8], points[2]]: discard(b.add_vertex(p))
+    for edge in 0..<4: discard(b.add_line(edge, (edge + 1) % 4))
+    let dome = b.add_spline_surface(points, [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], 3, 3, 2, 2, knots, knots)
+    discard(b.add_face(dome, [1, 2, 3, 4], [4]))
+    let plane = b.add_surface(0, Vector3(), Vector3(0.0, 0.0, 1.0), Vector3(1.0, 0.0, 0.0))
+    discard(b.add_face(plane, [-4, -3, -2, -1], [4], false))
+    let model = CadModel()
+    model.attach_brep(b)
+    return model
+
+pub func cad_display_tests() -> unit!:
+    let data = cad_data(dome_model())
+    let preview = data.preview()
+    assert(preview.meshes.length == 1 and preview.failed_faces == 0)
+    assert(preview.boundaries.length == 8 and preview.normal_guides.length == 4 and preview.hull.length == 24)
+    # A Tessellate node at the display's settings places the shown mesh.
+    let tessellated = data.tessellated(16)
+    assert((tessellated.mesh else trap("mesh")).points_id() == preview.meshes[0].points_id())
+    # The worker's overlays: edges and the hull, placed.
+    let hulls: list[Vector3] = []
+    append_cad_hulls(data, Matrix4(), hulls)
+    let edges: list[Vector3] = []
+    append_patch_boundaries(data, Matrix4(), edges)
+    assert(hulls.length == 24 and edges.length == 8)
+    print("PASS CAD display: kept tessellation shown and placed by Tessellate, edges, normal guides and control hulls")
