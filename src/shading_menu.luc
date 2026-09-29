@@ -7,10 +7,20 @@ import theme
 import ui
 
 pub func mode_names() -> list[str]:
-    return ["Wireframe", "Flat + Wireframe", "Flat", "Shaded", "Shaded + Wireframe", "Rendered (not available)", "Show normals"]
+    return ["Wireframe", "Flat + Wireframe", "Flat", "Shaded", "Shaded + Wireframe", "Rendered (not available)", "Show normals", "Zebra", "Isophotes"]
 
 pub func mode_asset(mode: int) -> str:
-    return ["wireframe", "solid-wireframe", "solid-view", "material", "shaded-wireframe", "render", "surface-normal"][mode]
+    return ["wireframe", "solid-wireframe", "solid-view", "material", "shaded-wireframe", "render", "surface-normal", "reflection", "light-sun"][mode]
+
+## The stripe options shown under the modes while Zebra or Isophotes is on.
+func option_rows(workspace: Workspace) -> list[str]:
+    if not (workspace.display_mode in [7, 8]):
+        return []
+    let axis = ["X", "Y", "Z", "View up"][workspace.zebra_axis]
+    return [f"Stripes: {workspace.zebra_stripes}", f"Dark share: {int(workspace.zebra_duty * 100.0 + 0.5)}%", f"Axis: {axis}",
+            "Model: Planar" if workspace.zebra_planar else "Model: Cylinder", "Shading: Off" if workspace.zebra_stripes_only else "Shading: On"]
+
+let row: float = 35.0
 
 pub func mode_icon(p: Painter, mode: int, x: float, y: float) -> unit!:
     ui.draw_icon(p.target(), mode_asset(mode), Rect(x, y, 24.0, 24.0), theme.text_muted() if mode == 5 else theme.text())
@@ -30,27 +40,53 @@ pub class ShadingMenu: Widget:
     pub func layout(self) -> Layout:
         return self.box
     pub func measure(self, available: Constraints) -> Size!:
-        return Size(268.0, 258.0)
+        return Size(268.0, 12.0 + row * float(mode_names().length + option_rows(self.workspace).length))
     pub func open(self, x: float, y: float, held: bool) -> unit!:
         self.held = held
         self.hovered = -1
         self.box.set_popup_point(x, y)
         self.box.set_visible(true)
     pub func choose(self, index: int) -> unit!:
-        if index == 5 or index < 0 or index > 6:
+        let modes = mode_names().length
+        if index >= modes:
+            self.option(index - modes)
+            return
+        if index == 5 or index < 0:
             return
         if index == 6:
             self.workspace.normals_visible = not self.workspace.normals_visible
             self.workspace.revision += 1
         else:
             self.workspace.set_display_mode(index)
+            if index in [7, 8]:
+                # Stay open: the stripe options appear below.
+                self.box.invalidate()
+                return
         self.box.set_visible(false)
+
+    ## Step a stripe option; the draw state changes, nothing recooks.
+    func option(self, index: int) -> unit!:
+        let w = self.workspace
+        if index == 0:
+            w.zebra_stripes = w.zebra_stripes * 2 if w.zebra_stripes < 64 else 8
+        elif index == 1:
+            w.zebra_duty = w.zebra_duty + 0.1 if w.zebra_duty < 0.85 else 0.1
+        elif index == 2:
+            w.zebra_axis = (w.zebra_axis + 1) % 4
+        elif index == 3:
+            w.zebra_planar = not w.zebra_planar
+        elif index == 4:
+            w.zebra_stripes_only = not w.zebra_stripes_only
+        else:
+            return
+        w.revision += 1
+        self.box.invalidate()
     pub func draw(self, target: RenderTarget) -> unit!:
         let p = Painter(target)
         p.rectangle(Rect(0.0, 0.0, target.size().width, target.size().height), theme.surface())
         let names = mode_names()
         for index in 0..<names.length:
-            let y = 6.0 + float(index) * 35.0
+            let y = 6.0 + float(index) * row
             let selected = index == self.workspace.display_mode or (index == 6 and self.workspace.normals_visible)
             if self.hovered == index and index != 5:
                 p.rectangle(Rect(4.0, y, 260.0, 34.0), theme.grey(72.0))
@@ -58,6 +94,12 @@ pub class ShadingMenu: Widget:
                 p.rectangle(Rect(4.0, y, 3.0, 34.0), theme.accent())
             mode_icon(p, index, 12.0, y + 4.0)
             p.text(names[index], 44.0, y + 8.0, theme.text_muted() if index == 5 else theme.text())
+        let options = option_rows(self.workspace)
+        for index in 0..<options.length:
+            let y = 6.0 + float(names.length + index) * row
+            if self.hovered == names.length + index:
+                p.rectangle(Rect(4.0, y, 260.0, 34.0), theme.grey(72.0))
+            p.text(options[index], 44.0, y + 8.0, theme.text_muted())
         p.close()
     pub func event(self, event: Event) -> unit!:
         if event.cancelled or event.kind == EventKind.focus_lost or (event.kind == EventKind.key_down and event.key == Key.escape):
@@ -65,9 +107,11 @@ pub class ShadingMenu: Widget:
             self.held = false
             return
         if event.kind == EventKind.pointer_moved:
-            self.hovered = int((event.y - 6.0) / 35.0) if event.inside and event.y >= 6.0 and event.y < 251.0 else -1
+            let rows = float(mode_names().length + option_rows(self.workspace).length)
+            self.hovered = int((event.y - 6.0) / row) if event.inside and event.y >= 6.0 and event.y < 6.0 + row * rows else -1
             self.box.invalidate()
         if (event.kind == EventKind.pointer_down and not self.held) or (event.kind == EventKind.pointer_up and self.held):
             self.held = false
-            if event.inside and event.y >= 6.0 and event.y < 251.0:
-                self.choose(int((event.y - 6.0) / 35.0))
+            let rows = float(mode_names().length + option_rows(self.workspace).length)
+            if event.inside and event.y >= 6.0 and event.y < 6.0 + row * rows:
+                self.choose(int((event.y - 6.0) / row))
