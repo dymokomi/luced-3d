@@ -1,12 +1,16 @@
 from app import Luce3D
 from gpu import Frame
 from step import Step
-from geometry_data import GeometryData
+from geometry_data import GeometryData, cad_data
+from overlay_lines import OverlayLines
 from scene_projection import append_scene, append_overlays, append_patch_boundaries
-from three import Group, Matrix4, WireBatch, Vector3
+from three import Group, Matrix4
 from obj import Obj
 import window
 import timing
+import modeling_commands
+import node_commands
+import selection_commands
 
 func recording(recorder: timing.GpuRecorder?) -> Frame!:
     if let found = recorder: return found.frame()
@@ -18,22 +22,24 @@ pub func main(arguments: list[str]) -> int!:
     let gpu_recorder = timing.GpuRecorder() if "gpu" in arguments else none
     editor.app.layout(1400.0, 900.0)
     if arguments.length > 1 and arguments[0] in ["camera", "mesh", "obj"]:
-        var data = GeometryData(Obj.load(arguments[1])) if arguments[0] == "obj" else GeometryData(surfaces = [Step.load_model(arguments[1])])
+        var data = GeometryData(Obj.load(arguments[1])) if arguments[0] == "obj" else cad_data(Step.load_model(arguments[1]))
         if arguments[0] == "mesh": data = data.tessellated(16)
         let group = Group()
         discard(append_scene(data, group))
         w.scene.add(group)
-        append_overlays(data, Matrix4(), w.wire_points, w.normal_points, 3)
-        w.wire_batch = WireBatch(w.wire_points)
-        let patches: list[Vector3] = []
+        let wires = OverlayLines.make()
+        let normals = OverlayLines.make()
+        let patches = OverlayLines.make()
+        append_overlays(data, Matrix4(), wires, normals)
         append_patch_boundaries(data, Matrix4(), patches)
-        w.patch_batch = WireBatch(patches)
-        w.distance = 300.0
+        w.batches.wire_batch = wires.batch()
+        w.batches.patch_batch = patches.batch()
+        w.view.distance = 300.0
         if arguments.length > 2 and arguments[2] == "wire": w.set_display_mode(4)
-        print(f"CAD fixture: {data.description()} / {w.wire_points.length // 2} boundary segments")
+        print(f"CAD fixture: {data.description()} / {wires.count()} boundary segments")
     if arguments.length > 0 and arguments[0] == "dense":
-        w.add_node("Sphere", 0.0, 0.0)
-        w.set_parameter(1, 64.0)
+        node_commands.add_node(w, "Sphere", 0.0, 0.0)
+        node_commands.set_parameter(w, 1, 64.0)
         editor.panels.refresh()
         let mesh = w.geometry else trap("mesh")
         print(f"Dense fixture: {mesh.point_count()} points / {mesh.face_count()} faces / {mesh.index_count() // 3} triangles")
@@ -42,7 +48,7 @@ pub func main(arguments: list[str]) -> int!:
         var total = 0.0
         var worst = 0.0
         let timer = editor.app.every(0.001, func () -> unit!:
-            w.orbit(0.5, 0.0)
+            w.view.orbit(0.5, 0.0)
             editor.panels.view.layout().invalidate())
         let connection = editor.app.on_frame(func (elapsed: float) -> unit!:
             count += 1
@@ -60,10 +66,10 @@ pub func main(arguments: list[str]) -> int!:
         return 0
     for phase in 0..<(1 if arguments.length > 0 and arguments[0] in ["camera", "mesh", "obj"] else 3):
         if phase == 1:
-            w.add_node("Edit", 40.0, 330.0)
+            node_commands.add_node(w, "Edit", 40.0, 330.0)
             if arguments.length == 0 or arguments[0] != "dense":
-                w.choose_component(2, false)
-                w.extrude()
+                selection_commands.choose_component(w, 2, false)
+                modeling_commands.extrude(w)
         if phase == 2:
             w.toggle_grid()
         var render_ms = 0.0
@@ -71,7 +77,7 @@ pub func main(arguments: list[str]) -> int!:
         var camera_ms = 0.0
         for iteration in 0..<120:
             let start = timing.now()
-            w.orbit(0.5, 0.0)
+            w.view.orbit(0.5, 0.0)
             let camera_end = timing.now()
             let frame = recording(gpu_recorder)
             editor.app.render(frame.target())
