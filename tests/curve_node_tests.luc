@@ -1,0 +1,47 @@
+## Curve nodes: generated from the verb catalog, cooked on whole geometry
+## sets, drawn as lines, and turned into meshes.
+from network import Network
+from workspace import Workspace
+import node_catalog
+import time
+
+pub func curve_node_tests() -> unit!:
+    # The catalog lists set verbs beside the mesh verbs, with their groups.
+    assert("Curve Circle" in node_catalog.kinds() and "Resample Curve" in node_catalog.kinds())
+    assert(node_catalog.category("Curve Spiral") == "Curves" and node_catalog.input_count("Curve Spiral") == 0)
+    assert("Curve Arc" in node_catalog.sources() and not node_catalog.has_group("Curve Arc"))
+    assert(node_catalog.has_group("Trim Curve") and node_catalog.input_count("Curve to Mesh") == 2)
+    assert(node_catalog.is_set_verb("Mesh to Curve") and not node_catalog.is_mesh_verb("Mesh to Curve"))
+    assert(not node_catalog.requires_second("Curve to Mesh"))
+    let graph = Network(false)
+    let circle = graph.add("Curve Circle", 0.0, 0.0)
+    let resample = graph.add("Resample Curve", 0.0, 60.0)
+    graph.connect(circle.id, resample.id, 0)
+    let data = graph.evaluate_data(resample.id)
+    assert(data.description() == "1 curves / 16 curve points")
+    # A tube without a profile input: the circle profile.
+    let tube = graph.add("Curve to Mesh", 0.0, 120.0)
+    graph.connect(resample.id, tube.id, 0)
+    let mesh = graph.evaluate(tube.id)
+    assert(mesh.face_count() == 16 * 12 and mesh.point_count() == 16 * 12)
+    # Back to curves: every edge of the closed tube, chained. Its boundary
+    # is empty: the circle closes the path.
+    let outline = graph.add("Mesh to Curve", 0.0, 180.0)
+    graph.connect(tube.id, outline.id, 0)
+    assert(graph.evaluate_data(outline.id).description() == "384 curves / 768 curve points")
+    # The workspace draws curves as lines, without the worker.
+    let workspace = Workspace()
+    let spiral = workspace.network.add("Curve Spiral", 200.0, 0.0)
+    workspace.network.display = spiral.id
+    workspace.network.preview = true
+    workspace.rebuild()
+    assert(workspace.curve_batches.length == 1 and workspace.curve_batches[0].count() == 3 * 32)
+    # The worker publishes them too, with the Bezier hull.
+    workspace.enable_compute()
+    let session = workspace.compute else trap("compute")
+    let deadline = time.now() + 20000000000
+    while session.busy and time.now() < deadline:
+        discard(workspace.poll_compute())
+    assert(not session.busy and workspace.notice == "")
+    assert(workspace.curve_batches.length == 1 and workspace.curve_batches[0].count() == 3 * 32)
+    assert(workspace.hull_batches[0].count() == 0)

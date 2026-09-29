@@ -14,6 +14,7 @@ No placeholder nodes are listed: every registered node evaluates geometry.
 | Transforms/copies | Transform, Mirror, CopyTransform, CopyToPoints, MatchSize |
 | Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Loop Cut, Bridge, Fill, Dissolve, Merge Points |
 | Deformation (verbs) | Transform Components, Smooth, Mountain, Peak, Flatten, Snap |
+| Curves (set verbs) | Curve Line, Curve Circle, Curve Arc, Curve Spiral, Resample Curve, Trim Curve, Fillet Curve, Reverse Curve, Set Curve Type, Curve to Mesh, Mesh to Curve |
 | Attributes | AttributeCreate, AttributeRandomize, AttributeDelete, AttributeRename, AttributePromote, Selection Group, Normal, Measure, UVProject, Color |
 
 Modeling and deformation nodes are luce-geocore verbs (after Houdini's SOP
@@ -34,6 +35,15 @@ heaviest parent's integer or text, and keeps group membership only when every
 parent is a member. New elements are zero, empty and in no group. Each verb
 also returns an output selection (Extrude's front faces, Inset's inner faces,
 Fuse's merged points), which the tool flow adopts.
+
+Curve nodes are set verbs: they run on the whole geometry set rather than the
+realized mesh, and come from the same catalog (luce-geocore's `VerbCatalog`).
+Curve points are the point domain and curves the primitive domain, so Group
+and Group Type work on curves as they do on meshes. The viewport draws
+evaluated curves in every shading mode, and their control hulls (control
+polygons, Bezier handles, control points) behind the **Control hulls** toggle;
+the hull overlay is generic, for any family's control nets. Curve to Mesh
+takes an optional profile curve on its second input.
 
 ## Selection and tools
 

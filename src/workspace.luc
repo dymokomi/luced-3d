@@ -1,5 +1,5 @@
 from geocore import Mesh, Selection, Verbs
-from three import Scene, Group, Vector3, Matrix4, PerspectiveCamera, AmbientLight, DirectionalLight, WireBatch
+from three import Scene, Group, Vector3, Matrix4, PerspectiveCamera, AmbientLight, DirectionalLight, WireBatch, CurveLines
 from network import Network, Node
 from edit_operations import EditStep
 from tools import ToolRun, tool_run, verb_defaults
@@ -65,6 +65,12 @@ pub class Workspace:
     pub var wire_batch: WireBatch? = none
     pub var normal_batch: WireBatch? = none
     pub var patch_batch: WireBatch? = none
+    ## Curves as lines, and their control hulls: one batch per displayed node
+    ## without the worker, one for the whole result with it.
+    pub let curve_batches: list[WireBatch]
+    pub let hull_batches: list[WireBatch]
+    ## Whether control hulls (curve control polygons, CV nets) are drawn.
+    pub var hulls_visible: bool = true
     pub let publisher: DisplayPublisher
     let sources: SourceCache
     var pending_frame: bool = false
@@ -73,6 +79,8 @@ pub class Workspace:
     pub func init(self) -> unit!:
         self.target = Vector3(0.0, 0.8, 0.0)
         self.wire_points = []
+        self.curve_batches = []
+        self.hull_batches = []
         self.normal_points = []
         self.sources = SourceCache()
         self.network = Network()
@@ -154,6 +162,12 @@ pub class Workspace:
                 return
             for point in self.publisher.bounds:
                 points.append(point)
+        # Curves frame by their drawn lines, with the worker or without.
+        for batch in self.curve_batches:
+            if batch.count() > 0:
+                let box = batch.bounds()
+                points.append(box.minimum)
+                points.append(box.maximum)
         var candidates = self.network.outputs(self.network.scope)
         if let node = self.network.find(self.network.display):
             if self.network.preview or node.kind == "Group":
@@ -197,6 +211,10 @@ pub class Workspace:
         self.revision += 1
         if self.compute != none and self.normals_visible:
             self.rebuild()
+
+    pub func toggle_hulls(self) -> unit!:
+        self.hulls_visible = not self.hulls_visible
+        self.revision += 1
 
     pub func toggle_grid(self) -> unit!:
         self.grid_visible = not self.grid_visible
@@ -341,6 +359,8 @@ pub class Workspace:
             self.revision += 1
             return
         self.objects.clear()
+        self.curve_batches.clear()
+        self.hull_batches.clear()
         self.wire_points.clear()
         self.normal_points.clear()
         self.geometry = none
@@ -367,6 +387,9 @@ pub class Workspace:
                 continue
             self.objects.add(branch)
             append_overlays(data, Matrix4(), self.wire_points, self.normal_points, self.display_mode if self.display_mode <= 4 else 3)
+            if CurveLines.count(data.geometry) > 0:
+                self.curve_batches.append(CurveLines.batch(data.geometry))
+                self.hull_batches.append(CurveLines.batch(data.geometry, true))
             append_patch_boundaries(data, Matrix4(), patches)
         if analytic > 0 and self.notice == "":
             self.notice = f"CAD preview: {analytic} patches could not be meshed; boundaries remain visible"
@@ -411,6 +434,10 @@ pub class Workspace:
             self.wire_batch = session.service.wires()
             self.normal_batch = session.service.normals()
             self.patch_batch = session.service.patches()
+            self.curve_batches.clear()
+            self.hull_batches.clear()
+            self.curve_batches.append(session.service.curve_lines())
+            self.hull_batches.append(session.service.hulls())
         self.geometry = self.publisher.geometry
         self.sync_selection()
         session.service.release_result(self.publisher.kept)
@@ -702,7 +729,7 @@ pub class Workspace:
     ## the group (and its guard) on Enter.
     pub func reselect(self, id: int) -> unit!:
         let node = self.network.require(id)
-        if not node_catalog.is_verb(node.kind) or node.inputs[0] < 0 or self.pending != none:
+        if not node_catalog.is_mesh_verb(node.kind) or node.inputs[0] < 0 or self.pending != none:
             return
         self.begin("Reselect")
         self.prompt = ToolPrompt(node.id, node.inputs[0], "Reselect", true)

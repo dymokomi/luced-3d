@@ -5,6 +5,7 @@ from geometry_data import GeometryData
 from edit_operations import EditStep
 import node_catalog
 from node_evaluation import source_geometry, evaluate_operator, evaluate_verb, load_geometry, SourceCache
+from geometry_nodes import evaluate_set_verb
 import ui
 
 pub func kinds() -> list[str]:
@@ -102,6 +103,10 @@ pub class Node:
         let translation = Vector3(v[1], v[2], v[3]).add(pivot).subtract(Matrix4.compose(Vector3(), rotation, scale).transform_point(pivot))
         if self.kind == "Group":
             return GeometryData().with_instance(data, translation, rotation, scale)
+        if node_catalog.is_set_verb(self.kind):
+            if not self.enabled:
+                return data
+            return evaluate_set_verb(self.kind, v, self.texts, data, second)
         if self.kind in node_catalog.sources():
             if not self.enabled:
                 return GeometryData()
@@ -127,7 +132,7 @@ pub class Node:
             for edit in self.edits:
                 mesh = edit.evaluate(mesh).mesh()
             return GeometryData(mesh)
-        if node_catalog.is_verb(self.kind):
+        if node_catalog.is_mesh_verb(self.kind):
             if self.guard != 0 and self.guard != mesh.topology_hash():
                 error(ui.invalid, "Group was selected on different topology. Reselect, or Keep IDs.")
             return evaluate_verb(self.kind, v, self.texts, mesh)
@@ -405,9 +410,10 @@ pub class Network:
             return data
         var second: GeometryData? = none
         if node.inputs.length == 2:
-            if node.inputs[1] < 0:
+            if node.inputs[1] >= 0:
+                second = self.evaluate_node(node.inputs[1], visiting)
+            elif node_catalog.requires_second(node.kind):
                 error(ui.invalid, "Connect the second geometry input")
-            second = self.evaluate_node(node.inputs[1], visiting)
         let progress = func (fraction: float) -> unit!:
             if let report = self.on_progress:
                 report(node.id, fraction, "Tessellating" if node.kind == "Tessellate" else "Computing")

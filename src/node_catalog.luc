@@ -5,24 +5,50 @@
 ## numeric slots (`parameters`) come from the same rows, so defaults, clamping
 ## and the pane never disagree.
 ##
-## Modeling nodes are luce-geocore verbs: their parameters come from the verb
-## (Verbs.parm_*), in value slots from 0, and every one has the standard Group
-## (text slot 0) and Group Type (value slot `group_type_slot`) of Houdini.
-from geocore import Verbs
+## Modeling, curve and field nodes are luce-geocore verbs, from one catalog
+## over its two registries (VerbCatalog: mesh verbs, then set verbs): their
+## parameters come from the verb, in value slots from 0, and grouped ones have
+## the standard Group (text slot 0) and Group Type (value slot
+## `group_type_slot`) of Houdini.
+from geocore import Verbs, VerbCatalog
 
 ## Value slots a node has, and the one verb nodes keep their Group Type in.
 pub let value_slots: int = 16
 pub let group_type_slot: int = 15
 
 pub func is_verb(kind: str) -> bool:
+    return VerbCatalog.index_of(kind) >= 0
+
+## Verbs that run on the realized mesh (their groups name mesh components).
+pub func is_mesh_verb(kind: str) -> bool:
     return Verbs.index_of(kind) >= 0
 
-## Every verb's node kind, in the registry's order.
+## Verbs that run on the whole geometry set (curves, fields, conversions).
+pub func is_set_verb(kind: str) -> bool:
+    let index = VerbCatalog.index_of(kind)
+    return index >= 0 and VerbCatalog.is_set(index)
+
+## Every verb's node kind, in the catalog's order.
 pub func verbs() -> list[str]:
     let result: list[str] = []
-    for index in 0..<Verbs.count():
-        result.append(Verbs.name(index))
+    for index in 0..<VerbCatalog.count():
+        result.append(VerbCatalog.name(index))
     return result
+
+## Verb nodes with no input (primitive curves, SDF shapes).
+func generators() -> list[str]:
+    let result: list[str] = []
+    for index in 0..<VerbCatalog.count():
+        if VerbCatalog.inputs(index) == 0:
+            result.append(VerbCatalog.name(index))
+    return result
+
+## Whether the node's second input must be connected.
+pub func requires_second(kind: str) -> bool:
+    let index = VerbCatalog.index_of(kind)
+    if index >= 0:
+        return VerbCatalog.second_required(index)
+    return not (kind in ["Switch", "Null"])
 
 ## One row of a node's parameter pane. `slot` is the first value slot (a
 ## vector's components take the slots after it) or, for text rows, the text slot.
@@ -142,15 +168,15 @@ func larger(a: float, b: float) -> float:
     return a if a > b else b
 
 pub func sources() -> list[str]:
-    return ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus", "File", "Group"]
+    return ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus", "File", "Group"] + generators()
 
 pub func categories() -> list[str]:
-    return ["Primitives", "Modeling", "Deform", "Transform / Copy", "Attributes", "Utility", "File I/O", "All"]
+    return ["Primitives", "Modeling", "Deform", "Curves", "Transform / Copy", "Attributes", "Utility", "File I/O", "All"]
 
 pub func category(kind: str) -> str:
-    let verb = Verbs.index_of(kind)
+    let verb = VerbCatalog.index_of(kind)
     if verb >= 0:
-        return Verbs.category(verb)
+        return VerbCatalog.category(verb)
     if kind == "File":
         return "File I/O"
     if kind == "Group":
@@ -169,10 +195,16 @@ pub func kinds() -> list[str]:
     return sources() + ["Transform", "Tessellate", "Blast", "Edit", "Merge", "Null", "Switch"] + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Normal", "Measure", "UVProject", "Color"]
 
 pub func input_count(kind: str) -> int:
+    let verb = VerbCatalog.index_of(kind)
+    if verb >= 0:
+        return VerbCatalog.inputs(verb)
     return 0 if kind in sources() else (2 if kind in ["Merge", "Switch", "CopyToPoints"] else 1)
 
 pub func has_group(kind: str) -> bool:
-    return is_verb(kind) or kind in ["Blast", "Selection Group"]
+    let verb = VerbCatalog.index_of(kind)
+    if verb >= 0:
+        return VerbCatalog.grouped(verb)
+    return kind in ["Blast", "Selection Group"]
 
 pub func has_attribute_name(kind: str) -> bool:
     return kind in ["AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group"]
@@ -205,7 +237,7 @@ pub func fields(kind: str, path: str = "") -> list[Parameter]!:
             rows.append(number("STEP tolerance", 0, 0.0, 0.0, 1.0, 0.00001, "Model tolerance in file units; 0 uses the file's own.", decimals = 9))
     if has_group(kind):
         rows.append(entry("Group", 0, "Elements to work on, in Houdini's group syntax: empty or * for all, 0 2-5 and 0-99:2 for numbers, names and globs, @P.y>0 or @name tests, ^ to remove, & to intersect, grow(x) and loop(x)."))
-    if is_verb(kind):
+    if is_verb(kind) and has_group(kind):
         rows.append(menu("Group Type", group_type_slot, "Guess from group|Points|Edges|Primitives|Vertices", 0.0, "What the group's numbers name; Guess reads the named groups' type, else the operation's own."))
     if has_attribute_name(kind):
         rows.append(entry("Attribute", 1, "The attribute's name."))
@@ -217,7 +249,7 @@ pub func fields(kind: str, path: str = "") -> list[Parameter]!:
 
 ## The numeric rows of each node kind.
 func value_fields(kind: str) -> list[Parameter]:
-    let verb = Verbs.index_of(kind)
+    let verb = VerbCatalog.index_of(kind)
     if verb >= 0:
         return verb_fields(verb)
     if kind == "Blast":
@@ -290,33 +322,33 @@ func value_fields(kind: str) -> list[Parameter]:
 func verb_fields(verb: int) -> list[Parameter]:
     let result: list[Parameter] = []
     var slot = 0
-    for parm in 0..<Verbs.parm_count(verb):
-        let label = Verbs.parm_label(verb, parm)
-        let kind = Verbs.parm_kind(verb, parm)
-        let initial = Verbs.parm_initial(verb, parm)
-        let low = Verbs.parm_minimum(verb, parm)
-        let high = Verbs.parm_maximum(verb, parm)
-        let doc = Verbs.parm_doc(verb, parm)
-        var row = number(label, slot, initial, low, high, 0.1, doc, Verbs.parm_soft(verb, parm) > 0.0, Verbs.parm_soft(verb, parm))
+    for parm in 0..<VerbCatalog.parm_count(verb):
+        let label = VerbCatalog.parm_label(verb, parm)
+        let kind = VerbCatalog.parm_kind(verb, parm)
+        let initial = VerbCatalog.parm_initial(verb, parm)
+        let low = VerbCatalog.parm_minimum(verb, parm)
+        let high = VerbCatalog.parm_maximum(verb, parm)
+        let doc = VerbCatalog.parm_doc(verb, parm)
+        var row = number(label, slot, initial, low, high, 0.1, doc, VerbCatalog.parm_soft(verb, parm) > 0.0, VerbCatalog.parm_soft(verb, parm))
         if kind == 1:
             row = whole(label, slot, initial, low, high, doc, true)
         elif kind == 2:
             row = toggle(label, slot, initial, doc)
         elif kind == 3:
             let defaults: list[float] = []
-            for component in 0..<Verbs.parm_components(verb, parm):
+            for component in 0..<VerbCatalog.parm_components(verb, parm):
                 defaults.append(initial)
             row = vector(label, slot, defaults, doc, low, high)
         elif kind == 4:
-            row = menu(label, slot, Verbs.parm_choices(verb, parm), initial, doc)
+            row = menu(label, slot, VerbCatalog.parm_choices(verb, parm), initial, doc)
         result.append(row)
         slot += row.components
     return result
 
 pub func description(kind: str) -> str:
-    let verb = Verbs.index_of(kind)
+    let verb = VerbCatalog.index_of(kind)
     if verb >= 0:
-        return Verbs.description(verb)
+        return VerbCatalog.description(verb)
     if kind == "Group":
         return "Nested network / double-click to enter"
     if kind == "CopyToPoints":

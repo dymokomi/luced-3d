@@ -13,7 +13,9 @@ import sync
 import c
 import geocore
 from geocore import detached_mesh, mesh_overlay_points
-from three import Vector3, Matrix4, invalid, WireBatch, wire_batch_type
+from three import Vector3, Matrix4, invalid, WireBatch, wire_batch_type, append_curve_segments
+from geocore import GeometrySet
+from geocore_growing import Growing
 import platform
 
 pub type ComputeHandler = interop.Callback[str, unit]
@@ -35,6 +37,9 @@ struct Product:
     var wires: Vector3[]
     var normals: Vector3[]
     var patches: Vector3[]
+    ## Evaluated curves and their control hulls.
+    var curves: Vector3[]
+    var hulls: Vector3[]
 
 ## Overlays of a key the UI holds, kept so unchanged keys need no extraction.
 struct Held:
@@ -42,6 +47,8 @@ struct Held:
     var wires: Vector3[]
     var normals: Vector3[]
     var patches: Vector3[]
+    var curves: Vector3[]
+    var hulls: Vector3[]
 
 struct State:
     var lock: sync.Mutex
@@ -77,6 +84,8 @@ struct State:
             release_points(product.wires)
             release_points(product.normals)
             release_points(product.patches)
+            release_points(product.curves)
+            release_points(product.hulls)
         self.count = 0
         if let report = self.report:
             report.release()
@@ -215,6 +224,37 @@ pub struct ComputeChannel:
         product.patches = try copy_points(patches)
         try self.add(product)
 
+    ## Publish the curves of `geometry` (evaluated lines and control hulls)
+    ## under a content key; nothing when it has no curves.
+    pub func curves(key: i64, node: i64, geometry: interop.Reference[GeometrySet]) -> !:
+        try self.check()
+        var lines = Growing[Vector3]()
+        defer lines.close()
+        var hulls = Growing[Vector3]()
+        defer hulls.close()
+        try append_curve_segments(try geometry.get(), Matrix4(), &lines, &hulls)
+        if lines.count + hulls.count == 0:
+            return
+        var product = Product(key, none, node, false, false, true)
+        errdefer:
+            release_points(product.curves)
+            release_points(product.hulls)
+        product.curves = try copy_points(lines.view())
+        product.hulls = try copy_points(hulls.view())
+        try self.add(product)
+
+    ## Publish control hulls (world-space endpoint pairs: control polygons,
+    ## CV nets, handle arms) under a content key. Any family's hulls go here;
+    ## the viewport draws them together, behind a visibility toggle.
+    pub func hull(key: i64, node: i64, points: const Vector3[]) -> !:
+        try self.check()
+        if points.length == 0:
+            return
+        var product = Product(key, none, node, false, false, true)
+        errdefer release_points(product.hulls)
+        product.hulls = try copy_points(points)
+        try self.add(product)
+
     ## A key already in this result gains the inspect role instead of a copy.
     func merge(key: i64, inspect: bool) -> bool:
         for index in 0..<self.state.count:
@@ -345,6 +385,11 @@ pub struct ComputeService:
         return try self.batch(1)
     pub func patches() -> interop.Reference[WireBatch]!:
         return try self.batch(2)
+    pub func curve_lines() -> interop.Reference[WireBatch]!:
+        return try self.batch(3)
+    ## Every published hull: curve control polygons and handles, CV nets.
+    pub func hulls() -> interop.Reference[WireBatch]!:
+        return try self.batch(4)
 
     func batch(which: i64) -> interop.Reference[WireBatch]!:
         let state = self.state else error(invalid, "Compute service closed")
@@ -381,17 +426,21 @@ pub struct ComputeService:
                 release_points(state.held[index].wires)
                 release_points(state.held[index].normals)
                 release_points(state.held[index].patches)
+                release_points(state.held[index].curves)
+                release_points(state.held[index].hulls)
         state.held_count = count
         for index in 0..<state.count:
             let product = &state.products[index]
             if not product.fresh or product.mesh != none or not listed(kept, product.key) or state.held_count == state.held.length:
                 continue
-            state.held[state.held_count] = Held(product.key, product.wires, product.normals, product.patches)
+            state.held[state.held_count] = Held(product.key, product.wires, product.normals, product.patches, product.curves, product.hulls)
             state.held_count += 1
             var empty: Vector3[]
             product.wires = empty
             product.normals = empty
             product.patches = empty
+            product.curves = empty
+            product.hulls = empty
         state.clear()
         state.completed = 0
         state.changed.broadcast()
@@ -414,6 +463,8 @@ pub struct ComputeService:
             release_points(held.wires)
             release_points(held.normals)
             release_points(held.patches)
+            release_points(held.curves)
+            release_points(held.hulls)
         if let phase = state.phase:
             phase.release()
         free(state) in memory.heap
@@ -429,12 +480,21 @@ func listed(keys: const i64[], key: i64) -> bool:
 
 func overlay_of(state: const State*, product: const Product, which: i64) -> const Vector3[]:
     if product.fresh:
-        return product.wires if which == 0 else (product.normals if which == 1 else product.patches)
+        return pick(which, product.wires, product.normals, product.patches, product.curves, product.hulls)
     for held in state.held[..<state.held_count]:
         if held.key == product.key:
-            return held.wires if which == 0 else (held.normals if which == 1 else held.patches)
+            return pick(which, held.wires, held.normals, held.patches, held.curves, held.hulls)
     var empty: Vector3[]
     return empty
+
+## Overlay `which`: 0 wires, 1 normals, 2 patches, 3 curves, 4 curve hulls.
+func pick(which: i64, wires: const Vector3[], normals: const Vector3[], patches: const Vector3[], curves: const Vector3[], hulls: const Vector3[]) -> const Vector3[]:
+    match which:
+        0: return wires
+        1: return normals
+        2: return patches
+        3: return curves
+        _: return hulls
 
 func run(raw: void*?):
     let state = (State*)(raw else return)
