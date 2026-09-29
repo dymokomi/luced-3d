@@ -182,8 +182,13 @@ Edit Mesh's levels are Object, Polygons, Edges, Vertices and Corners. At the
 Object level a pick selects a whole piece, and moves, rotations, scales and
 Delete act on whole pieces. Besides the modeling verbs its tools include
 Knife (a Clip keeping both sides, through the selection's centroid, across X),
-Connect (the tool amount places the new points) and Edge Slide (the tool
-amount is how far). It creates primitives (Box, Sphere, Cylinder,
+Connect (the tool amount places the new points), Edge Slide (the tool
+amount is how far), PolyMirror (Polygons: across X through the origin,
+welded), Spin (Edges: a full turn about Y in 12 steps), Crease (Edges: the
+tool amount is the sharpness) and PolyDraw (Vertices: a face through the
+selected points, ordered round their centroid and wound like its
+neighbours; as a node it also takes drawn positions, snapped to existing
+points). It creates primitives (Box, Sphere, Cylinder,
 Cone, Torus, Grid, Plane) as recipe steps: each new piece gets its own `path`
 (`/box1`, `/box2`, …), becomes the selected Object and undoes like any step.
 Unconnected, an Edit Mesh starts from nothing.
