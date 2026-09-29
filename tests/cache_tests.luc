@@ -26,6 +26,7 @@ pub func cache_tests() -> unit!:
     store_hits()
     source_cache()
     large_edit_replay()
+    pinned_undo()
     print("PASS stamps ignore names/flags/tool amount, result store hits on undo, hashed guards, small deltas and one-recipe Edit replay")
 
 ## Rename, placement, visibility, output flags and the Edit tool amount are
@@ -165,9 +166,11 @@ func large_edit_replay() -> unit!:
     w.move_selection(Vector3(0.0, 0.1, 0.0))
     settle(w)
     assert(w.notice == "" and session.recipes == 1 and session.request_size < 16384)
+    # A second move of the same components merges into the first step (D19).
     w.move_selection(Vector3(0.0, 0.1, 0.0))
     settle(w)
     assert(w.notice == "" and session.recipes == 1 and session.request_size < 16384)
+    assert((w.selected() else trap("Edit")).edits.length == 1)
     w.undo()
     settle(w)
     assert(session.recipes == 0)
@@ -179,5 +182,29 @@ func large_edit_replay() -> unit!:
     settle(w)
     assert(session.recipes == 1)
     w.commit()
-    assert((w.selected() else trap("Edit")).edits.length == 2)
+    assert((w.selected() else trap("Edit")).edits.length == 1)
+    session.close()
+
+## Undo inside the pinned window (the last eight steps) replays nothing:
+## every stored prefix is kept while the Edit node is shown (D18).
+func pinned_undo() -> unit!:
+    let w = Workspace()
+    w.enable_compute()
+    settle(w)
+    w.add_node("Edit", 0.0, 100.0)
+    settle(w)
+    let session = w.compute else trap("compute")
+    w.set_mode(0)
+    for step in 0..<10:
+        # Alternate groups so the moves do not merge.
+        w.choose_component(step % 8, false)
+        w.move_selection(Vector3(0.0, 0.05, 0.0))
+        settle(w)
+        assert(session.recipes == 1)
+    assert((w.selected() else trap("Edit")).edits.length == 10)
+    for undo in 0..<16:
+        if (w.selected() else trap("Edit")).edits.length <= 2: break
+        w.undo()
+        settle(w)
+        assert(session.recipes == 0)
     session.close()

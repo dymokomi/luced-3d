@@ -141,9 +141,10 @@ class Computation:
         self.channel.progress(node.id, 1.0, "Complete")
         return result
 
-    ## Apply only the recipes after the longest stored prefix. The prefix just
-    ## before the last recipe is stored too: a gizmo drag or the next recipe
-    ## starts from it.
+    ## Apply only the recipes after the longest stored prefix. Prefixes at the
+    ## checkpoints (the last eight, every sixteenth) are stored as they are
+    ## made: undo inside that window, a gizmo drag and the next recipe start
+    ## from a stored result.
     func edit(self, node: Node, input: GeometryData) -> GeometryData!:
         let base = self.graph.require(node.inputs[0]).stamp
         var mesh = input.require_mesh()
@@ -160,7 +161,7 @@ class Computation:
             mesh = node.edits[at].evaluate(mesh).mesh()
             self.recipes += 1
             self.channel.check()
-            if at == node.edits.length - 2:
+            if at + 1 < node.edits.length and checkpoint(at + 1, node.edits.length):
                 discard(self.store.put(prefix_stamp(node, base, at + 1), GeometryData(mesh)))
         return GeometryData(mesh)
 
@@ -196,7 +197,9 @@ class Computation:
             result.insert(node.stamp)
             if node.kind == "Edit" and node.edits.length > 0:
                 if let input = self.graph.find(node.inputs[0]):
-                    result.insert(prefix_stamp(node, input.stamp, node.edits.length - 1))
+                    for count in 1..<node.edits.length:
+                        if checkpoint(count, node.edits.length):
+                            result.insert(prefix_stamp(node, input.stamp, count))
             for input in node.inputs:
                 pending.append(input)
             if node.kind == "Group":
@@ -318,6 +321,12 @@ class Computation:
 
     func listed(self, key: int) -> bool:
         return key in self.keys
+
+## Whether the result after `count` of `total` steps is kept: the last eight
+## (instant undo and redo) and every sixteenth (a replay from any point costs
+## at most fifteen steps), per D18.
+pub func checkpoint(count: int, total: int) -> bool:
+    return count >= total - 8 or count % 16 == 0
 
 pub func compute_factory(token: int) -> ComputeHandler!:
     let computation = Computation(compute_bridge.channel(token))

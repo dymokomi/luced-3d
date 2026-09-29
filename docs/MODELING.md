@@ -80,10 +80,33 @@ guarded. Very large selections show as a summary in the Group field.
 - CopyToPoints realizes copies at target positions, with a 256-copy limit. It
   does not yet interpret orientation/scale attributes or retain instances.
 
-Each Edit step is one verb run: the verb, the group expression, its type,
-the parameter values and the connectivity hash the group was selected on.
-Topology-incompatible upstream edits fail rather than silently moving wrong IDs.
-Undo/redo includes modeling, groups, attribute parameters and graph changes.
+## The Edit node
+
+The Edit node is a modeling engine in one node: while it is displayed and
+selected, every tool appends a step to its recipe instead of creating a node,
+and each tool (or each drag) is one undo. There is no operation list to edit.
+
+- A step is one verb run: the verb, the group expression and its type, the
+  parameter values, the connectivity hash the group was selected on, and the
+  node's Symmetry and Keep selection settings at the time.
+- The recipe is the truth: undo restores a shorter recipe. The worker keeps
+  the results after the last eight steps and every sixteenth (D18), so undo
+  and redo inside that window cook nothing, and a deeper undo replays at most
+  fifteen steps. Consecutive moves of the same components merge into one step
+  (D19); each drag remains its own undo.
+- After a topology tool the selection becomes what the tool made (Extrude's
+  front faces); with **Keep selection** it is instead the selection carried
+  through the tool (a new element is selected when all its parents were).
+- **Soft radius** and **Falloff** (linear, quadratic, cubic, smooth) make
+  moves, rotations and scales pull the points near the selection, by the
+  distance to the nearest selected point.
+- **Symmetry** (X, Y or Z) mirrors every tool: the group gains the mirror of
+  each member (points, faces, edges and vertices matched by position within a
+  ten-thousandth of the model's size), and moved points' mirrors move to the
+  mirrored places; points on the plane stay on it.
+- An upstream change that alters the input's topology fails the node: "Edit
+  input topology changed. Undo the upstream change or clear this node's edits."
+  Position-only upstream changes flow through the recipe.
 
 ## Attribute contracts
 

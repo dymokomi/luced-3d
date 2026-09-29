@@ -1,0 +1,62 @@
+## The Edit node as a modeling engine: tools append verb steps with the
+## node's symmetry, soft radius and Keep selection; each tool is one undo;
+## the output selection (or the kept one) carries on to the next tool.
+from workspace import Workspace
+from three import Vector3
+import math
+
+## Steps of the selected Edit node (undo replaces node objects).
+func steps(w: Workspace) -> int!:
+    return (w.selected() else trap("Edit")).edits.length
+
+func near(a: float, b: float):
+    assert(math.abs(a - b) < 0.00001)
+
+pub func edit_engine_tests() -> unit!:
+    let w = Workspace()
+    w.delete_selected()
+    w.add_node("Grid", 0.0, 0.0)
+    w.add_node("Edit", 0.0, 100.0)
+    assert(w.editing())
+    # Symmetry across X: moving a point moves its mirror.
+    w.set_parameter(3, 1.0)
+    w.set_mode(0)
+    w.choose_component(0, false)
+    w.move_selection(Vector3(0.0, 0.5, 0.0))
+    let mesh = w.geometry else trap("mesh")
+    near(mesh.point(0).y, 0.5)
+    near(mesh.point(4).y, 0.5)
+    near(mesh.point(2).y, 0.0)
+    assert(steps(w) == 1 and (w.selected() else trap("Edit")).edits[0].symmetry == 1)
+    w.undo()
+    near((w.geometry else trap("undo")).point(4).y, 0.0)
+    # Soft selection: neighbours follow, less the farther they are.
+    w.set_parameter(3, 0.0)
+    w.set_parameter(1, 0.8)
+    w.choose_component(12, false)
+    w.move_selection(Vector3(0.0, 1.0, 0.0))
+    let soft = w.geometry else trap("soft")
+    near(soft.point(12).y, 1.0)
+    assert(soft.point(7).y > 0.0 and soft.point(7).y < 1.0 and soft.point(0).y == 0.0)
+    w.set_parameter(1, 0.0)
+    # Topology tools hand their output selection on: extrude, then inset the
+    # front face.
+    w.set_mode(2)
+    w.choose_component(5, false)
+    w.set_parameter(0, 0.4)
+    w.extrude()
+    assert(w.selected_ids() == [5])
+    let before = steps(w)
+    w.model("Inset")
+    assert(steps(w) == before + 1 and w.selected_ids() == [5])
+    # Keep selection carries the selection through instead (the walls of an
+    # extruded face descend from it, so they stay selected too).
+    w.set_parameter(4, 1.0)
+    w.choose_component(0, false)
+    w.extrude()
+    assert(w.selected_ids().length == 5 and 0 in w.selected_ids())
+    # Each tool is one undo step, and the recipe is the truth.
+    w.undo()
+    w.undo()
+    assert(steps(w) == before + 1)
+    print("PASS Edit engine: verb steps with symmetry, soft falloff, output and kept selections, one undo per tool")

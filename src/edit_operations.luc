@@ -9,7 +9,7 @@ import ui
 
 ## A Transform Components step moving `group` (on `group_type`) by `delta`.
 pub func move_step(group: str, group_type: int, delta: Vector3, topology: int) -> EditStep:
-    return EditStep("Transform Components", group, group_type, [delta.x, delta.y, delta.z, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0], topology)
+    return EditStep("Transform Components", group, group_type, [delta.x, delta.y, delta.z, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0], topology)
 
 pub class EditStep:
     ## The verb's name ("PolyExtrude", "Transform Components", …).
@@ -19,6 +19,10 @@ pub class EditStep:
     pub let group: str
     pub let group_type: int
     pub let numbers: list[float]
+    ## Mirror the group across X, Y or Z (1..3; 0 none), and carry the input
+    ## selection through the step instead of adopting what the verb made.
+    pub let symmetry: int
+    pub let keep: bool
     ## Connectivity hash of the mesh the group was selected on (0: none).
     pub let topology: int
     ## Content keys of the group text and of the whole step: node stamps and
@@ -26,21 +30,44 @@ pub class EditStep:
     pub let group_key: int
     pub let key: int
 
-    pub func init(self, verb: str, group: str, group_type: int, numbers: list[float], topology: int):
+    pub func init(self, verb: str, group: str, group_type: int, numbers: list[float], topology: int, symmetry: int = 0, keep: bool = false):
         self.verb = verb
         self.group = group
         self.group_type = group_type
         # A step always stores at least one number (fixed-shape arrays).
         self.numbers = numbers.copy() if numbers.length > 0 else [0.0]
         self.topology = topology
+        self.symmetry = symmetry
+        self.keep = keep
         self.group_key = hash(group)
-        self.key = hash((verb, self.group_key, group_type, self.numbers, topology))
+        self.key = hash((verb, self.group_key, group_type, self.numbers, topology, symmetry, keep))
 
     ## This step with other numbers (a gesture adjusting the last step).
     pub func with_numbers(self, numbers: list[float]) -> EditStep:
-        return EditStep(self.verb, self.group, self.group_type, numbers, self.topology)
+        return EditStep(self.verb, self.group, self.group_type, numbers, self.topology, self.symmetry, self.keep)
 
     pub func evaluate(self, mesh: Mesh) -> VerbResult!:
         if self.topology != 0 and self.topology != mesh.topology_hash():
             error(ui.invalid, "Edit input topology changed. Undo the upstream change or clear this node's edits.")
-        return Verbs.run(self.verb, mesh, self.group, self.group_type, self.numbers)
+        return Verbs.run(self.verb, mesh, self.group, self.group_type, self.numbers, self.symmetry, self.keep)
+
+    ## Whether `next` can merge into this step (D19): both move the same
+    ## group, with the same settings, by translation alone.
+    pub func merges(self, next: EditStep) -> bool:
+        return self.verb == "Transform Components" and next.verb == self.verb and next.group_key == self.group_key and next.group_type == self.group_type and next.topology == self.topology and next.symmetry == self.symmetry and next.keep == self.keep and translation_only(self.numbers) and translation_only(next.numbers) and self.numbers[13] == next.numbers[13] and self.numbers[14] == next.numbers[14]
+
+    ## This step followed by `next` (see merges): the translations add.
+    pub func merged(self, next: EditStep) -> EditStep:
+        let numbers = self.numbers.copy()
+        for axis in 0..<3:
+            numbers[axis] = numbers[axis] + next.numbers[axis]
+        return self.with_numbers(numbers)
+
+## A Transform Components parameter list that only translates.
+func translation_only(numbers: list[float]) -> bool:
+    if numbers.length < 15: return false
+    for at in 3..<6:
+        if numbers[at] != 0.0: return false
+    for at in 6..<9:
+        if numbers[at] != 1.0: return false
+    return true
