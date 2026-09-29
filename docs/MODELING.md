@@ -66,9 +66,15 @@ guarded. Very large selections show as a summary in the Group field.
 
 ## Edit tools and important limits
 
-- Extrude operates on face regions with boundary walls; not isolated edges or
-  points, nor a whole closed surface.
-- Inset is an individual-face centroid fraction, not an exact-distance offset.
+- PolyExtrude moves face regions (or each face, with Individual faces) along
+  their averaged normals, with an inset across the region's boundary and
+  divisions along the walls; each run of faces around a boundary point gets
+  its own front point, and a whole closed surface simply moves out. An edge
+  group extrudes its edges into quads (outward in the face plane on a mesh
+  boundary) and selects the front edges. There is no twist, taper or spine.
+- Inset moves the rim of each region (or face) inward by a distance, with an
+  optional depth; inner corners blend their face's corners so UVs follow.
+  Clamp keeps each move within half of the boundary edges beside it.
 - PolyBevel bevels the group's interior edges by a constant offset measured in
   the faces beside them, with 1–64 segments along a profile (0.5 round, 0
   flat) and overlap clamping. Where three or more beveled edges meet, the hole
