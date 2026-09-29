@@ -29,6 +29,8 @@ pub class Actions:
     pub let tools: list[Command]
     pub let add: list[Command]
     pub let modeling: list[Command]
+    ## Selection edits: invert, grow, shrink, border, flood, loop, ring.
+    pub let selection_tools: list[Command]
     pub let all: list[Command]
     let connections: list[Connection]
     let workspace: Workspace
@@ -68,9 +70,18 @@ pub class Actions:
             let command = Command(operation, id = "edit_" + operation)
             self.modeling.append(command)
             self.connections.append(command.on_trigger(func () -> unit!: workspace.model(name)))
+        self.selection_tools = [Command("Invert selection", Shortcut(Key.i, primary = true), id = "select_invert")]
+        self.connections.append(self.selection_tools[0].on_trigger(workspace.invert_selection))
+        let walks = ["Grow selection", "Shrink selection", "Select border", "Select connected", "Select loop", "Select ring"]
+        for index in 0..<walks.length:
+            let operation = index
+            let command = Command(walks[index], id = "select_walk_" + str(index))
+            self.selection_tools.append(command)
+            self.connections.append(command.on_trigger(func () -> unit!: workspace.walk_selection(operation)))
         self.modes = [Command("Points", Shortcut(Key.digit_1), id = "select_points"),
-            Command("Edges", Shortcut(Key.digit_2), id = "select_edges"), Command("Faces", Shortcut(Key.digit_3), id = "select_faces")]
-        for index in 0..<3:
+            Command("Edges", Shortcut(Key.digit_2), id = "select_edges"), Command("Faces", Shortcut(Key.digit_3), id = "select_faces"),
+            Command("Vertices", Shortcut(Key.digit_4), id = "select_vertices")]
+        for index in 0..<4:
             let mode = index
             self.connections.append(self.modes[index].on_trigger(func () -> unit!:
                 workspace.set_mode(mode)))
@@ -79,7 +90,7 @@ pub class Actions:
         self.connections.append(self.tools[1].on_trigger(func (): workspace.choose_tool("Move")))
         for kind in kinds():
             self.add.append(Command(kind, id = "add_" + kind))
-        self.all = [self.undo, self.redo, self.frame, self.grid, self.display, self.output, self.auto_output, self.visibility, self.parent, self.enabled, self.delete, self.extrude, self.clear_edits, self.select_all] + self.add + self.modes + self.tools + self.modeling
+        self.all = [self.undo, self.redo, self.frame, self.grid, self.display, self.output, self.auto_output, self.visibility, self.parent, self.enabled, self.delete, self.extrude, self.clear_edits, self.select_all] + self.add + self.modes + self.tools + self.modeling + self.selection_tools
         self.all += [self.new_project, self.open_project, self.save, self.save_as, self.reset_layout]
         self.refresh()
 
@@ -106,18 +117,21 @@ pub class Actions:
             self.clear_edits.set_enabled(selected.kind == "Edit" and selected.edits.length > 0)
         else:
             self.clear_edits.set_enabled(false)
-        self.extrude.set_enabled(w.editing() and w.component_mode == 2 and w.components.length > 0)
-        self.select_all.set_enabled(w.editing())
-        for index in 0..<3:
-            self.modes[index].set_enabled(w.editing())
+        let selecting = w.selecting()
+        self.extrude.set_enabled(selecting and w.component_mode == 2)
+        self.select_all.set_enabled(selecting)
+        for index in 0..<4:
+            self.modes[index].set_enabled(selecting)
             self.modes[index].set_checked(index == w.component_mode)
         for tool in self.tools:
-            tool.set_enabled(w.editing())
+            tool.set_enabled(selecting)
             tool.set_checked(tool.text() == w.edit_tool)
+        # Tools apply to the selection, or prompt for one (Tool → Select);
+        # on the Edit node they need a selection.
         for command in self.modeling:
-            let face_tool = command.text() in ["Reverse", "Triangulate", "Inset", "Duplicate", "Split"]
-            let edge_tool = command.text() in ["Fill", "Dissolve"]
-            command.set_enabled(w.editing() and (command.text() in ["Subdivide", "Bevel", "Clean"] or (w.components.length > 0 and (not face_tool or w.component_mode == 2) and (not edge_tool or w.component_mode == 1))))
+            command.set_enabled(selecting and (not w.editing() or w.selected_count() > 0 or command.text() in ["Subdivide", "Bevel", "Clean"]))
+        for command in self.selection_tools:
+            command.set_enabled(selecting and w.selected_count() > 0)
         self.grid.set_checked(w.grid_visible)
 
     pub func close(self):

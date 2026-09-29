@@ -78,21 +78,25 @@ pub class ViewportTools:
                 painter.text("Frame geometry (F)" if index == 0 else "Toggle grid (G)", width - 176.0, 49.0, theme.text())
         if self.hover_revision != w.revision:
             self.hovered = -1
-        if w.editing():
+        if w.selecting():
             let mesh = w.geometry else return
-            self.overlay.update(mesh, w.component_mode, w.components, self.hovered)
+            self.overlay.show(mesh, w.component_mode, w.selection, self.hovered)
             self.overlay.draw(w.camera, painter.target(), theme.grey(90.0), theme.accent(), theme.text(), wires = false)
             self.draw_edit_controls(painter, height)
         self.gizmos.draw(painter, width, height)
 
     func draw_edit_controls(self, painter: Painter, height: float) -> unit!:
         let w = self.workspace
-        for mode in 0..<3:
+        for mode in 0..<4:
             let x = 16.0 + float(mode) * 38.0
             painter.rounded_rectangle(Rect(x, 44.0, 32.0, 30.0), theme.accent() if mode == w.component_mode else theme.surface(), 4.0)
             let ink = theme.grey(0.0) if mode == w.component_mode else theme.text()
-            ui.draw_icon(painter.target(), ["vertex-select", "edge-select", "face-select"][mode], Rect(x + 5.0, 48.0, 22.0, 22.0), ink)
-        painter.text(["Points", "Edges", "Faces"][w.component_mode], 134.0, 51.0, theme.text_muted())
+            ui.draw_icon(painter.target(), ["vertex-select", "edge-select", "face-select", "corner-pin"][mode], Rect(x + 5.0, 48.0, 22.0, 22.0), ink)
+        let caption = ["Points", "Edges", "Faces", "Vertices"][w.component_mode]
+        painter.text(caption + (f" / {w.selected_count()} selected" if w.selected_count() > 0 else ""), 172.0, 51.0, theme.text_muted())
+        if let prompt = w.prompt:
+            painter.rounded_rectangle(Rect(16.0, height - 40.0, 420.0, 28.0), theme.surface(), 4.0)
+            painter.text(f"{prompt.label}: select components, Enter to accept, Esc to cancel", 24.0, height - 35.0, theme.accent())
         let commands = self.actions.tools + [self.actions.extrude] + self.actions.modeling
         for index in 0..<commands.length:
             let label = "Extrude" if index == 2 else commands[index].text()
@@ -129,7 +133,7 @@ pub class ViewportTools:
             if face >= -1:
                 return face
             return mesh.ray_face(w.camera.position(), view_ray(w, x, y, width, height))
-        self.overlay.update(mesh, w.component_mode, w.components, self.hovered)
+        self.overlay.show(mesh, w.component_mode, w.selection, self.hovered)
         return self.overlay.pick(w.camera, x, y, width, height, face)
 
     ## Returns true when node tools consume the input; otherwise navigation owns it.
@@ -147,7 +151,7 @@ pub class ViewportTools:
         self.dragging = self.gizmos.dragging
         if handled:
             return true
-        if event.kind == EventKind.scroll and w.editing() and not event.alt and event.x >= 16.0 and event.x <= 86.0 and event.y >= 94.0:
+        if event.kind == EventKind.scroll and w.selecting() and not event.alt and event.x >= 16.0 and event.x <= 86.0 and event.y >= 94.0:
             let maximum = math.max(0.0, float((self.actions.modeling.length + 4) // 2) * 36.0 - height + 144.0)
             self.tool_scroll = math.max(0.0, math.min(maximum, self.tool_scroll - event.scroll_y * 12.0))
             return true
@@ -157,7 +161,7 @@ pub class ViewportTools:
             self.hover_revision = w.revision
             if event.inside and not event.alt and event.y >= 8.0 and event.y <= 38.0 and event.x >= width - 88.0 and event.x <= width - 18.0:
                 self.hover_tool = 100 + int((event.x - width + 88.0) / 38.0)
-            elif event.inside and not event.alt and not self.dragging and w.editing():
+            elif event.inside and not event.alt and not self.dragging and w.selecting():
                 if event.x >= 16.0 and event.x <= 86.0 and event.y >= 94.0:
                     self.hover_tool = self.hit_tool(event.x, event.y, height)
                 elif not (event.y >= 44.0 and event.y <= 74.0 and event.x <= 250.0):
@@ -173,8 +177,8 @@ pub class ViewportTools:
             else:
                 self.actions.grid.trigger()
             return true
-        if w.editing():
-            if event.y >= 44.0 and event.y <= 74.0 and event.x >= 16.0 and event.x <= 124.0:
+        if w.selecting():
+            if event.y >= 44.0 and event.y <= 74.0 and event.x >= 16.0 and event.x <= 162.0:
                 let mode = int((event.x - 16.0) / 38.0)
                 self.actions.modes[mode].trigger()
                 return true
@@ -183,7 +187,7 @@ pub class ViewportTools:
                 let commands = self.actions.tools + [self.actions.extrude] + self.actions.modeling
                 commands[tool].trigger()
                 return true
-        if w.editing():
+        if w.selecting():
             w.choose_component(self.pick(event.x, event.y, width, height), event.shift)
             return true
         return false

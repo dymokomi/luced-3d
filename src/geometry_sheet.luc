@@ -28,7 +28,8 @@ pub class GeometrySheet: Widget:
     pub var columns: list[Column]
     let rows: SheetRows
     var rows_key: str = ""
-    var rows_selection: list[int]
+    ## The selection the rows were built for (its key; 0 for none).
+    var rows_selection: int = 0
     ## Row rebuilds so far; refreshes that change nothing must not add any.
     pub var builds: int = 0
     pub var pinned: int = -1
@@ -53,7 +54,6 @@ pub class GeometrySheet: Widget:
         self.box.set_takes_scroll(true)
         self.columns = []
         self.rows = SheetRows()
-        self.rows_selection = []
 
     pub func layout(self) -> Layout:
         return self.box
@@ -112,22 +112,24 @@ pub class GeometrySheet: Widget:
         let mesh = self.mesh else return
         let column = self.columns[self.sort_column] if self.sort_column >= 0 else Column("", -1, 0)
         let key = f"{self.domain}|{self.row_filter}|{self.sort_column >= 0}|{column.attribute}|{column.component}|{self.descending}|{self.selected_only}|{self.node_id == self.workspace.network.display}|{self.workspace.component_mode}"
-        let selection = self.workspace.components if self.selected_only else []
-        if not changed and key == self.rows_key and selection == self.rows_selection:
+        let chosen = self.shown_selection() if self.selected_only else none
+        var selection_key = 0
+        if let shown = chosen: selection_key = shown.key()
+        if not changed and key == self.rows_key and selection_key == self.rows_selection:
             return
         self.rows_key = key
-        self.rows_selection = selection.copy()
+        self.rows_selection = selection_key
         self.builds += 1
         let expression = self.row_filter
         if self.selected_only:
-            let chosen: list[int] = []
-            let count = mesh.domain_count(self.domain)
-            let filter = Selection.of(mesh, expression if expression != "" else "*", self.domain)
-            for row in selection:
-                if row >= 0 and row < count and self.row_selected(row) and not (row in chosen) and filter.contains(row):
-                    chosen.append(row)
-            chosen.sort()
-            self.rows.assign(chosen)
+            let rows: list[int] = []
+            if let shown = chosen:
+                let filtered = shown.combined(mesh, expression if expression != "" else "*", 2)
+                var at = filtered.next(-1)
+                while at >= 0:
+                    rows.append(at)
+                    at = filtered.next(at)
+            self.rows.assign(rows)
         elif expression == "" or expression == "*":
             self.rows.all(mesh.domain_count(self.domain))
         elif expression.starts_with("@"):
@@ -174,14 +176,17 @@ pub class GeometrySheet: Widget:
         self.row_filter = text.trim()
         self.refresh()
 
-    func row_selected(self, row: int) -> bool!:
+    ## The viewport's selection when it indexes this sheet's rows: the
+    ## displayed node's, on the sheet's domain.
+    func shown_selection(self) -> Selection?:
         if self.node_id != self.workspace.network.display:
-            return false
-        if self.domain == 2 and self.workspace.component_mode == 2:
-            return row in self.workspace.components
-        if self.domain == 0 and self.workspace.component_mode == 0:
-            return row in self.workspace.components
-        return false
+            return none
+        let chosen = self.workspace.selection else return none
+        return chosen if chosen.domain() == self.domain else none
+
+    func row_selected(self, row: int) -> bool!:
+        let chosen = self.shown_selection() else return false
+        return chosen.contains(row)
 
     pub func value(self, row: int, column: int) -> float!:
         let mesh = self.mesh else return 0.0
@@ -258,12 +263,12 @@ pub class GeometrySheet: Widget:
                 self.descending = not self.descending if column == self.sort_column else false
                 self.sort_column = column
                 self.refresh()
-            elif event.y >= 88.0 and self.workspace.editing() and self.node_id == self.workspace.network.display:
+            elif event.y >= 88.0 and self.workspace.selecting() and self.node_id == self.workspace.network.display:
                 let index = int((event.y - 88.0 + self.scroll_y) / 24.0)
                 if index >= 0 and index < self.row_count() and self.domain != 3:
-                    self.workspace.set_mode(2 if self.domain == 2 else 0)
-                    let id = (self.mesh else return).corner_point(self.rows.row(index)) if self.domain == 1 else self.rows.row(index)
-                    self.workspace.choose_component(id, event.shift)
+                    # Rows select components of their own domain (vertices are corners).
+                    self.workspace.set_mode([0, 3, 2, 0, 1][self.domain])
+                    self.workspace.choose_component(self.rows.row(index), event.shift)
                     self.refresh()
         elif event.kind == EventKind.pointer_moved:
             let index = int((event.y - 88.0 + self.scroll_y) / 24.0)

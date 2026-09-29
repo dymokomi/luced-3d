@@ -1,56 +1,46 @@
-## Immutable per-node modeling recipes and topology guards.
-from geocore import Mesh, MeshOps, TopologyTools
-from three import Vector3
+## The Edit node's recipe: each step is one luce-geocore verb run on the
+## result of the steps before it, with the group it was selected as and the
+## connectivity it was selected on. The recipe is the truth (undo restores a
+## shorter recipe; stored prefixes make that free); steps are never edited
+## once recorded, so only an upstream topology change can invalidate a group,
+## and the first step's guard reports it.
+from geocore import Mesh, Verbs, VerbResult, Vector3
 import ui
 
-pub class EditOperation:
-    pub let kind: str
-    pub let elements: list[int]
-    pub let delta: Vector3
-    pub let distance: float
-    # Connectivity hash of the mesh the recipe was authored on (0: unguarded,
-    # e.g. from an older project). Upstream transforms keep it; different
-    # connectivity must not silently send edits to unrelated components.
+## A Transform Components step moving `group` (on `group_type`) by `delta`.
+pub func move_step(group: str, group_type: int, delta: Vector3, topology: int) -> EditStep:
+    return EditStep("Transform Components", group, group_type, [delta.x, delta.y, delta.z, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0], topology)
+
+pub class EditStep:
+    ## The verb's name ("PolyExtrude", "Transform Components", …).
+    pub let verb: str
+    ## A group expression on `group_type` (1 points, 2 edges, 3 faces,
+    ## 4 vertices; 0 guesses).
+    pub let group: str
+    pub let group_type: int
+    pub let numbers: list[float]
+    ## Connectivity hash of the mesh the group was selected on (0: none).
     pub let topology: int
-    ## Content hashes of the element list and of the whole recipe; node stamps
-    ## and worker deltas use them, so large selections are hashed once.
-    pub let elements_key: int
+    ## Content keys of the group text and of the whole step: node stamps and
+    ## worker requests use them, so a large group is hashed once.
+    pub let group_key: int
     pub let key: int
 
-    pub func init(self, kind: str, elements: list[int], mesh: Mesh, delta: Vector3, distance: float, recipe: int? = none) -> unit!:
-        self.kind = kind
-        self.elements = elements.copy()
-        self.delta = delta
-        self.distance = distance
-        self.topology = recipe else mesh.topology_hash()
-        self.elements_key = hash(self.elements)
-        self.key = hash((kind, self.elements_key, delta.x, delta.y, delta.z, distance, self.topology))
+    pub func init(self, verb: str, group: str, group_type: int, numbers: list[float], topology: int):
+        self.verb = verb
+        self.group = group
+        self.group_type = group_type
+        # A step always stores at least one number (fixed-shape arrays).
+        self.numbers = numbers.copy() if numbers.length > 0 else [0.0]
+        self.topology = topology
+        self.group_key = hash(group)
+        self.key = hash((verb, self.group_key, group_type, self.numbers, topology))
 
-    pub func evaluate(self, mesh: Mesh) -> Mesh!:
+    ## This step with other numbers (a gesture adjusting the last step).
+    pub func with_numbers(self, numbers: list[float]) -> EditStep:
+        return EditStep(self.verb, self.group, self.group_type, numbers, self.topology)
+
+    pub func evaluate(self, mesh: Mesh) -> VerbResult!:
         if self.topology != 0 and self.topology != mesh.topology_hash():
             error(ui.invalid, "Edit input topology changed. Undo the upstream change or clear this node's edits.")
-        if self.kind == "Extrude":
-            return mesh.extruded_faces(self.elements, self.distance)
-        if self.kind == "DeletePoints":
-            return MeshOps.delete_points(mesh, self.elements)
-        if self.kind == "Clean":
-            return MeshOps.compact(mesh)
-        if self.kind in ["Delete", "Reverse", "Triangulate", "Inset", "Duplicate", "Split"]:
-            return MeshOps.faces(mesh, self.elements, ["Delete", "Reverse", "Triangulate", "Inset", "Duplicate", "Split"].index_of(self.kind) else 0, self.distance)
-        if self.kind == "Fuse":
-            return MeshOps.fuse(mesh, self.elements, self.distance)
-        if self.kind == "Subdivide":
-            return MeshOps.subdivide(mesh, true)
-        if self.kind == "Bevel":
-            return TopologyTools.bevel(mesh, self.distance)
-        if self.kind == "Fill":
-            return TopologyTools.fill(mesh, self.elements)
-        if self.kind == "Dissolve":
-            if self.elements.length != 1:
-                error(ui.invalid, "Dissolve currently joins across one selected edge")
-            return TopologyTools.dissolve(mesh, self.elements[0])
-        if self.kind in ["Smooth", "Noise", "Peak", "Flatten", "Rotate", "Scale", "Snap"]:
-            return MeshOps.points(mesh, self.elements, ["Smooth", "Noise", "Peak", "Flatten", "Rotate", "Scale", "Snap"].index_of(self.kind) else 0, self.distance, self.delta)
-        if self.kind == "Move":
-            return mesh.moved_points(self.elements, self.delta)
-        error(ui.invalid, "Unknown edit operation")
+        return Verbs.run(self.verb, mesh, self.group, self.group_type, self.numbers)

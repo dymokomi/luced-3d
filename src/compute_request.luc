@@ -1,6 +1,6 @@
 ## Worker request and report framing over the shared graph schema. A request
 ## carries every node's header and stamp, but a body only when the worker's
-## copy is stale, and each Edit element list once. Both sides keep exactly the
+## copy is stale, and each Edit step's group text once. Both sides keep exactly the
 ## nodes (and so the lists) of the last request, so they agree on what's held.
 from prism import Document, Value, Encoding
 from network import Network
@@ -27,7 +27,7 @@ pub class RequestWriter:
         schema.write_scene(doc, graph)
         doc.set("/scene", "mode", Value.integer(mode))
         doc.set("/scene", "normals", Value.boolean(normals))
-        let carried: map[int, list[int]] = {}
+        let carried: map[int, str] = {}
         let sent: map[int, int] = {}
         let lists: set[int] = {}
         for node in graph.nodes:
@@ -39,15 +39,15 @@ pub class RequestWriter:
                 doc.set(path, "source", Value.integer(node.source_revision))
             sent[node.id] = node.stamp
             for edit in node.edits:
-                lists.insert(edit.elements_key)
+                lists.insert(edit.group_key)
         doc.add("/scene/lists", "lists")
         for key in carried.keys():
             if key in self.lists:
                 continue
             let path = f"/scene/lists/l{doc.child_count("/scene/lists")}"
-            doc.add(path, "elements")
+            doc.add(path, "group")
             doc.set(path, "key", Value.integer(key))
-            values.put_ids(doc, path, "elements", carried[key] else [])
+            doc.set(path, "text", Value.text(carried[key] else ""))
         self.sent.clear()
         for id in sent.keys():
             self.sent[id] = sent[id] else 0
@@ -59,13 +59,13 @@ pub class RequestWriter:
 ## Worker side: rebuild the mirror, reusing held bodies (and their recipes).
 pub func read_request(message: str, previous: Network) -> Network!:
     let doc = Document.parse(message)
-    let lists: map[int, list[int]] = {}
+    let lists: map[int, str] = {}
     for old in previous.nodes:
         for edit in old.edits:
-            lists[edit.elements_key] = edit.elements
+            lists[edit.group_key] = edit.group
     for index in 0..<doc.child_count("/scene/lists"):
-        let path = doc.child_at("/scene/lists", index) else error(ui.invalid, "Missing element list")
-        lists[values.stamp(doc, path, "key")] = values.ids(doc, path, "elements", 16000000, 0)
+        let path = doc.child_at("/scene/lists", index) else error(ui.invalid, "Missing Edit group")
+        lists[values.stamp(doc, path, "key")] = values.text(doc, path, "text")
     let graph = Network(false)
     schema.read_scene(doc, graph)
     for index in 0..<doc.child_count("/scene/nodes"):
@@ -83,6 +83,7 @@ pub func read_request(message: str, previous: Network) -> Network!:
             node.values = old.values
             node.texts = old.texts
             node.edits = old.edits
+            node.guard = old.guard
             node.source_revision = old.source_revision
         graph.nodes.append(node)
     graph.compute_mode = values.integer(doc, "/scene", "mode", 0, 4)

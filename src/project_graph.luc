@@ -2,12 +2,11 @@
 ## compute worker's delta requests: authored nodes and Edit recipes, never
 ## cooked caches. A node is a header (identity, wiring, flags) and a body (what
 ## its cook reads); requests send bodies only when a node's stamp changed.
-from prism import Document, Value, DType
+from prism import Document, Value
 from network import Network, Node
-from edit_operations import EditOperation
-from geocore import Mesh
-from three import Vector3
+from edit_operations import EditStep
 import project_values as values
+from geocore import Verbs
 import ui
 
 pub func write_graph(doc: Document, graph: Network) -> unit!:
@@ -37,26 +36,29 @@ pub func write_header(doc: Document, path: str, node: Node) -> unit!:
     doc.set(path, "position", Value.numbers([2], [node.x, node.y]))
     values.put_ids(doc, path, "inputs", node.inputs)
 
-## With `shared`, element lists travel once under /scene/lists by content key;
-## the map collects the lists this document must carry. Projects inline them.
-pub func write_body(doc: Document, path: str, node: Node, shared: map[int, list[int]]?) -> unit!:
+## With `shared`, Edit step groups travel once under /scene/lists by content
+## key; the map collects the groups this document must carry. Projects inline
+## them.
+pub func write_body(doc: Document, path: str, node: Node, shared: map[int, str]?) -> unit!:
     doc.set(path, "enabled", Value.boolean(node.enabled))
     doc.set(path, "parameters", Value.numbers([node.values.length], node.values))
     doc.set(path, "texts", Value.strings([node.texts.length], node.texts))
+    doc.set(path, "guard", Value.integer(node.guard))
     doc.add(path + "/edits", "recipes")
     doc.set(path, "edit_count", Value.integer(node.edits.length))
     for at in 0..<node.edits.length:
         let edit = node.edits[at]
         let recipe = path + f"/edits/e{at}"
-        doc.add(recipe, edit.kind)
-        if let lists = shared:
-            doc.set(recipe, "elements_key", Value.integer(edit.elements_key))
-            lists[edit.elements_key] = edit.elements
+        doc.add(recipe, "step")
+        doc.set(recipe, "verb", Value.text(edit.verb))
+        if let groups = shared:
+            doc.set(recipe, "group_key", Value.integer(edit.group_key))
+            groups[edit.group_key] = edit.group
         else:
-            values.put_ids(doc, recipe, "elements", edit.elements)
+            doc.set(recipe, "group", Value.text(edit.group))
+        doc.set(recipe, "group_type", Value.integer(edit.group_type))
+        doc.set(recipe, "numbers", Value.numbers([edit.numbers.length], edit.numbers))
         doc.set(recipe, "topology", Value.integer(edit.topology))
-        doc.set(recipe, "delta", Value.numbers([3], [edit.delta.x, edit.delta.y, edit.delta.z]))
-        doc.set(recipe, "distance", Value.number(edit.distance))
 
 ## Worker requests come from the live graph: `trusted` skips the text-field
 ## checks projects need (they would build UI widgets on the worker thread).
@@ -77,8 +79,8 @@ pub func read_header(doc: Document, path: str, trusted: bool = false) -> Node!:
 pub func has_body(doc: Document, path: str) -> bool:
     return doc.has_property(path, "enabled")
 
-## `shared` resolves element-list keys (worker requests); projects inline them.
-pub func read_body(doc: Document, path: str, node: Node, shared: map[int, list[int]]?) -> unit!:
+## `shared` resolves group keys (worker requests); projects inline them.
+pub func read_body(doc: Document, path: str, node: Node, shared: map[int, str]?) -> unit!:
     node.enabled = values.flag(doc, path, "enabled")
     node.values = values.numbers(doc, path, "parameters", node.values.length, node.values.length)
     let texts = doc.get(path, "texts")
@@ -86,36 +88,25 @@ pub func read_body(doc: Document, path: str, node: Node, shared: map[int, list[i
     for at in 0..<texts.count():
         let text = texts.text_at(at)
         node.texts[at] = text if shared != none else values.line(text)
+    node.guard = values.stamp(doc, path, "guard") if doc.has_property(path, "guard") else 0
     let count = values.integer(doc, path, "edit_count", 0, 100000)
     if count != doc.child_count(path + "/edits") or (node.kind != "Edit" and count != 0):
         error(ui.invalid, "Invalid Edit recipe collection")
     node.edits = []
     for at in 0..<count:
         let recipe = path + f"/edits/e{at}"
-        let kind = doc.type_at(recipe)
-        if not (kind in recipe_kinds()):
+        if doc.type_at(recipe) != "step":
             error(ui.invalid, "Unknown Edit recipe")
-        var elements: list[int] = []
-        if let lists = shared:
-            elements = lists[values.stamp(doc, recipe, "elements_key")] else error(ui.invalid, "Missing Edit element list")
+        let verb = values.text(doc, recipe, "verb")
+        if Verbs.index_of(verb) < 0:
+            error(ui.invalid, "Unknown Edit operation")
+        var group = ""
+        if let groups = shared:
+            group = groups[values.stamp(doc, recipe, "group_key")] else error(ui.invalid, "Missing Edit group")
         else:
-            elements = values.ids(doc, recipe, "elements", 16000000, 0)
-        let delta = values.numbers(doc, recipe, "delta", 3, 3)
-        node.edits.append(EditOperation(kind, elements, Mesh.empty(), Vector3(delta[0], delta[1], delta[2]),
-            values.scalar(doc, recipe, "distance"), topology_guard(doc, recipe)))
-
-## Older projects stored the whole ordered connectivity (millions of ints) as
-## the guard; those recipes load unguarded rather than failing.
-func topology_guard(doc: Document, recipe: str) -> int!:
-    if not doc.has_property(recipe, "topology"):
-        return 0
-    let guard = doc.get(recipe, "topology")
-    if guard.rank() != 0 or guard.dtype() != DType.int64:
-        return 0
-    return guard.integer_at()
-
-pub func recipe_kinds() -> list[str]:
-    return ["Extrude", "DeletePoints", "Clean", "Delete", "Reverse", "Triangulate", "Inset", "Duplicate", "Split", "Fuse", "Subdivide", "Bevel", "Fill", "Dissolve", "Smooth", "Noise", "Peak", "Flatten", "Rotate", "Scale", "Snap", "Move"]
+            group = values.text(doc, recipe, "group")
+        let numbers = values.numbers(doc, recipe, "numbers", 0, 64)
+        node.edits.append(EditStep(verb, group, values.integer(doc, recipe, "group_type", 0, 4), numbers, values.stamp(doc, recipe, "topology")))
 
 ## Parse fully and check references/cycles before a caller replaces live state.
 pub func read_graph(doc: Document) -> Network!:

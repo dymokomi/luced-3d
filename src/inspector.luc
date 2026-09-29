@@ -86,6 +86,10 @@ pub class Inspector:
             self.actions.extrude.trigger()
         elif role == "clear":
             self.actions.clear_edits.trigger()
+        elif role == "reselect":
+            if let node = self.workspace.selected(): self.workspace.reselect(node.id)
+        elif role == "keep_ids":
+            if let node = self.workspace.selected(): self.workspace.keep_ids(node.id)
 
     ## The field showing value slot `slot`, in window points; empty when none shows it.
     pub func field_bounds(self, slot: int) -> Rect!:
@@ -106,7 +110,7 @@ pub class Inspector:
         return 0.0
 
     ## Rebuild the panel's rows for `node`: the catalog's, and an Edit node's edits.
-    func build(self, kind: str, path: str, edits: int) -> unit!:
+    func build(self, kind: str, path: str) -> unit!:
         self.rows = []
         self.roles = []
         var specs: list[ParameterSpec] = []
@@ -122,12 +126,13 @@ pub class Inspector:
                                                     doc = "Remove every component edit of this node."))
             self.add(specs, "last", ParameterSpec(name = "last", label = "Last extrusion", minimum = -100.0, maximum = 100.0, step = 0.1, decimals = 2,
                                                    doc = "Change the distance of the most recent extrusion."))
-            if edits > 0:
-                specs.append(ParameterSpec(name = "operations", label = "Operations", kind = ParameterKind.folder))
-                self.rows.append(Parameter("Operations", -1, 0.0))
-                self.roles.append("folder")
-            for index in 0..<edits:
-                self.add(specs, "operation", ParameterSpec(name = f"operation{index}", label = f"{index + 1}.", kind = ParameterKind.info), index)
+        # A verb node made from a selection: pick its components again, or keep
+        # its numbers on a changed topology (Houdini's behaviour).
+        if node_catalog.is_verb(kind):
+            self.add(specs, "reselect", ParameterSpec(name = "reselect", label = "Reselect", kind = ParameterKind.button, join = true,
+                                                      doc = "Show the input and pick the group's components again (Enter accepts)."))
+            self.add(specs, "keep_ids", ParameterSpec(name = "keep_ids", label = "Keep IDs", kind = ParameterKind.button,
+                                                      doc = "Use the group's numbers on the input's current topology."))
         self.parameters.set_specs(specs)
 
     ## An inspector row of the Edit node; `slot` is an operation's index.
@@ -143,10 +148,9 @@ pub class Inspector:
         let file = node.kind == "File"
         let path = node.texts[0].trim().lower()
         let format = "step" if file and (path.ends_with(".step") or path.ends_with(".stp")) else ""
-        let edits = node.edits.length if node.kind == "Edit" else 0
-        let key = f"{node.kind}|{format}|{edits}"
+        let key = f"{node.kind}|{format}"
         if key != self.built:
-            self.build(node.kind, node.texts[0], edits)
+            self.build(node.kind, node.texts[0])
             self.built = key
         self.showing = node.id
         self.state_rows.layout().set_visible(not file)
@@ -165,23 +169,25 @@ pub class Inspector:
                 for component in 0..<row.components:
                     self.parameters.set_component(index, component, node.values[row.slot + component])
             elif role == "text":
-                self.parameters.set_text(index, node.texts[row.slot])
+                # A selection too large to read as text shows as a summary
+                # (the group itself stays exact); Reselect changes it.
+                let text = node.texts[row.slot]
+                let baked = row.name == "Group" and text.byte_count > 16384
+                self.parameters.set_text(index, f"‹selection of {text.byte_count // 1024} KB›" if baked else text)
+                self.parameters.set_enabled(index, not baked)
             elif role == "edits":
-                self.parameters.set_text(index, f"{node.edits.length} operations / {self.workspace.components.length} selected")
+                self.parameters.set_text(index, f"{node.edits.length} edits / {self.workspace.selected_count()} selected")
             elif role == "last":
-                let last = node.edits.length > 0 and node.edits[-1].kind == "Extrude"
+                let last = node.edits.length > 0 and node.edits[-1].verb == "PolyExtrude"
                 self.parameters.set_hidden(index, not last)
                 if last:
-                    self.parameters.set_value(index, node.edits[-1].distance)
+                    self.parameters.set_value(index, node.edits[-1].numbers[0])
             elif role == "clear":
                 self.parameters.set_enabled(index, node.edits.length > 0)
             elif role == "extrude":
                 self.parameters.set_enabled(index, self.actions.extrude.is_enabled())
-            elif role == "operation":
-                let operation = row.slot
-                if operation >= 0 and operation < node.edits.length:
-                    let edit = node.edits[operation]
-                    self.parameters.set_text(index, f"{edit.kind} / {edit.elements.length} elements")
+            elif role == "keep_ids":
+                self.parameters.set_enabled(index, node.guard != 0)
         if node.kind == "Group":
             self.stats.set_text(f"{network.outputs(node.id).length} exposed children")
         elif self.workspace.compute != none:

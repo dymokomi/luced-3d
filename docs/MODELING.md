@@ -35,6 +35,35 @@ parent is a member. New elements are zero, empty and in no group. Each verb
 also returns an output selection (Extrude's front faces, Inset's inner faces,
 Fuse's merged points), which the tool flow adopts.
 
+## Selection and tools
+
+Components (points, edges, faces or vertices, keys 1–4) can be selected on
+whichever node the viewport displays; the selection is a luce-geocore
+`Selection` (bits plus the connectivity they index), so select all, invert,
+grow, shrink, border, flood, loop and ring are word-parallel Base passes.
+Switching the component type carries the selection over (a face stays when
+all its points were selected).
+
+Pressing a tool, as with Houdini's shelf tools:
+
+- on the active **Edit node**, appends a step to its recipe (see below);
+- on any other displayed node, creates the tool's verb node after it (between
+  it and whatever it fed), with **Group** set to the selection's expression
+  (runs such as `0-5 12`, a group's name, or chained edge pairs `p3-4-5`),
+  **Group Type** set to the component type, and a **guard**: the connectivity
+  hash the group was selected on. Display and the node selection move to it,
+  and when it cooks its output selection (Extrude's front faces, Inset's inner
+  faces) becomes the viewport selection, switching the component type. The
+  Move gizmo on a plain node makes a Transform Components node the same way.
+- with nothing selected, the new node waits (Tool → Select): the viewport shows
+  its input, Enter takes the selection as the group, Esc removes the node.
+
+If the input's topology later changes, a guarded node fails with "Group was
+selected on different topology. Reselect, or Keep IDs." **Reselect** shows the
+input with the group selected for a new pick; **Keep IDs** clears the guard and
+applies the numbers as they are (Houdini's behaviour). Typed groups are never
+guarded. Very large selections show as a summary in the Group field.
+
 ## Edit tools and important limits
 
 - Extrude operates on face regions with boundary walls; not isolated edges or
@@ -51,7 +80,8 @@ Fuse's merged points), which the tool flow adopts.
 - CopyToPoints realizes copies at target positions, with a 256-copy limit. It
   does not yet interpret orientation/scale attributes or retain instances.
 
-Each Edit operation stores its selection and exact input topology signature.
+Each Edit step is one verb run: the verb, the group expression, its type,
+the parameter values and the connectivity hash the group was selected on.
 Topology-incompatible upstream edits fail rather than silently moving wrong IDs.
 Undo/redo includes modeling, groups, attribute parameters and graph changes.
 
