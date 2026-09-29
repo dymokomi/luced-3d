@@ -8,6 +8,7 @@ from step import Step
 from fbx import Fbx
 from geometry_data import GeometryData
 from group_operations import imported_cad
+from file_identity import file_identity
 
 pub func load_geometry(path: str, step_tolerance: float = 0.0) -> GeometryData!:
     if path == "":
@@ -19,6 +20,59 @@ pub func load_geometry(path: str, step_tolerance: float = 0.0) -> GeometryData!:
     if path.lower().ends_with(".step") or path.lower().ends_with(".stp"):
         return imported_cad(Step.load_model(path, step_tolerance))
     error(ui.invalid, "Unsupported geometry file extension")
+
+## Process-lifetime import caches, so undo, reload and project reopen reuse
+## parsed files and tessellations. Files are keyed by path, size, mtime,
+## content hash and tolerance; tessellations by the parsed model's key and
+## options. A few recent entries each: they hold whole assemblies.
+pub class SourceCache:
+    let files: list[(int, GeometryData)]
+    let tessellations: list[(int, GeometryData)]
+    pub var hits: int = 0
+
+    pub func init(self):
+        self.files = []
+        self.tessellations = []
+
+    pub func load(self, path: str, tolerance: float) -> GeometryData!:
+        let identity = file_identity(path) catch failure:
+            # Let the loader report the missing or unreadable file.
+            return load_geometry(path, tolerance)
+        let key = nonzero(hash((path, tolerance, identity)))
+        if let found = self.find(self.files, key):
+            return found
+        let data = load_geometry(path, tolerance)
+        data.origin = key
+        remember(self.files, key, data)
+        return data
+
+    pub func tessellated(self, data: GeometryData, divisions: int, edge_size: float, progress: func(float) -> unit!? = none) -> GeometryData!:
+        if data.origin == 0:
+            return data.tessellated(divisions, edge_size, progress)
+        let key = nonzero(hash((data.origin, divisions, edge_size)))
+        if let found = self.find(self.tessellations, key):
+            return found
+        let result = data.tessellated(divisions, edge_size, progress)
+        remember(self.tessellations, key, result)
+        return result
+
+    func find(self, entries: list[(int, GeometryData)], key: int) -> GeometryData?:
+        for at in 0..<entries.length:
+            let (stored, data) = entries[at]
+            if stored == key:
+                # Most recently used entries move to the end.
+                entries.append(entries.remove_at(at))
+                self.hits += 1
+                return data
+        return none
+
+func remember(entries: list[(int, GeometryData)], key: int, data: GeometryData):
+    entries.append((key, data))
+    while entries.length > 4:
+        discard(entries.remove_at(0))
+
+func nonzero(value: int) -> int:
+    return value if value != 0 else 1
 
 pub func source_geometry(kind: str, v: list[float]) -> PolygonMesh!:
     if kind == "Cube":

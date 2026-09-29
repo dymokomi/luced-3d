@@ -1,0 +1,88 @@
+## The worker's cooked results, keyed by content stamp. Stamps name recipes, so
+## a rename, a visibility toggle or an undo lands on an existing entry instead
+## of a recook. Least-recently used entries go once the byte budget is
+## exceeded, except the pinned ones the current display and selection need.
+from geometry_data import GeometryData
+
+pub class Entry:
+    pub let data: GeometryData?
+    ## Raw failure text, without the node name (names are not in stamps).
+    pub let failure: str
+    pub let summary: str
+    pub let paths: list[str]
+    pub var size: int
+    pub var used: int = 0
+
+    pub func init(self, data: GeometryData?, failure: str, summary: str, paths: list[str], size: int):
+        self.data = data
+        self.failure = failure
+        self.summary = summary
+        self.paths = paths
+        self.size = size
+
+pub class ResultStore:
+    let entries: map[int, Entry]
+    pub let budget: int
+    pub var total: int = 0
+    var clock: int = 0
+    pub var hits: int = 0
+    pub var cooks: int = 0
+
+    pub func init(self, budget: int):
+        self.entries = {}
+        self.budget = budget
+
+    pub func count(self) -> int:
+        return self.entries.length
+
+    pub func get(self, stamp: int) -> Entry?:
+        let entry = self.entries[stamp] else return none
+        self.clock += 1
+        entry.used = self.clock
+        self.hits += 1
+        return entry
+
+    ## Look without counting a hit or refreshing recency (reports, probes).
+    pub func peek(self, stamp: int) -> Entry?:
+        return self.entries[stamp]
+
+    pub func put(self, stamp: int, data: GeometryData) -> Entry!:
+        return self.insert(stamp, Entry(data, "", data.description(), data.paths(), data.footprint()))
+
+    pub func fail(self, stamp: int, message: str) -> Entry!:
+        return self.insert(stamp, Entry(none, message, "", [], 256))
+
+    ## Re-measure after lazily built data (a CAD preview) grew an entry.
+    pub func refresh(self, stamp: int) -> unit:
+        let entry = self.entries[stamp] else return
+        let data = entry.data else return
+        self.total -= entry.size
+        entry.size = data.footprint()
+        self.total += entry.size
+
+    func insert(self, stamp: int, entry: Entry) -> Entry!:
+        if let old = self.entries.remove(stamp):
+            self.total -= old.size
+        self.clock += 1
+        entry.used = self.clock
+        self.entries[stamp] = entry
+        self.total += entry.size
+        self.cooks += 1
+        return entry
+
+    ## Evict least-recently used, unpinned entries until within budget.
+    pub func trim(self, pinned: set[int]) -> unit:
+        while self.total > self.budget:
+            var victim = 0
+            var oldest = -1
+            for stamp in self.entries.keys():
+                if stamp in pinned:
+                    continue
+                let entry = self.entries[stamp] else continue
+                if oldest < 0 or entry.used < oldest:
+                    oldest = entry.used
+                    victim = stamp
+            if oldest < 0:
+                return
+            if let removed = self.entries.remove(victim):
+                self.total -= removed.size

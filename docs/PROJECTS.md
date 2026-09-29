@@ -9,7 +9,8 @@ the Save / Don't Save / Cancel lifecycle. No custom file parser is used.
 `/scene` is a `luced3d` prim with a `network` child containing stable `n<ID>`
 node prims. Nodes author input IDs, parent Group ID, output/enabled/visibility,
 name, position and typed parameter arrays. Ordered Edit children retain operation
-kind, element IDs, exact topology guard, displacement and amount. `/scene/view`
+kind, element IDs, a 64-bit topology hash guard, displacement and amount.
+Older projects' whole-connectivity guards load as unguarded recipes. `/scene/view`
 stores camera and graph pan/zoom. Cached geometry, worker progress and undo history
 are deliberately not serialized. This is an editor schema built on Prism, not
 an OpenUSD interchange schema or an embedded copy of external assets.

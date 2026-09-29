@@ -21,6 +21,8 @@ pub class GeometryInstance:
 
 pub class GeometryData:
     var preview_cache: CadPreview? = none
+    ## Content key of the import this data was parsed from (0: derived data).
+    pub var origin: int = 0
     pub let mesh: PolygonMesh?
     pub let surfaces: list[CadModel]
     pub let instances: list[GeometryInstance]
@@ -126,6 +128,22 @@ pub class GeometryData:
             children.append(GeometryInstance(instance.data.tessellated(divisions, edge_size, progress), instance.translation, instance.rotation, instance.scale, instance.visible))
         return GeometryData(result, instances = children, groups = groups)
 
+    ## Approximate resident bytes, for the worker's result-store budget. Shared
+    ## meshes count once per holder, which errs toward evicting early.
+    pub func footprint(self) -> int:
+        var total = 256
+        if let mesh = self.mesh:
+            total += mesh_bytes(mesh)
+        for model in self.surfaces:
+            total += model.face_count() * 16384
+        if let preview = self.preview_cache:
+            for mesh in preview.meshes:
+                total += mesh_bytes(mesh)
+            total += (preview.boundaries.length + preview.normal_guides.length) * 32
+        for instance in self.instances:
+            total += instance.data.footprint()
+        return total
+
     pub func description(self) -> str!:
         var faces = 0
         for model in self.surfaces:
@@ -136,3 +154,6 @@ pub class GeometryData:
         if self.instances.length > 0:
             text += (" / " if text != "" else "") + f"{self.instances.length} scene branches"
         return text if text != "" else "Empty geometry"
+
+func mesh_bytes(mesh: PolygonMesh) -> int:
+    return 256 + mesh.point_count() * 24 + mesh.vertex_count() * 40 + mesh.face_count() * 56 + mesh.index_count() * 8 + mesh.edge_count() * 16

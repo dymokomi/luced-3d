@@ -1,0 +1,52 @@
+## Content stamps: a node's stamp names its cooked result. It covers what
+## compute reads (kind, bypass, parameters, texts, Edit recipes, the file
+## epoch and every input's stamp), never names, positions, display, output or
+## visibility flags, selection or the Edit tool amount. Those affect only the
+## parent Group, whose stamp lists its exposed children and their visibility.
+from network import Network, Node
+
+## Stamp every node. Computed on the UI thread before each request; cheap,
+## since Edit recipes carry their own precomputed content keys.
+pub func stamp_graph(graph: Network) -> unit!:
+    let done: map[int, int] = {}
+    for node in graph.nodes:
+        node.stamp = stamp_of(graph, node, done, 0)
+
+func stamp_of(graph: Network, node: Node, done: map[int, int], depth: int) -> int!:
+    if let known = done[node.id]:
+        return known
+    if depth > 256:
+        trap("node stamps exceed the graph depth budget")
+    let inputs: list[int] = []
+    for input in node.inputs:
+        if let upstream = graph.find(input):
+            inputs.append(stamp_of(graph, upstream, done, depth + 1))
+        else:
+            inputs.append(0)
+    let children: list[(int, bool)] = []
+    if node.kind == "Group":
+        for child in graph.outputs(node.id):
+            children.append((stamp_of(graph, child, done, depth + 1), child.visible))
+    var stamp = 0
+    if node.kind == "Edit" and node.enabled:
+        stamp = prefix_stamp(node, inputs[0], node.edits.length)
+    elif node.kind == "Edit":
+        # A bypassed Edit passes its input through; the tool amount is UI state.
+        stamp = nonzero(hash((node.kind, false, inputs)))
+    else:
+        stamp = nonzero(hash((node.kind, node.enabled, node.values, node.texts, inputs, children, node.source_revision)))
+    done[node.id] = stamp
+    return stamp
+
+## An enabled Edit node's result after its first `count` recipes. The full
+## count is the node's own stamp, so the state before a new recipe (or a
+## gizmo drag's preview recipe) is already stored under count - 1.
+pub func prefix_stamp(node: Node, input: int, count: int) -> int:
+    let recipes: list[int] = []
+    for at in 0..<count:
+        recipes.append(node.edits[at].key)
+    return nonzero(hash(("Edit", input, recipes)))
+
+## Zero means "never cooked" on both sides of the worker boundary.
+func nonzero(value: int) -> int:
+    return value if value != 0 else 1

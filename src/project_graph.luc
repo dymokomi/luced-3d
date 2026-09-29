@@ -1,4 +1,7 @@
-## Versioned graph schema: authored nodes and Edit recipes, never cooked caches.
+## Versioned graph schema, the one node serializer for project files and the
+## compute worker's delta requests: authored nodes and Edit recipes, never
+## cooked caches. A node is a header (identity, wiring, flags) and a body (what
+## its cook reads); requests send bodies only when a node's stamp changed.
 from prism import Document, Value, DType
 from network import Network, Node
 from edit_operations import EditOperation
@@ -7,37 +10,111 @@ import project_values as values
 import ui
 
 pub func write_graph(doc: Document, graph: Network) -> unit!:
+    write_scene(doc, graph)
+    doc.set("/scene", "next_id", Value.integer(graph.next_id))
+    for node in graph.nodes:
+        let path = f"/scene/nodes/n{node.id}"
+        write_header(doc, path, node)
+        write_body(doc, path, node, none)
+
+pub func write_scene(doc: Document, graph: Network) -> unit!:
     doc.add("/scene", "luced3d")
     doc.set("/scene", "version", Value.integer(1))
-    doc.set("/scene", "next_id", Value.integer(graph.next_id))
     doc.set("/scene", "selected", Value.integer(graph.selected))
     doc.set("/scene", "display", Value.integer(graph.display))
     doc.set("/scene", "scope", Value.integer(graph.scope))
     doc.set("/scene", "preview", Value.boolean(graph.preview))
     doc.add("/scene/nodes", "network")
-    for node in graph.nodes:
-        let path = f"/scene/nodes/n{node.id}"
-        doc.add(path, node.kind)
-        doc.set(path, "id", Value.integer(node.id))
-        doc.set(path, "name", Value.text(node.name))
-        doc.set(path, "parent", Value.integer(node.parent))
-        doc.set(path, "output", Value.integer(node.output))
-        doc.set(path, "enabled", Value.boolean(node.enabled))
-        doc.set(path, "visible", Value.boolean(node.visible))
-        doc.set(path, "position", Value.numbers([2], [node.x, node.y]))
-        doc.set(path, "parameters", Value.numbers([node.values.length], node.values))
-        doc.set(path, "texts", Value.strings([node.texts.length], node.texts))
-        values.put_ids(doc, path, "inputs", node.inputs)
-        doc.add(path + "/edits", "recipes")
-        doc.set(path, "edit_count", Value.integer(node.edits.length))
-        for at in 0..<node.edits.length:
-            let edit = node.edits[at]
-            let recipe = path + f"/edits/e{at}"
-            doc.add(recipe, edit.kind)
+
+pub func write_header(doc: Document, path: str, node: Node) -> unit!:
+    doc.add(path, node.kind)
+    doc.set(path, "id", Value.integer(node.id))
+    doc.set(path, "name", Value.text(node.name))
+    doc.set(path, "parent", Value.integer(node.parent))
+    doc.set(path, "output", Value.integer(node.output))
+    doc.set(path, "visible", Value.boolean(node.visible))
+    doc.set(path, "position", Value.numbers([2], [node.x, node.y]))
+    values.put_ids(doc, path, "inputs", node.inputs)
+
+## With `shared`, element lists travel once under /scene/lists by content key;
+## the map collects the lists this document must carry. Projects inline them.
+pub func write_body(doc: Document, path: str, node: Node, shared: map[int, list[int]]?) -> unit!:
+    doc.set(path, "enabled", Value.boolean(node.enabled))
+    doc.set(path, "parameters", Value.numbers([node.values.length], node.values))
+    doc.set(path, "texts", Value.strings([node.texts.length], node.texts))
+    doc.add(path + "/edits", "recipes")
+    doc.set(path, "edit_count", Value.integer(node.edits.length))
+    for at in 0..<node.edits.length:
+        let edit = node.edits[at]
+        let recipe = path + f"/edits/e{at}"
+        doc.add(recipe, edit.kind)
+        if let lists = shared:
+            doc.set(recipe, "elements_key", Value.integer(edit.elements_key))
+            lists[edit.elements_key] = edit.elements
+        else:
             values.put_ids(doc, recipe, "elements", edit.elements)
-            doc.set(recipe, "topology", Value.integer(edit.topology))
-            doc.set(recipe, "delta", Value.numbers([3], [edit.delta.x, edit.delta.y, edit.delta.z]))
-            doc.set(recipe, "distance", Value.number(edit.distance))
+        doc.set(recipe, "topology", Value.integer(edit.topology))
+        doc.set(recipe, "delta", Value.numbers([3], [edit.delta.x, edit.delta.y, edit.delta.z]))
+        doc.set(recipe, "distance", Value.number(edit.distance))
+
+## Worker requests come from the live graph: `trusted` skips the text-field
+## checks projects need (they would build UI widgets on the worker thread).
+pub func read_header(doc: Document, path: str, trusted: bool = false) -> Node!:
+    let id = values.integer(doc, path, "id", 1, 2147483646)
+    let position = values.numbers(doc, path, "position", 2, 2)
+    let node = Node(id, doc.type_at(path), position[0], position[1])
+    let name = values.text(doc, path, "name")
+    node.name = name if trusted else values.line(name)
+    node.parent = values.integer(doc, path, "parent", -1, 2147483646)
+    node.output = values.integer(doc, path, "output", -1, 1)
+    node.visible = values.flag(doc, path, "visible")
+    let inputs = values.ids(doc, path, "inputs", node.inputs.length)
+    if inputs.length != node.inputs.length: error(ui.invalid, "Invalid input port count")
+    node.inputs = inputs
+    return node
+
+pub func has_body(doc: Document, path: str) -> bool:
+    return doc.has_property(path, "enabled")
+
+## `shared` resolves element-list keys (worker requests); projects inline them.
+pub func read_body(doc: Document, path: str, node: Node, shared: map[int, list[int]]?) -> unit!:
+    node.enabled = values.flag(doc, path, "enabled")
+    node.values = values.numbers(doc, path, "parameters", node.values.length, node.values.length)
+    let texts = doc.get(path, "texts")
+    if texts.rank() != 1 or texts.count() != node.texts.length: error(ui.invalid, "Invalid text parameter count")
+    for at in 0..<texts.count():
+        let text = texts.text_at(at)
+        node.texts[at] = text if shared != none else values.line(text)
+    let count = values.integer(doc, path, "edit_count", 0, 100000)
+    if count != doc.child_count(path + "/edits") or (node.kind != "Edit" and count != 0):
+        error(ui.invalid, "Invalid Edit recipe collection")
+    node.edits = []
+    for at in 0..<count:
+        let recipe = path + f"/edits/e{at}"
+        let kind = doc.type_at(recipe)
+        if not (kind in recipe_kinds()):
+            error(ui.invalid, "Unknown Edit recipe")
+        var elements: list[int] = []
+        if let lists = shared:
+            elements = lists[values.stamp(doc, recipe, "elements_key")] else error(ui.invalid, "Missing Edit element list")
+        else:
+            elements = values.ids(doc, recipe, "elements", 16000000, 0)
+        let delta = values.numbers(doc, recipe, "delta", 3, 3)
+        node.edits.append(EditOperation(kind, elements, PolygonMesh.empty(), Vector3(delta[0], delta[1], delta[2]),
+            values.scalar(doc, recipe, "distance"), topology_guard(doc, recipe)))
+
+## Older projects stored the whole ordered connectivity (millions of ints) as
+## the guard; those recipes load unguarded rather than failing.
+func topology_guard(doc: Document, recipe: str) -> int!:
+    if not doc.has_property(recipe, "topology"):
+        return 0
+    let guard = doc.get(recipe, "topology")
+    if guard.rank() != 0 or guard.dtype() != DType.int64:
+        return 0
+    return guard.integer_at()
+
+pub func recipe_kinds() -> list[str]:
+    return ["Extrude", "DeletePoints", "Clean", "Delete", "Reverse", "Triangulate", "Inset", "Duplicate", "Split", "Fuse", "Subdivide", "Bevel", "Fill", "Dissolve", "Smooth", "Noise", "Peak", "Flatten", "Rotate", "Scale", "Snap", "Move"]
 
 ## Parse fully and check references/cycles before a caller replaces live state.
 pub func read_graph(doc: Document) -> Network!:
@@ -49,33 +126,9 @@ pub func read_graph(doc: Document) -> Network!:
         error(ui.invalid, "Project exceeds 128 nodes")
     for index in 0..<doc.child_count("/scene/nodes"):
         let path = doc.child_at("/scene/nodes", index) else error(ui.invalid, "Missing project node")
-        let id = values.integer(doc, path, "id", 1, 2147483646)
-        if graph.find(id) != none: error(ui.invalid, "Duplicate project node ID")
-        let position = values.numbers(doc, path, "position", 2, 2)
-        let node = Node(id, doc.type_at(path), position[0], position[1])
-        node.name = values.line(values.text(doc, path, "name"))
-        node.parent = values.integer(doc, path, "parent", -1, 2147483646)
-        node.output = values.integer(doc, path, "output", -1, 1)
-        node.enabled = values.flag(doc, path, "enabled")
-        node.visible = values.flag(doc, path, "visible")
-        node.values = values.numbers(doc, path, "parameters", node.values.length, node.values.length)
-        let inputs = values.ids(doc, path, "inputs", node.inputs.length)
-        if inputs.length != node.inputs.length: error(ui.invalid, "Invalid input port count")
-        node.inputs = inputs
-        let texts = doc.get(path, "texts")
-        if texts.rank() != 1 or texts.count() != node.texts.length: error(ui.invalid, "Invalid text parameter count")
-        for at in 0..<texts.count(): node.texts[at] = values.line(texts.text_at(at))
-        let count = values.integer(doc, path, "edit_count", 0, 100000)
-        if count != doc.child_count(path + "/edits") or (node.kind != "Edit" and count != 0):
-            error(ui.invalid, "Invalid Edit recipe collection")
-        for at in 0..<count:
-            let recipe = path + f"/edits/e{at}"
-            let kind = doc.type_at(recipe)
-            if not (kind in ["Extrude", "DeletePoints", "Clean", "Delete", "Reverse", "Triangulate", "Inset", "Duplicate", "Split", "Fuse", "Subdivide", "Bevel", "Fill", "Dissolve", "Smooth", "Noise", "Peak", "Flatten", "Rotate", "Scale", "Snap", "Move"]):
-                error(ui.invalid, "Unknown Edit recipe")
-            let delta = values.numbers(doc, recipe, "delta", 3, 3)
-            node.edits.append(EditOperation(kind, values.ids(doc, recipe, "elements", 16000000, 0), PolygonMesh.empty(),
-                Vector3(delta[0], delta[1], delta[2]), values.scalar(doc, recipe, "distance"), topology_guard(doc, recipe)))
+        let node = read_header(doc, path)
+        if graph.find(node.id) != none: error(ui.invalid, "Duplicate project node ID")
+        read_body(doc, path, node, none)
         graph.nodes.append(node)
     graph.next_id = values.integer(doc, "/scene", "next_id", 1, 2147483647)
     for node in graph.nodes:
@@ -92,21 +145,14 @@ pub func read_graph(doc: Document) -> Network!:
             if input == -1: continue
             if graph.require(input).parent != node.parent or graph.depends_on(input, node.id):
                 error(ui.invalid, "Invalid or cyclic project connection")
-    graph.selected = values.integer(doc, "/scene", "selected", -1, 2147483646)
-    graph.display = values.integer(doc, "/scene", "display", -1, 2147483646)
-    graph.scope = values.integer(doc, "/scene", "scope", -1, 2147483646)
-    graph.preview = values.flag(doc, "/scene", "preview")
+    read_scene(doc, graph)
     if graph.scope != -1 and graph.require(graph.scope).kind != "Group": error(ui.invalid, "Invalid network scope")
     for id in [graph.selected, graph.display]:
         if id != -1 and graph.require(id).parent != graph.scope: error(ui.invalid, "Selection outside network scope")
     return graph
 
-## Older projects stored the whole ordered connectivity (millions of ints) as
-## the guard; those recipes load unguarded rather than failing.
-func topology_guard(doc: Document, recipe: str) -> int!:
-    if not doc.has_property(recipe, "topology"):
-        return 0
-    let guard = doc.get(recipe, "topology")
-    if guard.rank() != 0 or guard.dtype() != DType.int64:
-        return 0
-    return guard.integer_at()
+pub func read_scene(doc: Document, graph: Network) -> unit!:
+    graph.selected = values.integer(doc, "/scene", "selected", -1, 2147483646)
+    graph.display = values.integer(doc, "/scene", "display", -1, 2147483646)
+    graph.scope = values.integer(doc, "/scene", "scope", -1, 2147483646)
+    graph.preview = values.flag(doc, "/scene", "preview")

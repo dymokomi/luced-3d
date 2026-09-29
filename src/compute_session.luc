@@ -1,8 +1,10 @@
-## UI-side scheduling: coalesce requests, ignore stale results, poll progress.
+## UI-side scheduling: stamp the graph, send the delta, poll progress and
+## adopt reports. A node is dirty while its stamp has no reported result.
 from compute_bridge import ComputeService
 from compute_worker import compute_factory
-from compute_protocol import snapshot, Reader
+from compute_request import RequestWriter, read_report
 from network import Network
+from stamps import stamp_graph
 
 pub class ComputeSession:
     pub let service: ComputeService
@@ -10,18 +12,33 @@ pub class ComputeSession:
     pub var applied: int = 0
     var sequence: int = -1
     pub var busy: bool = false
+    ## Set when the worker asked for a full request; the caller resubmits once.
+    pub var resync: bool = false
+    ## Size of the last request text and Edit recipes the last cook applied.
+    pub var request_size: int = 0
+    pub var recipes: int = 0
+    let writer: RequestWriter
+    var resyncs: int = 0
 
     pub func init(self) -> unit!:
         self.service = ComputeService(compute_factory)
+        self.writer = RequestWriter()
 
-    pub func submit(self, graph: Network, mode: int) -> unit!:
+    ## `interactive` marks gesture previews (see Network.interactive).
+    pub func submit(self, graph: Network, mode: int, interactive: bool = false) -> unit!:
+        stamp_graph(graph)
         self.generation += 1
         self.busy = true
+        let wanted: list[int] = []
         for node in graph.nodes:
+            wanted.append(node.stamp)
+            node.dirty = node.stamp != node.cooked
             node.computing = node.dirty
             node.progress = 0.0
             node.phase = "Queued" if node.dirty else ""
-        self.service.submit(snapshot(graph, mode), self.generation)
+        let request = self.writer.encode(graph, mode, interactive)
+        self.request_size = request.byte_count
+        self.service.submit(request, self.generation, wanted)
 
     pub func poll_progress(self, graph: Network) -> bool!:
         let sequence = self.service.sequence()
@@ -38,37 +55,37 @@ pub class ComputeSession:
         return true
 
     pub func read_report(self, graph: Network) -> str!:
+        self.busy = false
+        self.applied = self.generation
+        self.resync = false
         if self.service.failed():
-            self.busy = false
-            self.applied = self.generation
+            # The worker's mirror may hold part of a failed delta.
+            self.writer.reset()
             for node in graph.nodes:
                 node.computing = false
                 node.phase = ""
             return self.service.report()
-        let reader = Reader(self.service.report())
-        let notice = reader.text()
-        let count = reader.integer()
-        for at in 0..<count:
-            let id = reader.integer()
-            let dirty = reader.integer() != 0
-            let failure = reader.text()
-            let summary = reader.text()
-            let evaluations = reader.integer()
-            let paths: list[str] = []
-            let path_count = reader.integer()
-            for index in 0..<path_count: paths.append(reader.text())
-            if let node = graph.find(id):
-                node.dirty = dirty
-                node.failure = failure
-                node.summary = summary
-                node.evaluations = evaluations
-                node.group_paths = paths
-                node.computing = false
-                node.phase = ""
-                node.cache = none
-        self.busy = false
-        self.applied = self.generation
-        return notice
+        let report = read_report(self.service.report())
+        self.recipes = report.recipes
+        if report.resync:
+            # One full resend; a second refusal is reported, not retried.
+            self.writer.reset()
+            self.resyncs += 1
+            self.resync = self.resyncs == 1
+            return report.notice
+        self.resyncs = 0
+        for outcome in report.outcomes:
+            let node = graph.find(outcome.id) else continue
+            node.cooked = outcome.cooked
+            node.dirty = node.stamp != outcome.cooked
+            node.failure = outcome.failure
+            node.summary = outcome.summary
+            node.evaluations = outcome.evaluations
+            node.group_paths = outcome.paths
+            node.computing = false
+            node.phase = ""
+            node.cache = none
+        return report.notice
 
     pub func close(self):
         self.service.close()

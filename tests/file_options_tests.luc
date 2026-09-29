@@ -8,8 +8,8 @@ from network import Network
 from workspace import Workspace
 from prism import Document
 from project_graph import write_graph, read_graph
-from compute_protocol import snapshot, Reader
-import compute_protocol
+from compute_request import RequestWriter, read_request
+from stamps import stamp_graph
 import time
 
 pub func file_options_tests() -> unit!:
@@ -50,16 +50,17 @@ pub func file_options_tests() -> unit!:
     assert(node.failure != "")
     w.set_parameter(0, 0.0001)
     assert(node.failure == "" and node.cache != none)
-    let worker = compute_protocol.read_graph(Reader(snapshot(w.network, 3)), Network(false))
-    discard(worker.evaluate_data(node.id))
-    let cached = compute_protocol.read_graph(Reader(snapshot(w.network, 3)), worker)
-    assert(not cached.require(node.id).dirty)
+    # The tolerance is part of the File node's stamp and of its worker body.
+    let writer = RequestWriter()
+    stamp_graph(w.network)
+    let tolerant = node.stamp
+    let worker = read_request(writer.encode(w.network, 3), Network(false))
+    assert(worker.require(node.id).values[0] == 0.0001 and worker.require(node.id).stamp == tolerant)
     w.set_parameter(0, 0.0002)
-    let changed = compute_protocol.read_graph(Reader(snapshot(w.network, 3)), cached)
-    assert(changed.require(node.id).dirty)
-    let evaluations = changed.require(node.id).evaluations
-    discard(changed.evaluate_data(node.id))
-    assert(changed.require(node.id).evaluations == evaluations+1)
+    stamp_graph(w.network)
+    assert(node.stamp != tolerant)
+    let changed = read_request(writer.encode(w.network, 3), worker)
+    assert(changed.require(node.id).values[0] == 0.0002)
     w.undo()
     assert((w.selected() else trap("File")).values[0] == 0.0001)
     w.redo()

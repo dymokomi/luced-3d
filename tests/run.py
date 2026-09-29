@@ -19,6 +19,12 @@ def prepare(project):
     (project / "tests/fixtures/large.obj").write_text(
         "v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvn 0 0 1\n" +
         "f 1/1/1 2/1/1 3/1/1\n" * 22000)
+    # A ~500k-face planar grid for worker request-size and Edit replay checks.
+    n = 710
+    points = "".join(f"v {x} 0 {z}\n" for z in range(n + 1) for x in range(n + 1))
+    faces = "".join(f"f {z * (n + 1) + x + 1} {(z + 1) * (n + 1) + x + 1} {(z + 1) * (n + 1) + x + 2} {z * (n + 1) + x + 2}\n"
+                    for z in range(n) for x in range(n))
+    (project / "tests/fixtures/grid500k.obj").write_text(points + faces)
     manifest = (ROOT / "package.prisma").read_text()
     for name in ("luce-ui", "luce-3d", "luce-color", "luce-std", "luce-gpu", "luce-window", "luce-obj", "luce-tesselator", "luce-cad", "luce-step", "luce-fbx", "luce-prism"):
         manifest = manifest.replace(f'"../{name}"', f'"{ROOT.parent / name}"')
@@ -69,4 +75,4 @@ if __name__ == "__main__":
             shutil.copy2(module, project / "src" / module.name)
         binary = project / "test-runner"
         build(project, binary, arguments.opt, arguments.backend)
-        subprocess.run([str(binary)], check=True, timeout=60, cwd=project)
+        subprocess.run([str(binary)], check=True, timeout=300, cwd=project)

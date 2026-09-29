@@ -4,7 +4,8 @@ from edit_operations import EditOperation
 from history import History, Snapshot
 from scene_projection import append_scene, append_bounds, append_overlays, append_patch_boundaries
 from compute_session import ComputeSession
-from geometry_data import GeometryData
+from display_publisher import DisplayPublisher
+from node_evaluation import SourceCache
 import math
 import node_catalog
 import ui
@@ -38,7 +39,8 @@ pub class Workspace:
     pub var wire_batch: WireBatch? = none
     pub var normal_batch: WireBatch? = none
     pub var patch_batch: WireBatch? = none
-    let display_bounds: list[Vector3]
+    pub let publisher: DisplayPublisher
+    let sources: SourceCache
     var pending_frame: bool = false
     var project_epoch: int = 0
 
@@ -46,12 +48,14 @@ pub class Workspace:
         self.target = Vector3(0.0, 0.8, 0.0)
         self.wire_points = []
         self.normal_points = []
-        self.display_bounds = []
+        self.sources = SourceCache()
         self.network = Network()
+        self.network.sources = self.sources
         self.history = History()
         self.components = []
         self.scene = Scene()
         self.objects = Group()
+        self.publisher = DisplayPublisher(self.objects)
         self.scene.add(self.objects)
         self.scene.add(AmbientLight(intensity = 0.35))
         self.scene.add(DirectionalLight(direction = Vector3(3.0, 5.0, 2.0), intensity = 0.85))
@@ -72,6 +76,7 @@ pub class Workspace:
             node.source_revision = self.project_epoch
         self.network = graph
         self.network.background = self.compute != none
+        self.network.sources = self.sources
         self.history.changes.clear()
         self.history.cursor = 0
         self.components.clear()
@@ -109,7 +114,7 @@ pub class Workspace:
             if session.busy:
                 self.pending_frame = true
                 return
-            for point in self.display_bounds:
+            for point in self.publisher.bounds:
                 points.append(point)
         var candidates = self.network.outputs(self.network.scope)
         if let node = self.network.find(self.network.display):
@@ -188,11 +193,16 @@ pub class Workspace:
 
     pub func commit(self) -> unit!:
         let before = self.pending else return
-        if self.pending_changed:
+        let changed = self.pending_changed
+        if changed:
             self.history.push(self.pending_label, before, self.snapshot())
         self.pending = none
         self.pending_changed = false
         self.revision += 1
+        # Previews skipped query-index warming; one settled request warms the
+        # shown meshes (every stamp is stored, so nothing recooks).
+        if changed and self.compute != none:
+            self.rebuild()
 
     pub func cancel(self) -> unit!:
         let before = self.pending else return
@@ -244,7 +254,7 @@ pub class Workspace:
 
     pub func rebuild(self) -> unit!:
         if let session = self.compute:
-            session.submit(self.network, self.display_mode)
+            session.submit(self.network, self.display_mode, self.pending != none)
             self.revision += 1
             return
         self.objects.clear()
@@ -296,40 +306,29 @@ pub class Workspace:
         if completed == 0:
             return progress
         if completed != session.generation:
-            session.service.release_result()
+            session.service.release_result(self.publisher.kept)
             return progress
         self.notice = session.read_report(self.network) catch failure:
-            session.service.release_result()
+            session.service.release_result(self.publisher.kept)
             session.busy = false
             self.notice = failure.message
             self.revision += 1
             return true
-        if session.service.failed():
-            session.service.release_result()
+        if session.service.failed() or session.resync:
+            session.service.release_result(self.publisher.kept)
+            # The worker lost its mirror: send the whole graph once.
+            if session.resync:
+                self.rebuild()
             self.revision += 1
             return true
-        self.objects.clear()
-        self.display_bounds.clear()
-        self.geometry = none
-        for index in 0..<session.service.mesh_count():
-            let mesh = session.service.take_mesh(index)
-            let node = session.service.mesh_node(index)
-            let data = GeometryData(mesh)
-            if session.service.mesh_display(index):
-                discard(append_scene(data, self.objects, mode = self.display_mode))
-                self.display_bounds.append(mesh.bounds().minimum)
-                self.display_bounds.append(mesh.bounds().maximum)
-            if session.service.mesh_inspect(index):
-                if let selected = self.network.find(node):
-                    selected.cache = data
-                if node == self.network.display:
-                    self.geometry = mesh
-        self.wire_points.clear()
-        self.normal_points.clear()
-        self.wire_batch = session.service.wires()
-        self.normal_batch = session.service.normals()
-        self.patch_batch = session.service.patches()
-        session.service.release_result()
+        if self.publisher.adopt(session.service, self.network):
+            self.wire_points.clear()
+            self.normal_points.clear()
+            self.wire_batch = session.service.wires()
+            self.normal_batch = session.service.normals()
+            self.patch_batch = session.service.patches()
+        self.geometry = self.publisher.geometry
+        session.service.release_result(self.publisher.kept)
         self.revision += 1
         if self.pending_frame:
             self.pending_frame = false
@@ -589,16 +588,19 @@ pub class Workspace:
 
     pub func selected_points(self) -> list[int]!:
         let mesh = self.geometry else return []
+        let seen: set[int] = {}
         let result: list[int] = []
         for id in self.components:
             if self.component_mode == 0:
-                if id >= 0 and id < mesh.point_count() and not (id in result):
+                if id >= 0 and id < mesh.point_count() and not (id in seen):
+                    seen.insert(id)
                     result.append(id)
             else:
                 let count = 2 if self.component_mode == 1 else mesh.face_size(id)
                 for at in 0..<count:
                     let point = mesh.edge_point(id, at) if self.component_mode == 1 else mesh.face_point(id, at)
-                    if not (point in result):
+                    if not (point in seen):
+                        seen.insert(point)
                         result.append(point)
         return result
 
@@ -618,12 +620,15 @@ pub class Workspace:
         let mesh = self.geometry else return
         let node = self.selected() else return
         self.perform("Move components", func () -> unit!:
-            let edit = EditOperation("Move", self.selected_points(), mesh, delta, 0.0)
-            if self.compute == none:
-                discard(edit.evaluate(mesh))
-            node.edits.append(edit)
-            self.network.invalidate(node.id)
+            self.append_move(node, mesh, delta)
             self.rebuild())
+
+    func append_move(self, node: Node, mesh: PolygonMesh, delta: Vector3) -> unit!:
+        let edit = EditOperation("Move", self.selected_points(), mesh, delta, 0.0)
+        if self.compute == none:
+            discard(edit.evaluate(mesh))
+        node.edits.append(edit)
+        self.network.invalidate(node.id)
 
     pub func extrude(self) -> unit!:
         if not self.editing() or self.component_mode != 2 or self.components.length == 0:
@@ -676,18 +681,26 @@ pub class Workspace:
 
     ## Preview each gizmo delta against the original gesture snapshot, not
     ## against the last frame. A whole drag becomes one undo entry.
+    ## One request per pointer move: the worker applies the preview recipe to
+    ## the stored state before the gesture, never replaying the node.
     pub func preview_move(self, delta: Vector3) -> unit!:
         let before = self.pending else return
         self.network = before.graph.copy()
         self.components = before.components.copy()
-        self.rebuild()
         if self.transforming():
             let node = self.selected() else return
             node.values[1] += delta.x
             node.values[2] += delta.y
             node.values[3] += delta.z
             self.network.invalidate(node.id)
-            self.rebuild()
             self.pending_changed = true
-        elif self.editing():
-            self.move_selection(delta)
+        elif self.editing() and self.components.length > 0:
+            let mesh = self.geometry else return
+            let node = self.selected() else return
+            self.append_move(node, mesh, delta) catch failure:
+                self.cancel()
+                self.notice = failure.message
+                self.revision += 1
+                return
+            self.pending_changed = true
+        self.rebuild()

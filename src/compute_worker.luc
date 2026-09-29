@@ -1,101 +1,311 @@
-## Worker-local DAG and preview caches. No UI objects are created here.
-from compute_bridge import ComputeChannel, ComputeHandler
+## Worker-local DAG mirror, stamp-keyed result store and publishing. No UI
+## objects are created here. Cooking resolves each node by stamp: a stored
+## result is reused, and an Edit node applies only the recipes after its
+## longest stored prefix.
+from compute_bridge import ComputeChannel, ComputeHandler, memory_budget
 import compute_bridge
-from compute_protocol import Reader, read_graph, escaped
-from network import Network
-from geometry_data import GeometryData
+from compute_request import read_request, write_report, Outcome
+from network import Network, Node
+from node_evaluation import SourceCache
+from result_store import ResultStore
+from stamps import prefix_stamp
+from geometry_data import GeometryData, GeometryInstance
 from scene_projection import append_overlays, append_patch_boundaries
-from three import Vector3, Matrix4
+from three import Vector3, Matrix4, PolygonMesh
+import node_catalog
+import ui
 
 class Computation:
     let channel: ComputeChannel
     var graph: Network
+    let store: ResultStore
+    let sources: SourceCache
+    ## Cooks per node ID, reported as the node's evaluation count.
+    let cooks: map[int, int]
+    ## Failures met while cooking this request, with node names.
+    let failures: map[int, str]
     var preview_warning: str = ""
+    var recipes: int = 0
+    ## Meshes published under keys the UI may hold, kept alive so an identity
+    ## match never sees a recycled object. A mesh reaching several nodes (an
+    ## Edit without recipes, a Null, a bypass) keeps one key, so the UI keeps
+    ## its copy, scene object and renderer data.
+    var meshes: list[PolygonMesh]
+    var keys: list[int]
+
     pub func init(self, channel: ComputeChannel) -> unit!:
         self.channel = channel
         self.graph = Network(false)
+        self.store = ResultStore(memory_budget())
+        self.sources = SourceCache()
+        self.cooks = {}
+        self.failures = {}
+        self.meshes = []
+        self.keys = []
 
     pub func compute(self, message: str) -> unit!:
-        self.preview_warning = ""
-        for node in self.graph.nodes:
-            if node.failure.contains("Computation superseded"):
-                self.graph.invalidate(node.id)
-        self.graph = read_graph(Reader(message), self.graph)
+        self.graph = read_request(message, self.graph) catch failure:
+            # The mirror is unusable: ask the UI for a full request.
+            self.graph = Network(false)
+            self.channel.report(write_report(failure.message, true, []))
+            return
+        # A newer delta is queued: apply this one, cook only the newest.
+        if self.channel.superseded():
+            return
         let graph = self.graph
-        graph.on_progress = self.channel.progress
+        self.preview_warning = ""
+        self.recipes = 0
+        self.failures.clear()
         var notice = ""
         var outputs = graph.outputs(graph.scope)
         if graph.preview:
             if let node = graph.find(graph.display):
                 outputs = [node]
-        let wires: list[Vector3] = []
-        let normals: list[Vector3] = []
-        let patches: list[Vector3] = []
+        let meshes: list[PolygonMesh] = []
+        let keys: list[int] = []
+        for at in 0..<self.keys.length:
+            if self.channel.holds(self.keys[at]):
+                meshes.append(self.meshes[at])
+                keys.append(self.keys[at])
+        self.meshes = meshes
+        self.keys = keys
         for node in outputs:
             if not node.visible:
                 continue
-            let data = graph.evaluate_data(node.id) catch failure:
+            let data = self.evaluate(node) catch failure:
+                if failure.message == "Computation superseded":
+                    error(failure.code, failure.message)
                 notice = failure.message
                 continue
-            self.prepare(data, node.id)
             self.channel.progress(node.id, 0.95, "Preparing viewport")
-            self.display(data, Matrix4(), node.id, graph.compute_mode)
-            self.polygon_overlays(data, Matrix4())
-            append_overlays(data, Matrix4(), wires, normals, graph.compute_mode, polygons = false)
-            append_patch_boundaries(data, Matrix4(), patches)
+            self.publish(node, data)
         if let node = graph.find(graph.selected):
-            let data = graph.evaluate_data(node.id) catch failure:
+            let data = self.evaluate(node) catch failure:
+                if failure.message == "Computation superseded":
+                    error(failure.code, failure.message)
                 recover GeometryData()
             if let mesh = data.mesh:
-                self.channel.mesh(mesh, node.id, false)
+                self.inspect(node, mesh)
         if notice == "":
             notice = self.preview_warning
-        let report = [escaped(notice), str(graph.nodes.length)]
-        for node in graph.nodes:
-            report.append(str(node.id))
-            report.append("1" if node.dirty else "0")
-            report.append(escaped(node.failure))
-            report.append(escaped(node.summary))
-            report.append(str(node.evaluations))
-            report.append(str(node.group_paths.length))
-            for path in node.group_paths: report.append(escaped(path))
-        self.channel.overlays(wires, normals, patches)
-        self.channel.report(report.join("\n"))
-        self.channel.check() catch failure:
-            for node in graph.nodes:
-                if node.failure != "":
-                    graph.invalidate(node.id)
-            error(failure.code, failure.message)
+        self.store.trim(self.pinned())
+        self.channel.report(write_report(notice, false, self.outcomes(), self.recipes))
 
-    func prepare(self, data: GeometryData, node: int) -> unit!:
+    ## Stored result for the node's stamp, or cook it. Failures from inputs
+    ## propagate without being stored under this node's stamp.
+    func evaluate(self, node: Node, depth: int = 0) -> GeometryData!:
+        if depth > 64:
+            error(ui.invalid, "Cycle detected during evaluation")
+        if let entry = self.store.get(node.stamp):
+            if entry.failure != "":
+                error(ui.invalid, self.failed(node, entry.failure))
+            return entry.data else GeometryData()
+        self.channel.begin(node.stamp)
+        let result = self.cook(node, depth) catch failure:
+            self.channel.end()
+            error(failure.code, failure.message)
+        self.channel.end()
+        return result
+
+    func cook(self, node: Node, depth: int) -> GeometryData!:
+        let graph = self.graph
+        var input = GeometryData()
+        var second: GeometryData? = none
+        if node.kind == "Group":
+            let children: list[GeometryInstance] = []
+            if node.enabled:
+                for child in graph.outputs(node.id):
+                    children.append(GeometryInstance(self.upstream(node, child, depth), visible = child.visible))
+            input = GeometryData(instances = children)
+        elif not (node.kind in node_catalog.sources()):
+            let port = int(node.values[0]) if node.kind == "Switch" and node.enabled else 0
+            if port < 0 or port >= node.inputs.length or node.inputs[port] < 0:
+                return self.own(node, ui.invalid, "Connect a geometry input")
+            input = self.upstream(node, graph.require(node.inputs[port]), depth)
+            if node.enabled and node.inputs.length == 2 and not (node.kind in ["Switch", "Null"]):
+                if node.inputs[1] < 0:
+                    return self.own(node, ui.invalid, "Connect the second geometry input")
+                second = self.upstream(node, graph.require(node.inputs[1]), depth)
+        self.channel.progress(node.id, 0.0, "Computing")
+        self.cooks[node.id] = (self.cooks[node.id] else 0) + 1
+        var result = GeometryData()
+        if node.kind == "Edit" and node.enabled:
+            result = self.edit(node, input) catch failure:
+                return self.own(node, failure.code, failure.message)
+        else:
+            let progress = func (fraction: float) -> unit!:
+                self.channel.progress(node.id, fraction, "Tessellating" if node.kind == "Tessellate" else "Computing")
+            result = node.compute(input, second, progress, self.sources) catch failure:
+                return self.own(node, failure.code, failure.message)
+        discard(self.store.put(node.stamp, result))
+        self.channel.progress(node.id, 1.0, "Complete")
+        return result
+
+    ## Apply only the recipes after the longest stored prefix. The prefix just
+    ## before the last recipe is stored too: a gizmo drag or the next recipe
+    ## starts from it.
+    func edit(self, node: Node, input: GeometryData) -> GeometryData!:
+        let base = self.graph.require(node.inputs[0]).stamp
+        var mesh = input.require_mesh()
+        var start = 0
+        var count = node.edits.length - 1
+        while count > 0 and start == 0:
+            if let entry = self.store.get(prefix_stamp(node, base, count)):
+                if let data = entry.data:
+                    if let stored = data.mesh:
+                        mesh = stored
+                        start = count
+            count -= 1
+        for at in start..<node.edits.length:
+            mesh = node.edits[at].evaluate(mesh)
+            self.recipes += 1
+            self.channel.check()
+            if at == node.edits.length - 2:
+                discard(self.store.put(prefix_stamp(node, base, at + 1), GeometryData(mesh)))
+        return GeometryData(mesh)
+
+    func upstream(self, node: Node, input: Node, depth: int) -> GeometryData!:
+        let data = self.evaluate(input, depth + 1) catch failure:
+            if failure.message == "Computation superseded":
+                error(failure.code, failure.message)
+            error(failure.code, self.failed(node, failure.message))
+        return data
+
+    ## A failure of this node's own recipe, stored under its stamp.
+    func own(self, node: Node, code: ErrorCode, message: str) -> GeometryData!:
+        if message == "Computation superseded":
+            error(code, message)
+        discard(self.store.fail(node.stamp, message))
+        error(code, self.failed(node, message))
+
+    func failed(self, node: Node, message: str) -> str:
+        let text = f"{node.name}: {message}"
+        self.failures[node.id] = text
+        return text
+
+    ## Displayed and selected stamps and everything they read stay resident.
+    func pinned(self) -> set[int]!:
+        let result: set[int] = {}
+        let pending: list[int] = [self.graph.display, self.graph.selected]
+        for node in self.graph.outputs(self.graph.scope):
+            pending.append(node.id)
+        while pending.length > 0:
+            let node = self.graph.find(pending.pop()) else continue
+            if node.stamp in result:
+                continue
+            result.insert(node.stamp)
+            if node.kind == "Edit" and node.edits.length > 0:
+                if let input = self.graph.find(node.inputs[0]):
+                    result.insert(prefix_stamp(node, input.stamp, node.edits.length - 1))
+            for input in node.inputs:
+                pending.append(input)
+            if node.kind == "Group":
+                for child in self.graph.outputs(node.id):
+                    pending.append(child.id)
+        return result
+
+    func outcomes(self) -> list[Outcome]:
+        let result: list[Outcome] = []
+        for node in self.graph.nodes:
+            var cooked = 0
+            var summary = ""
+            var paths: list[str] = []
+            var failure = self.failures[node.id] else ""
+            if let entry = self.store.peek(node.stamp):
+                cooked = node.stamp
+                summary = entry.summary
+                paths = entry.paths
+                if entry.failure != "":
+                    failure = f"{node.name}: {entry.failure}"
+            elif failure != "":
+                cooked = node.stamp
+            result.append(Outcome(node.id, cooked, failure, summary, self.cooks[node.id] else 0, paths))
+        return result
+
+    ## Publish a displayed node's meshes and overlays by content key; keys the
+    ## UI still holds cost nothing. CAD previews build under the node's stamp,
+    ## so a newer request that still wants it lets the preview finish.
+    func publish(self, node: Node, data: GeometryData) -> unit!:
+        self.channel.begin(node.stamp)
+        self.prepare(data, node) catch failure:
+            self.channel.end()
+            error(failure.code, failure.message)
+        self.channel.end()
+        self.store.refresh(node.stamp)
+        discard(self.display(data, Matrix4(), node, 0))
+        let key = hash((node.stamp, "overlays"))
+        if self.channel.holds(key):
+            self.channel.reuse(key, node.id, false, false)
+            return
+        let wires: list[Vector3] = []
+        let normals: list[Vector3] = []
+        let patches: list[Vector3] = []
+        append_overlays(data, Matrix4(), wires, normals, self.graph.compute_mode, polygons = false)
+        append_patch_boundaries(data, Matrix4(), patches)
+        if wires.length + normals.length + patches.length > 0:
+            self.channel.overlay(key, node.id, wires, normals, patches)
+
+    func prepare(self, data: GeometryData, node: Node) -> unit!:
         if data.surfaces.length > 0:
             let preview = data.preview(func (fraction: float) -> unit!:
-                self.channel.progress(node, fraction * 0.9, "Previewing CAD"))
+                self.channel.progress(node.id, fraction * 0.9, "Previewing CAD"))
             if preview.failed_faces > 0:
                 self.preview_warning = f"{preview.failed_faces} CAD preview patches failed: {preview.first_error}"
-                self.channel.progress(node, 0.9, f"{preview.failed_faces} preview failures")
+                self.channel.progress(node.id, 0.9, f"{preview.failed_faces} preview failures")
         for instance in data.instances:
             if instance.visible:
                 self.prepare(instance.data, node)
 
-    func display(self, data: GeometryData, matrix: Matrix4, node: int, mode: int) -> unit!:
+    ## Deterministic traversal: a stamp always yields the same ordinals.
+    func display(self, data: GeometryData, matrix: Matrix4, node: Node, ordinal: int) -> int!:
         self.channel.check()
+        var next = ordinal
         if let mesh = data.mesh:
-            let display = mesh if matrix.is_identity() else mesh.placed(matrix)
-            self.channel.mesh(display, node, true)
+            self.show(mesh, matrix, node, next, true)
+            next += 1
         if data.surfaces.length > 0:
             for mesh in data.preview().meshes:
-                self.display(GeometryData(mesh), matrix, node, mode)
+                self.show(mesh, matrix, node, next, false)
+                next += 1
         for instance in data.instances:
             if instance.visible:
-                self.display(instance.data, matrix.multiply(Matrix4.compose(instance.translation, instance.rotation, instance.scale)), node, mode)
+                next = self.display(instance.data, matrix.multiply(Matrix4.compose(instance.translation, instance.rotation, instance.scale)), node, next)
+        return next
 
-    func polygon_overlays(self, data: GeometryData, matrix: Matrix4) -> unit!:
-        if let mesh = data.mesh:
-            self.channel.polygon_overlays(mesh, matrix)
-        for instance in data.instances:
-            if instance.visible:
-                self.polygon_overlays(instance.data, matrix.multiply(Matrix4.compose(instance.translation, instance.rotation, instance.scale)))
+    func show(self, mesh: PolygonMesh, matrix: Matrix4, node: Node, ordinal: int, overlays: bool) -> unit!:
+        let identity = matrix.is_identity()
+        let key = self.key_of(mesh, hash((node.stamp, ordinal))) if identity else hash((node.stamp, ordinal))
+        if self.channel.holds(key):
+            # The UI's copy shares this mesh's query index: warm it once a
+            # gesture settles, not during its previews.
+            if not self.graph.interactive and matrix.is_identity():
+                mesh.prepare_queries()
+            self.channel.reuse(key, node.id, true, false)
+            return
+        self.channel.mesh(mesh if identity else mesh.placed(matrix), key, node.id, true, false, overlays, not self.graph.interactive)
+        if identity:
+            self.meshes.append(mesh)
+            self.keys.append(key)
+
+    ## The selected node's mesh for the spreadsheet and component picking. A
+    ## mesh already published (displayed, or held from before) doubles as it.
+    func inspect(self, node: Node, mesh: PolygonMesh) -> unit!:
+        let key = self.key_of(mesh, hash((node.stamp, "inspect")))
+        if self.channel.holds(key) or self.listed(key):
+            self.channel.reuse(key, node.id, false, true)
+            return
+        self.channel.mesh(mesh, key, node.id, false, true, false, not self.graph.interactive)
+        self.meshes.append(mesh)
+        self.keys.append(key)
+
+    func key_of(self, mesh: PolygonMesh, fallback: int) -> int:
+        for at in 0..<self.meshes.length:
+            if self.meshes[at] is mesh:
+                return self.keys[at]
+        return fallback
+
+    func listed(self, key: int) -> bool:
+        return key in self.keys
 
 pub func compute_factory(token: int) -> ComputeHandler!:
     let computation = Computation(compute_bridge.channel(token))

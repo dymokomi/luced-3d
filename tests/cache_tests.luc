@@ -1,0 +1,171 @@
+## Node caching: content stamps, the worker's result store, hashed topology
+## guards and incremental Edit replay on a ~500k-face mesh.
+from workspace import Workspace
+from network import Network
+from stamps import stamp_graph
+from edit_operations import EditOperation
+from compute_request import RequestWriter
+from project_graph import write_graph, read_graph
+from prism import Document, Value
+from three import PolygonMesh, Vector3
+import time
+
+func settle(workspace: Workspace) -> unit!:
+    let session = workspace.compute else trap("compute")
+    let deadline = time.now() + 60000000000
+    while session.busy and time.now() < deadline:
+        discard(workspace.poll_compute())
+    assert(not session.busy)
+
+pub func cache_tests() -> unit!:
+    stamp_rules()
+    group_stamps()
+    hashed_guards()
+    store_hits()
+    large_edit_replay()
+    print("PASS stamps ignore names/flags/tool amount, result store hits on undo, hashed guards, small deltas and one-recipe Edit replay")
+
+## Rename, placement, visibility, output flags and the Edit tool amount are
+## not cook inputs; a parameter is, and undo restores the earlier stamp.
+func stamp_rules() -> unit!:
+    let w = Workspace()
+    w.add_node("Edit", 0.0, 100.0)
+    stamp_graph(w.network)
+    let cube = w.network.require(1).stamp
+    let edit = w.network.require(2).stamp
+    w.select_node(1)
+    w.rename("Renamed cube")
+    w.move_node(1, 300.0, 20.0)
+    w.toggle_visible()
+    w.set_output(1, 1)
+    w.select_node(2)
+    w.set_parameter(0, 0.9)
+    stamp_graph(w.network)
+    assert(w.network.require(1).stamp == cube and w.network.require(2).stamp == edit)
+    w.select_node(1)
+    w.set_parameter(0, 3.0)
+    stamp_graph(w.network)
+    assert(w.network.require(1).stamp != cube and w.network.require(2).stamp != edit)
+    w.undo()
+    stamp_graph(w.network)
+    assert(w.network.require(1).stamp == cube and w.network.require(2).stamp == edit)
+
+## Visibility and output flags reach only the parent Group's stamp.
+func group_stamps() -> unit!:
+    let graph = Network(false)
+    let group = graph.add("Group", 0.0, 0.0)
+    graph.scope = group.id
+    let child = graph.add("Cube", 0.0, 0.0)
+    let other = graph.add("Sphere", 0.0, 60.0)
+    stamp_graph(graph)
+    let before = group.stamp
+    let own = child.stamp
+    child.visible = false
+    stamp_graph(graph)
+    assert(group.stamp != before and child.stamp == own)
+    child.visible = true
+    child.name = "Renamed"
+    stamp_graph(graph)
+    assert(group.stamp == before)
+    other.output = -1
+    stamp_graph(graph)
+    assert(group.stamp != before and child.stamp == own)
+
+## The guard is the mesh's 64-bit connectivity hash: transforms pass, other
+## connectivity fails, projects store one integer and old arrays load unguarded.
+func hashed_guards() -> unit!:
+    let mesh = PolygonMesh.cube(2.0)
+    let edit = EditOperation("Move", [0, 1], mesh, Vector3(0.0, 0.5, 0.0), 0.0)
+    assert(edit.topology == mesh.topology_hash() and edit.topology != 0)
+    discard(edit.evaluate(mesh.transformed(Vector3(1.0, 0.0, 0.0), Vector3(), Vector3(2.0, 2.0, 2.0))))
+    var rejected = false
+    discard(edit.evaluate(mesh.extruded_faces([2], 0.5))) catch failure: rejected = true
+    assert(rejected)
+    let graph = Network()
+    let node = graph.add("Edit", 0.0, 90.0)
+    graph.connect(1, node.id, 0)
+    node.edits.append(edit)
+    # A worker request resends a body only when its node's stamp changed.
+    stamp_graph(graph)
+    let writer = RequestWriter()
+    let full = writer.encode(graph, 3)
+    let delta = writer.encode(graph, 3)
+    assert(full.contains("edit_count") and not delta.contains("edit_count") and delta.byte_count < full.byte_count)
+    let doc = Document()
+    write_graph(doc, graph)
+    assert(read_graph(doc).require(node.id).edits[0].topology == edit.topology)
+    doc.set(f"/scene/nodes/n{node.id}/edits/e0", "topology", Value.numbers([3], [8.0, 6.0, 4.0]))
+    let legacy = read_graph(doc).require(node.id).edits[0]
+    assert(legacy.topology == 0 and legacy.elements == [0, 1])
+    discard(legacy.evaluate(mesh.extruded_faces([2], 0.5)))
+
+## Undo, redo, renames and visibility round trips hit the worker's store and
+## the UI's held meshes instead of recooking or recopying.
+func store_hits() -> unit!:
+    let w = Workspace()
+    w.enable_compute()
+    settle(w)
+    w.add_node("Subdivide", 0.0, 100.0)
+    settle(w)
+    let cooks = (w.selected() else trap("Subdivide")).evaluations
+    let faces = (w.geometry else trap("subdivided")).face_count()
+    w.set_parameter(0, 2.0)
+    settle(w)
+    assert((w.selected() else trap("Subdivide")).evaluations == cooks + 1)
+    assert((w.geometry else trap("level 2")).face_count() == faces * 4)
+    w.undo()
+    settle(w)
+    assert((w.selected() else trap("Subdivide")).evaluations == cooks + 1)
+    assert((w.geometry else trap("undone")).face_count() == faces)
+    w.redo()
+    settle(w)
+    assert((w.selected() else trap("Subdivide")).evaluations == cooks + 1)
+    let adopted = w.publisher.adopted
+    w.rename("Renamed")
+    w.toggle_visible()
+    settle(w)
+    w.toggle_visible()
+    settle(w)
+    w.select_node(1)
+    settle(w)
+    w.select_node(2)
+    settle(w)
+    assert((w.selected() else trap("Subdivide")).evaluations == cooks + 1)
+    assert(w.publisher.adopted == adopted and w.geometry != none)
+    (w.compute else trap("compute")).close()
+
+## A ~500k-face mesh: requests stay small, a new recipe or a gizmo step
+## applies one recipe to the stored prefix, and undo applies none.
+func large_edit_replay() -> unit!:
+    let w = Workspace()
+    w.enable_compute()
+    settle(w)
+    w.delete_selected()
+    w.add_node("File", 0.0, 0.0)
+    w.set_text(0, "tests/fixtures/grid500k.obj")
+    settle(w)
+    w.add_node("Edit", 0.0, 100.0)
+    settle(w)
+    let session = w.compute else trap("compute")
+    assert(w.editing() and (w.geometry else trap("grid")).face_count() > 500000)
+    for face in 0..<20:
+        w.choose_component(face * 9973, true)
+    w.move_selection(Vector3(0.0, 0.1, 0.0))
+    settle(w)
+    assert(w.notice == "" and session.recipes == 1 and session.request_size < 16384)
+    w.move_selection(Vector3(0.0, 0.1, 0.0))
+    settle(w)
+    assert(w.notice == "" and session.recipes == 1 and session.request_size < 16384)
+    w.undo()
+    settle(w)
+    assert(session.recipes == 0)
+    w.begin("Move components")
+    w.preview_move(Vector3(0.0, 0.2, 0.0))
+    settle(w)
+    assert(session.recipes == 1 and session.request_size < 16384)
+    w.preview_move(Vector3(0.0, 0.3, 0.0))
+    settle(w)
+    assert(session.recipes == 1)
+    w.commit()
+    assert((w.selected() else trap("Edit")).edits.length == 2)
+    session.close()

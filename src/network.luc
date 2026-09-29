@@ -3,7 +3,7 @@ from three import PolygonMesh, Vector3, Matrix4
 from geometry_data import GeometryData, GeometryInstance
 from edit_operations import EditOperation
 import node_catalog
-from node_evaluation import source_geometry, evaluate_operator, load_geometry
+from node_evaluation import source_geometry, evaluate_operator, load_geometry, SourceCache
 from group_operations import blast
 import ui
 
@@ -37,6 +37,9 @@ pub class Node:
     pub var phase: str = ""
     pub var summary: str = ""
     pub var group_paths: list[str]
+    ## Content stamp of the recipe (stamps.luc) and of the last result reported.
+    pub var stamp: int = 0
+    pub var cooked: int = 0
 
     pub func init(self, id: int, kind: str, x: float, y: float) -> unit!:
         if not (kind in kinds()):
@@ -76,11 +79,13 @@ pub class Node:
         result.source_revision = self.source_revision
         result.summary = self.summary
         result.group_paths = self.group_paths.copy()
+        result.stamp = self.stamp
+        result.cooked = self.cooked
         return result
 
     ## Pure node computation over resolved immutable inputs. Runtime invokes this
     ## only on the compute worker; synchronous callers use the same contract.
-    pub func compute(self, data: GeometryData, second: GeometryData? = none, progress: func(float) -> unit!? = none) -> GeometryData!:
+    pub func compute(self, data: GeometryData, second: GeometryData? = none, progress: func(float) -> unit!? = none, sources: SourceCache? = none) -> GeometryData!:
         let v = self.values
         let rotation = Vector3(v[4], v[5], v[6]).multiply_scalar(0.017453292519943295)
         let scale = Vector3(v[7], v[8], v[9])
@@ -92,6 +97,8 @@ pub class Node:
             if not self.enabled:
                 return GeometryData()
             if self.kind == "File":
+                if let cache = sources:
+                    return cache.load(self.texts[0].trim(), v[0])
                 return load_geometry(self.texts[0].trim(), v[0])
             return GeometryData(source_geometry(self.kind, v))
         if not self.enabled or self.kind in ["Switch", "Null"]:
@@ -99,6 +106,8 @@ pub class Node:
         if self.kind == "Blast":
             return blast(data, self.texts[0], v[0] != 0.0)
         if self.kind == "Tessellate":
+            if let cache = sources:
+                return cache.tessellated(data, int(v[0]), v[1], progress)
             return data.tessellated(int(v[0]), v[1], progress)
         if self.kind == "Transform":
             return data.transformed(translation, rotation, scale)
@@ -123,7 +132,11 @@ pub class Network:
     pub var preview: bool = false
     pub var background: bool = false
     pub var compute_mode: int = 3
+    ## Set on worker copies while a gesture previews: skip query-index warming.
+    pub var interactive: bool = false
     pub var on_progress: func(int, float, str) -> unit!? = none
+    ## Process-lifetime import caches shared by every copy of this graph.
+    pub var sources: SourceCache? = none
 
     pub func init(self, seed: bool = true) -> unit!:
         self.nodes = []
@@ -168,6 +181,7 @@ pub class Network:
         result.scope = self.scope
         result.preview = self.preview
         result.background = self.background
+        result.sources = self.sources
         for node in self.nodes:
             result.nodes.append(node.copy())
         return result
@@ -380,6 +394,7 @@ pub class Network:
             if node.inputs[1] < 0:
                 error(ui.invalid, "Connect the second geometry input")
             second = self.evaluate_node(node.inputs[1], visiting)
-        return node.compute(data, second, func (fraction: float) -> unit!:
+        let progress = func (fraction: float) -> unit!:
             if let report = self.on_progress:
-                report(node.id, fraction, "Tessellating" if node.kind == "Tessellate" else "Computing"))
+                report(node.id, fraction, "Tessellating" if node.kind == "Tessellate" else "Computing")
+        return node.compute(data, second, progress, self.sources)

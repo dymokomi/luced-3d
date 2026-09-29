@@ -169,8 +169,9 @@ Set **Tool amount** in Parameters before applying a tool. Hover icons for names.
 
 The graph has stable node IDs, geometry ports, shared cached results, downstream
 invalidation and demand-driven evaluation of exposed outputs or preview. Edit nodes
-store ordered operations against immutable mesh snapshots. A topology guard
-rejects incompatible upstream changes instead of applying edits to wrong IDs.
+store ordered operations against immutable mesh snapshots. A 64-bit topology
+hash guard rejects incompatible upstream changes instead of applying edits to
+wrong IDs. Results are cached by content stamp (docs/COMPUTE-AND-GIZMOS.md).
 Undo covers graph changes, nested deletion, parameters, Out/visibility/preview/bypass, selections and modeling;
 history retains 64 transactions.
 

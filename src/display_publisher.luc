@@ -1,0 +1,94 @@
+## Adopts worker results by content key. A key the UI already holds keeps its
+## mesh (and so the renderer's cache for it), and an unchanged scene keeps its
+## objects: re-publishing an unchanged stamp (a rename, a selection, a
+## visibility toggle elsewhere) rebuilds nothing.
+## A few keys that just left the scene stay held, so toggling a node back on
+## or undoing a display change needs no new copy either.
+from three import Group, PolygonMesh, Vector3
+from compute_bridge import ComputeService
+from network import Network
+from geometry_data import GeometryData
+from scene_projection import display_mesh
+
+pub class DisplayPublisher:
+    let objects: Group
+    let held: map[int, PolygonMesh]
+    var shown_keys: list[int]
+    var product_keys: list[int]
+    ## Every key the worker may re-publish without copying: this result's
+    ## products, then recently dropped keys, newest first.
+    pub var kept: list[int]
+    pub var geometry: PolygonMesh? = none
+    pub let bounds: list[Vector3]
+    ## Meshes adopted as new copies over the session (tests and benchmarks).
+    pub var adopted: int = 0
+
+    pub func init(self, objects: Group):
+        self.objects = objects
+        self.held = {}
+        self.shown_keys = []
+        self.product_keys = []
+        self.kept = []
+        self.bounds = []
+
+    ## Adopt the completed result. Returns whether its overlay batches differ
+    ## from the previous result's, i.e. whether the caller must fetch them.
+    pub func adopt(self, service: ComputeService, network: Network) -> bool!:
+        let displayed: list[int] = []
+        let products: list[int] = []
+        var fresh = false
+        self.geometry = none
+        for index in 0..<service.mesh_count():
+            let key = service.mesh_key(index)
+            let node = service.mesh_node(index)
+            products.append(key)
+            if service.mesh_fresh(index):
+                self.held[key] = service.take_mesh(index)
+                self.adopted += 1
+                fresh = true
+            let mesh = self.held[key] else continue
+            if service.mesh_display(index):
+                displayed.append(key)
+            if service.mesh_inspect(index):
+                if let selected = network.find(node):
+                    selected.cache = GeometryData(mesh)
+                if node == network.display:
+                    self.geometry = mesh
+        if displayed != self.shown_keys:
+            self.show(displayed)
+        self.retain(products)
+        let changed = fresh or products != self.product_keys
+        self.product_keys = products
+        return changed
+
+    ## Scene objects are cheap wrappers; they are rebuilt only when the list of
+    ## displayed keys changes. (Retaining them in a Luce map across frames hit
+    ## a native-backend lifetime fault; the renderer caches by geometry.)
+    func show(self, displayed: list[int]) -> unit!:
+        self.objects.clear()
+        self.bounds.clear()
+        for key in displayed:
+            let mesh = self.held[key] else continue
+            self.objects.add(display_mesh(mesh))
+            self.bounds.append(mesh.bounds().minimum)
+            self.bounds.append(mesh.bounds().maximum)
+        self.shown_keys = displayed
+
+    ## Keep this result's keys plus the six most recent dropped ones.
+    func retain(self, products: list[int]) -> unit:
+        let kept = products.copy()
+        var extra = 0
+        for key in self.kept:
+            if extra == 6:
+                break
+            if not (key in kept):
+                kept.append(key)
+                extra += 1
+        let meshes: map[int, PolygonMesh] = {}
+        for key in kept:
+            if let mesh = self.held[key]:
+                meshes[key] = mesh
+        self.held.clear()
+        for key in meshes.keys():
+            self.held[key] = meshes[key] else continue
+        self.kept = kept

@@ -1,36 +1,55 @@
 ## App-owned worker boundary. Luce graphs and ARC owners never cross threads.
-## Requests are copied text; completed native mesh copies are adopted on the UI
-## thread. One active job and one replaceable pending request bound memory/work.
+## Requests are copied text, applied in order: each is a delta against the one
+## before, so none is dropped, but only the newest is cooked and published. A
+## cook whose stamp the newest request still wants runs to completion into the
+## worker's result store; stale publishing stops at the next check.
+## Published products are keyed by content: the UI keeps the meshes it adopted,
+## and the worker re-publishes a held key without copying, indexing or
+## re-extracting overlays.
 import interop
 import memory
 import thread
 import sync
-import strings
+import c
 from three import PolygonMesh, polygon_mesh_type, detached_mesh, Vector3, Matrix4, invalid, WireBatch, wire_batch_type, mesh_overlay_points
+import platform
 
 pub type ComputeHandler = interop.Callback[str, unit]
 
-pub func number(text: str) -> f64!:
-    return try strings.parse_f64(text)
+struct Request:
+    let message: interop.Packet[str]
+    let generation: i64
+    let wanted: i64[]
 
-pub func decimal(value: f64) -> interop.Outcome[str]:
-    var buffer: u8[32]
-    let text = strings.format_f64(value, buffer) catch failure:
-        return interop.Outcome[str].failure(failure.code, interop.copy_text(failure.message) catch exhausted: trap(exhausted.message))
-    return interop.Outcome[str].success(interop.copy_text(text) catch exhausted: trap(exhausted.message))
-
+## A product of the current result. Fresh products own a deep mesh copy for
+## the UI and freshly extracted overlays; others name a key the UI holds.
 struct Product:
+    let key: i64
     var mesh: PolygonMesh*?
     let node: i64
     let display: bool
-    let source: u64
     var inspect: bool
+    let fresh: bool
+    var wires: Vector3[]
+    var normals: Vector3[]
+    var patches: Vector3[]
+
+## Overlays of a key the UI holds, kept so unchanged keys need no extraction.
+struct Held:
+    let key: i64
+    var wires: Vector3[]
+    var normals: Vector3[]
+    var patches: Vector3[]
 
 struct State:
     var lock: sync.Mutex
     var changed: sync.Condition
     var stopping: bool = false
-    var pending: interop.Packet[str]? = none
+    var queue: Request[]
+    var queued: usize = 0
+    var wanted: i64[]
+    var cooking: i64[64]
+    var depth: usize = 0
     var requested: i64 = 0
     var active: i64 = 0
     var completed: i64 = 0
@@ -42,32 +61,49 @@ struct State:
     var failed: bool = false
     var products: Product[1024]
     var count: usize = 0
-    var wires: Vector3[]
-    var normals: Vector3[]
-    var patches: Vector3[]
+    var held: Held[1024]
+    var held_count: usize = 0
     var handle: thread.Handle
     let entry: interop.WorkerEntry[i64, str, unit]
 
+    ## Drop the current result; untaken fresh copies are freed.
     mutating func clear():
         for product in self.products[..<self.count]:
             if let mesh = product.mesh:
                 mesh.close()
                 free(mesh) in memory.heap
+            release_points(product.wires)
+            release_points(product.normals)
+            release_points(product.patches)
         self.count = 0
-        if self.wires.length > 0:
-            free(self.wires) in memory.heap
-        if self.normals.length > 0:
-            free(self.normals) in memory.heap
-        if self.patches.length > 0:
-            free(self.patches) in memory.heap
-        var empty: Vector3[]
-        self.wires = empty
-        self.normals = empty
-        self.patches = empty
         if let report = self.report:
             report.release()
         self.report = none
         self.failed = false
+
+    func holds(key: i64) -> bool:
+        for held in self.held[..<self.held_count]:
+            if held.key == key:
+                return true
+        return false
+
+    func wants(stamp: i64) -> bool:
+        for wanted in self.wanted:
+            if wanted == stamp:
+                return true
+        return false
+
+func release_points(points: Vector3[]):
+    if points.length > 0:
+        free(points) in memory.heap
+
+func copy_points(points: const Vector3[]) -> Vector3[]!:
+    var empty: Vector3[]
+    if points.length == 0:
+        return empty
+    let output = try alloc Vector3[points.length] in memory.heap
+    memory.copy(output, points, points.length)
+    return output
 
 ## Borrowed synchronized channel valid only while the service's worker lives.
 pub struct ComputeChannel:
@@ -76,12 +112,37 @@ pub struct ComputeChannel:
     pub mutating func close():
         discard(self.state)
 
+    ## Cancellation point. A newer request cancels publishing, and a cook only
+    ## when that request no longer wants the stamp being cooked.
     pub func check() -> !:
         self.state.lock.lock()
-        let cancelled = self.state.stopping or self.state.active != self.state.requested
-        self.state.lock.unlock()
-        if cancelled:
+        defer self.state.lock.unlock()
+        if self.state.stopping:
             error(invalid, "Computation superseded")
+        if self.state.queued == 0:
+            return
+        if self.state.depth == 0 or not self.state.wants(self.state.cooking[self.state.depth - 1]):
+            error(invalid, "Computation superseded")
+
+    ## Whether a newer request waits; its delta must be applied before cooking.
+    pub func superseded() -> bool:
+        self.state.lock.lock()
+        defer self.state.lock.unlock()
+        return self.state.queued > 0 or self.state.stopping
+
+    pub func begin(stamp: i64) -> !:
+        self.state.lock.lock()
+        defer self.state.lock.unlock()
+        if self.state.depth == self.state.cooking.length:
+            error(invalid, "Node cooks nest too deeply")
+        self.state.cooking[self.state.depth] = stamp
+        self.state.depth += 1
+
+    pub func end():
+        self.state.lock.lock()
+        defer self.state.lock.unlock()
+        if self.state.depth > 0:
+            self.state.depth -= 1
 
     pub func progress(node: i64, fraction: f64, phase: str) -> !:
         try self.check()
@@ -95,62 +156,84 @@ pub struct ComputeChannel:
         self.state.fraction = fraction
         self.state.sequence += 1
 
-    pub func mesh(source: interop.Reference[PolygonMesh], node: i64, display: bool) -> !:
+    ## True when the UI already holds this product key from the last result.
+    pub func holds(key: i64) -> bool:
+        self.state.lock.lock()
+        defer self.state.lock.unlock()
+        return self.state.holds(key)
+
+    ## Publish a key the UI holds: no copy, index or overlay work.
+    pub func reuse(key: i64, node: i64, display: bool, inspect: bool) -> !:
         try self.check()
-        if not display:
-            for index in 0..<self.state.count:
-                if self.state.products[index].node == node and self.state.products[index].source == source.identity():
-                    self.state.products[index].inspect = true
-                    return
-        if self.state.count == self.state.products.length:
-            error(invalid, "Computed scene exceeds 1024 mesh batches")
+        if self.merge(key, inspect):
+            return
+        try self.add(Product(key, none, node, display, inspect, false))
+
+    ## Publish a new mesh product: a new owner of the worker's immutable storage
+    ## (and so of its query index, warmed here unless a gesture is previewing,
+    ## not on the UI's first click), plus its wire and normal overlays.
+    pub func mesh(source: interop.Reference[PolygonMesh], key: i64, node: i64, display: bool, inspect: bool, overlays: bool, index: bool) -> !:
+        try self.check()
+        if self.merge(key, inspect):
+            return
         let copy = try detached_mesh(source)
+        var product = Product(key, copy, node, display, inspect, true)
         errdefer:
             copy.close()
             free(copy) in memory.heap
-        # Final viewport/picking products are warmed here, not on the UI's first
-        # click. Intermediate meshes in the CAD cook never need a query index.
-        try copy.prepare_queries()
+            release_points(product.wires)
+            release_points(product.normals)
+        if index:
+            try copy.prepare_queries()
+        if overlays:
+            product.wires = try mesh_overlay_points(copy, Matrix4(), false)
+            product.normals = try mesh_overlay_points(copy, Matrix4(), true)
         try self.check()
-        self.state.products[self.state.count] = Product(copy, node, display, source.identity(), not display)
+        try self.add(product)
+
+    ## Publish analytic CAD boundaries and normal guides under a content key.
+    pub func overlay(key: i64, node: i64, wires: const Vector3[], normals: const Vector3[], patches: const Vector3[]) -> !:
+        try self.check()
+        var product = Product(key, none, node, false, false, true)
+        errdefer:
+            release_points(product.wires)
+            release_points(product.normals)
+            release_points(product.patches)
+        product.wires = try copy_points(wires)
+        product.normals = try copy_points(normals)
+        product.patches = try copy_points(patches)
+        try self.add(product)
+
+    ## A key already in this result gains the inspect role instead of a copy.
+    func merge(key: i64, inspect: bool) -> bool:
+        for index in 0..<self.state.count:
+            if self.state.products[index].key == key:
+                self.state.products[index].inspect = self.state.products[index].inspect or inspect
+                return true
+        return false
+
+    func add(product: Product) -> !:
+        if self.state.count == self.state.products.length:
+            error(invalid, "Computed scene exceeds 1024 mesh batches")
+        self.state.products[self.state.count] = product
         self.state.count += 1
 
-    pub func overlays(wires: const Vector3[], normals: const Vector3[], patches: const Vector3[]) -> !:
-        try self.check()
-        try append_points(&self.state.wires, wires)
-        try append_points(&self.state.normals, normals)
-        self.state.patches = try alloc Vector3[patches.length] in memory.heap
-        for index in 0..<patches.length:
-            self.state.patches[index] = patches[index]
-
-    ## Extract whole polygon batches in Base, without millions of boxed Luce
-    ## vectors or per-corner interop calls during large-file preparation.
-    pub func polygon_overlays(source: interop.Reference[PolygonMesh], matrix: Matrix4) -> !:
-        try self.check()
-        let wires = try mesh_overlay_points(source.value(), matrix, false)
-        defer free(wires) in memory.heap
-        try append_points(&self.state.wires, wires)
-        let normals = try mesh_overlay_points(source.value(), matrix, true)
-        defer free(normals) in memory.heap
-        try append_points(&self.state.normals, normals)
-
     pub func report(text: str) -> !:
-        try self.check()
-        self.state.report = try interop.text_transfer.copy(text)
+        let copied = try interop.text_transfer.copy(text)
+        if let previous = self.state.report:
+            previous.release()
+        self.state.report = copied
 
 pub let compute_channel_type: interop.Type[ComputeChannel] = interop.Type[ComputeChannel]("Worker compute channel", ComputeChannel.close)
-
-func append_points(target: Vector3[]*, points: const Vector3[]) -> !:
-    if points.length == 0: return
-    let output = try alloc Vector3[target.length + points.length] in memory.heap
-    memory.copy(output, *target, target.length)
-    memory.copy(output[target.length..], points, points.length)
-    if target.length > 0: free(*target) in memory.heap
-    *target = output
 
 ## Called only by the named worker factory with its service-provided token.
 pub func channel(token: i64) -> interop.Reference[ComputeChannel]!:
     return try interop.Reference[ComputeChannel].adopt(new ComputeChannel((State*)(usize)token) in memory.heap, compute_channel_type, memory.heap)
+
+## A quarter of physical memory for cooked results; 4 GiB when unknown.
+pub func memory_budget() -> i64:
+    let total = physical_memory()
+    return (i64)(total // 4) if total > 0 else 4294967296
 
 ## Main-thread owner. poll never waits for geometry work; close cancels and joins.
 pub struct ComputeService:
@@ -159,17 +242,34 @@ pub struct ComputeService:
     pub func init(entry: interop.WorkerEntry[i64, str, unit]) -> !:
         let state = try new State(entry = entry) in memory.heap
         errdefer free(state) in memory.heap
+        state.queue = try alloc Request[16] in memory.heap
+        errdefer free(state.queue) in memory.heap
         state.handle = try thread.spawn(run, (void*)state, name = "luced-3d compute")
         self.state = state
 
-    pub func submit(text: str, generation: i64) -> !:
+    ## Queue a delta request and the stamps it wants kept cooking.
+    pub func submit(text: str, generation: i64, wanted: const i64[]) -> !:
         let state = self.state else error(invalid, "Compute service closed")
-        let request = try interop.text_transfer.copy(text)
+        let message = try interop.text_transfer.copy(text)
+        errdefer message.release()
+        let stamps = try alloc i64[wanted.length + 1] in memory.heap
+        errdefer free(stamps) in memory.heap
+        memory.copy(stamps, wanted, wanted.length)
+        stamps[wanted.length] = 0
         state.lock.lock()
         defer state.lock.unlock()
-        if let old = state.pending:
-            old.release()
-        state.pending = request
+        if state.queued == state.queue.length:
+            let grown = try alloc Request[state.queue.length * 2] in memory.heap
+            memory.copy(grown, state.queue, state.queued)
+            free(state.queue) in memory.heap
+            state.queue = grown
+        let current = try alloc i64[wanted.length + 1] in memory.heap
+        memory.copy(current, stamps, stamps.length)
+        if state.wanted.length > 0:
+            free(state.wanted) in memory.heap
+        state.wanted = current
+        state.queue[state.queued] = Request(message, generation, stamps)
+        state.queued += 1
         state.requested = generation
         state.changed.broadcast()
 
@@ -208,12 +308,17 @@ pub struct ComputeService:
 
     pub func mesh_count() -> i64:
         return (i64)(self.state else return 0).count
+    pub func mesh_key(index: i64) -> i64:
+        return (self.state else return 0).products[(usize)index].key
     pub func mesh_node(index: i64) -> i64:
         return (self.state else return -1).products[(usize)index].node
     pub func mesh_display(index: i64) -> bool:
         return (self.state else return false).products[(usize)index].display
     pub func mesh_inspect(index: i64) -> bool:
         return (self.state else return false).products[(usize)index].inspect
+    ## Whether the product carries a new mesh to adopt (else the UI holds it).
+    pub func mesh_fresh(index: i64) -> bool:
+        return (self.state else return false).products[(usize)index].mesh != none
     pub func take_mesh(index: i64) -> interop.Reference[PolygonMesh]!:
         let state = self.state else error(invalid, "Compute service closed")
         if index < 0 or (usize)index >= state.count or state.completed == 0:
@@ -221,21 +326,61 @@ pub struct ComputeService:
         let mesh = state.products[(usize)index].mesh else error(invalid, "Mesh already consumed")
         state.products[(usize)index].mesh = none
         return try interop.Reference[PolygonMesh].adopt(mesh, polygon_mesh_type, memory.heap)
+
+    ## Combined overlays of the current result: fresh and held keys.
     pub func wires() -> interop.Reference[WireBatch]!:
-        return try interop.Reference[WireBatch].adopt(new WireBatch((self.state else trap("closed compute service")).wires) in memory.heap, wire_batch_type, memory.heap)
+        return try self.batch(0)
     pub func normals() -> interop.Reference[WireBatch]!:
-        return try interop.Reference[WireBatch].adopt(new WireBatch((self.state else trap("closed compute service")).normals) in memory.heap, wire_batch_type, memory.heap)
+        return try self.batch(1)
     pub func patches() -> interop.Reference[WireBatch]!:
-        return try interop.Reference[WireBatch].adopt(new WireBatch((self.state else trap("closed compute service")).patches) in memory.heap, wire_batch_type, memory.heap)
+        return try self.batch(2)
+
+    func batch(which: i64) -> interop.Reference[WireBatch]!:
+        let state = self.state else error(invalid, "Compute service closed")
+        var total: usize = 0
+        for product in state.products[..<state.count]:
+            total += overlay_of(state, product, which).length
+        let points = try alloc Vector3[total] in memory.heap
+        defer free(points) in memory.heap
+        var at: usize = 0
+        for product in state.products[..<state.count]:
+            let part = overlay_of(state, product, which)
+            memory.copy(points[at..], part, part.length)
+            at += part.length
+        return try interop.Reference[WireBatch].adopt(try new WireBatch(points) in memory.heap, wire_batch_type, memory.heap)
+
     pub func report() -> str:
         return ((self.state else trap("closed compute service")).report else interop.Packet[str]("")).value
     pub func failed() -> bool:
         return (self.state else trap("closed compute service")).failed
 
-    pub func release_result():
+    ## Release the result. `kept` lists every key the UI holds from now on:
+    ## held keys it names stay, and so do this result's fresh products the UI
+    ## adopted (or that carry only overlays). All other held data is freed.
+    pub func release_result(kept: const i64[]):
         let state = self.state else return
         state.lock.lock()
         defer state.lock.unlock()
+        var count: usize = 0
+        for index in 0..<state.held_count:
+            if listed(kept, state.held[index].key):
+                state.held[count] = state.held[index]
+                count += 1
+            else:
+                release_points(state.held[index].wires)
+                release_points(state.held[index].normals)
+                release_points(state.held[index].patches)
+        state.held_count = count
+        for index in 0..<state.count:
+            let product = &state.products[index]
+            if not product.fresh or product.mesh != none or not listed(kept, product.key) or state.held_count == state.held.length:
+                continue
+            state.held[state.held_count] = Held(product.key, product.wires, product.normals, product.patches)
+            state.held_count += 1
+            var empty: Vector3[]
+            product.wires = empty
+            product.normals = empty
+            product.patches = empty
         state.clear()
         state.completed = 0
         state.changed.broadcast()
@@ -248,14 +393,37 @@ pub struct ComputeService:
         state.lock.unlock()
         state.handle.join() catch failure: trap(failure.message)
         state.clear()
-        if let pending = state.pending:
-            pending.release()
+        for request in state.queue[..<state.queued]:
+            request.message.release()
+            free(request.wanted) in memory.heap
+        free(state.queue) in memory.heap
+        if state.wanted.length > 0:
+            free(state.wanted) in memory.heap
+        for held in state.held[..<state.held_count]:
+            release_points(held.wires)
+            release_points(held.normals)
+            release_points(held.patches)
         if let phase = state.phase:
             phase.release()
         free(state) in memory.heap
         self.state = none
 
 pub let compute_service_type: interop.Type[ComputeService] = interop.Type[ComputeService]("3D compute service", ComputeService.close, closeable = true, main_thread = true)
+
+func listed(keys: const i64[], key: i64) -> bool:
+    for candidate in keys:
+        if candidate == key:
+            return true
+    return false
+
+func overlay_of(state: const State*, product: const Product, which: i64) -> const Vector3[]:
+    if product.fresh:
+        return product.wires if which == 0 else (product.normals if which == 1 else product.patches)
+    for held in state.held[..<state.held_count]:
+        if held.key == product.key:
+            return held.wires if which == 0 else (held.normals if which == 1 else held.patches)
+    var empty: Vector3[]
+    return empty
 
 func run(raw: void*?):
     let state = (State*)(raw else return)
@@ -266,16 +434,18 @@ func run(raw: void*?):
     let handler = opened.get() catch failure: trap(failure.message)
     while true:
         state.lock.lock()
-        while (state.pending == none or state.completed != 0) and not state.stopping:
+        while (state.queued == 0 or state.completed != 0) and not state.stopping:
             state.changed.wait(&state.lock)
         if state.stopping:
             state.lock.unlock()
             return
-        let request = state.pending else trap("missing compute request")
-        state.pending = none
-        state.active = state.requested
+        let request = state.queue[0]
+        state.queued -= 1
+        memory.move(state.queue, state.queue[1..], state.queued)
+        state.active = request.generation
+        state.depth = 0
         state.lock.unlock()
-        let result = handler.invoke(request.value)
+        let result = handler.invoke(request.message.value)
         result.get() catch failure:
             state.failed = true
             if let previous = state.report:
@@ -283,11 +453,41 @@ func run(raw: void*?):
             state.report = interop.text_transfer.copy(failure.message) catch exhausted: trap(exhausted.message)
             recover ()
         result.release()
-        request.release()
+        request.message.release()
+        free(request.wanted) in memory.heap
         state.lock.lock()
-        if state.active == state.requested and not state.stopping:
+        if state.queued == 0 and state.active == state.requested and not state.stopping:
             state.completed = state.active
         else:
             state.clear()
         state.sequence += 1
         state.lock.unlock()
+
+## The machine's physical memory in bytes; 0 when it cannot be told.
+func physical_memory() -> u64:
+    if platform.macos:
+        var value: u64 = 0
+        var length: usize = 8
+        if sysctlbyname((c.str)"hw.memsize", (void*)&value, &length, none, 0) != 0:
+            return 0
+        return value
+    elif platform.windows:
+        # MEMORYSTATUSEX: dwLength first, ullTotalPhys at byte 8.
+        var status: u8[64]
+        memory.set(status, 0)
+        status[0] = 64
+        if GlobalMemoryStatusEx((void*)&status[0]) == 0:
+            return 0
+        var total: u64 = 0
+        for index in 0..<(usize)8:
+            total |= (u64)status[8 + index] << (u64)(index * 8)
+        return total
+    else:
+        # _SC_PHYS_PAGES and _SC_PAGESIZE on Linux.
+        let pages = sysconf(85)
+        let size = sysconf(30)
+        return (u64)pages * (u64)size if pages > 0 and size > 0 else 0
+
+extern func sysctlbyname(name: c.str, value: void*, length: usize*, new_value: void*?, new_length: usize) -> i32
+extern func sysconf(name: i32) -> i64
+extern func GlobalMemoryStatusEx(status: void*) -> i32
