@@ -1,0 +1,60 @@
+## USD in the node graph (luce-usd): the File node reading .usd, .usda,
+## .usdc and .usdz with its USD rows (node_catalog.usd_fields), and the
+## Export node, which writes its input to a file in the format its
+## extension names (USD, OBJ or prism) and passes it on.
+import math
+from usd import Usd
+from obj import Obj
+from geocore import GeometryFile
+from geometry_data import GeometryData
+import ui
+
+## Whether `path` names a USD file.
+pub func is_usd_path(path: str) -> bool:
+    let lower = path.trim().lower()
+    return lower.ends_with(".usd") or lower.ends_with(".usda") or lower.ends_with(".usdc") or lower.ends_with(".usdz")
+
+## A File node's stage at the options its USD rows hold: 1 import mode
+## (flatten everything when 1), 2 set time, 3 time, 4-6 render, proxy and
+## guide purposes, 7 convert to Y-up meters, 8 subdivide as authored.
+pub func load_usd(path: str, values: list[float]) -> GeometryData!:
+    let at = values[3] if values[2] != 0.0 else math.nan
+    let purposes = (1 if values[4] != 0.0 else 0) + (2 if values[5] != 0.0 else 0) + (4 if values[6] != 0.0 else 0)
+    let geometry = Usd.load(path, time = at, flatten = values[1] == 1.0, purposes = purposes, convert_units = values[7] != 0.0, subdivide = values[8] != 0.0)
+    let data = GeometryData(geometry = geometry)
+    data.warning = summary(Usd.warnings())
+    return data
+
+## The Export node's cook: write `data` to `path` (options in `values`: 0
+## split by path, 1 precise points; `root` the root prim for USD) and pass
+## it on, with what the writer left out as the warning. Cooks run when the
+## node's stamp changes, so the file is written then.
+pub func cook_export(path: str, root: str, values: list[float], data: GeometryData) -> GeometryData!:
+    let file = path.trim()
+    if file == "":
+        return data.passed("No file: nothing is written")
+    let lower = file.lower()
+    if is_usd_path(lower):
+        let name = root.trim() if root.trim() != "" else "geo"
+        Usd.save(data.geometry, file, root = name, split = values[0] != 0.0, precise = values[1] != 0.0)
+        let warning = summary(Usd.warnings())
+        return data.passed(warning) if warning != "" else data
+    if lower.ends_with(".obj"):
+        Obj.write(file, data.geometry.realized())
+        return data
+    if lower.ends_with(".prism"):
+        discard(GeometryFile.save(data.geometry, file, 0))
+        return data
+    error(ui.invalid, "Export to a .usd, .usda, .usdc, .usdz, .obj or .prism file")
+
+## Warning lines as one node warning: the first, and how many more.
+func summary(text: str) -> str:
+    let lines: list[str] = []
+    for line in text.split("\n"):
+        if line.trim() != "":
+            lines.append(line.trim())
+    if lines.length == 0:
+        return ""
+    if lines.length == 1:
+        return lines[0]
+    return f"{lines[0]} (and {lines.length - 1} more)"

@@ -10,7 +10,7 @@ No placeholder nodes are listed: every registered node evaluates geometry.
 | Family | Nodes |
 | --- | --- |
 | Sources | Cube, Grid, Sphere, Cylinder, Cone, Torus, File |
-| Graph | Edit Mesh, Edit CAD, Edit SDF, Edit Sketch, Merge, Null, Switch, Tessellate, Group, Blast, Cache |
+| Graph | Edit Mesh, Edit CAD, Edit SDF, Edit Sketch, Merge, Null, Switch, Tessellate, Group, Blast, Cache, Export |
 | Transforms/copies | Transform, Mirror, CopyTransform, CopyToPoints, MatchSize |
 | Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Loop Cut, Bridge, Fill, Dissolve, Merge Points; Subdivision (display) and Crease |
 | Deformation (verbs) | Transform Components, Smooth, Mountain, Peak, Flatten, Snap |
@@ -79,6 +79,42 @@ recorded there. Two things follow:
 - while it reads, upstream edits stop at the node.
 
 A 700k-face mesh saves in about 4 ms and loads in about 17 ms.
+
+The **Export** node writes its input to the file its path names and passes
+the input on. The extension picks the format:
+
+- `.usda`, `.usdc`, `.usd` or `.usdz` (luce-usd): prims split by the `path`
+  attribute, with **Root prim** for the rest (empty: `geo`) and **Precise
+  points** for double precision;
+- `.obj` (luce-obj): the realized mesh;
+- `.prism`: the geometry codec, as the Cache node writes it.
+
+A cook writes the file, and cooks follow the node's stamp. A file is
+therefore written when the input or the settings change. What USD cannot
+hold, such as untessellated CAD, is left out with a warning.
+
+## USD files
+
+The File node reads `.usd`, `.usda`, `.usdc` and `.usdz` stages through
+luce-usd's `Usd.load`, as luce-usd's docs/MAPPING.md describes:
+
+- meshes, intrinsic shapes, curves and points are flattened into one
+  component per family, each element carrying its prim path as `path`;
+- point instancers become instances.
+
+The USD rows:
+
+- **Import**: *Flatten, keep instancing*, or *Flatten everything* to bake
+  the instances;
+- **Set time** and **Time**: the time values are read at (off: the stage's
+  start time);
+- **Render**, **Proxy** and **Guide** purposes;
+- **Convert to Y-up meters**;
+- **Subdivide as authored**: meshes without a `subdivisionScheme` are
+  Catmull-Clark surfaces in USD.
+
+Import warnings, such as dropped faces or skipped prim types, appear as the
+node's warning.
 
 ## Selection and tools
 

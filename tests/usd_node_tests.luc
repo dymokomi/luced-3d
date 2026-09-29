@@ -1,0 +1,47 @@
+## USD in the graph: the File node's USD rows and options, and the Export
+## node writing its input by extension and passing it on.
+from network import Network
+from stamps import stamp_graph
+from usd import Usd
+from geocore import GeometryFile
+from obj import Obj
+import node_catalog
+
+pub func usd_node_tests() -> unit!:
+    assert("Export" in node_catalog.kinds() and node_catalog.category("Export") == "File I/O")
+    # A USD path brings the USD rows: import mode, time, purposes, units, subdivision.
+    assert(node_catalog.parameters("File", "stage.usdc").length == 8)
+    assert(node_catalog.file_format("a.USDZ") == "usd" and node_catalog.file_format("a.stp") == "step" and node_catalog.file_format("a.obj") == "")
+    let graph = Network(false)
+    let sphere = graph.add("Sphere", 0.0, 0.0)
+    let export = graph.add("Export", 0.0, 60.0)
+    assert(export.texts[1] == "geo" and export.values[0] == 1.0)
+    graph.connect(sphere.id, export.id, 0)
+    for name in ["sphere.usda", "sphere.usdc", "sphere.usdz", "sphere.obj", "sphere.prism"]:
+        export.texts[0] = name
+        graph.invalidate(export.id)
+        stamp_graph(graph)
+        assert(graph.evaluate(export.id).face_count() == graph.evaluate(sphere.id).face_count())
+    # Each file reads back in its own format.
+    assert(Usd.serialization("sphere.usda") == "usda" and Usd.serialization("sphere.usdc") == "usdc" and Usd.serialization("sphere.usdz") == "usdz")
+    let faces = graph.evaluate(sphere.id).face_count()
+    assert(Obj.load("sphere.obj").face_count() == faces)
+    let saved = GeometryFile.load("sphere.prism").mesh() else trap("mesh")
+    assert(saved.face_count() == faces)
+    # The File node reads the written stage back; the sphere has no subdivisionScheme
+    # on export ("none" is written), so the default subdivision leaves it alone.
+    let file = graph.add("File", 200.0, 0.0)
+    file.texts[0] = "sphere.usdc"
+    for parameter in node_catalog.parameters("File", file.texts[0]):
+        file.values[parameter.slot] = parameter.initial
+    stamp_graph(graph)
+    assert(graph.evaluate(file.id).face_count() == faces)
+    # A point instancer: instances by default, baked with Flatten everything.
+    file.texts[0] = "tests/fixtures/instancer.usda"
+    graph.invalidate(file.id)
+    stamp_graph(graph)
+    assert(graph.evaluate_data(file.id).geometry.instance_count() == 3)
+    file.values[1] = 1.0
+    graph.invalidate(file.id)
+    stamp_graph(graph)
+    assert(graph.evaluate(file.id).face_count() == 7)

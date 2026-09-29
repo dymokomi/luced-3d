@@ -35,9 +35,11 @@ Related packages: CAD modeling and tessellation live in
 hold NURBS evaluation and trim/grid meshing, formerly luce-tesselator), geometry
 and rendering in [luce-3d](https://github.com/dymokomi/luce-3d), and the formats
 in [luce-step](https://github.com/dymokomi/luce-step),
-[luce-obj](https://github.com/dymokomi/luce-obj) and
-[luce-fbx](https://github.com/dymokomi/luce-fbx). Each format owns its read and
-write; the OBJ writer is `Obj.write` in luce-obj.
+[luce-obj](https://github.com/dymokomi/luce-obj),
+[luce-fbx](https://github.com/dymokomi/luce-fbx) and
+[luce-usd](https://github.com/dymokomi/luce-usd). Each format owns its read and
+write; the OBJ writer is `Obj.write` in luce-obj, the USD one `Usd.save` in
+luce-usd.
 
 ![Procedural modeling with shared LuciaOS SVG icons](docs/preview_shared_icons.png)
 
@@ -87,7 +89,9 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   joining branches. Cycles are rejected. See [capabilities](docs/MODELING.md).
 - Tab or right-click opens a menu at the pointer, kept inside the window.
   Browse categories/submenus or type to filter; arrows and Enter choose.
-- File imports OBJ, raw mesh-local FBX, and a bounded STEP subset. Browse or enter
+- File imports OBJ, raw mesh-local FBX, USD (.usd, .usda, .usdc, .usdz; see
+  [USD files](docs/MODELING.md#usd-files)) and a bounded STEP subset. Export
+  writes a node's result to USD, OBJ or prism. Browse or enter
   a path, then Reload for disk changes. STEP remains analytic: use Transform for
   scale and Tessellate for explicit polygon conversion. CAD surfaces appear
   automatically with patch boundaries using cached, disposable viewport meshes;

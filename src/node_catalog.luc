@@ -14,6 +14,7 @@ from geocore import Verbs, VerbCatalog
 import math
 from edit_kinds import is_edit, edit_kind_names, edit_kind
 from edit_types import first_kind_slot, most_kind_parameters
+from usd_nodes import is_usd_path
 
 ## Value slots a node has, and the one verb nodes keep their Group Type in.
 pub let value_slots: int = 16
@@ -180,7 +181,7 @@ pub func category(kind: str) -> str:
     let verb = VerbCatalog.index_of(kind)
     if verb >= 0:
         return VerbCatalog.category(verb)
-    if kind in ["File", "Cache"]:
+    if kind in ["File", "Cache", "Export"]:
         return "File I/O"
     if kind == "Group":
         return "Utility"
@@ -195,7 +196,7 @@ pub func category(kind: str) -> str:
     return "Modeling"
 
 pub func kinds() -> list[str]:
-    return sources() + ["Transform", "Tessellate", "Cache", "Blast"] + edit_kind_names() + ["Merge", "Null", "Switch"] + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Normal", "Measure", "UVProject", "Color"]
+    return sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Switch"] + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Normal", "Measure", "UVProject", "Color"]
 
 pub func input_count(kind: str) -> int:
     let verb = VerbCatalog.index_of(kind)
@@ -231,15 +232,21 @@ pub func parameters(kind: str, path: str = "") -> list[Parameter]!:
 pub func fields(kind: str, path: str = "") -> list[Parameter]!:
     let rows: list[Parameter] = []
     if kind == "File":
-        rows.append(entry("File", 0, "The geometry file: OBJ, FBX or STEP.", "path"))
+        rows.append(entry("File", 0, "The geometry file: OBJ, FBX, STEP or USD (.usd, .usda, .usdc, .usdz).", "path"))
         let reload = heading("Reload", "button")
         reload.doc = "Read the file again from disk."
         rows.append(reload)
         let source = path.trim().lower()
         if source.ends_with(".step") or source.ends_with(".stp"):
             rows.append(number("STEP tolerance", 0, 0.0, 0.0, 1.0, 0.00001, "Model tolerance in file units; 0 uses the file's own.", decimals = 9))
+        if is_usd_path(source):
+            for row in usd_fields():
+                rows.append(row)
     if kind == "Cache":
         rows.append(entry("File", 0, "The .prism file the cooked geometry is saved to (and loaded from).", "path"))
+    if kind == "Export":
+        rows.append(entry("File", 0, "Where the input is written, in the format its extension names: .usd, .usda, .usdc, .usdz, .obj or .prism.", "path"))
+        rows.append(entry("Root prim", 1, "USD: the prim elements without a path attribute go under (empty: geo); it becomes the default prim."))
     if has_group(kind):
         rows.append(entry("Group", 0, "Elements to work on, in Houdini's group syntax: empty or * for all, 0 2-5 and 0-99:2 for numbers, names and globs, @P.y>0 or @name tests, ^ to remove, & to intersect, grow(x) and loop(x)."))
     if is_verb(kind) and has_group(kind):
@@ -252,6 +259,28 @@ pub func fields(kind: str, path: str = "") -> list[Parameter]!:
         rows.append(row)
     return rows
 
+## A File node's rows for a USD stage (usd_nodes.load_usd reads them), in
+## value slots from 1: slot 0 keeps a STEP tolerance across format changes.
+func usd_fields() -> list[Parameter]:
+    let set_time = toggle("Set time", 2, 0.0, "Off: the stage's start time, else each attribute's first sample. On: the time below.")
+    set_time.key = "settime"
+    let at = number("Time", 3, 0.0, -1000000.0, 1000000.0, 1.0, "The time code values are read at.")
+    at.disable_when = "{ settime == 0 }"
+    return [menu("Import", 1, "Flatten, keep instancing|Flatten everything", 0.0, "Keep point instancers as instances, or bake every instance into the meshes, curves and points."),
+            set_time, at,
+            toggle("Render purpose", 4, 1.0, "Load prims whose purpose is render."),
+            toggle("Proxy purpose", 5, 0.0, "Load prims whose purpose is proxy."),
+            toggle("Guide purpose", 6, 0.0, "Load prims whose purpose is guide."),
+            toggle("Convert to Y-up meters", 7, 0.0, "Turn a Z-up stage Y-up and scale it to meters; off keeps the stage's own axes and units (in the usd.* detail attributes)."),
+            toggle("Subdivide as authored", 8, 1.0, "Show meshes without a subdivisionScheme as Catmull-Clark surfaces, as USD's default says; off shows their polygons.")]
+
+## The format of a File node's path ("usd", "step" or ""), whose rows it has.
+pub func file_format(path: str) -> str:
+    let source = path.trim().lower()
+    if source.ends_with(".step") or source.ends_with(".stp"):
+        return "step"
+    return "usd" if is_usd_path(source) else ""
+
 ## The numeric rows of each node kind.
 func value_fields(kind: str) -> list[Parameter]:
     let verb = VerbCatalog.index_of(kind)
@@ -259,6 +288,9 @@ func value_fields(kind: str) -> list[Parameter]:
         return verb_fields(verb)
     if kind == "Blast":
         return [toggle("Isolate group", 0, 0.0, "On: keep only the group. Off: delete it.")]
+    if kind == "Export":
+        return [toggle("Split by path", 0, 1.0, "USD: one prim per path attribute value, as the file was imported; off writes one prim per family."),
+                toggle("Precise points", 1, 0.0, "USD: double-precision points, keeping large coordinates exact.")]
     if kind == "Cache":
         return [toggle("Load from disk", 0, 0.0, "On: read the file and skip everything upstream. Off: write the input's result to the file when it changes, and pass it on.")]
     if kind == "Tessellate":
@@ -375,6 +407,8 @@ pub func description(kind: str) -> str:
         return "Select and edit in the viewport; each edit is a step you can undo"
     if kind == "Cache":
         return "Save the cooked input to disk, or load it back and freeze upstream"
+    if kind == "Export":
+        return "Write the input to a USD, OBJ or prism file and pass it on"
     if kind == "CopyToPoints":
         return "Input 1: source / Input 2: target points"
     if kind in ["AttributeCreate", "AttributeRandomize", "AttributeDelete", "Selection Group"]:
