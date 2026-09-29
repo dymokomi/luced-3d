@@ -180,7 +180,10 @@ surfaces (Edit SDF).
 
 Edit Mesh's levels are Object, Polygons, Edges, Vertices and Corners. At the
 Object level a pick selects a whole piece, and moves, rotations, scales and
-Delete act on whole pieces. It creates primitives (Box, Sphere, Cylinder,
+Delete act on whole pieces. Besides the modeling verbs its tools include
+Knife (a Clip keeping both sides, through the selection's centroid, across X),
+Connect (the tool amount places the new points) and Edge Slide (the tool
+amount is how far). It creates primitives (Box, Sphere, Cylinder,
 Cone, Torus, Grid, Plane) as recipe steps: each new piece gets its own `path`
 (`/box1`, `/box2`, …), becomes the selected Object and undoes like any step.
 Unconnected, an Edit Mesh starts from nothing.
