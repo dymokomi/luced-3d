@@ -118,8 +118,16 @@ pub class Workspace:
         self.target = self.target.add(right.multiply_scalar(-dx * scale)).add(up.multiply_scalar(dy * scale))
         self.update_camera()
 
+    ## Frame the selected components while editing, else every displayed mesh.
     pub func frame_cube(self) -> unit!:
         let points: list[Vector3] = []
+        if self.editing() and self.components.length > 0:
+            let mesh = self.geometry else return
+            for id in self.selected_points():
+                points.append(mesh.point(id))
+            let bounds = mesh.bounds()
+            self.frame_points(points, bounds.maximum.subtract(bounds.minimum).length() * 0.01)
+            return
         if let session = self.compute:
             if session.busy:
                 self.pending_frame = true
@@ -138,6 +146,10 @@ pub class Workspace:
             let data = self.network.evaluate_data(node.id) catch failure:
                 continue
             append_bounds(data, Matrix4(), points)
+        self.frame_points(points)
+
+    ## Frame `points`, from at least `least` away.
+    func frame_points(self, points: list[Vector3], least: float = 0.001) -> unit!:
         if points.length > 0:
             var minimum = points[0]
             var maximum = points[0]
@@ -145,7 +157,9 @@ pub class Workspace:
                 minimum = Vector3(math.min(minimum.x, point.x), math.min(minimum.y, point.y), math.min(minimum.z, point.z))
                 maximum = Vector3(math.max(maximum.x, point.x), math.max(maximum.y, point.y), math.max(maximum.z, point.z))
             self.target = minimum.add(maximum).multiply_scalar(0.5)
-            self.distance = math.max(1.0, maximum.subtract(minimum).length() * 1.8)
+            # Small models (millimetre parts, OBJs in metres) frame as tightly
+            # as large ones; zoom reaches the same minimum.
+            self.distance = math.max(math.max(0.001, least), maximum.subtract(minimum).length() * 1.8)
         else:
             self.target = Vector3(0.0, 1.0, 0.0)
             self.distance = 9.0
@@ -345,14 +359,20 @@ pub class Workspace:
             self.frame_cube()
         return true
 
+    ## Selecting an Edit node also displays it: its tools edit the geometry
+    ## the viewport shows, however the node was reached.
     pub func select_node(self, id: int) -> unit!:
-        discard(self.network.require(id))
-        if self.network.selected != id:
+        let node = self.network.require(id)
+        let shows = node.kind == "Edit" and (self.network.display != id or self.network.preview)
+        if self.network.selected != id or shows:
             self.network.selected = id
+            if shows:
+                self.network.display = id
+                self.network.preview = false
             self.components = []
             self.edit_tool = "Select"
             self.revision += 1
-            if self.compute != none:
+            if self.compute != none or shows:
                 self.rebuild()
 
     pub func display_selected(self) -> unit!:

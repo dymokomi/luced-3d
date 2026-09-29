@@ -4,7 +4,9 @@ from geocore import PolygonMesh
 from three import Vector3
 from edit_operations import EditOperation
 from app import Luce3D
+from workspace import Workspace
 import math
+import time
 
 ## One 300-degree band polygon: ear clipping in its average plane fails, as it
 ## does for curved CAD cells, so only its explicit strip triangles work.
@@ -55,4 +57,48 @@ pub func edit_move_tests() -> unit!:
     let corner = before.face_point(0, 0)
     assert(math.abs(after.point(corner).y - before.point(corner).y - 0.1) < 0.000001)
     editor.close()
-    print("PASS position-only edits keep CAD display triangles through Move, the Edit node and extrusion")
+    worker_edit()
+    print("PASS position-only edits keep CAD display triangles through Move, the Edit node and extrusion; File(OBJ) -> Edit on the worker")
+
+func settle(workspace: Workspace) -> unit!:
+    let session = workspace.compute else trap("compute")
+    let deadline = time.now() + 20000000000
+    while session.busy and time.now() < deadline:
+        discard(workspace.poll_compute())
+    assert(not session.busy)
+
+## File(OBJ) -> Edit through the worker, as the editor runs it. Reaching the
+## Edit node by a network click (select_node) after previewing its input
+## displays it, so its tools appear; a face moves; F frames the selection.
+func worker_edit() -> unit!:
+    let w = Workspace()
+    w.enable_compute()
+    settle(w)
+    w.delete_selected()
+    w.add_node("File", 0.0, 0.0)
+    w.set_text(0, "tests/fixtures/grid500k.obj")
+    let file = w.network.selected
+    w.add_node("Edit", 0.0, 100.0)
+    let edit = w.network.selected
+    settle(w)
+    assert(w.editing())
+    w.select_node(file)
+    w.display_selected()
+    settle(w)
+    assert(w.network.display == file and not w.editing())
+    w.select_node(edit)
+    settle(w)
+    assert(w.network.display == edit and w.editing())
+    let before = w.geometry else trap("edit geometry")
+    w.set_mode(2)
+    w.choose_component(0, false)
+    assert(w.components == [0])
+    let corner = before.face_point(0, 0)
+    w.move_selection(Vector3(0.0, 0.25, 0.0))
+    settle(w)
+    assert(w.notice == "" and w.editing())
+    let after = w.geometry else trap("moved geometry")
+    assert(math.abs(after.point(corner).y - before.point(corner).y - 0.25) < 0.000001)
+    w.choose_component(0, false)
+    w.frame_cube()
+    assert(w.distance < 20.0 and math.abs(w.target.y - 0.25) < 0.001)
