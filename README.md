@@ -148,10 +148,17 @@ Filter attributes or rows, click headers to sort, and click rows to select
 components on the displayed Edit node. Numeric scalar/vector attributes survive
 topology operations; `Cd` affects rendering and corner `uv` supports seams.
 
-Edit's scrollable icon shelf includes inset, delete, reverse, triangulate,
-duplicate, split, fuse, smooth, peak, flatten, rotate, scale, snap, noise,
-subdivide, bevel, fill and dissolve, alongside extrusion and XYZ movement.
-Set **Tool amount** in Parameters before applying a tool. Hover icons for names.
+Each Edit kind (Edit Mesh, Edit CAD, Edit SDF, Edit Sketch) has its own
+selection levels, tool strip and primitives, generated from its registry
+entry. Edit Mesh's strip holds the luce-geocore modeling verbs (extrude, inset,
+bevel, loop cut, bridge, fill, dissolve, knife, connect, edge slide, mirror,
+spin, crease, PolyDraw and the point and face operators), each offered on the
+levels it applies to; Edit CAD moves and deletes models and faces and edits
+control vertices. Set **Tool amount** in Parameters before applying a tool;
+hover icons for names. **Soft radius** and **Falloff** let nearby points
+follow a move (the viewport tints the points they reach by weight),
+**Symmetry** mirrors every tool across an axis plane, and **Keep selection**
+carries the selection through topology tools. See [MODELING.md](docs/MODELING.md).
 
 The graph has stable node IDs, geometry ports, shared cached results, downstream
 invalidation and demand-driven evaluation of exposed outputs or preview. Edit nodes
@@ -161,15 +168,14 @@ wrong IDs. Results are cached by content stamp ([design](docs/DESIGN.md#backgrou
 Undo covers graph changes, nested deletion, parameters, Out/visibility/preview/bypass, selections and modeling;
 history retains 64 transactions.
 
-Geometry storage, transforms, merge, triangulation, ray intersections and region
-extrusion live in `luce-3d`'s geocore `Mesh`; luce-3d has no UI dependency.
-Editor state, graph evaluation, commands and tools stay in this project; the
-viewport is `luce-ui`'s `SceneView` widget. Rendering uses `luce-gpu`
-with retained geometry buffers; first-draw preparation is still on the CPU.
+Geometry storage, groups, modeling verbs, ray queries and the geometry codec
+live in luce-geocore; CAD models and their tessellation in luce-cad; the
+renderer and Edit overlays in luce-3d, drawing through luce-gpu from retained
+GPU arrays. None of them depends on UI. Editor state, graph evaluation,
+commands and tools stay in this project; the viewport is `luce-ui`'s
+`SceneView` widget.
 
-This is an experimental modeling foundation. Extrusion currently operates on
-face regions with a boundary, not isolated vertices/edges or an entire closed
-surface. Transform/Group gizmos support Move, Rotate, Scale and compensated Pivot;
+This is an experimental modeling foundation. Transform/Group gizmos support Move, Rotate, Scale and compensated Pivot;
 Cube supports corner resizing. Shift snaps and +/- changes gizmo size.
 Limits include 128 nodes, 8,388,608 points/faces and 33,554,432 corners per mesh;
 individual operators and importers can have tighter safety budgets. General
