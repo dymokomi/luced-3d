@@ -12,7 +12,7 @@ No placeholder nodes are listed: every registered node evaluates geometry.
 | Sources | Cube, Grid, Sphere, Cylinder, Cone, Torus, File |
 | Graph | Edit, Merge, Null, Switch, Tessellate, Group, Blast, Cache |
 | Transforms/copies | Transform, Mirror, CopyTransform, CopyToPoints, MatchSize |
-| Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Loop Cut, Bridge, Fill, Dissolve, Merge Points |
+| Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Loop Cut, Bridge, Fill, Dissolve, Merge Points; Subdivision (display) and Crease |
 | Deformation (verbs) | Transform Components, Smooth, Mountain, Peak, Flatten, Snap |
 | Curves (set verbs) | Curve Line, Curve Circle, Curve Arc, Curve Spiral, Resample Curve, Trim Curve, Fillet Curve, Reverse Curve, Set Curve Type, Curve to Mesh, Mesh to Curve |
 | Attributes | AttributeCreate, AttributeRandomize, AttributeDelete, AttributeRename, AttributePromote, Selection Group, Normal, Measure, UVProject, Color |
@@ -112,6 +112,11 @@ guarded. Very large selections show as a summary in the Group field.
   becomes one patch face (no grid patch); a lone beveled edge's end vertex
   stays and its strip fans around it. Edges at non-manifold points are skipped
   with a warning.
+- Subdivision marks a mesh to be shown as its Catmull-Clark (Loop, bilinear)
+  limit surface at a display level; nodes after it still get the cage, and Edit
+  edits the cage while the viewport shows the smooth surface. Crease sets USD
+  edge sharpness for it. Picking selects cage faces (picked on the cage's
+  shape, not the smooth surface).
 - Subdivide operates on the whole mesh, Catmull–Clark or linear, with edges used
   by more than two faces kept as creases. There are no crease weights yet.
 - Fill caps each closed loop of the group's boundary edges with one face, or
