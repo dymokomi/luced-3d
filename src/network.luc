@@ -1,11 +1,10 @@
 ## Editor-owned geometry DAG. IDs survive history restores; meshes are immutable.
 from geocore import Mesh
 from three import Vector3, Matrix4
-from geometry_data import GeometryData, GeometryInstance
+from geometry_data import GeometryData
 from edit_operations import EditOperation
 import node_catalog
 from node_evaluation import source_geometry, evaluate_operator, load_geometry, SourceCache
-from group_operations import blast
 import ui
 
 pub func kinds() -> list[str]:
@@ -93,7 +92,7 @@ pub class Node:
         let pivot = Vector3(v[10], v[11], v[12])
         let translation = Vector3(v[1], v[2], v[3]).add(pivot).subtract(Matrix4.compose(Vector3(), rotation, scale).transform_point(pivot))
         if self.kind == "Group":
-            return GeometryData(instances = [GeometryInstance(data, translation, rotation, scale)])
+            return GeometryData().with_instance(data, translation, rotation, scale)
         if self.kind in node_catalog.sources():
             if not self.enabled:
                 return GeometryData()
@@ -105,7 +104,7 @@ pub class Node:
         if not self.enabled or self.kind in ["Switch", "Null"]:
             return data
         if self.kind == "Blast":
-            return blast(data, self.texts[0], v[0] != 0.0)
+            return data.blasted(self.texts[0], v[0] != 0.0)
         if self.kind == "Tessellate":
             if let cache = sources:
                 return cache.tessellated(data, int(v[0]), v[1], progress)
@@ -377,11 +376,11 @@ pub class Network:
 
     func cook(self, node: Node, visiting: list[int]) -> GeometryData!:
         if node.kind == "Group":
-            let children: list[GeometryInstance] = []
+            var children = GeometryData()
             if node.enabled:
                 for child in self.outputs(node.id):
-                    children.append(GeometryInstance(self.evaluate_node(child.id, visiting), visible = child.visible))
-            return node.compute(GeometryData(instances = children))
+                    children = children.with_instance(self.evaluate_node(child.id, visiting), visible = child.visible)
+            return node.compute(children)
         if node.kind in node_catalog.sources():
             return node.compute(GeometryData())
         let port = int(node.values[0]) if node.kind == "Switch" and node.enabled else 0

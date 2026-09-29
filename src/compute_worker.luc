@@ -9,7 +9,7 @@ from network import Network, Node
 from node_evaluation import SourceCache
 from result_store import ResultStore
 from stamps import prefix_stamp
-from geometry_data import GeometryData, GeometryInstance
+from geometry_data import GeometryData
 from scene_projection import append_overlays, append_patch_boundaries
 from geocore import Mesh
 from three import Vector3, Matrix4
@@ -113,11 +113,10 @@ class Computation:
         var input = GeometryData()
         var second: GeometryData? = none
         if node.kind == "Group":
-            let children: list[GeometryInstance] = []
+            input = GeometryData()
             if node.enabled:
                 for child in graph.outputs(node.id):
-                    children.append(GeometryInstance(self.upstream(node, child, depth), visible = child.visible))
-            input = GeometryData(instances = children)
+                    input = input.with_instance(self.upstream(node, child, depth), visible = child.visible)
         elif not (node.kind in node_catalog.sources()):
             let port = int(node.values[0]) if node.kind == "Switch" and node.enabled else 0
             if port < 0 or port >= node.inputs.length or node.inputs[port] < 0:
@@ -249,15 +248,15 @@ class Computation:
             self.channel.overlay(key, node.id, wires, normals, patches)
 
     func prepare(self, data: GeometryData, node: Node) -> unit!:
-        if data.surfaces.length > 0:
+        if data.has_cad():
             let preview = data.preview(func (fraction: float) -> unit!:
                 self.channel.progress(node.id, fraction * 0.9, "Previewing CAD"))
             if preview.failed_faces > 0:
                 self.preview_warning = f"{preview.failed_faces} CAD preview patches failed: {preview.first_error}"
                 self.channel.progress(node.id, 0.9, f"{preview.failed_faces} preview failures")
-        for instance in data.instances:
-            if instance.visible:
-                self.prepare(instance.data, node)
+        for index in 0..<data.instance_count():
+            if data.instance_visible(index):
+                self.prepare(data.instance(index), node)
 
     ## Deterministic traversal: a stamp always yields the same ordinals.
     func display(self, data: GeometryData, matrix: Matrix4, node: Node, ordinal: int) -> int!:
@@ -266,13 +265,13 @@ class Computation:
         if let mesh = data.mesh:
             self.show(mesh, matrix, node, next, true)
             next += 1
-        if data.surfaces.length > 0:
+        if data.has_cad():
             for mesh in data.preview().meshes:
                 self.show(mesh, matrix, node, next, false)
                 next += 1
-        for instance in data.instances:
-            if instance.visible:
-                next = self.display(instance.data, matrix.multiply(Matrix4.compose(instance.translation, instance.rotation, instance.scale)), node, next)
+        for index in 0..<data.instance_count():
+            if data.instance_visible(index):
+                next = self.display(data.instance(index), matrix.multiply(data.instance_matrix(index)), node, next)
         return next
 
     func show(self, mesh: Mesh, matrix: Matrix4, node: Node, ordinal: int, overlays: bool) -> unit!:

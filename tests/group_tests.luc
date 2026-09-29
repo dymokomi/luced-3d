@@ -1,6 +1,4 @@
-from group_operations import imported_cad, blast
-from geometry_groups import GeometryGroup, patterns, matches
-from geometry_data import GeometryData
+from geometry_data import GeometryData, cad_data
 from step import Step
 from network import Network
 from geometry_tests import near
@@ -8,47 +6,50 @@ from app import Luce3D
 
 pub func group_tests() -> unit!:
     let path = "Camera test/Lens:1/solid_37"
-    let data = imported_cad(Step.load_model("tests/fixtures/assembly.step"))
-    assert(data.paths() == [path] and data.groups[0].faces == [0, 1, 2])
-    assert(matches(path, patterns("'Camera test/Lens:1'")))
-    assert(matches(path, patterns("*/Lens:1/*")))
-    assert(not matches(path, patterns("* ^*/solid_37")))
-    assert(not matches(path, patterns("'Camera test/Lens'")))
-    let kept = blast(data, "*/solid_37", true)
-    assert(kept.mesh == none and kept.surfaces.length == 1 and kept.paths() == [path])
+    let data = cad_data(Step.load_model("tests/fixtures/assembly.step"))
+    assert(data.paths() == [path] and data.models()[0].face_count() == 3)
+    # Quoted parents, globs, exclusions and partial names.
+    assert(data.blasted("'Camera test/Lens:1'", true).paths() == [path])
+    assert(data.blasted("*/Lens:1/*", true).paths() == [path])
+    assert(data.blasted("* ^*/solid_37", true).paths().length == 0)
+    assert(data.blasted("'Camera test/Lens'", true).paths().length == 0)
+    let kept = data.blasted("*/solid_37", true)
+    assert(kept.mesh == none and kept.models().length == 1 and kept.paths() == [path])
+    # Tessellated faces carry their B-rep face's path.
     let tessellated = kept.tessellated(4)
     let mesh = tessellated.require_mesh()
-    assert(tessellated.paths() == [path] and tessellated.groups[0].faces.length == mesh.face_count())
+    let paths = mesh.find_attribute("path", 2)
+    assert(tessellated.paths() == [path] and paths >= 0 and not tessellated.has_cad())
+    for face in 0..<mesh.face_count():
+        assert(mesh.attribute_text(paths, face) == path)
     near(mesh.bounds().minimum.x, 8.0)
     assert(mesh.find_attribute("Cd", 2) >= 0 and mesh.find_attribute("N", 1) >= 0)
-    assert(blast(data, "*", false).surfaces.length == 0)
-    let empty = blast(tessellated, "*", false).require_mesh()
+    assert(data.blasted("*", false).models().length == 0)
+    let empty = tessellated.blasted("*", false).require_mesh()
     assert(empty.face_count() == 0 and empty.point_count() == 0)
-    let after = blast(tessellated, "'Camera test'", true)
+    let after = tessellated.blasted("'Camera test'", true)
     assert(after.paths() == [path] and after.require_mesh().face_count() == mesh.face_count())
-    let partitioned = GeometryData(surfaces = data.surfaces, groups = [GeometryGroup("root/body", [0, 1], 0), GeometryGroup("root/cap", [2], 0)])
-    let cap = blast(partitioned, "root/cap", true)
-    assert(cap.surfaces[0].face_count() == 1 and cap.groups[0].faces == [0])
-    let cap_mesh = cap.tessellated(4).require_mesh()
-    near(cap_mesh.bounds().minimum.x, 8.0)
-    assert(cap_mesh.find_attribute("Cd", 2) >= 0)
-    let whole = partitioned.tessellated(4)
-    let removed = blast(whole, "root/body", false)
-    # Removing polygons must preserve the source partition exactly. Meshing a
-    # CAD cap alone need not have the same count: an adjacent curved wall can
-    # legitimately require additional shared boundary stations before Blast.
-    assert(removed.paths() == ["root/cap"] and removed.require_mesh().face_count() == whole.groups[1].faces.length)
-    let original_mesh = whole.require_mesh()
+    # A partition of the tessellation by path: removing faces keeps the
+    # rest exactly, authored normals included.
+    let source = mesh.find_attribute("cad_face", 2)
+    let parts: list[int] = []
+    let cap: list[int] = []
+    for face in 0..<mesh.face_count():
+        let body = int(mesh.attribute_value(source, face)) < 2
+        parts.append(0 if body else 1)
+        if not body: cap.append(face)
+    let partitioned = GeometryData(mesh.with_text_values("path", 2, "root/body\nroot/cap", parts))
+    let removed = partitioned.blasted("root/body", false)
     let filtered = removed.require_mesh()
-    let source_normals = original_mesh.find_attribute("N",1)
-    let filtered_normals = filtered.find_attribute("N",1)
+    assert(removed.paths() == ["root/cap"] and filtered.face_count() == cap.length and cap.length > 0)
+    let source_normals = mesh.find_attribute("N", 1)
+    let filtered_normals = filtered.find_attribute("N", 1)
     assert(source_normals >= 0 and filtered_normals >= 0)
     for face in 0..<filtered.face_count():
-        let original = whole.groups[1].faces[face]
+        let original = cap[face]
         for corner in 0..<filtered.face_size(face):
             for axis in 0..<3:
-                assert(filtered.attribute_value(filtered_normals,filtered.face_offset(face)+corner,axis) == original_mesh.attribute_value(source_normals,original_mesh.face_offset(original)+corner,axis))
-    near(removed.require_mesh().bounds().minimum.z, cap_mesh.bounds().minimum.z)
+                assert(filtered.attribute_value(filtered_normals, filtered.face_offset(face) + corner, axis) == mesh.attribute_value(source_normals, mesh.face_offset(original) + corner, axis))
     let graph = Network(false)
     let file = graph.add("File", 0.0, 0.0)
     file.texts[0] = "tests/fixtures/assembly.step"
@@ -65,4 +66,4 @@ pub func group_tests() -> unit!:
     assert(rows[-1].path == path and rows[-1].depth == 3)
     assert(rows[-2].branch and rows[-2].path == "Camera test/Lens:1")
     editor.close()
-    print("PASS STEP hierarchy, CAD/polygon Blast, quoted parent paths, wildcards and Outliner projection")
+    print("PASS STEP hierarchy, CAD/polygon Blast by path attributes, quoted parents, wildcards, partitions and Outliner projection")

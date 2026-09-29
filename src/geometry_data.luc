@@ -1,163 +1,152 @@
-## Typed DAG payload. CAD stays analytic until an explicit conversion node.
-## Additional geometry families belong here, not in a polygon-only File contract.
-from geocore import Mesh
+## A node's cooked result: a thin wrapper around luce-geocore's GeometrySet,
+## which holds its mesh, CAD models (luce-cad's family), point cloud and
+## instances. The set is immutable and shares its arrays; what this class
+## adds is Luce-side caching: the CAD preview meshes, and wrappers of the
+## instances' sets so their previews persist too. CAD stays analytic until a
+## Tessellate node.
+from geocore import Mesh, GeometrySet
 from three import Vector3, Matrix4
 from cad import CadModel
+from cad_geometry import CadGeometry
 from cad_preview import CadPreview
-from geometry_groups import GeometryGroup
-import ui
-
-pub class GeometryInstance:
-    pub let data: GeometryData
-    pub let translation: Vector3
-    pub let rotation: Vector3
-    pub let scale: Vector3
-    pub let visible: bool
-    pub func init(self, data: GeometryData, translation: Vector3? = none, rotation: Vector3? = none, scale: Vector3? = none, visible: bool = true):
-        self.data = data
-        self.translation = translation else Vector3()
-        self.rotation = rotation else Vector3()
-        self.scale = scale else Vector3(1.0, 1.0, 1.0)
-        self.visible = visible
 
 pub class GeometryData:
-    var preview_cache: CadPreview? = none
+    pub let geometry: GeometrySet
+    ## The set's own mesh (not its instances').
+    pub let mesh: Mesh?
     ## Content key of the import this data was parsed from (0: derived data).
     pub var origin: int = 0
-    pub let mesh: Mesh?
-    pub let surfaces: list[CadModel]
-    pub let instances: list[GeometryInstance]
-    pub let groups: list[GeometryGroup]
+    var preview_cache: CadPreview? = none
+    ## Wrappers of the instances' sets, made once, in instance order.
+    var children: list[GeometryData]? = none
 
-    pub func init(self, mesh: Mesh? = none, surfaces: list[CadModel]? = none, instances: list[GeometryInstance]? = none, groups: list[GeometryGroup]? = none):
-        self.mesh = mesh
-        self.surfaces = (surfaces else []).copy()
-        self.instances = (instances else []).copy()
-        self.groups = (groups else []).copy()
+    pub func init(self, mesh: Mesh? = none, geometry: GeometrySet? = none) -> unit!:
+        var chosen = geometry else GeometrySet()
+        if geometry == none:
+            if let polygons = mesh:
+                chosen = GeometrySet.of_mesh(polygons)
+        self.geometry = chosen
+        self.mesh = chosen.mesh() if geometry != none else mesh
 
-    pub func paths(self) -> list[str]:
-        let result: list[str] = []
-        for group in self.groups:
-            if group.faces.length > 0 and not (group.path in result): result.append(group.path)
-        for instance in self.instances:
-            for path in instance.data.paths():
-                if not (path in result): result.append(path)
+    pub func models(self) -> list[CadModel]!:
+        let result: list[CadModel] = []
+        for index in 0..<CadGeometry.model_count(self.geometry):
+            result.append(CadGeometry.model(self.geometry, index))
         return result
 
+    pub func has_cad(self) -> bool!:
+        return CadGeometry.model_count(self.geometry) > 0
+
+    # -- Instances.
+
+    pub func instance_count(self) -> int:
+        return self.geometry.instance_count()
+
+    ## Instance `index`'s data; the same object on every call.
+    pub func instance(self, index: int) -> GeometryData!:
+        if self.children == none:
+            let made: list[GeometryData] = []
+            for at in 0..<self.geometry.instance_count():
+                made.append(GeometryData(geometry = self.geometry.instance(at)))
+            self.children = made
+        return (self.children else [])[index]
+
+    pub func instance_translation(self, index: int) -> Vector3!:
+        return self.geometry.instance_translation(index)
+    ## XYZ radians.
+    pub func instance_rotation(self, index: int) -> Vector3!:
+        return self.geometry.instance_rotation(index)
+    pub func instance_scale(self, index: int) -> Vector3!:
+        return self.geometry.instance_scale(index)
+    pub func instance_visible(self, index: int) -> bool!:
+        return self.geometry.instance_visible(index)
+    pub func instance_matrix(self, index: int) -> Matrix4!:
+        return Matrix4.compose(self.geometry.instance_translation(index), self.geometry.instance_rotation(index), self.geometry.instance_scale(index))
+
+    ## This data with `child` added as an instance; `child` keeps serving as
+    ## the new instance's data (and its preview).
+    pub func with_instance(self, child: GeometryData, translation: Vector3? = none, rotation: Vector3? = none, scale: Vector3? = none, visible: bool = true) -> GeometryData!:
+        let result = GeometryData(geometry = self.geometry.with_instance(child.geometry, translation else Vector3(), rotation else Vector3(), scale else Vector3(1.0, 1.0, 1.0), visible))
+        let kept: list[GeometryData] = []
+        for index in 0..<self.instance_count():
+            kept.append(self.instance(index))
+        kept.append(child)
+        result.children = kept
+        return result
+
+    # -- Whole-data operations.
+
+    pub func paths(self) -> list[str]!:
+        let text = self.geometry.paths()
+        return [] if text == "" else text.split("\n")
+
+    ## One mesh of every polygon, instances baked; fails on CAD (Tessellate
+    ## first).
     pub func require_mesh(self) -> Mesh!:
-        if self.surfaces.length > 0:
-            error(ui.invalid, "This operation requires polygons; connect a Tessellate node first")
-        var result = self.mesh else Mesh.empty()
-        for instance in self.instances:
-            let mesh = instance.data.require_mesh().transformed(instance.translation, instance.rotation, instance.scale)
-            result = result.merged(mesh)
-        return result
+        if self.instance_count() == 0:
+            if let mesh = self.mesh:
+                if not self.has_cad(): return mesh
+        return self.geometry.realized()
 
     pub func preview(self, progress: func(float) -> unit!? = none) -> CadPreview!:
         if let cached = self.preview_cache:
             return cached
-        let result = CadPreview(self.surfaces, progress = progress)
+        let result = CadPreview(self.models(), progress = progress)
         self.preview_cache = result
         return result
 
     pub func merged(self, other: GeometryData) -> GeometryData!:
-        var polygons = self.mesh
-        if let incoming = other.mesh:
-            if let existing = polygons:
-                polygons = existing.merged(incoming)
-            else:
-                polygons = incoming
-        let groups = self.groups.copy()
-        var offset = 0
-        if let mesh = self.mesh: offset = mesh.face_count()
-        for group in other.groups:
-            let faces: list[int] = []
-            for face in group.faces: faces.append(face + (offset if group.model < 0 else 0))
-            groups.append(GeometryGroup(group.path, faces, group.model + self.surfaces.length if group.model >= 0 else -1))
-        return GeometryData(polygons, self.surfaces + other.surfaces, self.instances + other.instances, groups)
+        let result = GeometryData(geometry = self.geometry.merged(other.geometry))
+        # Instances of both keep their wrappers (and previews).
+        if self.instance_count() + other.instance_count() > 0:
+            let kept: list[GeometryData] = []
+            for index in 0..<self.instance_count():
+                kept.append(self.instance(index))
+            for index in 0..<other.instance_count():
+                kept.append(other.instance(index))
+            result.children = kept
+        return result
 
+    ## Placed by translation, rotation (XYZ radians) and scale. Instances are
+    ## wrapped in one instance under the placement; a CAD preview is placed
+    ## rather than remade.
     pub func transformed(self, translation: Vector3, rotation: Vector3, scale: Vector3) -> GeometryData!:
         if Matrix4.compose(translation, rotation, scale).is_identity():
             return self
-        let models: list[CadModel] = []
-        for model in self.surfaces:
-            models.append(model.transformed(translation, rotation, scale))
-        var polygons: Mesh? = none
-        if let mesh = self.mesh:
-            polygons = mesh.transformed(translation, rotation, scale)
-        let children: list[GeometryInstance] = []
-        if self.instances.length > 0:
-            children.append(GeometryInstance(GeometryData(instances = self.instances), translation, rotation, scale))
-        let result = GeometryData(polygons, models, children, self.groups)
+        let result = GeometryData(geometry = self.geometry.transformed(translation, rotation, scale))
+        if self.instance_count() > 0:
+            let inner = GeometryData(geometry = result.geometry.instance(0))
+            let kept: list[GeometryData] = []
+            for index in 0..<self.instance_count():
+                kept.append(self.instance(index))
+            inner.children = kept
+            result.children = [inner]
         if let cached = self.preview_cache:
             result.preview_cache = CadPreview([], cached, Matrix4.compose(translation, rotation, scale))
         return result
 
     pub func tessellated(self, divisions: int, edge_size: float = 0.0, progress: func(float) -> unit!? = none) -> GeometryData!:
-        var result = self.mesh
-        let groups: list[GeometryGroup] = []
-        for group in self.groups:
-            if group.model < 0: groups.append(group)
-        for model_index in 0..<self.surfaces.length:
-            let model = self.surfaces[model_index]
-            # Analytic principal curvatures ride along (about 5% of the
-            # tessellation) for the Curvature view; meshes estimate their own.
-            let part = model.tessellate(divisions, edge_size, progress, model.supports_curvature())
-            let source = part.find_attribute("cad_face", 2)
-            var offset = 0
-            if let mesh = result: offset = mesh.face_count()
-            let owners: list[int] = []
-            for face in 0..<model.face_count(): owners.append(-1)
-            let mapped: list[list[int]] = []
-            let names: list[str] = []
-            for group in self.groups:
-                if group.model != model_index: continue
-                for face in group.faces: owners[face] = mapped.length
-                mapped.append([])
-                names.append(group.path)
-            if source >= 0:
-                for face in 0..<part.face_count():
-                    let original = int(part.attribute_value(source, face))
-                    if original >= 0 and original < owners.length and owners[original] >= 0:
-                        mapped[owners[original]].append(offset + face)
-            for index in 0..<mapped.length:
-                groups.append(GeometryGroup(names[index], mapped[index]))
-            if let mesh = result:
-                result = mesh.merged(part)
-            else:
-                result = part
-        let children: list[GeometryInstance] = []
-        for instance in self.instances:
-            children.append(GeometryInstance(instance.data.tessellated(divisions, edge_size, progress), instance.translation, instance.rotation, instance.scale, instance.visible))
-        return GeometryData(result, instances = children, groups = groups)
+        return GeometryData(geometry = CadGeometry.tessellated(self.geometry, divisions, edge_size, progress))
 
-    ## Approximate resident bytes, for the worker's result-store budget. Shared
-    ## meshes count once per holder, which errs toward evicting early.
-    pub func footprint(self) -> int:
-        var total = 256
-        if let mesh = self.mesh:
-            total += mesh_bytes(mesh)
-        for model in self.surfaces:
-            total += model.face_count() * 16384
+    ## Elements whose object path matches `expression` kept, or removed.
+    pub func blasted(self, expression: str, keep: bool) -> GeometryData!:
+        return GeometryData(geometry = self.geometry.blasted(expression, keep))
+
+    ## Resident bytes for the worker's result store: shared arrays count once
+    ## within a result, and CAD previews on top.
+    pub func footprint(self) -> int!:
+        var total = 256 + self.geometry.footprint()
         if let preview = self.preview_cache:
             for mesh in preview.meshes:
-                total += mesh_bytes(mesh)
+                total += 256 + mesh.column_bytes()
             total += (preview.boundaries.length + preview.normal_guides.length) * 32
-        for instance in self.instances:
-            total += instance.data.footprint()
+        for child in self.children else []:
+            if child.preview_cache != none: total += child.footprint()
         return total
 
     pub func description(self) -> str!:
-        var faces = 0
-        for model in self.surfaces:
-            faces += model.face_count()
-        var text = f"{faces} CAD surfaces" if faces > 0 else ""
-        if let mesh = self.mesh:
-            text += (" / " if text != "" else "") + f"{mesh.point_count()} points / {mesh.face_count()} faces / {mesh.attribute_count()} attributes"
-        if self.instances.length > 0:
-            text += (" / " if text != "" else "") + f"{self.instances.length} scene branches"
-        return text if text != "" else "Empty geometry"
+        return self.geometry.description()
 
-func mesh_bytes(mesh: Mesh) -> int:
-    # The mesh's own columns; lazy topology caches and the BVH are extra.
-    return 256 + mesh.column_bytes()
+## Analytic CAD, as a File node imports it.
+pub func cad_data(model: CadModel) -> GeometryData!:
+    return GeometryData(geometry = CadGeometry.of_model(model))

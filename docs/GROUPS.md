@@ -1,7 +1,8 @@
 # Imported hierarchy and Blast
 
-Geometry owns named primitive groups; nodes only expose those paths in their
-evaluation summary. The Outliner projects the paths below each exposed node.
+Every node's result wraps a luce-geocore `GeometrySet`. Object paths live in
+the geometry: CAD faces carry their B-rep path, and polygon faces the text
+attribute `path`. Nodes only expose those paths in their evaluation summary. The Outliner projects the paths below each exposed node.
 It does not create graph nodes for imported parts or infer ancestry from wires.
 Actual Group nodes still own nested networks and transforms.
 
@@ -12,10 +13,10 @@ encoded as `%2F` and `%25`, so they cannot accidentally add hierarchy levels.
 Repeated product instances and STEP Unicode escape decoding remain unsupported;
 duplicate sibling labels are not yet disambiguated.
 
-File returns analytic CAD plus groups. Tessellate uses the native primitive
-`cad_face` attribute to map each analytic face's group onto every generated
-polygon. Transform preserves membership; Merge offsets member/model IDs.
-Other modeling operators do not yet all propagate this path metadata.
+File returns analytic CAD (luce-cad's `cad` family of the set). Tessellate
+writes each generated polygon's B-rep path to its `path` attribute, in one pass
+over every model. Transform, Merge and every operator that remaps attributes
+carry `path` like any other face attribute.
 
 Blast accepts whitespace/comma-separated selectors, quoted names, `*` and `?`.
 An exact parent path includes its descendants. `^pattern` subtracts matches from
@@ -29,7 +30,8 @@ deletes matches; Delete non-selected / isolate retains them. For example:
 ```
 
 CAD extraction copies only referenced topology, preserving colors and placement;
-polygon extraction remaps face groups and removes unused points. Both run inside
+polygon extraction keeps the matching faces with every attribute and removes
+unused points (a parallel subset in luce-geocore). Both run inside
 the existing background DAG compute. The Outliner receives only a copied path
 summary, not worker-owned geometry. Imported rows collapse independently; clicking
 one selects its producing node, not yet an individual geometry component.
