@@ -22,6 +22,7 @@ TARGETS = {
     "Move 1k adjacent faces round trip": "< 10 ms",
     "select 1k faces (1000 clicks)": "< 2 ms per click",
     "first display": "< 30 ms",
+    "CV drag frame, mean of 5": "< 50 ms",
 }
 
 
@@ -38,6 +39,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--step", type=Path, default=Path.home() / "Desktop/camera.step")
     parser.add_argument("--opt", choices=["0", "1", "2", "3"], default="2")
+    parser.add_argument("--only", choices=["drag"], help="Run one case only (drag: the STEP file's CV drag)")
     arguments = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="luced-3d-bench-") as temporary:
         project = Path(temporary)
@@ -53,7 +55,7 @@ def main():
         step = str(arguments.step) if arguments.step.exists() else ""
         if not step:
             print(f"# {arguments.step} is missing; the STEP case is skipped")
-        result = subprocess.run([str(binary), str(mesh), step], capture_output=True, text=True, timeout=3600, cwd=project)
+        result = subprocess.run([str(binary), str(mesh), step] + ([arguments.only] if arguments.only else []), capture_output=True, text=True, timeout=3600, cwd=project)
         if result.returncode != 0:
             sys.exit(f"bench failed ({result.returncode}):\n{result.stdout}\n{result.stderr}")
         output = result.stdout

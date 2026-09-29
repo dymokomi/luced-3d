@@ -94,7 +94,7 @@ class Computation:
                 let picked = editor.pick(data, graph.level) catch failure:
                     recover none
                 if let mesh = picked:
-                    self.inspect(node, mesh)
+                    self.inspect(node, mesh, graph.level)
             elif let mesh = data.mesh:
                 self.inspect(node, mesh)
         if notice == "":
@@ -256,21 +256,32 @@ class Computation:
         self.channel.end()
         self.store.refresh(node.stamp)
         discard(self.display(data, Matrix4(), node, 0))
-        let key = hash((node.stamp, "overlays", self.graph.show_normals))
-        if self.channel.holds(key):
-            self.channel.reuse(key, node.id, false, false)
-            self.publish_curves(node, data)
-            self.publish_cad_hulls(node, data)
-            return
-        let wires = OverlayLines.make()
-        let normals = OverlayLines.make()
-        let patches = OverlayLines.make()
-        append_overlays(data, Matrix4(), wires, normals if self.graph.show_normals else OverlayLines.make(), polygons = false)
-        append_patch_boundaries(data, Matrix4(), patches)
-        if wires.count() + normals.count() + patches.count() > 0:
-            self.channel.overlay(key, node.id, wires, normals, patches)
+        # CAD edges are keyed by what they are drawn from, so a CV drag keeps
+        # them held; normal guides follow the result.
+        let edges = data.edges_key()
+        if edges != 0:
+            self.publish_lines(hash((edges, "cad-edges")), node, data, true, false)
+            if self.graph.show_normals:
+                self.publish_lines(hash((node.stamp, "guides")), node, data, false, true)
+        else:
+            self.publish_lines(hash((node.stamp, "overlays", self.graph.show_normals)), node, data, true, self.graph.show_normals)
         self.publish_curves(node, data)
         self.publish_cad_hulls(node, data)
+
+    ## Overlay lines under `key`: the CAD edges (as wires and patch borders)
+    ## with `edges`, the normal guides with `normals`.
+    func publish_lines(self, key: int, node: Node, data: GeometryData, edges: bool, normals: bool) -> unit!:
+        if self.channel.holds(key):
+            self.channel.reuse(key, node.id, false, false)
+            return
+        let wires = OverlayLines.make()
+        let guides = OverlayLines.make()
+        let patches = OverlayLines.make()
+        append_overlays(data, Matrix4(), wires if edges else OverlayLines.make(), guides if normals else OverlayLines.make(), polygons = false)
+        if edges:
+            append_patch_boundaries(data, Matrix4(), patches)
+        if wires.count() + guides.count() + patches.count() > 0:
+            self.channel.overlay(key, node.id, wires, guides, patches)
 
     ## CAD control nets go to the shared hull product, under their own key.
     func publish_cad_hulls(self, node: Node, data: GeometryData) -> unit!:
@@ -293,8 +304,10 @@ class Computation:
 
     func prepare(self, data: GeometryData, node: Node) -> unit!:
         if data.has_cad():
-            let preview = data.preview(func (fraction: float) -> unit!:
-                self.channel.progress(node.id, fraction * 0.9, "Tessellating CAD"))
+            # A drag's frames show moved control vertices' quick previews.
+            let report = func (fraction: float) -> unit!:
+                self.channel.progress(node.id, fraction * 0.9, "Tessellating CAD")
+            let preview = data.preview(report, self.graph.gesture)
             if preview.failed_faces > 0:
                 self.preview_warning = f"{preview.failed_faces} CAD preview patches failed: {preview.first_error}"
                 self.channel.progress(node.id, 0.9, f"{preview.failed_faces} preview failures")
@@ -349,8 +362,10 @@ class Computation:
 
     ## The selected node's mesh for the spreadsheet and component picking. A
     ## mesh already published (displayed, or held from before) doubles as it.
-    func inspect(self, node: Node, mesh: Mesh) -> unit!:
-        let key = self.key_of(mesh, hash((node.stamp, "inspect")))
+    ## `level`: the Edit node's level whose pick geometry `mesh` is (-1 a
+    ## node's own mesh), part of the key since levels pick on other meshes.
+    func inspect(self, node: Node, mesh: Mesh, level: int = -1) -> unit!:
+        let key = self.key_of(mesh, hash((node.stamp, "inspect", level)))
         if self.channel.holds(key) or self.listed(key):
             self.channel.reuse(key, node.id, false, true)
             return

@@ -174,13 +174,57 @@ func sphere_case() -> unit!:
     report("sphere 64: Mesh to SDF, voxel 0.01", since(start))
     print(f"# sphere 64: {volume.description()}")
 
+## A CV drag on `path`'s CAD in an Edit CAD node: each frame of the drag
+## (request, quick preview, hand-off, redraw), then the release's full cook.
+func cad_drag_case(label: str, path: str, view: OffscreenView) -> unit!:
+    let w = Workspace()
+    w.enable_compute()
+    settle(w)
+    w.delete_selected()
+    let renderer = Renderer(true)
+    let overlay = EditOverlay()
+    overlay.set_fill(false)
+    w.add_node("File", 0.0, 0.0)
+    w.set_text(0, path)
+    settle(w)
+    w.add_node("Edit CAD", 0.0, 100.0)
+    settle(w)
+    discard(frame(view, w, renderer, overlay))
+    w.set_mode(3)
+    settle(w)
+    for cv in 100..<111:
+        w.choose_component(cv, cv > 100)
+    print(f"# {label}: {w.selected_count()} CVs selected of {(w.geometry else trap("cloud")).point_count()}")
+    w.begin("Move gizmo")
+    var worst = 0.0
+    var total = 0.0
+    for step in 1..<6:
+        let start = time.now()
+        w.preview_move(Vector3(0.0, float(step) * 0.5, 0.0))
+        settle(w)
+        let spent = since(start) + frame(view, w, renderer, overlay)
+        worst = math.max(worst, spent)
+        total += spent
+    report(f"{label}: CV drag frame, mean of 5", total / 5.0)
+    report(f"{label}: CV drag frame, worst", worst)
+    let start = time.now()
+    w.commit()
+    settle(w)
+    report(f"{label}: CV drag release, full tessellation", since(start) + frame(view, w, renderer, overlay))
+    (w.compute else trap("compute")).close()
+
 pub func main(arguments: list[str]) -> int!:
     let view = OffscreenView()
+    if arguments.length > 2 and arguments[2] == "drag":
+        cad_drag_case("camera.step", arguments[1], view)
+        view.close()
+        return 0
     run_case("grid 700k", arguments[0], false, view)
     codec_case("grid 700k", arguments[0], false)
     sphere_case()
     if arguments.length > 1 and arguments[1] != "":
         run_case("camera.step", arguments[1], true, view)
         codec_case("camera.step", arguments[1], true)
+        cad_drag_case("camera.step", arguments[1], view)
     view.close()
     return 0

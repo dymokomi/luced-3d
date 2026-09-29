@@ -62,6 +62,15 @@ shape no mesher accepts is left out and counted (`CadGeometry.dropped_faces`)
 instead of failing the model. A cone's side that closes at its apex meshes as
 rings and an apex fan (`conical_fan.lucb`).
 
+While a control-vertex drag is live, each frame shows a quick preview
+(`brep/quick.lucb`) instead: the parent's kept tessellation with the moved
+surfaces' own points given their parameters on the old surface and moved to
+the new one there, in parallel, and every shared point (vertices, edge
+samples, layout rows) kept, so it stays joined; the edges' lines keep their
+content key and stay on the GPU. Releasing the drag tessellates in full. On
+camera.step with 11 CVs dragged, a frame (request, preview, hand-off and
+redraw) takes about 44 ms; the release's full tessellation about 0.87 s.
+
 A full tessellation (`CadModel.tessellate(segments, edge_size)`) runs:
 
 1. **Shared edge sampling.** Every B-rep edge is sampled once, by physical arc

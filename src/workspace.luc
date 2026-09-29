@@ -7,6 +7,7 @@ from history import History, Snapshot
 from scene_projection import append_scene, append_bounds, append_overlays, append_patch_boundaries, append_cad_hulls
 from overlay_lines import OverlayLines
 from compute_session import ComputeSession
+from compute_bridge import ComputeService
 from display_publisher import DisplayPublisher
 from node_evaluation import SourceCache
 import math
@@ -45,6 +46,11 @@ pub class Workspace:
     var pending_group: str = ""
     var pending_type: int = 0
     pub var edit_tool: str = "Select"
+    ## A gizmo drag's frames are being previewed (preview_move and
+    ## preview_parameters); commit cooks the released result in full.
+    pub var dragging: bool = false
+    ## The worker overlay batches shown (ComputeService.batch_key; -1 none).
+    var batch_keys: list[int]
     pub var revision: int = 0
     pub var notice: str = ""
     var pending: Snapshot? = none
@@ -91,6 +97,7 @@ pub class Workspace:
         self.hull_batches = []
         self.sources = SourceCache()
         self.edit_kinds = {}
+        self.batch_keys = [-1, -1, -1, -1, -1]
         self.mesh_levels = edit_mesh.levels()
         self.network = Network()
         self.network.sources = self.sources
@@ -338,6 +345,7 @@ pub class Workspace:
     ## Parameter gizmos submit absolute gesture values; no mesh work on UI thread.
     pub func preview_parameters(self, values: list[float]) -> unit!:
         let before = self.pending else return
+        self.dragging = true
         let original = before.graph.require(self.network.selected)
         let node = self.selected() else return
         node.values = values.copy()
@@ -363,11 +371,16 @@ pub class Workspace:
         self.pending = none
         self.pending_changed = false
         self.revision += 1
+        # A drag's frames were previews: the released result is cooked in full.
+        if self.dragging:
+            self.dragging = false
+            self.rebuild()
 
     pub func cancel(self) -> unit!:
         let before = self.pending else return
         self.pending = none
         self.pending_changed = false
+        self.dragging = false
         self.restore(before)
 
     pub func in_transaction(self) -> bool:
@@ -415,6 +428,7 @@ pub class Workspace:
     pub func rebuild(self) -> unit!:
         if let session = self.compute:
             self.network.level = self.component_mode
+            self.network.gesture = self.dragging
             session.submit(self.network, self.display_mode if self.display_mode <= 4 else 3, self.normals_visible)
             self.revision += 1
             return
@@ -458,6 +472,7 @@ pub class Workspace:
         self.wire_batch = wires.batch()
         self.normal_batch = normals.batch()
         self.patch_batch = patches.batch()
+        self.batch_keys = [-1, -1, -1, -1, -1]
         self.hull_batches.append(hulls.batch())
         self.revision += 1
 
@@ -469,6 +484,15 @@ pub class Workspace:
                 return kind.pick(data, self.component_mode) catch failure:
                     recover none
         return data.mesh
+
+    ## Whether the worker's overlay batch `which` differs from the one shown
+    ## (and note the new one).
+    func batch_changed(self, service: ComputeService, which: int) -> bool!:
+        let key = service.batch_key(which)
+        if self.batch_keys[which] == key:
+            return false
+        self.batch_keys[which] = key
+        return true
 
     ## Runtime UI uses a persistent worker; deterministic tests/scripts may cook
     ## synchronously. Published scenes remain visible while replacements compute.
@@ -501,13 +525,21 @@ pub class Workspace:
             self.revision += 1
             return true
         if self.publisher.adopt(session.service, self.network):
-            self.wire_batch = session.service.wires()
-            self.normal_batch = session.service.normals()
-            self.patch_batch = session.service.patches()
-            self.curve_batches.clear()
-            self.hull_batches.clear()
-            self.curve_batches.append(session.service.curve_lines())
-            self.hull_batches.append(session.service.hulls())
+            # Only the batches whose lines changed are made again (a CV drag
+            # keeps the CAD edges and redraws the hull).
+            let service = session.service
+            if self.batch_changed(service, 0):
+                self.wire_batch = service.wires()
+            if self.batch_changed(service, 1):
+                self.normal_batch = service.normals()
+            if self.batch_changed(service, 2):
+                self.patch_batch = service.patches()
+            if self.batch_changed(service, 3):
+                self.curve_batches.clear()
+                self.curve_batches.append(service.curve_lines())
+            if self.batch_changed(service, 4):
+                self.hull_batches.clear()
+                self.hull_batches.append(service.hulls())
         self.geometry = self.publisher.geometry
         self.sync_selection()
         session.service.release_result(self.publisher.kept)
@@ -1011,6 +1043,7 @@ pub class Workspace:
     ## the stored state before the gesture, never replaying the node.
     pub func preview_move(self, delta: Vector3) -> unit!:
         let before = self.pending else return
+        self.dragging = true
         self.network = before.graph.copy()
         self.selection = before.selection
         if self.transforming():
