@@ -1,5 +1,5 @@
 ## Operator dispatch only. Mesh algorithms and attribute storage belong to three.
-from geocore import PolygonMesh, MeshOps, MeshPrimitives, TopologyTools
+from geocore import PolygonMesh, MeshOps, MeshPrimitives, TopologyTools, AttributeKernels
 from three import Vector3
 from component_groups import group_indices
 import math
@@ -136,56 +136,22 @@ pub func evaluate_operator(kind: str, v: list[float], text: list[str], input: Po
         return mesh.renamed_attribute(text[1], text[2], int(v[0]))
     if kind == "AttributePromote":
         return mesh.promoted_attribute(text[1], int(v[0]), int(v[1]))
-    if kind in ["AttributeCreate", "AttributeRandomize", "Selection Group", "Color"]:
-        let domain = 0 if kind == "Color" else int(v[0])
-        let width = 3 if kind == "Color" else (1 if kind == "Selection Group" else int(v[1]))
-        let integer = kind == "Selection Group" or (kind != "Color" and v[2] != 0.0)
-        let selection = group_indices(mesh, domain, text[0]) if kind == "Selection Group" else []
+    # Attribute nodes run whole-mesh Base kernels: one new column each.
+    if kind == "Selection Group":
+        let domain = int(v[0])
+        return AttributeKernels.membership(mesh, text[1], domain, group_indices(mesh, domain, text[0]))
+    if kind == "Color":
+        return AttributeKernels.filled(mesh, "Cd", 0, [v[0], v[1], v[2]], false, false, 0.0)
+    if kind in ["AttributeCreate", "AttributeRandomize"]:
+        let width = int(v[1])
         let values: list[float] = []
-        for id in 0..<mesh.domain_count(domain):
-            for component in 0..<width:
-                var value = v[component] if kind == "Color" else (float(1 if id in selection else 0) if kind == "Selection Group" else v[3 + component])
-                if kind == "AttributeRandomize":
-                    let random = math.sin(float(id * 7 + component) * 12.9898 + v[7] * 78.233) * 43758.5453
-                    value *= random - math.floor(random)
-                values.append(math.floor(value) if integer else value)
-        return mesh.with_attribute("Cd" if kind == "Color" else text[1], domain, width, values, integer)
+        for component in 0..<width:
+            values.append(v[3 + component])
+        return AttributeKernels.filled(mesh, text[1], int(v[0]), values, v[2] != 0.0, kind == "AttributeRandomize", v[7])
     if kind == "UVProject":
-        let values: list[float] = []
-        for corner in 0..<mesh.vertex_count():
-            let p = mesh.point(mesh.corner_point(corner))
-            values.append(p.x * v[0])
-            values.append(p.z * v[0])
-        return mesh.with_attribute("uv", 1, 2, values)
+        return AttributeKernels.uv_project(mesh, v[0])
     if kind == "Normal":
-        let domain = 2 if int(v[0]) == 2 else 0
-        let normals: list[Vector3] = []
-        for id in 0..<mesh.domain_count(domain):
-            normals.append(Vector3())
-        for face in 0..<mesh.face_count():
-            let normal = mesh.face_normal(face)
-            if domain == 2:
-                normals[face] = normal
-            else:
-                for at in 0..<mesh.face_size(face):
-                    let id = mesh.face_point(face, at)
-                    normals[id] = normals[id].add(normal)
-        let values: list[float] = []
-        for normal in normals:
-            let n = normal.normalized() if normal.length() > 0.000001 else Vector3()
-            values.append(n.x)
-            values.append(n.y)
-            values.append(n.z)
-        return mesh.with_attribute("N", domain, 3, values)
+        return AttributeKernels.normals(mesh, 2 if int(v[0]) == 2 else 0)
     if kind == "Measure":
-        let areas: list[float] = []
-        for face in 0..<mesh.face_count():
-            areas.append(0.0)
-        for triangle in 0..<mesh.index_count() // 3:
-            let a = mesh.vertex(mesh.index(triangle * 3)).position
-            let b = mesh.vertex(mesh.index(triangle * 3 + 1)).position
-            let c = mesh.vertex(mesh.index(triangle * 3 + 2)).position
-            let face = mesh.triangle_face(triangle)
-            areas[face] += b.subtract(a).cross(c.subtract(a)).length() * 0.5
-        return mesh.with_attribute("area", 2, 1, areas)
+        return AttributeKernels.face_areas(mesh)
     error(ui.invalid, "Operator has no evaluator")
