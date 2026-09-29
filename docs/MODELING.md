@@ -176,7 +176,10 @@ Create entries come from the kinds themselves: the strip shows what the
 active kind offers (Edit Mesh's on other nodes). A kind may also draw guides
 while displayed (Edit Sketch's plane grid, keyed by the set's detail
 attributes so a drag keeps the batch) and show its selection through
-surfaces (Edit SDF).
+surfaces (Edit SDF). A kind may add node parameters after the shared ones
+(value slots 5 onwards): their values at the time ride on every step it
+records, after the verb's numbers, so a replay needs no node. Edit Sketch's
+Grid snap and End snap use this.
 
 Edit Mesh's levels are Object, Polygons, Edges, Vertices and Corners. At the
 Object level a pick selects a whole piece, and moves, rotations, scales and
@@ -237,7 +240,10 @@ distance. Moves keep their translation in the plane. **Delete** removes
 points, segments (an open curve splits, a closed one opens) or curves;
 **Close** and **Open** change closure; **Snap** snaps points to a grid of
 the tool amount; **Join Ends** moves open ends onto the nearest other end
-within the tool amount. Constraints are not in yet: every move goes through
+within the tool amount. The node's **Grid snap** (a spacing) and **End
+snap** (a reach, 0.05 by default) snap every move as it happens: moved
+points land on the plane's grid, and a moved open end lands on another open
+end within reach. Constraints are not in yet: every move goes through
 one Base entry (`placed_curves`) where a solver would adjust the targets.
 
 - A step is one verb run: the verb, the group expression and its type, the
