@@ -1,7 +1,7 @@
 ## Node-specific viewport UI. Topology and intersections remain in luce-3d.
 from ui import Painter, Event
 from gpu import Rect
-from three import Vector3, EditOverlay
+from three import Vector3, EditOverlay, Renderer
 from input import EventKind
 from workspace import Workspace
 from actions import Actions
@@ -50,12 +50,16 @@ pub class ViewportTools:
     ## the selection, so hover and camera frames never loop over the mesh here.
     pub let overlay: EditOverlay
     pub var hover_changed: bool = false
+    ## The viewport's renderer: faces are picked from its GPU id pass.
+    pub var renderer: Renderer? = none
 
     pub func init(self, workspace: Workspace, actions: Actions):
         self.workspace = workspace
         self.actions = actions
         self.gizmos = NodeGizmos(workspace)
         self.overlay = EditOverlay()
+        # The renderer tints selected faces (Renderer.set_face_selection).
+        self.overlay.set_fill(false)
 
     pub func has_gizmo(self) -> bool:
         return self.gizmos.available()
@@ -111,13 +115,22 @@ pub class ViewportTools:
         let id = row * 2 + column
         return id if id < self.actions.modeling.length + 3 else -1
 
+    ## The component under (x, y): the face from the renderer's GPU id pass
+    ## (a CPU ray before the first device frame), then for points and edges
+    ## the nearest one on that face.
     pub func pick(self, x: float, y: float, width: float, height: float) -> int!:
         let w = self.workspace
         let mesh = w.geometry else return -1
+        var face = -2
+        if let renderer = self.renderer:
+            face = renderer.pick_face(mesh, w.camera, x, y, width, height) catch failure:
+                recover -2
         if w.component_mode == 2:
+            if face >= -1:
+                return face
             return mesh.ray_face(w.camera.position(), view_ray(w, x, y, width, height))
         self.overlay.update(mesh, w.component_mode, w.components, self.hovered)
-        return self.overlay.pick(w.camera, x, y, width, height)
+        return self.overlay.pick(w.camera, x, y, width, height, face)
 
     ## Returns true when node tools consume the input; otherwise navigation owns it.
     ## Records whether the highlight changed, so an idle pointer move over the

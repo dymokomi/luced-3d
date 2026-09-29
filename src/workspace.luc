@@ -27,11 +27,6 @@ pub class Workspace:
     var pending: Snapshot? = none
     var pending_label: str = ""
     var pending_changed: bool = false
-    ## A gesture's previews went out as interactive requests (no index
-    ## warming); its commit sends one settled request.
-    var previewed: bool = false
-    ## Inside a one-shot perform: its request is already the settled one.
-    var settled_action: bool = false
     pub var yaw: float = 0.7
     pub var pitch: float = 0.5
     pub var distance: float = 9.0
@@ -203,9 +198,12 @@ pub class Workspace:
     pub func selected(self) -> Node?:
         return self.network.find(self.network.selected)
 
+    ## Edit tools work on the displayed Edit node's cooked mesh. During a
+    ## gesture its previews keep it recooking; the overlay and tools stay on
+    ## the latest preview.
     pub func editing(self) -> bool:
         let node = self.selected() else return false
-        return node.kind == "Edit" and node.enabled and not node.dirty and node.id == self.network.display and self.geometry != none
+        return node.kind == "Edit" and node.enabled and (not node.dirty or self.pending != none) and node.id == self.network.display and self.geometry != none
 
     pub func transforming(self) -> bool:
         let node = self.selected() else return false
@@ -230,7 +228,6 @@ pub class Workspace:
         self.pending = self.snapshot()
         self.pending_label = label
         self.pending_changed = false
-        self.previewed = false
 
     pub func commit(self) -> unit!:
         let before = self.pending else return
@@ -240,13 +237,6 @@ pub class Workspace:
         self.pending = none
         self.pending_changed = false
         self.revision += 1
-        # Previews skipped query-index warming; one settled request warms the
-        # shown meshes (every stamp is stored, so nothing recooks). A one-shot
-        # action's own request was settled already, and a selection change
-        # sends none.
-        if self.previewed and self.compute != none:
-            self.previewed = false
-            self.rebuild()
 
     pub func cancel(self) -> unit!:
         let before = self.pending else return
@@ -286,14 +276,11 @@ pub class Workspace:
         let owns = self.pending == none
         if owns:
             self.begin(label)
-            self.settled_action = true
         action() catch failure:
-            self.settled_action = false
             self.cancel()
             self.notice = failure.message
             self.revision += 1
             return
-        self.settled_action = false
         self.pending_changed = true
         self.revision += 1
         if owns:
@@ -301,9 +288,7 @@ pub class Workspace:
 
     pub func rebuild(self) -> unit!:
         if let session = self.compute:
-            let interactive = self.pending != none and not self.settled_action
-            self.previewed = self.previewed or interactive
-            session.submit(self.network, self.display_mode if self.display_mode <= 4 else 3, interactive, self.normals_visible)
+            session.submit(self.network, self.display_mode if self.display_mode <= 4 else 3, self.normals_visible)
             self.revision += 1
             return
         self.objects.clear()
@@ -608,7 +593,9 @@ pub class Workspace:
         let mesh = self.geometry else return
         let count = mesh.point_count() if self.component_mode == 0 else ((try mesh.edge_count()) if self.component_mode == 1 else mesh.face_count())
         self.perform("Invert selection", func ():
-            let previous = self.components
+            # A set makes each membership test O(1): O(n + k), not O(n k).
+            let previous: set[int] = {}
+            for id in self.components: previous.insert(id)
             self.components = []
             for id in 0..<count:
                 if not (id in previous):
