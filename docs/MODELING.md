@@ -259,7 +259,11 @@ one Base entry (`placed_curves`) where a solver would adjust the targets.
   through the tool (a new element is selected when all its parents were).
 - **Soft radius** and **Falloff** (linear, quadratic, cubic, smooth) make
   moves, rotations and scales pull the points near the selection, by the
-  distance to the nearest selected point.
+  distance to the nearest selected point. While the radius is on, the
+  viewport draws every point it reaches in a ramp from blue (barely moved)
+  through yellow to orange (moves fully); the weights come from the same
+  Base kernel as the move (luce-geocore's `selection_weights`). Edit Mesh and
+  Edit CAD's control vertices honor it.
 - **Symmetry** (X, Y or Z) mirrors every tool: the group gains the mirror of
   each member (points, faces, edges and vertices matched by position within a
   ten-thousandth of the model's size), and moved points' mirrors move to the
@@ -303,13 +307,12 @@ motivated separate topology/position handling and linear attribute interpolation
 Fuse shows that merging points needs explicit attribute ownership (ours keeps the
 first representative, and Clean is separate); PolyBevel also offers point
 bevels, per-edge offsets and patterned corner patches, where ours makes one
-patch face per corner; Smooth has more controls than our one-step neighbor relaxation. The
+patch face per corner; Smooth has more controls than our amount-and-iterations neighbor relaxation. The
 limits above document these differences rather than claiming SOP equivalence.
 Fields should arrive as a deliberate type-system addition, not ad-hoc
 expressions inside widgets.
 
 ## Remaining modeling milestones
 
-Selected-edge bevel and fillets, knife/loop cuts, multi-edge dissolve, bridge
-loops, robust booleans, remeshing, UV unwrap, instancing, general fields, multi-node
-selection, wire insertion and subnets remain future work.
+Robust booleans, remeshing, UV unwrap, multi-node selection, wire insertion and
+subnets remain future work.

@@ -137,6 +137,9 @@ and picking live in `node_gizmos`/`gizmo_math`, independent of evaluation.
 - Edit overlays (`EditOverlay` in luce-3d) keep retained wire, point and selection
   batches in Base; picking uses the retained screen projection confirmed by one
   ray. Edge picking tests the perspective-correct point nearest the pointer.
+  With a soft radius the overlay also holds each point's soft weight (geocore's
+  `selection_weights`, recomputed only when the selection, mesh or settings
+  change) and draws the points it reaches in a falloff ramp.
 - Five display modes plus normal guides; Wireframe is transparent line-only,
   Flat ignores `N`, Shaded consumes it. CAD patch boundaries have their own batch.
 - Camera clip planes follow orbit distance for depth precision on large parts.
