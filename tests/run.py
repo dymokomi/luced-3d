@@ -22,7 +22,7 @@ def prepare(project):
                     for z in range(n) for x in range(n))
     (project / "tests/fixtures/grid500k.obj").write_text(points + faces)
     manifest = (ROOT / "package.prisma").read_text()
-    for name in ("luce-ui", "luce-3d", "luce-color", "luce-std", "luce-gpu", "luce-window", "luce-obj", "luce-cad", "luce-step", "luce-fbx", "luce-prism"):
+    for name in ("luce-ui", "luce-geocore", "luce-3d", "luce-color", "luce-std", "luce-gpu", "luce-window", "luce-obj", "luce-cad", "luce-step", "luce-fbx", "luce-prism"):
         manifest = manifest.replace(f'"../{name}"', f'"{ROOT.parent / name}"')
     (project / "package.prisma").write_text(manifest)
 
