@@ -45,15 +45,16 @@ interactive while they cook.
 - **Position edits share topology.** Move and drag create meshes that share the
   input's topology and display triangles; only positions change.
 - **Shared storage across threads.** A published mesh is a new owner of the
-  worker's immutable storage and query index (atomic owner counts), not a copy.
+  worker's immutable storage and caches (atomic owner counts), not a copy.
   Meshes are published by content key, and a key the UI still holds is
   republished with no work.
 - **Renderer keeps prepared data per geometry.** Unchanged objects survive scene
   changes; display-mode and wire toggles never evaluate the DAG. Geometry lives in
   retained GPU buffers; camera motion updates a small uniform block per batch.
-- **Edit overlays in Base.** Retained wire, point and selection batches;
-  picking uses the retained screen projection plus one confirming ray, and the
-  query BVH is built lazily and warmed on the worker.
+- **Picking and selection on the GPU.** Faces come from the renderer's id pass
+  (points and edges from the picked face), selected faces tint from one bit
+  per face, and a local Move uploads only its neighbourhood of the previous
+  buffers. The query BVH is lazy (first CPU query) and refits after Moves.
 - **Process-level source caches.** Parsed files (path, size, mtime, content hash,
   tolerance) and tessellations (parsed model and options) are reused on reload.
 - **CAD.** luce-cad runs its per-face work (layout seeding, speculative
@@ -108,13 +109,9 @@ warm up first, and note concurrent load; single runs are indicative only.
 
 ## Open work
 
-- **First draw of a changed mesh** spends ~1.8 s of main-thread CPU in
-  `Renderer.prepare` (reading expanded vertices, transforming normals, computing
-  flat/smooth colors). Indexed GPU buffers and shader lighting should replace it.
-- **Publishing a large CAD mesh** costs ~1.2 s on the worker after the 1.8 s
-  cook: the query BVH (`prepare_queries`, ~0.55 s) and normal-guide overlay
-  points (~0.3 s) in `ComputeChannel.mesh`. The BVH could be built lazily on
-  first pick, and guides on demand.
+- **A spread-out Move** (1k faces across a 700k mesh) still re-uploads whole
+  arrays (23–32 ms round trip; a local one is 13 ms): per-element GPU
+  scatter would close it.
 - **Tessellation (1.8 s)**: what remains serial is geocore's final
   geocore `Mesh` construction (~0.27 s), layout reconcile/balance (~0.2 s) and
   the slowest faces' tails. CAD File 9.3 s and Tessellate 7.4 s cooks

@@ -77,10 +77,10 @@ The UI never shares Luce objects with it.
 - **Publishing** (`display_publisher.luc`). Products are keyed by content: a
   displayed mesh by its stamp and ordinal, or by the identity of a mesh already
   published (an Edit without recipes, a Null or a bypass reuses its input's key).
-  A published mesh is a new owner of the worker's immutable storage and query
-  index (atomic owner counts), not a copy. The worker warms the query index
-  (except while a gesture previews) and extracts wire and normal overlays once
-  per key. The publisher keeps the meshes the UI holds (this result's and six
+  A published mesh is a new owner of the worker's immutable storage and its
+  lazy caches (atomic owner counts), not a copy. Nothing is warmed for the UI:
+  it picks on the GPU. Normal guides are extracted only while Show normals is
+  on, as their own keyed products. The publisher keeps the meshes the UI holds (this result's and six
   recent keys), so a held key republishes with no work, and scene objects are
   rebuilt only when the displayed keys change.
 
@@ -139,8 +139,12 @@ and picking live in `node_gizmos`/`gizmo_math`, independent of evaluation.
 - Five display modes plus normal guides; Wireframe is transparent line-only,
   Flat ignores `N`, Shaded consumes it. CAD patch boundaries have their own batch.
 - Camera clip planes follow orbit distance for depth precision on large parts.
-- Picking and distance queries use an immutable triangle BVH built lazily on
-  first query (or `prepare_queries()` on the worker) and shared by snapshots.
+- Picking reads the renderer's GPU id pass (faces; points and edges on the
+  picked face), read back once per view. Distance queries use an immutable
+  triangle BVH built lazily on first query, shared by snapshots and refitted
+  after Moves.
+- Selected faces tint in the surface pass from one bit per face; the overlay
+  outlines up to 20k of them.
 
 ## Imports
 
