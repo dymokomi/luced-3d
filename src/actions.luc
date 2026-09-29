@@ -4,7 +4,7 @@ from input import Key
 from interop import Connection
 from workspace import Workspace
 from network import kinds
-from edit_kinds import is_edit
+from edit_kinds import is_edit, edit_tool_names, edit_primitive_names
 
 pub class Actions:
     pub let new_project: Command
@@ -70,7 +70,10 @@ pub class Actions:
             self.clear_edits.on_trigger(workspace.clear_edits), self.select_all.on_trigger(workspace.select_all)]
         self.add = []
         self.modeling = []
-        for operation in ["Inset", "Delete", "Reverse", "Triangulate", "Duplicate", "Split", "Fuse", "Merge Points", "Smooth", "Peak", "Flatten", "Rotate", "Scale", "Snap", "Noise", "Subdivide", "Bevel", "Loop Cut", "Bridge", "Fill", "Dissolve", "Clean"]:
+        # Every Edit kind's tools and primitives, from the kind registry
+        # (Extrude has its own command); the strip shows the active kind's.
+        for operation in edit_tool_names():
+            if operation == "Extrude": continue
             let name = operation
             let command = Command(operation, id = "edit_" + operation)
             self.modeling.append(command)
@@ -93,9 +96,9 @@ pub class Actions:
                 workspace.set_mode(mode)))
         # Primitives an Edit node creates (each kind offers its own).
         self.create = []
-        for primitive in ["Box", "Sphere", "Cylinder", "Cone", "Torus", "Grid", "Plane"]:
+        for primitive in edit_primitive_names():
             let name = primitive
-            let command = Command(primitive, id = "create_" + primitive.lower())
+            let command = Command(primitive, id = "create_" + primitive.lower().replace(" ", "_"))
             self.create.append(command)
             self.connections.append(command.on_trigger(func () -> unit!: workspace.create(name)))
         self.tools = [Command("Select", Shortcut(Key.q), id = "tool_select"), Command("Move", Shortcut(Key.m), id = "tool_move")]
@@ -107,10 +110,19 @@ pub class Actions:
         self.all += [self.new_project, self.open_project, self.save, self.save_as, self.reset_layout]
         self.refresh()
 
-    ## The viewport's tool strip: Select, Move, Extrude, the modeling tools,
-    ## then the primitives.
+    ## The viewport's tool strip: Select, Move, then what the active Edit
+    ## kind offers (Edit Mesh's on other nodes): Extrude, its tools, its
+    ## primitives.
     pub func strip(self) -> list[Command]:
-        return self.tools + [self.extrude] + self.modeling + self.create
+        let kind = self.workspace.strip_kind()
+        let result = self.tools.copy()
+        if kind.tool("Extrude") != none:
+            result.append(self.extrude)
+        for command in self.modeling:
+            if kind.tool(command.text()) != none: result.append(command)
+        for command in self.create:
+            if command.text() in kind.primitives: result.append(command)
+        return result
 
     pub func refresh(self) -> unit!:
         let w = self.workspace

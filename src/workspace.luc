@@ -278,10 +278,15 @@ pub class Workspace:
         let all = self.levels()
         return all[self.component_mode if self.component_mode < all.length else 0]
 
+    ## The kind whose tools the viewport offers: the active Edit node's,
+    ## else Edit Mesh's (tools on any displayed mesh make verb nodes).
+    pub func strip_kind(self) -> EditKind:
+        return self.active_kind() else (self.kind_of(edit_mesh.kind_name) else trap("Edit Mesh"))
+
     ## Whether viewport tool `name` applies at the current level: the Edit
-    ## node's kind offers it there (any tool on another node's mesh).
+    ## node's kind offers it there (Edit Mesh's tools on another node's mesh).
     pub func tool_available(self, name: str) -> bool!:
-        let kind = self.active_kind() else return true
+        let kind = self.active_kind() else return tool_run(name, 0.5) != none
         if name in kind.primitives:
             return true
         let tool = kind.tool(name) else return false
@@ -463,6 +468,10 @@ pub class Workspace:
             self.objects.add(branch)
             append_overlays(data, Matrix4(), wires, normals)
             append_cad_hulls(data, Matrix4(), hulls)
+            if node.id == graph.display and node.enabled:
+                if let kind = self.kind_of(node.kind):
+                    if let guides = kind.guides:
+                        guides(data, hulls)
             if CurveLines.count(data.geometry) > 0:
                 self.curve_batches.append(CurveLines.batch(data.geometry))
                 self.hull_batches.append(CurveLines.batch(data.geometry, true))
@@ -733,15 +742,19 @@ pub class Workspace:
     ## expression and its guard the topology it was made on. With nothing
     ## selected a node waits for its components (Tool → Select).
     pub func model(self, operation: str) -> unit!:
-        var run = tool_run(operation, self.tool_amount()) else return
         let mesh = self.geometry else return
+        var run = ToolRun("", [])
         if let kind = self.active_kind():
+            # The kind's own tool: its verb and numbers, whether or not
+            # tools.luc knows the name (Edit SDF's Subtract).
             let tool = kind.tool(operation) else return
             if not tool.offered(self.component_mode):
                 self.notice = f"{operation} does not apply to {self.level().name}"
                 self.revision += 1
                 return
             run = ToolRun(tool.verb, tool.numbers(self.tool_amount()))
+        else:
+            run = tool_run(operation, self.tool_amount()) else return
         let wants_group = not (operation in ["Subdivide", "Clean"])
         let chosen = self.current_selection() else return
         if wants_group and chosen.count() == 0:
@@ -783,7 +796,10 @@ pub class Workspace:
         self.perform(label + " components", func () -> unit!:
             node.edits.append(self.edit_step(node, verb, group, numbers, mesh))
             self.network.invalidate(node.id)
-            self.adopt_output = Verbs.changes_topology(Verbs.index_of(verb))
+            # A kind's own verb (not a mesh verb) keeps a selection that
+            # still fits.
+            let index = Verbs.index_of(verb)
+            self.adopt_output = index >= 0 and Verbs.changes_topology(index)
             self.rebuild())
 
     ## A step of Edit node `node`: its soft radius and falloff reach the
