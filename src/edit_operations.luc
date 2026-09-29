@@ -1,4 +1,4 @@
-## Immutable per-node modeling recipes and exact topology guards.
+## Immutable per-node modeling recipes and topology guards.
 from three import PolygonMesh, Vector3, MeshOps, TopologyTools
 import ui
 
@@ -7,19 +7,26 @@ pub class EditOperation:
     pub let elements: list[int]
     pub let delta: Vector3
     pub let distance: float
-    # Exact ordered topology guard: upstream transforms are fine; different
+    # Connectivity hash of the mesh the recipe was authored on (0: unguarded,
+    # e.g. from an older project). Upstream transforms keep it; different
     # connectivity must not silently send edits to unrelated components.
-    pub let topology: list[int]
+    pub let topology: int
+    ## Content hashes of the element list and of the whole recipe; node stamps
+    ## and worker deltas use them, so large selections are hashed once.
+    pub let elements_key: int
+    pub let key: int
 
-    pub func init(self, kind: str, elements: list[int], mesh: PolygonMesh, delta: Vector3, distance: float, recipe: list[int]? = none) -> unit!:
+    pub func init(self, kind: str, elements: list[int], mesh: PolygonMesh, delta: Vector3, distance: float, recipe: int? = none) -> unit!:
         self.kind = kind
         self.elements = elements.copy()
         self.delta = delta
         self.distance = distance
-        self.topology = (recipe else topology_of(mesh)).copy()
+        self.topology = recipe else mesh.topology_hash()
+        self.elements_key = hash(self.elements)
+        self.key = hash((kind, self.elements_key, delta.x, delta.y, delta.z, distance, self.topology))
 
     pub func evaluate(self, mesh: PolygonMesh) -> PolygonMesh!:
-        if self.topology != topology_of(mesh):
+        if self.topology != 0 and self.topology != mesh.topology_hash():
             error(ui.invalid, "Edit input topology changed. Undo the upstream change or clear this node's edits.")
         if self.kind == "Extrude":
             return mesh.extruded_faces(self.elements, self.distance)
@@ -46,12 +53,3 @@ pub class EditOperation:
         if self.kind == "Move":
             return mesh.moved_points(self.elements, self.delta)
         error(ui.invalid, "Unknown edit operation")
-
-func topology_of(mesh: PolygonMesh) -> list[int]!:
-    let result: list[int] = [mesh.point_count(), mesh.face_count()]
-    for face in 0..<mesh.face_count():
-        let count = mesh.face_size(face)
-        result.append(count)
-        for at in 0..<count:
-            result.append(mesh.face_point(face, at))
-    return result
