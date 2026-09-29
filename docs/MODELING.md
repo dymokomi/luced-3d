@@ -12,7 +12,7 @@ No placeholder nodes are listed: every registered node evaluates geometry.
 | Sources | Cube, Grid, Sphere, Cylinder, Cone, Torus, File |
 | Graph | Edit, Merge, Null, Switch, Tessellate, Group, Blast |
 | Transforms/copies | Transform, Mirror, CopyTransform, CopyToPoints, MatchSize |
-| Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, Bevel, Fill, Dissolve |
+| Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Fill, Dissolve |
 | Deformation (verbs) | Transform Components, Smooth, Mountain, Peak, Flatten, Snap |
 | Attributes | AttributeCreate, AttributeRandomize, AttributeDelete, AttributeRename, AttributePromote, Selection Group, Normal, Measure, UVProject, Color |
 
@@ -69,8 +69,12 @@ guarded. Very large selections show as a summary in the Group field.
 - Extrude operates on face regions with boundary walls; not isolated edges or
   points, nor a whole closed surface.
 - Inset is an individual-face centroid fraction, not an exact-distance offset.
-- Bevel chamfers all edges of a closed oriented manifold, using a fractional
-  width. It is not a selected-edge, constant-width, multi-segment fillet.
+- PolyBevel bevels the group's interior edges by a constant offset measured in
+  the faces beside them, with 1–64 segments along a profile (0.5 round, 0
+  flat) and overlap clamping. Where three or more beveled edges meet, the hole
+  becomes one patch face (no grid patch); a lone beveled edge's end vertex
+  stays and its strip fans around it. Edges at non-manifold points are skipped
+  with a warning.
 - Subdivide operates on the whole mesh, Catmull–Clark or linear, with edges used
   by more than two faces kept as creases. There are no crease weights yet.
 - Fill caps one boundary loop of the group's edges. Dissolve joins faces across
@@ -141,9 +145,9 @@ Houdini's [Subdivide](https://www.sidefx.com/docs/houdini/nodes/sop/subdivide.ht
 references for these operators, and each is broader than ours: Subdivide
 motivated separate topology/position handling and linear attribute interpolation;
 Fuse shows that merging points needs explicit attribute ownership (ours keeps the
-first representative, and Clean is separate); PolyBevel covers selected edges,
-constant distance, segments and corners, where ours is a closed-mesh fractional
-chamfer; Smooth has more controls than our one-step neighbor relaxation. The
+first representative, and Clean is separate); PolyBevel also offers point
+bevels, per-edge offsets and patterned corner patches, where ours makes one
+patch face per corner; Smooth has more controls than our one-step neighbor relaxation. The
 limits above document these differences rather than claiming SOP equivalence.
 Fields should arrive as a deliberate type-system addition, not ad-hoc
 expressions inside widgets.
