@@ -19,6 +19,7 @@ from run import prepare  # noqa: E402
 
 TARGETS = {
     "Move 1k faces round trip": "< 10 ms",
+    "Move 1k adjacent faces round trip": "< 10 ms",
     "select 1k faces (1000 clicks)": "< 2 ms per click",
     "first display": "< 30 ms",
 }
