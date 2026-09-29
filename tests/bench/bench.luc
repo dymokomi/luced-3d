@@ -1,0 +1,84 @@
+## Headless editor benchmark (tests/bench/run.py): the real Workspace, worker
+## and publisher, drawing into an offscreen texture as the viewport does. It
+## times importing and cooking a mesh, its first display, selecting 1k faces,
+## and a Move round trip (request, cook, hand-off, adopt, redraw).
+from workspace import Workspace
+from three import Vector3, Renderer, EditOverlay
+from offscreen import OffscreenView
+import theme
+import time
+
+func since(start: int) -> float:
+    return float(time.now() - start) / 1000000.0
+
+func report(name: str, value: float) -> unit:
+    print(f"{name}\t{value}")
+
+func settle(workspace: Workspace) -> unit!:
+    let session = workspace.compute else trap("compute")
+    let deadline = time.now() + 600000000000
+    while session.busy and time.now() < deadline:
+        discard(workspace.poll_compute())
+    assert(not session.busy)
+
+## One viewport frame: the shaded scene, then Edit mode's wires and selection.
+func frame(view: OffscreenView, w: Workspace, renderer: Renderer, overlay: EditOverlay) -> float!:
+    let start = time.now()
+    let target = view.begin()
+    renderer.render(w.scene, w.camera, target, true)
+    if w.editing():
+        if let mesh = w.geometry:
+            overlay.update(mesh, w.component_mode, w.components, -1)
+            overlay.draw(w.camera, target, theme.grey(90.0), theme.accent(), theme.text())
+    view.end()
+    return since(start)
+
+## `label`: File (and for STEP, Tessellate) into an Edit node, then the timings.
+func run_case(label: str, path: str, tessellate: bool, view: OffscreenView) -> unit!:
+    let w = Workspace()
+    w.enable_compute()
+    settle(w)
+    w.delete_selected()
+    var start = time.now()
+    w.add_node("File", 0.0, 0.0)
+    w.set_text(0, path)
+    if tessellate:
+        w.add_node("Tessellate", 0.0, 100.0)
+    w.add_node("Edit", 0.0, 200.0)
+    settle(w)
+    report(f"{label}: import and cook to an Edit node", since(start))
+    let mesh = w.geometry else trap("no mesh to edit")
+    print(f"# {label}: {mesh.point_count()} points, {mesh.face_count()} faces, {mesh.edge_count()} edges")
+    w.frame_cube()
+    let renderer = Renderer(true)
+    let overlay = EditOverlay()
+    report(f"{label}: first display", frame(view, w, renderer, overlay))
+    w.orbit(4.0, 0.0)
+    report(f"{label}: camera-only redraw", frame(view, w, renderer, overlay))
+    w.set_mode(2)
+    let faces = mesh.face_count()
+    start = time.now()
+    for at in 0..<1000:
+        w.choose_component((at * 691) % faces, true)
+    report(f"{label}: select 1k faces (1000 clicks)", since(start))
+    report(f"{label}: redraw with the selection", frame(view, w, renderer, overlay))
+    start = time.now()
+    w.move_selection(Vector3(0.0, 0.01, 0.0))
+    settle(w)
+    let cooked = since(start)
+    let drawn = frame(view, w, renderer, overlay)
+    report(f"{label}: Move 1k faces, request to adopted result", cooked)
+    report(f"{label}: Move 1k faces, redraw", drawn)
+    report(f"{label}: Move 1k faces round trip", cooked + drawn)
+    start = time.now()
+    w.invert_selection()
+    report(f"{label}: invert a 1k-face selection", since(start))
+    (w.compute else trap("compute")).close()
+
+pub func main(arguments: list[str]) -> int!:
+    let view = OffscreenView()
+    run_case("grid 700k", arguments[0], false, view)
+    if arguments.length > 1 and arguments[1] != "":
+        run_case("camera.step", arguments[1], true, view)
+    view.close()
+    return 0

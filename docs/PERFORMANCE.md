@@ -89,6 +89,12 @@ nanosecond clock, reported in milliseconds). `mesh` tessellates at 16 divisions;
 callback-to-callback intervals in a real window, which include the event loop and
 presentation.
 
+`tests/bench/run.py` is the geometry-core benchmark's headless editor case: the
+real `Workspace`, worker, publisher, renderer and Edit overlay drawing into an
+offscreen texture, on the 700k-face grid and `~/Desktop/camera.step` (`--step`).
+It times import, first display, selecting 1k faces and the Move round trip; the
+figures for each migration step are in luce-3d's `docs/BENCHMARKS.md`.
+
 The Edit-mode and worker numbers above come from driving the real `Workspace`,
 compute worker and `app.render` on the camera fixture and timing each call on
 the UI thread and the worker separately. Report UI and worker time separately,

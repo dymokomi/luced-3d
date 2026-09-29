@@ -1,0 +1,41 @@
+## An offscreen editor frame for the headless benchmark: a device texture the
+## Luce side records into like the viewport does. `end` presents and reads one
+## pixel back, so a timed frame includes the GPU's work.
+import gpu
+import interop
+
+pub struct OffscreenView:
+    var device: gpu.Device
+    var texture: gpu.Texture
+    var recording: interop.Reference[gpu.Frame]?
+
+    pub func init(width: i64 = 1400, height: i64 = 900) -> !:
+        var device = try gpu.Device.open()
+        errdefer device.destroy()
+        self.texture = try gpu.Texture.create(device, (u32)width, (u32)height, gpu.Format.rgba8)
+        self.device = device
+        self.recording = none
+
+    ## Start a frame; the target stays valid until `end`.
+    pub mutating func begin() -> interop.View[gpu.RenderTarget]!:
+        if self.recording != none: error(gpu.frame_in_use, "the offscreen frame is already recording")
+        let recording = try self.texture.frame()
+        self.recording = recording
+        return try recording.value().target()
+
+    ## Draw what was recorded and wait for the GPU to finish it.
+    pub mutating func end() -> !:
+        let recording = self.recording else error(gpu.frame_finished, "no offscreen frame is recording")
+        self.recording = none
+        defer recording.release()
+        discard(try recording.value().present(gpu.Color(0.1, 0.1, 0.1)))
+        var pixel: u8[4]
+        try self.texture.read(pixel, gpu.Region(0, 0, 1, 1))
+
+    pub mutating func close():
+        if let recording = self.recording: recording.release()
+        self.recording = none
+        self.texture.destroy()
+        self.device.destroy()
+
+pub let offscreen_view_type: interop.Type[OffscreenView] = interop.Type[OffscreenView]("OffscreenView", OffscreenView.close, closeable = true, main_thread = true)
