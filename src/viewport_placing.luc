@@ -1,0 +1,99 @@
+## The viewport side of placing (place_prompt.luc): a click becomes a world
+## point and the workspace takes it; the cursor's would-be corner is the
+## rubber band's end. Hit tests are Base calls: the edited mesh's points by
+## screen distance (EditOverlay.pick), the displayed surfaces
+## (SurfaceHits.cast), the ground plane (SurfaceHits.plane).
+from ui import Painter
+from three import Vector3, EditOverlay, Renderer, SurfaceHits, SurfaceHit, WireRenderer
+from workspace import Workspace
+from place_prompt import PlacePrompt
+import theme
+
+## Screen pixels within which a click lands on a mesh point or closes a
+## drawing on its first corner.
+let reach = 11.0
+
+pub class ViewportPlacing:
+    let workspace: Workspace
+    ## Whether the last pointer move moved the rubber band (a frame is due).
+    pub var moved: bool = false
+
+    pub func init(self, workspace: Workspace):
+        self.workspace = workspace
+
+    ## A click while placing: a face for a face primitive; a corner (or the
+    ## finish, on the first corner) for a drawing.
+    pub func click(self, placing: PlacePrompt, overlay: EditOverlay, renderer: Renderer?, x: float, y: float, width: float, height: float) -> unit!:
+        let w = self.workspace
+        if not placing.drawing:
+            let hit = w.surface_at(w.camera.position(), view_direction(w, x, y, width, height))
+            if hit.found:
+                w.place_on_face(hit.point, hit.normal)
+            return
+        if placing.corners.length >= 3 and near_on_screen(w, placing.corners[0], x, y, width, height):
+            w.finish_placing()
+            return
+        let hit = self.corner_at(placing, overlay, renderer, x, y, width, height)
+        if hit.found:
+            w.add_corner(hit.point)
+
+    ## The pointer moved while drawing: the rubber band follows.
+    pub func hover(self, placing: PlacePrompt, overlay: EditOverlay, renderer: Renderer?, x: float, y: float, width: float, height: float) -> unit!:
+        if not placing.drawing:
+            return
+        let hit = self.corner_at(placing, overlay, renderer, x, y, width, height)
+        placing.cursor = hit.point if hit.found else none
+        self.moved = true
+
+    ## Where a corner lands: an edited-mesh point within reach, else the
+    ## surface under the cursor, else the ground (through the first corner).
+    func corner_at(self, placing: PlacePrompt, overlay: EditOverlay, renderer: Renderer?, x: float, y: float, width: float, height: float) -> SurfaceHit!:
+        let w = self.workspace
+        let direction = view_direction(w, x, y, width, height)
+        if let mesh = w.geometry:
+            if mesh.point_count() > 0:
+                var face = -2
+                if let drawn = renderer:
+                    face = drawn.pick_face(mesh, w.camera, x, y, width, height) catch failure:
+                        recover -2
+                overlay.show(mesh, 0, none, -1)
+                let point = overlay.pick(w.camera, x, y, width, height, face)
+                if point >= 0:
+                    return SurfaceHit(true, mesh.point(point), Vector3(0.0, 1.0, 0.0), 0.0)
+        let hit = w.surface_at(w.camera.position(), direction)
+        if hit.found:
+            return hit
+        let base = placing.corners[0] if placing.corners.length > 0 else Vector3()
+        return SurfaceHits.plane(w.camera.position(), direction, base, Vector3(0.0, 1.0, 0.0))
+
+    ## The drawing so far, and the rubber band to the cursor.
+    pub func draw(self, painter: Painter) -> unit!:
+        let placing = self.workspace.placing else return
+        if not placing.drawing or placing.corners.length == 0:
+            return
+        let points: list[Vector3] = []
+        for at in 1..<placing.corners.length:
+            points.append(placing.corners[at - 1])
+            points.append(placing.corners[at])
+        if let cursor = placing.cursor:
+            points.append(placing.corners[-1])
+            points.append(cursor)
+        if points.length > 0:
+            WireRenderer.lines(points, self.workspace.camera, painter.target(), theme.accent(), 2.0)
+
+## The view ray's direction through (x, y).
+func view_direction(w: Workspace, x: float, y: float, width: float, height: float) -> Vector3!:
+    let projection = w.camera.projection(width / height)
+    return projection.right.multiply_scalar((x / width * 2.0 - 1.0) * projection.aspect / projection.focal).add(
+        projection.up.multiply_scalar((1.0 - y / height * 2.0) / projection.focal)).subtract(projection.backward).normalized()
+
+## Whether `point` shows within reach of (x, y).
+func near_on_screen(w: Workspace, point: Vector3, x: float, y: float, width: float, height: float) -> bool!:
+    let projection = w.camera.projection(width / height)
+    let offset = point.subtract(projection.position)
+    let depth = -offset.dot(projection.backward)
+    if depth <= projection.near:
+        return false
+    let sx = (offset.dot(projection.right) * projection.focal / projection.aspect / depth + 1.0) * width * 0.5
+    let sy = (1.0 - offset.dot(projection.up) * projection.focal / depth) * height * 0.5
+    return (sx - x) * (sx - x) + (sy - y) * (sy - y) <= reach * reach

@@ -10,6 +10,7 @@ import theme
 import ui
 from tool_icons import draw_icon
 from node_gizmos import NodeGizmos
+from viewport_placing import ViewportPlacing
 
 pub func projected(workspace: Workspace, point: Vector3, width: float, height: float) -> list[float]!:
     let projection = workspace.camera.projection(math.max(1.0, width) / math.max(1.0, height))
@@ -52,6 +53,8 @@ pub class ViewportTools:
     ## Wires, selection and point markers stay in Base, keyed by the mesh and
     ## the selection, so hover and camera frames never loop over the mesh here.
     pub let overlay: EditOverlay
+    ## Faces and corners placed by clicking (Plane from Face, PolyDraw).
+    pub let placing: ViewportPlacing
     pub var hover_changed: bool = false
     ## The viewport's renderer: faces are picked from its GPU id pass.
     pub var renderer: Renderer? = none
@@ -62,6 +65,7 @@ pub class ViewportTools:
         self.actions = actions
         self.gizmos = NodeGizmos(workspace)
         self.overlay = EditOverlay()
+        self.placing = ViewportPlacing(workspace)
         # The renderer tints selected faces (Renderer.set_face_selection).
         self.overlay.set_fill(false)
 
@@ -90,6 +94,7 @@ pub class ViewportTools:
             let kind = w.active_kind()
             let through = kind != none and (kind else trap("kind")).see_through
             self.overlay.draw(w.camera, painter.target(), theme.grey(90.0), theme.accent(), theme.text(), wires = false, hidden = theme.grey(150.0) if through else none)
+            self.placing.draw(painter)
             self.draw_edit_controls(painter, height)
         if self.knifing:
             let line = self.knife_line
@@ -159,8 +164,9 @@ pub class ViewportTools:
     ## same face requests no frame and a hover change requests exactly one.
     pub func event(self, event: Event, width: float, height: float) -> bool!:
         let before = [self.hovered, self.hover_tool, self.gizmos.hovered]
+        self.placing.moved = false
         let handled = self.handle(event, width, height)
-        self.hover_changed = before != [self.hovered, self.hover_tool, self.gizmos.hovered]
+        self.hover_changed = before != [self.hovered, self.hover_tool, self.gizmos.hovered] or self.placing.moved
         return handled
 
     ## The Knife tool: press, drag a line across the model (Shift snaps it to
@@ -216,7 +222,10 @@ pub class ViewportTools:
                 if event.x >= 16.0 and event.x <= 86.0 and event.y >= 94.0:
                     self.hover_tool = self.hit_tool(event.x, event.y, height)
                 elif not (event.y >= 44.0 and event.y <= 74.0 and event.x <= 250.0):
-                    self.hovered = self.pick(event.x, event.y, width, height)
+                    if let placing = w.placing:
+                        self.placing.hover(placing, self.overlay, self.renderer, event.x, event.y, width, height)
+                    else:
+                        self.hovered = self.pick(event.x, event.y, width, height)
         if event.kind == EventKind.pointer_left or event.kind == EventKind.focus_lost or event.cancelled or event.alt:
             self.hovered = -1
             self.hover_tool = -1
@@ -238,6 +247,9 @@ pub class ViewportTools:
             if tool >= 0:
                 self.actions.strip()[tool].trigger()
                 return true
+        if let placing = w.placing:
+            self.placing.click(placing, self.overlay, self.renderer, event.x, event.y, width, height)
+            return true
         if w.selecting():
             w.choose_component(self.pick(event.x, event.y, width, height), event.shift)
             return true

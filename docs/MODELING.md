@@ -189,8 +189,11 @@ amount is how far), PolyMirror (Polygons: across X through the origin,
 welded), Spin (Edges: a full turn about Y in 12 steps), Crease (Edges: the
 tool amount is the sharpness) and PolyDraw (Vertices: a face through the
 selected points, ordered round their centroid and wound like its
-neighbours; as a node it also takes drawn positions, snapped to existing
-points). It creates primitives (Box, Sphere, Cylinder,
+neighbours). With nothing selected, PolyDraw draws: each click places a
+corner on a point of the mesh (within 11 pixels), else on the surface
+under the cursor, else on the ground; a rubber band follows the cursor;
+Enter or a click on the first corner makes the face (one step with the
+corners' positions), Esc cancels. It creates primitives (Box, Sphere, Cylinder,
 Cone, Torus, Grid, Plane) as recipe steps: each new piece gets its own `path`
 (`/box1`, `/box2`, …), becomes the selected Object and undoes like any step.
 Unconnected, an Edit Mesh starts from nothing.
@@ -223,8 +226,9 @@ surface (40 voxels across); the release shows the full one (128).
 Edit Sketch draws planar sketches as curves (luce-geocore's `Sketches`). The
 sketch plane is the set's detail attributes `sketch.plane_origin` and
 `sketch.plane_normal`, set by **Plane XY**, **Plane YZ** and **Plane ZX**
-before or between shapes (a step may give any origin and normal, such as a
-face's), so later nodes can read it; it shows as a light grid. Shapes are
+before or between shapes, or by **Plane from Face**: a click on a face of
+anything displayed gives the plane its point and normal. Later nodes can
+read it; it shows as a light grid. Shapes are
 **Line**, **Polyline**, **Arc**, **Circle** (exact NURBS), **Rectangle** and
 **Spline** (cubic NURBS), each a step on the plane selected as its Object.
 Levels: Object (whole curves) and Segments pick on samples along the curves,

@@ -1,5 +1,6 @@
 from geocore import Mesh, Selection, Verbs
-from three import Scene, Group, Vector3, Matrix4, PerspectiveCamera, AmbientLight, DirectionalLight, WireBatch, CurveLines, Knife
+from three import Scene, Group, Vector3, Matrix4, PerspectiveCamera, AmbientLight, DirectionalLight, WireBatch, CurveLines, Knife, SurfaceHits, SurfaceHit
+from place_prompt import PlacePrompt, placed_on_face
 from network import Network, Node
 from edit_operations import EditStep
 from tools import ToolRun, tool_run, verb_defaults
@@ -40,6 +41,8 @@ pub class Workspace:
     ## A tool waiting for its components (Houdini's tool → select), or
     ## Reselect of a node's group.
     pub var prompt: ToolPrompt? = none
+    ## A face or corners being placed in the viewport (place_prompt.luc).
+    pub var placing: PlacePrompt? = none
     ## Adopt the displayed verb's output selection (Extrude's front faces)
     ## when its result arrives; and a group to select on the next geometry.
     var adopt_output: bool = false
@@ -287,7 +290,7 @@ pub class Workspace:
     ## node's kind offers it there (Edit Mesh's tools on another node's mesh).
     pub func tool_available(self, name: str) -> bool!:
         let kind = self.active_kind() else return tool_run(name, 0.5) != none
-        if name in kind.primitives:
+        if name in kind.primitives or name in kind.draw_tools:
             return true
         let tool = kind.tool(name) else return false
         return tool.offered(self.component_mode)
@@ -399,6 +402,9 @@ pub class Workspace:
         self.rebuild()
 
     pub func undo(self) -> unit!:
+        if self.placing != none:
+            self.cancel_placing()
+            return
         if self.pending != none:
             self.cancel_prompt()
             return
@@ -562,6 +568,8 @@ pub class Workspace:
     ## the viewport shows, however the node was reached.
     pub func select_node(self, id: int) -> unit!:
         let node = self.network.require(id)
+        if node.id != self.network.selected:
+            self.placing = none
         let shows = is_edit(node.kind) and (self.network.display != id or self.network.preview)
         if self.network.selected != id or shows:
             self.network.selected = id
@@ -750,6 +758,13 @@ pub class Workspace:
             return
         var run = ToolRun("", [])
         if let kind = self.active_kind():
+            # A drawing tool with nothing to work on draws instead.
+            if operation in kind.draw_tools and kind.drawn != none and self.editing():
+                let chosen = self.current_selection() else return
+                let tool = kind.tool(operation) else return
+                if chosen.count() == 0 or not tool.offered(self.component_mode):
+                    self.start_placing(operation, true)
+                    return
             # The kind's own tool: its verb and numbers, whether or not
             # tools.luc knows the name (Edit SDF's Subtract).
             let tool = kind.tool(operation) else return
@@ -782,6 +797,9 @@ pub class Workspace:
         if not self.editing():
             return
         let node = self.selected() else return
+        if name in kind.face_primitives:
+            self.start_placing(name, false)
+            return
         let step = kind.create(name) else return
         self.perform("Create " + name, func () -> unit!:
             node.edits.append(step)
@@ -789,6 +807,64 @@ pub class Workspace:
             self.adopt_output = true
             self.pending_level = 0
             self.rebuild())
+
+    # -- Placing on surfaces (place_prompt.luc).
+
+    func start_placing(self, name: str, drawing: bool) -> unit!:
+        let placing = PlacePrompt(name, drawing)
+        self.placing = placing
+        self.notice = placing.hint()
+        self.revision += 1
+
+    ## The nearest visible surface along a view ray (the displayed scene).
+    pub func surface_at(self, origin: Vector3, direction: Vector3) -> SurfaceHit!:
+        return SurfaceHits.cast(self.objects, origin, direction)
+
+    ## A face was picked for the waiting face primitive: its step, with the
+    ## face's point and normal, goes on the recipe.
+    pub func place_on_face(self, point: Vector3, normal: Vector3) -> unit!:
+        let placing = self.placing else return
+        let kind = self.active_kind() else return self.cancel_placing()
+        let node = self.selected() else return self.cancel_placing()
+        let step = kind.create(placing.name) else return self.cancel_placing()
+        self.placing = none
+        self.notice = ""
+        self.perform("Create " + placing.name, func () -> unit!:
+            node.edits.append(placed_on_face(step, point, normal))
+            self.network.invalidate(node.id)
+            self.adopt_output = true
+            self.pending_level = 0
+            self.rebuild())
+
+    ## One more drawn corner.
+    pub func add_corner(self, point: Vector3) -> unit!:
+        let placing = self.placing else return
+        placing.corners.append(point)
+        self.revision += 1
+
+    ## Enter (or the first corner again): the drawing becomes one step.
+    pub func finish_placing(self) -> unit!:
+        let placing = self.placing else return
+        let kind = self.active_kind() else return self.cancel_placing()
+        let node = self.selected() else return self.cancel_placing()
+        let draw = kind.drawn else return self.cancel_placing()
+        self.placing = none
+        self.notice = ""
+        self.revision += 1
+        let made = draw(placing.name, placing.corners)
+        let step = made else return
+        self.perform(placing.name, func () -> unit!:
+            node.edits.append(step)
+            self.network.invalidate(node.id)
+            self.adopt_output = true
+            self.rebuild())
+
+    pub func cancel_placing(self) -> unit!:
+        if self.placing == none:
+            return
+        self.placing = none
+        self.notice = ""
+        self.revision += 1
 
     ## The amount the Edit node's tools use (its first parameter), 0.5 elsewhere.
     pub func tool_amount(self) -> float:
