@@ -52,7 +52,10 @@ def main():
         step = str(arguments.step) if arguments.step.exists() else ""
         if not step:
             print(f"# {arguments.step} is missing; the STEP case is skipped")
-        output = subprocess.run([str(binary), str(mesh), step], check=True, capture_output=True, text=True, timeout=3600, cwd=project).stdout
+        result = subprocess.run([str(binary), str(mesh), step], capture_output=True, text=True, timeout=3600, cwd=project)
+        if result.returncode != 0:
+            sys.exit(f"bench failed ({result.returncode}):\n{result.stdout}\n{result.stderr}")
+        output = result.stdout
     lines = output.splitlines()
     for line in lines:
         if line.startswith("#"):

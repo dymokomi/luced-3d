@@ -234,7 +234,7 @@ class Computation:
         self.channel.end()
         self.store.refresh(node.stamp)
         discard(self.display(data, Matrix4(), node, 0))
-        let key = hash((node.stamp, "overlays"))
+        let key = hash((node.stamp, "overlays", self.graph.show_normals))
         if self.channel.holds(key):
             self.channel.reuse(key, node.id, false, false)
             return
@@ -242,6 +242,8 @@ class Computation:
         let normals: list[Vector3] = []
         let patches: list[Vector3] = []
         append_overlays(data, Matrix4(), wires, normals, self.graph.compute_mode, polygons = false)
+        if not self.graph.show_normals:
+            normals.clear()
         append_patch_boundaries(data, Matrix4(), patches)
         if wires.length + normals.length + patches.length > 0:
             self.channel.overlay(key, node.id, wires, normals, patches)
@@ -276,17 +278,28 @@ class Computation:
     func show(self, mesh: PolygonMesh, matrix: Matrix4, node: Node, ordinal: int, overlays: bool) -> unit!:
         let identity = matrix.is_identity()
         let key = self.key_of(mesh, hash((node.stamp, ordinal))) if identity else hash((node.stamp, ordinal))
+        # An Edit node's mesh is picked on at once: warm its index (a refit
+        # after a Move) once a gesture settles. Other query indexes are built
+        # by their first query.
+        let index = node.kind == "Edit" and not self.graph.interactive
+        var shown: PolygonMesh? = none
         if self.channel.holds(key):
-            # The UI's copy shares this mesh's query index: warm it once a
-            # gesture settles, not during its previews.
-            if not self.graph.interactive and matrix.is_identity():
+            if index and identity:
                 mesh.prepare_queries()
             self.channel.reuse(key, node.id, true, false)
-            return
-        self.channel.mesh(mesh if identity else mesh.placed(matrix), key, node.id, true, false, overlays, not self.graph.interactive)
-        if identity:
-            self.meshes.append(mesh)
-            self.keys.append(key)
+        else:
+            let placed = mesh if identity else mesh.placed(matrix)
+            shown = placed
+            self.channel.mesh(placed, key, node.id, true, false, index)
+            if identity:
+                self.meshes.append(mesh)
+                self.keys.append(key)
+        if overlays and self.graph.show_normals:
+            let guides = hash((key, "guides"))
+            if self.channel.holds(guides):
+                self.channel.reuse(guides, node.id, false, false)
+            else:
+                self.channel.guides(guides, node.id, shown else (mesh if identity else mesh.placed(matrix)))
 
     ## The selected node's mesh for the spreadsheet and component picking. A
     ## mesh already published (displayed, or held from before) doubles as it.
@@ -295,7 +308,7 @@ class Computation:
         if self.channel.holds(key) or self.listed(key):
             self.channel.reuse(key, node.id, false, true)
             return
-        self.channel.mesh(mesh, key, node.id, false, true, false, not self.graph.interactive)
+        self.channel.mesh(mesh, key, node.id, false, true, node.kind == "Edit" and not self.graph.interactive)
         self.meshes.append(mesh)
         self.keys.append(key)
 

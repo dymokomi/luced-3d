@@ -27,6 +27,11 @@ pub class Workspace:
     var pending: Snapshot? = none
     var pending_label: str = ""
     var pending_changed: bool = false
+    ## A gesture's previews went out as interactive requests (no index
+    ## warming); its commit sends one settled request.
+    var previewed: bool = false
+    ## Inside a one-shot perform: its request is already the settled one.
+    var settled_action: bool = false
     pub var yaw: float = 0.7
     pub var pitch: float = 0.5
     pub var distance: float = 9.0
@@ -171,6 +176,13 @@ pub class Workspace:
         self.pitch = 0.5
         self.frame_cube()
 
+    ## Normal guides are made on the worker only while they are shown.
+    pub func toggle_normals(self) -> unit!:
+        self.normals_visible = not self.normals_visible
+        self.revision += 1
+        if self.compute != none and self.normals_visible:
+            self.rebuild()
+
     pub func toggle_grid(self) -> unit!:
         self.grid_visible = not self.grid_visible
         self.revision += 1
@@ -214,6 +226,7 @@ pub class Workspace:
         self.pending = self.snapshot()
         self.pending_label = label
         self.pending_changed = false
+        self.previewed = false
 
     pub func commit(self) -> unit!:
         let before = self.pending else return
@@ -224,8 +237,11 @@ pub class Workspace:
         self.pending_changed = false
         self.revision += 1
         # Previews skipped query-index warming; one settled request warms the
-        # shown meshes (every stamp is stored, so nothing recooks).
-        if changed and self.compute != none:
+        # shown meshes (every stamp is stored, so nothing recooks). A one-shot
+        # action's own request was settled already, and a selection change
+        # sends none.
+        if self.previewed and self.compute != none:
+            self.previewed = false
             self.rebuild()
 
     pub func cancel(self) -> unit!:
@@ -266,11 +282,14 @@ pub class Workspace:
         let owns = self.pending == none
         if owns:
             self.begin(label)
+            self.settled_action = true
         action() catch failure:
+            self.settled_action = false
             self.cancel()
             self.notice = failure.message
             self.revision += 1
             return
+        self.settled_action = false
         self.pending_changed = true
         self.revision += 1
         if owns:
@@ -278,7 +297,9 @@ pub class Workspace:
 
     pub func rebuild(self) -> unit!:
         if let session = self.compute:
-            session.submit(self.network, self.display_mode if self.display_mode <= 4 else 3, self.pending != none)
+            let interactive = self.pending != none and not self.settled_action
+            self.previewed = self.previewed or interactive
+            session.submit(self.network, self.display_mode if self.display_mode <= 4 else 3, interactive, self.normals_visible)
             self.revision += 1
             return
         self.objects.clear()
@@ -496,8 +517,10 @@ pub class Workspace:
         let node = self.selected() else return
         if name == "" or name == node.name:
             return
+        # Names reach the worker's messages and group paths, not its stamps.
         self.perform("Rename node", func () -> unit!:
-            node.name = name)
+            node.name = name
+            if self.compute != none: self.rebuild())
 
     pub func set_parameter(self, slot: int, value: float) -> unit!:
         let node = self.selected() else return
