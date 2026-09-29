@@ -12,7 +12,7 @@ No placeholder nodes are listed: every registered node evaluates geometry.
 | Sources | Cube, Grid, Sphere, Cylinder, Cone, Torus, File |
 | Graph | Edit, Merge, Null, Switch, Tessellate, Group, Blast |
 | Transforms/copies | Transform, Mirror, CopyTransform, CopyToPoints, MatchSize |
-| Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Loop Cut, Fill, Dissolve |
+| Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Loop Cut, Bridge, Fill, Dissolve |
 | Deformation (verbs) | Transform Components, Smooth, Mountain, Peak, Flatten, Snap |
 | Attributes | AttributeCreate, AttributeRandomize, AttributeDelete, AttributeRename, AttributePromote, Selection Group, Normal, Measure, UVProject, Color |
 
@@ -79,6 +79,10 @@ guarded. Very large selections show as a summary in the Group field.
   only between the group's edges), slid together toward one side; other faces
   on the ring take the new points, and a quad already cut by one ring stops a
   crossing ring. The new loop edges are selected.
+- Bridge joins pairs of boundary loops or runs among the group's edges (each
+  with the nearest one of its kind) with rows of quads when they have as many
+  edges, else with triangles zipped by distance along them. Loops are paired
+  facing each other; coplanar holes twist. Twist turns where a loop starts.
 - PolyBevel bevels the group's interior edges by a constant offset measured in
   the faces beside them, with 1–64 segments along a profile (0.5 round, 0
   flat) and overlap clamping. Where three or more beveled edges meet, the hole
