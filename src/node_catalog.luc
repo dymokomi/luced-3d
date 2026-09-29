@@ -1,4 +1,12 @@
-## Single source of truth for the node menu, defaults and parameter UI.
+## Single source of truth for the node menu, defaults and parameter UI. Each
+## node's parameters are rows of its parameter pane (`fields`), after
+## Houdini's parameter templates: a kind, a label, the slot its value or text
+## lives in, ranges, a menu's items, a unit, a tooltip and conditions. The
+## numeric slots (`parameters`) come from the same rows, so defaults, clamping
+## and the pane never disagree.
+
+## One row of a node's parameter pane. `slot` is the first value slot (a
+## vector's components take the slots after it) or, for text rows, the text slot.
 pub class Parameter:
     pub let name: str
     pub let slot: int
@@ -8,6 +16,22 @@ pub class Parameter:
     pub let step: float
     pub let integer: bool
     pub let decimals: int
+    ## number, integer, vector, toggle, menu, text, path, button, info, folder, separator, color.
+    pub var kind: str = "number"
+    ## The name conditions and scripts use; the label, lower-cased, when not given.
+    pub var key: str = ""
+    pub var components: int = 1
+    ## A vector's or color's defaults after the first.
+    pub var rest: list[float]
+    pub var items: str = ""
+    pub var suffix: str = ""
+    pub var doc: str = ""
+    pub var hide_when: str = ""
+    pub var disable_when: str = ""
+    pub var slider: bool = false
+    pub var soft_maximum: float = 0.0
+    pub var join: bool = false
+    pub var text: str = ""
 
     pub func init(self, name: str, slot: int, initial: float, minimum: float = -1000.0, maximum: float = 1000.0, step: float = 0.1, integer: bool = false, decimals: int = 3):
         self.name = name
@@ -18,6 +42,85 @@ pub class Parameter:
         self.step = step
         self.integer = integer
         self.decimals = 0 if integer else decimals
+        self.rest = []
+
+    ## Whether the row keeps numbers in value slots (not text, buttons or headings).
+    pub func valued(self) -> bool:
+        return self.kind in ["number", "integer", "vector", "toggle", "menu", "color"]
+
+# -- Row builders.
+
+## A float, `doc` its tooltip; a slider when `slider` (to `soft` when the hard maximum is far).
+func number(label: str, slot: int, initial: float, minimum: float = -1000.0, maximum: float = 1000.0, step: float = 0.1,
+            doc: str = "", slider: bool = false, soft: float = 0.0, decimals: int = 3, suffix: str = "") -> Parameter:
+    let parameter = Parameter(label, slot, initial, minimum, maximum, step, decimals = decimals)
+    parameter.doc = doc
+    parameter.slider = slider
+    parameter.soft_maximum = soft
+    parameter.suffix = suffix
+    return parameter
+
+func whole(label: str, slot: int, initial: float, minimum: float, maximum: float, doc: str = "", slider: bool = false) -> Parameter:
+    let parameter = Parameter(label, slot, initial, minimum, maximum, 1.0, true)
+    parameter.kind = "integer"
+    parameter.doc = doc
+    parameter.slider = slider
+    return parameter
+
+## Components on one row, in `slot` and the slots after it.
+func vector(label: str, slot: int, defaults: list[float], doc: str = "", minimum: float = -1000.0, maximum: float = 1000.0, suffix: str = "") -> Parameter:
+    let parameter = Parameter(label, slot, defaults[0], minimum, maximum)
+    parameter.kind = "vector"
+    parameter.components = defaults.length
+    for component in 1..<defaults.length:
+        parameter.rest.append(defaults[component])
+    parameter.doc = doc
+    parameter.suffix = suffix
+    return parameter
+
+func toggle(label: str, slot: int, initial: float, doc: str = "") -> Parameter:
+    let parameter = Parameter(label, slot, initial, 0.0, 1.0, 1.0, true)
+    parameter.kind = "toggle"
+    parameter.doc = doc
+    return parameter
+
+## A choice of `items` (`label` or `label=value`, `|` between); its value is the item's.
+func menu(label: str, slot: int, items: str, initial: float, doc: str = "") -> Parameter:
+    var highest = 0.0
+    var index = 0
+    for item in items.split("|"):
+        let parts = item.split("=")
+        let value = float(index)
+        highest = larger(highest, value if parts.length < 2 else parse_number(parts[1]))
+        index += 1
+    let parameter = Parameter(label, slot, initial, 0.0, highest, 1.0, true)
+    parameter.kind = "menu"
+    parameter.items = items
+    parameter.doc = doc
+    return parameter
+
+## A line of text in text slot `slot`.
+func entry(label: str, slot: int, doc: str = "", kind: str = "text") -> Parameter:
+    let parameter = Parameter(label, slot, 0.0)
+    parameter.kind = kind
+    parameter.doc = doc
+    return parameter
+
+func heading(label: str, kind: str = "folder") -> Parameter:
+    let parameter = Parameter(label, -1, 0.0)
+    parameter.kind = kind
+    return parameter
+
+## A small whole number written as text ("2" in "Faces=2").
+func parse_number(written: str) -> float:
+    var value = 0.0
+    for digit in written.trim():
+        let at = "0123456789".index_of(digit) else return value
+        value = value * 10.0 + float(at)
+    return value
+
+func larger(a: float, b: float) -> float:
+    return a if a > b else b
 
 pub func sources() -> list[str]:
     return ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus", "File", "Group"]
@@ -54,66 +157,128 @@ pub func has_group(kind: str) -> bool:
 pub func has_attribute_name(kind: str) -> bool:
     return kind in ["AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group"]
 
+## The value slots of a node: one Parameter a slot, a vector's components
+## each their own, for defaults and clamping.
 pub func parameters(kind: str, path: str = "") -> list[Parameter]!:
+    let result: list[Parameter] = []
+    for row in fields(kind, path):
+        if not row.valued():
+            continue
+        if row.components == 1:
+            result.append(row)
+            continue
+        for component in 0..<row.components:
+            let value = row.initial if component == 0 else row.rest[component - 1]
+            result.append(Parameter(row.name + " " + ["X", "Y", "Z", "W"][component], row.slot + component, value, row.minimum, row.maximum, row.step, row.integer, row.decimals))
+    return result
+
+## Every row of a node's parameter pane, in order.
+pub func fields(kind: str, path: str = "") -> list[Parameter]!:
+    let rows: list[Parameter] = []
     if kind == "File":
+        rows.append(entry("File", 0, "The geometry file: OBJ, FBX or STEP.", "path"))
+        let reload = heading("Reload", "button")
+        reload.doc = "Read the file again from disk."
+        rows.append(reload)
         let source = path.trim().lower()
         if source.ends_with(".step") or source.ends_with(".stp"):
-            return [Parameter("STEP tolerance / 0 = file", 0, 0.0, 0.0, 1.0, 0.00001, decimals = 9)]
-        return []
+            rows.append(number("STEP tolerance", 0, 0.0, 0.0, 1.0, 0.00001, "Model tolerance in file units; 0 uses the file's own.", decimals = 9))
+    if has_group(kind):
+        rows.append(entry("Group", 0, "Elements to work on: * for all, 0 2-5 for indices, @name for a named group."))
+    if has_attribute_name(kind):
+        rows.append(entry("Attribute", 1, "The attribute's name."))
+    if kind == "AttributeRename":
+        rows.append(entry("New name", 2, "What the attribute is called after."))
+    for row in value_fields(kind):
+        rows.append(row)
+    return rows
+
+## The numeric rows of each node kind.
+func value_fields(kind: str) -> list[Parameter]:
     if kind == "Blast":
-        return [Parameter("Delete non-selected / isolate", 0, 0.0, 0.0, 1.0, 1.0, true)]
+        return [toggle("Isolate group", 0, 0.0, "On: keep only the group. Off: delete it.")]
     if kind == "Tessellate":
-        return [Parameter("Surface divisions", 0, 16.0, 1.0, 64.0, 1.0, true), Parameter("Target edge length / 0 = off", 1, 0.0, 0.0, 100000.0, 0.5)]
+        return [whole("Surface divisions", 0, 16.0, 1.0, 64.0, "Subdivisions per CAD surface span.", true),
+                number("Target edge", 1, 0.0, 0.0, 100000.0, 0.5, "Longest triangle edge in model units; 0 leaves it to the divisions.", soft = 10.0)]
     if kind == "Cube":
-        return [Parameter("Size", 0, 2.0, 0.001, 100.0),
-            Parameter("Position X", 1, 0.0), Parameter("Position Y", 2, 0.0), Parameter("Position Z", 3, 0.0),
-            Parameter("Width factor", 7, 1.0, 0.001, 1000.0), Parameter("Height factor", 8, 1.0, 0.001, 1000.0), Parameter("Depth factor", 9, 1.0, 0.001, 1000.0)]
+        return [number("Size", 0, 2.0, 0.001, 100.0, 0.1, "Edge length before the size factors.", true, 10.0),
+                vector("Position", 1, [0.0, 0.0, 0.0], "Where the cube's center sits."),
+                vector("Size factors", 7, [1.0, 1.0, 1.0], "Width, height and depth as factors of Size.", 0.001, 1000.0)]
     if kind in ["Grid", "Sphere", "Cylinder", "Cone", "Torus"]:
-        let result = [Parameter("Size" if kind == "Grid" else "Radius", 0, 2.0 if kind == "Grid" else 1.0, 0.001, 100.0), Parameter("Divisions", 1, 4.0 if kind == "Grid" else 16.0, 1.0 if kind == "Grid" else 4.0, 64.0, 1.0, true)]
-        if kind in ["Cylinder", "Cone", "Torus"]:
-            result.append(Parameter("Tube radius" if kind == "Torus" else "Height", 2, 0.3 if kind == "Torus" else 2.0, 0.001, 100.0))
+        let grid = kind == "Grid"
+        let result = [number("Size" if grid else "Radius", 0, 2.0 if grid else 1.0, 0.001, 100.0, 0.1, "Overall size." if grid else "Distance from the center to the surface.", true, 10.0),
+                      whole("Divisions", 1, 4.0 if grid else 16.0, 1.0 if grid else 4.0, 64.0, "Rows and columns." if grid else "Segments around.", true)]
+        if kind == "Torus":
+            result.append(number("Tube radius", 2, 0.3, 0.001, 100.0, 0.1, "Radius of the ring's cross section.", true, 2.0))
+        elif kind in ["Cylinder", "Cone"]:
+            result.append(number("Height", 2, 2.0, 0.001, 100.0, 0.1, "Length along Y.", true, 10.0))
         return result
     if kind in ["Transform", "Group"]:
-        let result: list[Parameter] = []
-        for group in 0..<3:
-            for axis in 0..<3:
-                result.append(Parameter(["Translate ", "Rotate ", "Scale "][group] + ["X", "Y", "Z"][axis], 1 + group * 3 + axis, 1.0 if group == 2 else 0.0))
-        for axis in 0..<3:
-            result.append(Parameter("Pivot " + ["X", "Y", "Z"][axis], 10 + axis, 0.0))
-        return result
+        return [vector("Translate", 1, [0.0, 0.0, 0.0], "Moves the geometry, after rotating and scaling."),
+                vector("Rotate", 4, [0.0, 0.0, 0.0], "Rotation about X, then Y, then Z, in degrees, about the pivot.", suffix = "°"),
+                vector("Scale", 7, [1.0, 1.0, 1.0], "Scale along each axis about the pivot; never zero."),
+                vector("Pivot", 10, [0.0, 0.0, 0.0], "The point rotation and scale happen about.")]
     if kind == "Subdivide":
-        return [Parameter("Levels", 0, 1.0, 1.0, 3.0, 1.0, true), Parameter("Catmull-Clark (0 = linear)", 1, 1.0, 0.0, 1.0, 1.0, true)]
+        return [whole("Levels", 0, 1.0, 1.0, 3.0, "Each level splits every face into four.", true),
+                menu("Method", 1, "Linear|Catmull-Clark", 1.0, "Catmull-Clark smooths as it splits; Linear keeps the shape.")]
     if kind == "Bevel":
-        return [Parameter("Chamfer fraction (all edges)", 0, 0.15, 0.001, 0.89, 0.05)]
-    if kind in ["Smooth", "Mountain", "Peak", "Inset", "PolyExtrude", "Duplicate", "Fuse"]:
-        return [Parameter("Tolerance" if kind == "Fuse" else ("Fraction" if kind == "Inset" else "Amount"), 0, 0.001 if kind == "Fuse" else 0.2, 0.000001 if kind == "Fuse" else (0.001 if kind == "Inset" else (-100.0 if kind in ["Peak", "PolyExtrude", "Duplicate"] else 0.0)), 0.99 if kind == "Inset" else (1.0 if kind == "Smooth" else 100.0), 0.001 if kind == "Fuse" else 0.1)]
+        return [number("Chamfer", 0, 0.15, 0.001, 0.89, 0.05, "Chamfer width as a fraction of each edge, on every edge of a closed mesh.", true)]
+    if kind == "Smooth":
+        return [number("Amount", 0, 0.2, 0.0, 1.0, 0.1, "How far each point moves toward its neighbours.", true)]
+    if kind in ["Mountain", "Peak", "PolyExtrude", "Duplicate"]:
+        let signed = kind != "Mountain"
+        return [number("Distance" if kind == "PolyExtrude" else "Amount", 0, 0.2, -100.0 if signed else 0.0, 100.0, 0.1, offset_doc(kind), soft = 2.0)]
+    if kind == "Inset":
+        return [number("Fraction", 0, 0.2, 0.001, 0.99, 0.1, "How far each face's edges move toward its center.", true)]
+    if kind == "Fuse":
+        return [number("Tolerance", 0, 0.001, 0.000001, 100.0, 0.001, "Points closer than this merge.", decimals = 6)]
     if kind == "Mirror":
-        return [Parameter("Axis: X=0 Y=1 Z=2", 0, 0.0, 0.0, 2.0, 1.0, true), Parameter("Keep original", 1, 1.0, 0.0, 1.0, 1.0, true)]
+        return [menu("Axis", 0, "X|Y|Z", 0.0, "The axis the mirror plane faces."),
+                toggle("Keep original", 1, 1.0, "Keep the input beside its mirror image.")]
     if kind == "CopyTransform":
-        return [Parameter("Copies (includes source)", 0, 3.0, 1.0, 64.0, 1.0, true), Parameter("Step X", 1, 2.5), Parameter("Step Y", 2, 0.0), Parameter("Step Z", 3, 0.0)]
+        let step = vector("Step", 1, [2.5, 0.0, 0.0], "Offset between one copy and the next.")
+        step.disable_when = "{ copies <= 1 }"
+        let copies = whole("Copies", 0, 3.0, 1.0, 64.0, "How many, the source included.", true)
+        copies.key = "copies"
+        return [copies, step]
     if kind == "Switch":
-        return [Parameter("Input", 0, 0.0, 0.0, 1.0, 1.0, true)]
+        return [menu("Input", 0, "First|Second", 0.0, "Which input passes through.")]
     if kind == "MatchSize":
-        return [Parameter("Longest side", 0, 2.0, 0.001, 1000.0)]
+        return [number("Longest side", 0, 2.0, 0.001, 1000.0, 0.1, "The size the longest bounding-box side is scaled to.", soft = 10.0)]
     if kind in ["AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group"]:
-        let result = [Parameter("Domain: P=0 V=1 F=2 D=3", 0, 0.0, 0.0, 3.0, 1.0, true)]
+        let domains = "Points|Vertices|Faces|Detail"
+        let result = [menu("Domain", 0, domains, 0.0, "Which elements carry the attribute.")]
         if kind == "AttributePromote":
-            result.append(Parameter("Target domain", 1, 2.0, 0.0, 3.0, 1.0, true))
+            result.append(menu("Target domain", 1, domains, 2.0, "The domain the attribute moves to."))
         if kind in ["AttributeCreate", "AttributeRandomize"]:
-            result.append(Parameter("Tuple size", 1, 1.0, 1.0, 4.0, 1.0, true))
-            result.append(Parameter("Integer (0/1)", 2, 0.0, 0.0, 1.0, 1.0, true))
-            for component in 0..<4:
-                result.append(Parameter(["Value X", "Value Y", "Value Z", "Value W"][component], 3 + component, 1.0 if component == 0 else 0.0))
+            let size = whole("Tuple size", 1, 1.0, 1.0, 4.0, "Components per element: 1 for a float, 3 for a vector.")
+            size.key = "size"
+            result.append(size)
+            result.append(toggle("Integer", 2, 0.0, "Store whole numbers."))
+            result.append(vector("Maximum" if kind == "AttributeRandomize" else "Value", 3, [1.0, 0.0, 0.0, 0.0], "The value per component; components past the tuple size are unused."))
             if kind == "AttributeRandomize":
-                result.append(Parameter("Seed", 7, 1.0, 0.0, 100000.0, 1.0, true))
+                result.append(whole("Seed", 7, 1.0, 0.0, 100000.0, "Another seed gives other random values."))
         return result
     if kind == "Normal":
-        return [Parameter("Domain: points=0 faces=2", 0, 0.0, 0.0, 2.0, 2.0, true)]
+        return [menu("Domain", 0, "Points=0|Faces=2", 0.0, "Smooth normals on points, or flat normals on faces.")]
     if kind == "UVProject":
-        return [Parameter("UV scale", 0, 1.0, 0.001, 1000.0)]
+        return [number("UV scale", 0, 1.0, 0.001, 1000.0, 0.1, "Texture repeats per model unit.", soft = 10.0)]
     if kind == "Color":
-        return [Parameter("Red", 0, 0.8, 0.0, 1.0), Parameter("Green", 1, 0.4, 0.0, 1.0), Parameter("Blue", 2, 0.1, 0.0, 1.0)]
+        let color = vector("Color", 0, [0.8, 0.4, 0.1], "Point color Cd, linear RGB, multiplied by the material.", 0.0, 1.0)
+        color.kind = "color"
+        return [color]
+    if kind == "Edit":
+        return [number("Tool amount", 0, 0.5, -100.0, 100.0, 0.05, "Inset: fraction. Rotate: Y degrees. Scale: factor. Fuse: tolerance.", soft = 2.0)]
     return []
+
+func offset_doc(kind: str) -> str:
+    if kind == "Mountain":
+        return "Height of the noise displacement."
+    if kind == "Peak":
+        return "Distance along the normals."
+    if kind == "PolyExtrude":
+        return "Extrusion distance along the face normals."
+    return "Offset of the copy along the normals."
 
 pub func description(kind: str) -> str:
     if kind == "Group":

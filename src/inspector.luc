@@ -1,184 +1,189 @@
-## Catalog-driven parameters; no operator-specific widget construction.
-from ui import VStack, HStack, Text, TextField, Font, NumberField, Button, Widget
+## The Parameters pane: a compact node header (name, type and flags, what it
+## does), then the node's parameters as one ParameterPanel built from the
+## catalog, one line each after Houdini's parameter pane. The catalog's rows
+## name the value or text slot each edits; an Edit node adds its component
+## edit rows. A drag is live and one undo step on release.
+from ui import VStack, HStack, Text, TextField, Font, Button, ParameterPanel, ParameterSpec, ParameterKind, Rect
 from interop import Connection
 from workspace import Workspace
 from actions import Actions
+from node_catalog import Parameter
 import node_catalog
 
 pub class Inspector:
     pub var on_browse: func() -> unit!? = none
     pub let body: VStack
-    pub let fields: list[NumberField]
+    ## The selected node's parameters.
+    pub let parameters: ParameterPanel
     let workspace: Workspace
+    let actions: Actions
     let name: TextField
     let kind: Text
     let stats: Text
-    let edit_info: Text
     let description: Text
-    let distance: NumberField
-    let last_distance: NumberField
-    let last_row: HStack
-    let operation_rows: VStack
-    let parameter_rows: VStack
-    let parameter_groups: list[VStack]
-    let parameter_labels: list[Text]
-    let group_row: VStack
-    let attribute_row: VStack
-    let group: TextField
-    let attribute: TextField
-    let replacement: TextField
-    let replacement_row: VStack
-    let font: Font
-    let edit_rows: VStack
-    let generic_rows: VStack
     let state_rows: VStack
     let delete_button: Button
-    let file_rows: VStack
-    let file_path: TextField
+    let generic_rows: VStack
     let connections: list[Connection]
+    ## The catalog rows the panel shows, and what each row is to the inspector:
+    ## "value", "text", "reload", "extrude", "clear", "last", "edits" or "operation".
+    var rows: list[Parameter]
+    var roles: list[str]
+    ## What the panel was built for: node kind, file format and edit count.
+    var built: str = ""
     var showing: int = -2
-    var showing_kind: str = ""
-    var showing_path: str = ""
 
     pub func init(self, workspace: Workspace, actions: Actions, font: Font) -> unit!:
         self.workspace = workspace
-        self.font = font
+        self.actions = actions
         self.connections = []
+        self.rows = []
+        self.roles = []
         self.name = TextField("", font = font, placeholder = "Node name", cells = 18.0)
         self.connections.append(self.name.on_commit(workspace.rename))
         self.kind = Text("", font = font, muted = true)
         self.stats = Text("", font = font, muted = true)
-        self.edit_info = Text("", font = font, muted = true)
         self.description = Text("", font = font, muted = true)
-        self.fields = []
-        for slot in 0..<13:
-            let index = slot
-            let field = NumberField(0.0, -100000.0, 100000.0, 0.1, decimals = 3, font = font, cells = 8.0)
-            self.connections.append(field.on_begin(func () -> unit!: workspace.begin("Change parameter")))
-            self.connections.append(field.on_change(func (value: float) -> unit!: workspace.set_parameter(index, value)))
-            self.connections.append(field.on_end(workspace.commit))
-            self.fields.append(field)
-        self.parameter_rows = VStack([], spacing = 10.0)
-        self.parameter_groups = []
-        self.parameter_labels = []
-        let persistent_rows: list[Widget] = []
-        for slot in 0..<13:
-            let label = Text("", font = font)
-            let row = VStack([label, self.fields[slot]], spacing = 4.0)
-            self.parameter_labels.append(label)
-            self.parameter_groups.append(row)
-            persistent_rows.append(row)
-        self.parameter_rows.set_children(persistent_rows)
-        self.file_path = TextField("", font = font, placeholder = "Path to geometry file", cells = 24.0)
-        self.connections.append(self.file_path.on_commit(func (value: str) -> unit!: workspace.set_text(0, value)))
-        let browse = Button("Browse...", font = font)
-        let reload = Button("Reload", font = font)
-        self.connections.append(browse.on_click(func () -> unit!:
-            if let callback = self.on_browse:
-                callback()))
-        self.connections.append(reload.on_click(workspace.reload_file))
-        self.file_rows = VStack([self.file_path, HStack([browse, reload], spacing = 6.0)], spacing = 6.0)
-        self.group = TextField("", font = font, placeholder = "* or 0 2-5 or @group", cells = 18.0)
-        self.attribute = TextField("", font = font, placeholder = "Attribute name", cells = 18.0)
-        self.replacement = TextField("", font = font, placeholder = "New name", cells = 18.0)
-        self.connections.append(self.group.on_commit(func (value: str) -> unit!: workspace.set_text(0, value)))
-        self.connections.append(self.attribute.on_commit(func (value: str) -> unit!: workspace.set_text(1, value)))
-        self.connections.append(self.replacement.on_commit(func (value: str) -> unit!: workspace.set_text(2, value)))
-        self.group_row = VStack([Text("Group", font = font), self.group], spacing = 5.0)
-        self.attribute_row = VStack([Text("Attribute name", font = font), self.attribute], spacing = 5.0)
-        self.replacement_row = VStack([Text("New name", font = font), self.replacement], spacing = 5.0)
-        self.distance = NumberField(0.5, -100.0, 100.0, 0.05, decimals = 3, font = font, cells = 8.0)
-        self.connections.append(self.distance.on_begin(func () -> unit!: workspace.begin("Tool amount")))
-        self.connections.append(self.distance.on_change(func (value: float) -> unit!: workspace.set_parameter(0, value)))
-        self.connections.append(self.distance.on_end(workspace.commit))
-        self.last_distance = NumberField(0.5, -100.0, 100.0, 0.1, decimals = 2, font = font, cells = 7.0)
-        self.connections.append(self.last_distance.on_begin(func () -> unit!: workspace.begin("Change extrusion")))
-        self.connections.append(self.last_distance.on_change(workspace.set_last_extrusion))
-        self.connections.append(self.last_distance.on_end(workspace.commit))
-        self.last_row = HStack([Text("Last extrusion", font = font), self.last_distance], spacing = 8.0)
-        self.operation_rows = VStack([], spacing = 6.0)
-        let edit_tools: list[Widget] = [Text("Component edits", font = font), self.edit_info,
-            Text("Use the viewport icon tools.", font = font, muted = true),
-            HStack([Text("Tool amount", font = font), self.distance], spacing = 8.0),
-            Text("Inset: fraction / Rotate: Y degrees", font = font, muted = true),
-            Text("Scale: factor / Fuse: tolerance", font = font, muted = true),
-            Button(action = actions.extrude, font = font)]
-        edit_tools.append(Text("Bevel / Subdivide: entire mesh", font = font, muted = true))
-        edit_tools.append(Text("Fill / Dissolve: select edges", font = font, muted = true))
-        edit_tools.append(self.last_row)
-        edit_tools.append(self.operation_rows)
-        edit_tools.append(Button(action = actions.clear_edits, font = font))
-        self.edit_rows = VStack(edit_tools, spacing = 8.0)
+        self.parameters = ParameterPanel([], font = font)
+        self.connections.append(self.parameters.on_begin(func (index: int) -> unit!:
+            if self.roles[index] in ["value", "last"]:
+                workspace.begin("Change " + self.rows[index].name)))
+        self.connections.append(self.parameters.on_change(self.changed))
+        self.connections.append(self.parameters.on_commit(func (index: int) -> unit!:
+            workspace.commit()))
+        self.connections.append(self.parameters.on_action(self.acted))
         self.state_rows = VStack([
-            HStack([Button(action = actions.output, font = font), Button(action = actions.auto_output, font = font), Button(action = actions.visibility, font = font)], spacing = 5.0),
-            HStack([Button(action = actions.display, font = font), Button(action = actions.enabled, font = font)], spacing = 5.0)], spacing = 8.0)
+            HStack([Button(action = actions.output, font = font), Button(action = actions.auto_output, font = font), Button(action = actions.visibility, font = font)], spacing = 4.0),
+            HStack([Button(action = actions.display, font = font), Button(action = actions.enabled, font = font)], spacing = 4.0)], spacing = 4.0)
         self.delete_button = Button(action = actions.delete, font = font)
-        self.generic_rows = VStack([self.name, self.kind, self.state_rows,
-            self.description, self.file_rows, self.group_row, self.attribute_row, self.replacement_row, self.parameter_rows, self.edit_rows, self.stats,
-            self.delete_button], spacing = 12.0, padding = 14.0)
+        let header = VStack([self.name, self.kind, self.state_rows, self.description], spacing = 6.0, padding = 8.0)
+        let footer = VStack([self.stats, self.delete_button], spacing = 6.0, padding = 8.0)
+        self.generic_rows = VStack([header, self.parameters, footer], spacing = 0.0)
         self.body = VStack([self.generic_rows], spacing = 0.0)
         self.refresh()
+
+    ## A parameter changed in the panel: its slots take the values (a vector
+    ## its components), a text row its text.
+    func changed(self, index: int) -> unit!:
+        let role = self.roles[index]
+        let row = self.rows[index]
+        if role == "value":
+            for component in 0..<row.components:
+                self.workspace.set_parameter(row.slot + component, self.parameters.component(index, component))
+        elif role == "text":
+            self.workspace.set_text(row.slot, self.parameters.text(index))
+        elif role == "last":
+            self.workspace.set_last_extrusion(self.parameters.value(index))
+
+    func acted(self, index: int) -> unit!:
+        let role = self.roles[index]
+        if role == "text":
+            if let callback = self.on_browse:
+                callback()
+        elif role == "reload":
+            self.workspace.reload_file()
+        elif role == "extrude":
+            self.actions.extrude.trigger()
+        elif role == "clear":
+            self.actions.clear_edits.trigger()
+
+    ## The field showing value slot `slot`, in window points; empty when none shows it.
+    pub func field_bounds(self, slot: int) -> Rect!:
+        let origin = self.parameters.layout().bounds()
+        for index in 0..<self.rows.length:
+            let row = self.rows[index]
+            if self.roles[index] == "value" and slot >= row.slot and slot < row.slot + row.components:
+                let field = self.parameters.field_bounds(index, slot - row.slot)
+                return Rect(origin.x + field.x, origin.y + field.y, field.width, field.height)
+        return Rect()
+
+    ## The value the panel shows for slot `slot`.
+    pub func shown_value(self, slot: int) -> float!:
+        for index in 0..<self.rows.length:
+            let row = self.rows[index]
+            if self.roles[index] == "value" and slot >= row.slot and slot < row.slot + row.components:
+                return self.parameters.component(index, slot - row.slot)
+        return 0.0
+
+    ## Rebuild the panel's rows for `node`: the catalog's, and an Edit node's edits.
+    func build(self, kind: str, path: str, edits: int) -> unit!:
+        self.rows = []
+        self.roles = []
+        var specs: list[ParameterSpec] = []
+        for row in node_catalog.fields(kind, path):
+            specs.append(spec_of(row))
+            self.rows.append(row)
+            self.roles.append("text" if row.kind in ["text", "path"] else ("reload" if row.kind == "button" else "value"))
+        if kind == "Edit":
+            self.add(specs, "edits", ParameterSpec(name = "edits", label = "Edits", kind = ParameterKind.info))
+            self.add(specs, "extrude", ParameterSpec(name = "extrude", label = "Extrude faces", kind = ParameterKind.button, join = true,
+                                                      doc = "Extrude the selected faces by the tool amount (E)."))
+            self.add(specs, "clear", ParameterSpec(name = "clear", label = "Clear edits", kind = ParameterKind.button,
+                                                    doc = "Remove every component edit of this node."))
+            self.add(specs, "last", ParameterSpec(name = "last", label = "Last extrusion", minimum = -100.0, maximum = 100.0, step = 0.1, decimals = 2,
+                                                   doc = "Change the distance of the most recent extrusion."))
+            if edits > 0:
+                specs.append(ParameterSpec(name = "operations", label = "Operations", kind = ParameterKind.folder))
+                self.rows.append(Parameter("Operations", -1, 0.0))
+                self.roles.append("folder")
+            for index in 0..<edits:
+                self.add(specs, "operation", ParameterSpec(name = f"operation{index}", label = f"{index + 1}.", kind = ParameterKind.info), index)
+        self.parameters.set_specs(specs)
+
+    ## An inspector row of the Edit node; `slot` is an operation's index.
+    func add(self, specs: list[ParameterSpec], role: str, spec: ParameterSpec, slot: int = -1):
+        specs.append(spec)
+        self.rows.append(Parameter(spec.label, slot, 0.0))
+        self.roles.append(role)
 
     pub func refresh(self) -> unit!:
         self.generic_rows.layout().set_visible(self.workspace.selected() != none)
         let node = self.workspace.selected() else return
         let changed = node.id != self.showing
-        self.file_rows.layout().set_visible(node.kind == "File")
-        self.kind.layout().set_visible(node.kind != "File")
-        self.state_rows.layout().set_visible(node.kind != "File")
-        self.delete_button.layout().set_visible(node.kind != "File")
-        if changed or not self.file_path.layout().is_focused():
-            self.file_path.set_text(node.texts[0])
+        let file = node.kind == "File"
+        let path = node.texts[0].trim().lower()
+        let format = "step" if file and (path.ends_with(".step") or path.ends_with(".stp")) else ""
+        let edits = node.edits.length if node.kind == "Edit" else 0
+        let key = f"{node.kind}|{format}|{edits}"
+        if key != self.built:
+            self.build(node.kind, node.texts[0], edits)
+            self.built = key
+        self.showing = node.id
+        self.state_rows.layout().set_visible(not file)
+        self.delete_button.layout().set_visible(not file)
         if changed or not self.name.layout().is_focused():
             self.name.set_text(node.name)
-        if changed or not self.group.layout().is_focused():
-            self.group.set_text(node.texts[0])
-        if changed or not self.attribute.layout().is_focused():
-            self.attribute.set_text(node.texts[1])
-        if changed or not self.replacement.layout().is_focused():
-            self.replacement.set_text(node.texts[2])
-        self.replacement_row.layout().set_visible(node.kind == "AttributeRename")
-        self.group_row.layout().set_visible(node_catalog.has_group(node.kind))
-        self.attribute_row.layout().set_visible(node_catalog.has_attribute_name(node.kind))
-        let parameters = node_catalog.parameters(node.kind, node.texts[0])
-        if self.showing_kind != node.kind or (node.kind == "File" and self.showing_path != node.texts[0]):
-            # Mounted controls keep their parent throughout their lifetime.
-            for group in self.parameter_groups:
-                group.layout().set_visible(false)
-            for parameter in parameters:
-                let field = self.fields[parameter.slot]
-                field.set_range(parameter.minimum, parameter.maximum)
-                field.set_step(parameter.step)
-                field.set_decimals(parameter.decimals)
-                field.set_default(parameter.initial)
-                self.parameter_labels[parameter.slot].set_text(parameter.name)
-                self.parameter_groups[parameter.slot].layout().set_visible(true)
-        self.showing_kind = node.kind
-        self.showing_path = node.texts[0]
-        self.showing = node.id
-        self.kind.set_text(node.kind + (" / Out" if self.workspace.network.is_output(node.id) else " / internal") + (" / Auto" if node.output == 0 else "") + (" / preview" if self.workspace.network.preview and node.id == self.workspace.network.display else ""))
+        let network = self.workspace.network
+        self.kind.set_text(node.kind + (" · Out" if network.is_output(node.id) else " · internal") + (" · Auto" if node.output == 0 else "") + (" · preview" if network.preview and node.id == network.display else "") + ("" if node.enabled else " · bypassed"))
         self.description.set_text(node.failure if node.failure != "" else node_catalog.description(node.kind))
-        self.description.layout().set_visible(node.kind != "File" or node.failure != "")
-        self.edit_rows.layout().set_visible(node.kind == "Edit")
-        self.edit_rows.layout().set_enabled(node.enabled)
-        for parameter in parameters:
-            let slot = parameter.slot
-            if changed or self.fields[slot].value() != node.values[slot]:
-                self.fields[slot].set_value(node.values[slot])
-        self.edit_info.set_text(f"{node.edits.length} operations / {self.workspace.components.length} selected")
-        if changed or self.distance.value() != node.values[0]:
-            self.distance.set_value(node.values[0])
-        let last = node.edits.length > 0 and node.edits[-1].kind == "Extrude"
-        self.last_row.layout().set_visible(last)
-        if last and (changed or self.last_distance.value() != node.edits[-1].distance):
-            self.last_distance.set_value(node.edits[-1].distance)
-        let operations: list[Widget] = []
-        for index in 0..<node.edits.length:
-            let edit = node.edits[index]
-            operations.append(Text(f"{index + 1}. {edit.kind} / {edit.elements.length} elements", font = self.font, muted = true))
-        self.operation_rows.set_children(operations)
+        self.description.layout().set_visible(not file or node.failure != "")
+        self.parameters.layout().set_enabled(node.enabled or file)
+        for index in 0..<self.rows.length:
+            let role = self.roles[index]
+            let row = self.rows[index]
+            if role == "value":
+                for component in 0..<row.components:
+                    self.parameters.set_component(index, component, node.values[row.slot + component])
+            elif role == "text":
+                self.parameters.set_text(index, node.texts[row.slot])
+            elif role == "edits":
+                self.parameters.set_text(index, f"{node.edits.length} operations / {self.workspace.components.length} selected")
+            elif role == "last":
+                let last = node.edits.length > 0 and node.edits[-1].kind == "Extrude"
+                self.parameters.set_hidden(index, not last)
+                if last:
+                    self.parameters.set_value(index, node.edits[-1].distance)
+            elif role == "clear":
+                self.parameters.set_enabled(index, node.edits.length > 0)
+            elif role == "extrude":
+                self.parameters.set_enabled(index, self.actions.extrude.is_enabled())
+            elif role == "operation":
+                let operation = row.slot
+                if operation >= 0 and operation < node.edits.length:
+                    let edit = node.edits[operation]
+                    self.parameters.set_text(index, f"{edit.kind} / {edit.elements.length} elements")
         if node.kind == "Group":
-            self.stats.set_text(f"{self.workspace.network.outputs(node.id).length} exposed children")
+            self.stats.set_text(f"{network.outputs(node.id).length} exposed children")
         elif self.workspace.compute != none:
             self.stats.set_text(node.phase if node.computing else node.summary)
         elif let data = node.cache:
@@ -191,3 +196,39 @@ pub class Inspector:
         for connection in self.connections:
             connection.disconnect()
         self.connections.clear()
+
+## The panel's description of a catalog row.
+func spec_of(row: Parameter) -> ParameterSpec:
+    let rest = row.rest + [0.0, 0.0, 0.0]
+    let soft = row.soft_maximum > 0.0
+    return ParameterSpec(name = row.key if row.key != "" else row.name.lower().replace(" ", "_"), label = row.name, kind = kind_of(row.kind),
+                         components = row.components, value = row.initial, y = rest[0], z = rest[1], w = rest[2],
+                         minimum = row.minimum, maximum = row.maximum, soft_minimum = (row.minimum if row.minimum >= 0.0 else -row.soft_maximum) if soft else 0.0,
+                         soft_maximum = row.soft_maximum, step = row.step, decimals = row.decimals, suffix = row.suffix, slider = row.slider or soft,
+                         items = row.items, doc = row.doc, hide_when = row.hide_when, disable_when = row.disable_when, join = row.join,
+                         linear = row.kind == "color", tag = row.slot)
+
+func kind_of(name: str) -> ParameterKind:
+    if name == "integer":
+        return ParameterKind.integer
+    if name == "vector":
+        return ParameterKind.vector
+    if name == "toggle":
+        return ParameterKind.toggle
+    if name == "menu":
+        return ParameterKind.menu
+    if name == "text":
+        return ParameterKind.text
+    if name == "path":
+        return ParameterKind.path
+    if name == "button":
+        return ParameterKind.button
+    if name == "info":
+        return ParameterKind.info
+    if name == "folder":
+        return ParameterKind.folder
+    if name == "separator":
+        return ParameterKind.separator
+    if name == "color":
+        return ParameterKind.color
+    return ParameterKind.number
