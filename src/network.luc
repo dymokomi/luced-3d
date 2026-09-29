@@ -8,6 +8,7 @@ from node_evaluation import source_geometry, evaluate_verb, load_geometry, Sourc
 from geometry_nodes import evaluate_set_verb, is_placement, evaluate_placement, evaluate_attributes
 from cache_node import reads_file, cook_cache
 import ui
+from edit_kinds import is_edit, edit_kind
 
 pub func kinds() -> list[str]:
     return node_catalog.kinds()
@@ -65,7 +66,7 @@ pub class Node:
         for parameter in node_catalog.parameters(kind):
             self.values[parameter.slot] = parameter.initial
         self.texts = ["0" if kind == "PolyExtrude" else "", "group" if kind == "Selection Group" else "weight", "renamed"]
-        if kind == "Edit":
+        if is_edit(kind):
             self.values[0] = 0.5
         self.edits = []
         self.group_paths = []
@@ -130,16 +131,16 @@ pub class Node:
             return data.transformed(translation, rotation, scale)
         if self.kind == "Merge":
             return data.merged(second else error(ui.invalid, "Connect the second geometry input"))
+        if let kind = edit_kind(self.kind):
+            var result = kind.start(data)
+            for edit in self.edits:
+                result = kind.run(edit, result)
+            return result
         # Mesh operators work on the mesh component; the other components
         # (curves, points, volumes, SDFs, CAD beside a mesh) pass through.
         if is_placement(self.kind):
             return evaluate_placement(self.kind, v, data, second)
         let operand = data.operand()
-        if self.kind == "Edit":
-            var mesh = operand else return data
-            for edit in self.edits:
-                mesh = edit.evaluate(mesh).mesh()
-            return data.with_operand(mesh)
         if node_catalog.is_mesh_verb(self.kind):
             let mesh = operand else return data.passed("The input has no polygons; it passes through")
             if self.guard != 0 and self.guard != mesh.topology_hash():
@@ -161,6 +162,8 @@ pub class Network:
     pub var compute_mode: int = 3
     ## Set on worker copies while the viewport shows normals: publish guides.
     pub var show_normals: bool = false
+    ## The viewport's selection level (an Edit node's pick geometry follows it).
+    pub var level: int = 0
     pub var on_progress: func(int, float, str) -> unit!? = none
     ## Process-lifetime import caches shared by every copy of this graph.
     pub var sources: SourceCache? = none
@@ -412,6 +415,9 @@ pub class Network:
         if node.kind in node_catalog.sources() or reads_file(node.kind, node.enabled, node.values):
             return node.compute(GeometryData())
         let port = int(node.values[0]) if node.kind == "Switch" and node.enabled else 0
+        # An Edit node starts from nothing when unconnected (it can create).
+        if is_edit(node.kind) and node.inputs[0] < 0:
+            return node.compute(GeometryData())
         if port < 0 or port >= node.inputs.length or node.inputs[port] < 0:
             error(ui.invalid, "Connect a geometry input")
         let data = self.evaluate_node(node.inputs[port], visiting)

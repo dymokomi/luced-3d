@@ -1,0 +1,118 @@
+## Edit Mesh: the Edit framework's polygon kind. Its levels are Object
+## (whole pieces: faces sharing a `path`, else a connected component),
+## Polygons, Edges, Vertices (points) and Corners; its tools are the
+## luce-geocore modeling verbs, and its primitives (box, sphere, cylinder,
+## cone, torus, grid, plane) are recipe steps that add a named piece.
+from geocore import Mesh, MeshPrimitives, Groups, Domain, GroupType, Vector3
+from geometry_data import GeometryData
+from edit_operations import EditStep
+from edit_types import EditKind, EditLevel, EditTool
+from tools import tool_run
+import ui
+
+pub let kind_name = "Edit Mesh"
+
+## The modeling tools, in strip order.
+pub func tool_names() -> list[str]:
+    return ["Extrude", "Inset", "Delete", "Reverse", "Triangulate", "Duplicate", "Split", "Fuse", "Merge Points", "Smooth", "Peak", "Flatten",
+            "Rotate", "Scale", "Snap", "Noise", "Subdivide", "Bevel", "Loop Cut", "Bridge", "Fill", "Dissolve", "Clean"]
+
+pub func primitive_names() -> list[str]:
+    return ["Box", "Sphere", "Cylinder", "Cone", "Torus", "Grid", "Plane"]
+
+pub func kind() -> EditKind:
+    return EditKind(kind_name, levels(), tool_list(), primitive_names(), start, pick, run, create)
+
+## Object, Polygons, Edges, Vertices, Corners (the level switcher's order;
+## any displayed mesh selects on these).
+pub func levels() -> list[EditLevel]:
+    return [EditLevel("Object", "cube", Domain.face, GroupType.faces, piece),
+            EditLevel("Polygons", "face-select", Domain.face, GroupType.faces),
+            EditLevel("Edges", "edge-select", Domain.edge, GroupType.edges),
+            EditLevel("Vertices", "vertex-select", Domain.point, GroupType.points),
+            EditLevel("Corners", "corner-pin", Domain.corner, GroupType.corners)]
+
+func tool_list() -> list[EditTool]:
+    let result: list[EditTool] = []
+    for name in tool_names():
+        let tool = name
+        let made = tool_run(tool, 0.5) else continue
+        result.append(EditTool(tool, made.verb, [], func (amount: float) -> list[float]:
+            if let current = tool_run(tool, amount):
+                return current.numbers
+            return []))
+    return result
+
+## The piece around face `face`: the faces sharing its `path`, or its
+## connected component when it has none.
+func piece(mesh: Mesh, face: int) -> str!:
+    let index = mesh.find_attribute("path", 2)
+    if index >= 0:
+        let path = mesh.attribute_text(index, face)
+        if path != "":
+            return f"@path=\"{path}\""
+    return f"connected({face})"
+
+## Steps edit the input's polygons (GeometryData.operand: its mesh, or its
+## instances realized; CAD alone must be tessellated first) and put them
+## back beside its other components, which pass through.
+func start(data: GeometryData) -> GeometryData!:
+    discard(data.operand())
+    return data
+
+## Every level picks on the polygons (an empty mesh before there are any).
+func pick(data: GeometryData, level: int) -> Mesh?!:
+    return mesh_of(data)
+
+func mesh_of(data: GeometryData) -> Mesh!:
+    return data.operand() else Mesh.empty()
+
+func run(step: EditStep, data: GeometryData) -> GeometryData!:
+    let mesh = mesh_of(data)
+    if step.verb.starts_with("Create "):
+        return created(step, mesh, data)
+    return data.with_operand(step.evaluate(mesh).mesh())
+
+## The step adding primitive `name` at the origin. Its numbers: size or
+## radius, divisions, height or tube radius, then the position.
+func create(name: str) -> EditStep?!:
+    if not (name in primitive_names()):
+        return none
+    var numbers = [2.0, 1.0, 0.0]
+    if name in ["Sphere", "Cylinder", "Cone", "Torus"]:
+        numbers = [1.0, 16.0, 0.3 if name == "Torus" else 2.0]
+    elif name == "Grid":
+        numbers = [2.0, 4.0, 0.0]
+    return EditStep("Create " + name, "", 0, numbers + [0.0, 0.0, 0.0], 0)
+
+## `mesh` with the primitive of `step` added as a piece of its own `path`
+## (/box1, /box2, …), whose faces come back as the `.selection`.
+func created(step: EditStep, mesh: Mesh, data: GeometryData) -> GeometryData!:
+    let name = step.verb[7..]
+    let v = step.numbers
+    if v.length < 6:
+        error(ui.invalid, f"{step.verb} needs six numbers")
+    var shape = Mesh.cube(v[0])
+    if name == "Sphere":
+        shape = MeshPrimitives.sphere(v[0], int(v[1]))
+    elif name == "Cylinder" or name == "Cone":
+        shape = MeshPrimitives.cylinder(v[0], v[2], int(v[1]), name == "Cone")
+    elif name == "Torus":
+        shape = MeshPrimitives.torus(v[0], v[2], int(v[1]))
+    elif name == "Grid" or name == "Plane":
+        shape = MeshPrimitives.grid(v[0], 1 if name == "Plane" else int(v[1]))
+    elif name != "Box":
+        error(ui.invalid, f"Edit Mesh cannot create {name}")
+    let placed = shape.transformed(Vector3(v[3], v[4], v[5]), Vector3(), Vector3(1.0, 1.0, 1.0))
+    let named = placed.with_text("path", 2, unused_path(mesh, name.lower()))
+    let first = mesh.face_count()
+    let result = named if mesh.point_count() == 0 else mesh.merged(named)
+    return data.with_operand(Groups.with_group(result, ".selection", 2, f"{first}-{result.face_count() - 1}"))
+
+## The first of /<stem>1, /<stem>2, … that no face of `mesh` has.
+func unused_path(mesh: Mesh, stem: str) -> str!:
+    var number = 1
+    if mesh.find_attribute("path", 2) >= 0:
+        while Groups.count(mesh, f"@path=\"/{stem}{number}\"", 2) > 0:
+            number += 1
+    return f"/{stem}{number}"

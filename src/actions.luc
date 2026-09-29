@@ -4,6 +4,7 @@ from input import Key
 from interop import Connection
 from workspace import Workspace
 from network import kinds
+from edit_kinds import is_edit
 
 pub class Actions:
     pub let new_project: Command
@@ -30,6 +31,8 @@ pub class Actions:
     pub let tools: list[Command]
     pub let add: list[Command]
     pub let modeling: list[Command]
+    ## Create a primitive in the displayed Edit node.
+    pub let create: list[Command]
     ## Selection edits: invert, grow, shrink, border, flood, loop, ring.
     pub let selection_tools: list[Command]
     pub let all: list[Command]
@@ -80,21 +83,34 @@ pub class Actions:
             let command = Command(walks[index], id = "select_walk_" + str(index))
             self.selection_tools.append(command)
             self.connections.append(command.on_trigger(func () -> unit!: workspace.walk_selection(operation)))
-        self.modes = [Command("Points", Shortcut(Key.digit_1), id = "select_points"),
-            Command("Edges", Shortcut(Key.digit_2), id = "select_edges"), Command("Faces", Shortcut(Key.digit_3), id = "select_faces"),
-            Command("Vertices", Shortcut(Key.digit_4), id = "select_vertices")]
-        for index in 0..<4:
+        # Selection levels 1-5: their labels follow the Edit kind's levels.
+        self.modes = [Command("Object", Shortcut(Key.digit_1), id = "select_level_1"), Command("Polygons", Shortcut(Key.digit_2), id = "select_level_2"),
+            Command("Edges", Shortcut(Key.digit_3), id = "select_level_3"), Command("Vertices", Shortcut(Key.digit_4), id = "select_level_4"),
+            Command("Corners", Shortcut(Key.digit_5), id = "select_level_5")]
+        for index in 0..<self.modes.length:
             let mode = index
             self.connections.append(self.modes[index].on_trigger(func () -> unit!:
                 workspace.set_mode(mode)))
+        # Primitives an Edit node creates (each kind offers its own).
+        self.create = []
+        for primitive in ["Box", "Sphere", "Cylinder", "Cone", "Torus", "Grid", "Plane"]:
+            let name = primitive
+            let command = Command(primitive, id = "create_" + primitive.lower())
+            self.create.append(command)
+            self.connections.append(command.on_trigger(func () -> unit!: workspace.create(name)))
         self.tools = [Command("Select", Shortcut(Key.q), id = "tool_select"), Command("Move", Shortcut(Key.m), id = "tool_move")]
         self.connections.append(self.tools[0].on_trigger(func (): workspace.choose_tool("Select")))
         self.connections.append(self.tools[1].on_trigger(func (): workspace.choose_tool("Move")))
         for kind in kinds():
             self.add.append(Command(kind, id = "add_" + kind))
-        self.all = [self.undo, self.redo, self.frame, self.grid, self.hulls, self.display, self.output, self.auto_output, self.visibility, self.parent, self.enabled, self.delete, self.extrude, self.clear_edits, self.select_all] + self.add + self.modes + self.tools + self.modeling + self.selection_tools
+        self.all = [self.undo, self.redo, self.frame, self.grid, self.hulls, self.display, self.output, self.auto_output, self.visibility, self.parent, self.enabled, self.delete, self.extrude, self.clear_edits, self.select_all] + self.add + self.modes + self.tools + self.modeling + self.create + self.selection_tools
         self.all += [self.new_project, self.open_project, self.save, self.save_as, self.reset_layout]
         self.refresh()
+
+    ## The viewport's tool strip: Select, Move, Extrude, the modeling tools,
+    ## then the primitives.
+    pub func strip(self) -> list[Command]:
+        return self.tools + [self.extrude] + self.modeling + self.create
 
     pub func refresh(self) -> unit!:
         let w = self.workspace
@@ -116,22 +132,27 @@ pub class Actions:
             self.output.set_checked(w.network.is_output(selected.id))
             self.auto_output.set_checked(selected.output == 0)
             self.visibility.set_checked(selected.visible)
-            self.clear_edits.set_enabled(selected.kind == "Edit" and selected.edits.length > 0)
+            self.clear_edits.set_enabled(is_edit(selected.kind) and selected.edits.length > 0)
         else:
             self.clear_edits.set_enabled(false)
         let selecting = w.selecting()
-        self.extrude.set_enabled(selecting and w.component_mode == 2)
+        self.extrude.set_enabled(selecting and w.domain() == 2 and w.tool_available("Extrude"))
         self.select_all.set_enabled(selecting)
-        for index in 0..<4:
-            self.modes[index].set_enabled(selecting)
+        let levels = w.levels()
+        for index in 0..<self.modes.length:
+            self.modes[index].set_enabled(selecting and index < levels.length)
             self.modes[index].set_checked(index == w.component_mode)
+            if index < levels.length:
+                self.modes[index].set_text(levels[index].name)
+        for command in self.create:
+            command.set_enabled(w.editing() and w.tool_available(command.text()))
         for tool in self.tools:
             tool.set_enabled(selecting)
             tool.set_checked(tool.text() == w.edit_tool)
         # Tools apply to the selection, or prompt for one (Tool → Select);
         # on the Edit node they need a selection.
         for command in self.modeling:
-            command.set_enabled(selecting and (not w.editing() or w.selected_count() > 0 or command.text() in ["Subdivide", "Clean"]))
+            command.set_enabled(selecting and w.tool_available(command.text()) and (not w.editing() or w.selected_count() > 0 or command.text() in ["Subdivide", "Clean"]))
         for command in self.selection_tools:
             command.set_enabled(selecting and w.selected_count() > 0)
         self.grid.set_checked(w.grid_visible)

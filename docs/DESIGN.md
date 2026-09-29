@@ -90,9 +90,10 @@ Shutdown joins the worker.
 
 ## Edit recipes and undo
 
-An Edit node stores ordered immutable `EditOperation`s: moves retain point IDs and
-a displacement, extrusions retain face IDs and distance. Each recipe guards its
-input with the mesh's 64-bit topology hash. Changing an upstream transform or
+An Edit node stores ordered immutable `EditStep`s (a verb, its group and group
+type, its numbers, symmetry and Keep selection); its kind (`edit_kinds.luc`:
+Edit Mesh today) runs each step and says what its levels pick on. Each step
+guards its input with the pick geometry's 64-bit topology hash. Changing an upstream transform or
 dimensions preserves topology and replays edits; incompatible connectivity yields
 an error with guidance. The latest extrusion distance can change without adding
 an operation. Position-only edits share topology and display triangles with

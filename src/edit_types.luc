@@ -1,0 +1,110 @@
+## What an Edit node kind plugs into the Edit framework (edit_kinds.luc):
+## its selection levels, its tools and primitives, the geometry each level
+## picks on, and the step executor that gives its recipe's verbs meaning.
+## The framework owns everything else: the recipe (undo is a shorter
+## recipe), checkpoints, move coalescing, the tool amount, symmetry, soft
+## selection and Keep selection, the selection and its hand-off, Tool →
+## Select, the inspector rows, the level switcher and the tool strip.
+from geocore import Mesh, Domain, GroupType
+from geometry_data import GeometryData
+from edit_operations import EditStep
+
+## A selection level: what one pick selects, on which domain of the level's
+## pick geometry, and the group type its steps receive.
+pub class EditLevel:
+    ## The switcher's label and icon ("Polygons", "face-select").
+    pub let name: str
+    pub let icon: str
+    pub let domain: Domain
+    pub let group_type: GroupType
+    ## With a piece function, a pick selects the whole piece around the
+    ## picked element: the group expression naming it on `domain` (Object
+    ## levels); without one, the element alone.
+    pub let piece: func(Mesh, int) -> str!?
+
+    pub func init(self, name: str, icon: str, domain: Domain, group_type: GroupType, piece: func(Mesh, int) -> str!? = none):
+        self.name = name
+        self.icon = icon
+        self.domain = domain
+        self.group_type = group_type
+        self.piece = piece
+
+    ## The group expression of what picking `element` of `mesh` selects: its
+    ## piece, or "" for the element alone.
+    pub func whole(self, mesh: Mesh, element: int) -> str!:
+        let expand = self.piece else return ""
+        return expand(mesh, element)
+
+    ## The domain and group type as geocore's i64 parameters take them.
+    pub func domain_number(self) -> int:
+        return domain_number(self.domain)
+
+    pub func group_number(self) -> int:
+        return group_number(self.group_type)
+
+## A tool button: its label, the verb its step runs, the levels it is
+## offered on ([] every level) and its numbers for a tool amount.
+pub class EditTool:
+    pub let name: str
+    pub let verb: str
+    pub let levels: list[int]
+    pub let numbers: func(float) -> list[float]
+
+    pub func init(self, name: str, verb: str, levels: list[int], numbers: func(float) -> list[float]):
+        self.name = name
+        self.verb = verb
+        self.levels = levels
+        self.numbers = numbers
+
+    pub func offered(self, level: int) -> bool:
+        return self.levels.length == 0 or level in self.levels
+
+## An Edit node kind.
+pub class EditKind:
+    ## The node kind ("Edit Mesh").
+    pub let name: str
+    pub let levels: list[EditLevel]
+    pub let tools: list[EditTool]
+    ## Create entries ("Box", "Sphere", …).
+    pub let primitives: list[str]
+    ## The geometry the recipe starts from, made from the node's input (an
+    ## empty GeometryData when unconnected); fails on input it cannot edit.
+    pub let start: func(GeometryData) -> GeometryData!
+    ## The geometry level `level` of `data` picks on (the worker publishes
+    ## it for the viewport); none when there is nothing to pick.
+    pub let pick: func(GeometryData, int) -> Mesh?!
+    ## One recipe step on `data`.
+    pub let run: func(EditStep, GeometryData) -> GeometryData!
+    ## The step creating primitive `name`, with its default numbers.
+    pub let create: func(str) -> EditStep?!
+
+    pub func init(self, name: str, levels: list[EditLevel], tools: list[EditTool], primitives: list[str], start: func(GeometryData) -> GeometryData!,
+                  pick: func(GeometryData, int) -> Mesh?!, run: func(EditStep, GeometryData) -> GeometryData!, create: func(str) -> EditStep?!):
+        self.name = name
+        self.levels = levels
+        self.tools = tools
+        self.primitives = primitives
+        self.start = start
+        self.pick = pick
+        self.run = run
+        self.create = create
+
+    ## Tool `name`, when this kind has it.
+    pub func tool(self, name: str) -> EditTool?:
+        for tool in self.tools:
+            if tool.name == name:
+                return tool
+        return none
+
+pub func domain_number(domain: Domain) -> int:
+    if domain == Domain.corner: return 1
+    if domain == Domain.face: return 2
+    if domain == Domain.edge: return 4
+    return 0
+
+pub func group_number(group_type: GroupType) -> int:
+    if group_type == GroupType.points: return 1
+    if group_type == GroupType.edges: return 2
+    if group_type == GroupType.faces: return 3
+    if group_type == GroupType.corners: return 4
+    return 0

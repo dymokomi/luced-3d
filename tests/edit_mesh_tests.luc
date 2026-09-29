@@ -1,0 +1,70 @@
+## Edit Mesh: its levels (Object picks whole pieces: the faces of one
+## `path`, else a connected component), primitives created as recipe steps
+## (each its own path, selected as an Object, undone like any step), and
+## Object-level move and delete. Unconnected, it starts from nothing.
+from workspace import Workspace
+from three import Vector3
+import math
+
+func near(a: float, b: float):
+    assert(math.abs(a - b) < 0.00001)
+
+func faces(w: Workspace) -> int!:
+    return (w.geometry else trap("geometry")).face_count()
+
+pub func edit_mesh_tests() -> unit!:
+    let w = Workspace()
+    w.delete_selected()
+    w.add_node("Edit Mesh", 0.0, 0.0)
+    assert(w.editing() and faces(w) == 0)
+    let names: list[str] = []
+    for level in w.levels():
+        names.append(level.name)
+    assert(names == ["Object", "Polygons", "Edges", "Vertices", "Corners"])
+    # A primitive is a step: its piece is named and selected as an Object.
+    w.create("Box")
+    assert(faces(w) == 6 and w.component_mode == 0 and w.selected_count() == 6)
+    w.create("Sphere")
+    let both = w.geometry else trap("both")
+    let sphere = both.face_count() - 6
+    assert(sphere > 6 and w.selected_count() == sphere and (w.selected() else trap("node")).edits.length == 2)
+    let path = both.find_attribute("path", 2)
+    assert(both.attribute_text(path, 0) == "/box1" and both.attribute_text(path, 6) == "/sphere1")
+    # Object picks select whole pieces; Shift adds and removes one.
+    w.choose_component(2, false)
+    assert(w.selected_count() == 6)
+    w.choose_component(7, true)
+    assert(w.selected_count() == 6 + sphere)
+    w.choose_component(7, true)
+    assert(w.selected_count() == 6)
+    # Moving and deleting an Object: the box alone.
+    w.move_selection(Vector3(3.0, 0.0, 0.0))
+    let moved = w.geometry else trap("moved")
+    near(moved.bounds().maximum.x, 4.0)
+    near(moved.bounds().minimum.x, -1.0)
+    w.model("Delete")
+    assert(faces(w) == sphere)
+    # Undo walks the recipe back: the delete, then the move.
+    w.undo()
+    assert(faces(w) == 6 + sphere)
+    w.undo()
+    near((w.geometry else trap("unmoved")).bounds().maximum.x, 1.0)
+    assert((w.selected() else trap("node")).edits.length == 2)
+    # A second box is named after the first; a mesh without paths picks its
+    # connected components.
+    w.create("Box")
+    let boxes = w.geometry else trap("boxes")
+    assert(boxes.attribute_text(boxes.find_attribute("path", 2), 6 + sphere) == "/box2")
+    let g = Workspace()
+    g.delete_selected()
+    g.add_node("Grid", 0.0, 0.0)
+    g.add_node("Edit Mesh", 0.0, 100.0)
+    g.set_mode(0)
+    g.choose_component(3, false)
+    assert(g.selected_count() == 16)
+    g.create("Box")
+    g.choose_component(3, false)
+    assert(g.selected_count() == 16)
+    g.choose_component(16, false)
+    assert(g.selected_count() == 6)
+    print("PASS Edit Mesh: Object, Polygons, Edges, Vertices and Corners levels; primitives as steps with their own paths; Object picks, moves, deletes and undo")

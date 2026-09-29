@@ -61,14 +61,16 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
    The new node connects to the selected node and becomes the viewport output.
 2. Change its Translation, Rotation or Scale in Parameters, or drag an XYZ
    handle in the viewport to translate it.
-3. In Network, **Tab**, type `Edit`, Enter. The viewport gains point/edge/face
-   selection buttons and a tool strip at the left.
-4. Choose Faces (**3**), then click a face. Shift-click adds/removes components.
+3. In Network, **Tab**, type `Edit Mesh`, Enter. The viewport gains the
+   Object/Polygons/Edges/Vertices/Corners level buttons and a tool strip at the
+   left, ending with primitives to create.
+4. Choose Polygons (**2**), then click a face. Shift-click adds/removes components.
+   At Object (**1**) a click selects a whole piece.
    Press **E** or click Extrude. Repeat to keep extending the selected cap.
 5. Set **Next distance** before extrusion; **Last distance** changes the most
    recent extrusion. The Edit node lists the operations it owns.
 6. Choose Move (**M**) and drag an XYZ handle to move selected points, edges or
-   faces. **Q** returns to selection; **1 / 2 / 3** change component type.
+   faces. **Q** returns to selection; **1–5** change the selection level.
 7. **Cmd/Ctrl-Z** undoes; **Cmd/Ctrl-Shift-Z** redoes. A scrub or handle drag is
    one step; Escape cancels a handle or node drag.
 
@@ -119,10 +121,10 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
 - The **Outliner** shows exposed results and nested Groups. Double-click a Group
   to enter its local network; Up returns to the parent. Groups have hierarchical
   transforms and visibility. See [output rules and limits](docs/OUTLINER.md).
-- Disabling Transform, Edit or Merge passes its first input through.
+- Disabling Transform, an Edit node or Merge passes its first input through.
   Disabling Cube produces empty geometry. Delete/Backspace in Network deletes
   the selected node and disconnects its consumers.
-- Edit tools appear when the selected Edit node is enabled and displayed.
+- Edit tools appear when the selected Edit node (Edit Mesh) is enabled and displayed.
   Display it with D before modeling. Incomplete nodes show an error instead of
   stale geometry; connect their inputs or undo the change.
 

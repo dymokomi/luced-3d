@@ -16,6 +16,7 @@ from geocore import Mesh, Subdivision
 from three import Vector3, Matrix4
 import node_catalog
 import ui
+from edit_kinds import is_edit, edit_kind
 
 class Computation:
     let channel: ComputeChannel
@@ -86,7 +87,14 @@ class Computation:
                 if failure.message == "Computation superseded":
                     error(failure.code, failure.message)
                 recover GeometryData()
-            if let mesh = data.mesh:
+            # An Edit node's kind says what its level picks on.
+            let kind = edit_kind(node.kind) if node.enabled else none
+            if let editor = kind:
+                let picked = editor.pick(data, graph.level) catch failure:
+                    recover none
+                if let mesh = picked:
+                    self.inspect(node, mesh)
+            elif let mesh = data.mesh:
                 self.inspect(node, mesh)
         if notice == "":
             notice = self.preview_warning
@@ -120,10 +128,13 @@ class Computation:
                     input = input.with_instance(self.upstream(node, child, depth), visible = child.visible)
         elif not (node.kind in node_catalog.sources()) and not reads_file(node.kind, node.enabled, node.values):
             let port = int(node.values[0]) if node.kind == "Switch" and node.enabled else 0
-            if port < 0 or port >= node.inputs.length or node.inputs[port] < 0:
+            # An Edit node starts from nothing when unconnected (it can create).
+            let unconnected = is_edit(node.kind) and node.inputs[0] < 0
+            if not unconnected and (port < 0 or port >= node.inputs.length or node.inputs[port] < 0):
                 return self.own(node, ui.invalid, "Connect a geometry input")
-            input = self.upstream(node, graph.require(node.inputs[port]), depth)
-            if node.enabled and node.inputs.length == 2 and not (node.kind in ["Switch", "Null"]):
+            if not unconnected:
+                input = self.upstream(node, graph.require(node.inputs[port]), depth)
+            if not unconnected and node.enabled and node.inputs.length == 2 and not (node.kind in ["Switch", "Null"]):
                 if node.inputs[1] >= 0:
                     second = self.upstream(node, graph.require(node.inputs[1]), depth)
                 elif node_catalog.requires_second(node.kind):
@@ -131,7 +142,7 @@ class Computation:
         self.channel.progress(node.id, 0.0, "Computing")
         self.cooks[node.id] = (self.cooks[node.id] else 0) + 1
         var result = GeometryData()
-        if node.kind == "Edit" and node.enabled:
+        if is_edit(node.kind) and node.enabled:
             result = self.edit(node, input) catch failure:
                 return self.own(node, failure.code, failure.message)
         else:
@@ -146,26 +157,28 @@ class Computation:
     ## Apply only the recipes after the longest stored prefix. Prefixes at the
     ## checkpoints (the last eight, every sixteenth) are stored as they are
     ## made: undo inside that window, a gizmo drag and the next recipe start
-    ## from a stored result.
+    ## from a stored result. The node's Edit kind runs each step.
     func edit(self, node: Node, input: GeometryData) -> GeometryData!:
-        let base = self.graph.require(node.inputs[0]).stamp
-        var mesh = input.operand() else return input
+        let kind = edit_kind(node.kind) else error(ui.invalid, f"{node.kind} is not an Edit node")
+        var base = 0
+        if let upstream = self.graph.find(node.inputs[0]):
+            base = upstream.stamp
+        var result = kind.start(input)
         var start = 0
         var count = node.edits.length - 1
         while count > 0 and start == 0:
             if let entry = self.store.get(prefix_stamp(node, base, count)):
                 if let data = entry.data:
-                    if let stored = data.mesh:
-                        mesh = stored
-                        start = count
+                    result = data
+                    start = count
             count -= 1
         for at in start..<node.edits.length:
-            mesh = node.edits[at].evaluate(mesh).mesh()
+            result = kind.run(node.edits[at], result)
             self.recipes += 1
             self.channel.check()
             if at + 1 < node.edits.length and checkpoint(at + 1, node.edits.length):
-                discard(self.store.put(prefix_stamp(node, base, at + 1), GeometryData(mesh)))
-        return input.with_operand(mesh)
+                discard(self.store.put(prefix_stamp(node, base, at + 1), result))
+        return result
 
     func upstream(self, node: Node, input: Node, depth: int) -> GeometryData!:
         let data = self.evaluate(input, depth + 1) catch failure:
@@ -197,7 +210,7 @@ class Computation:
             if node.stamp in result:
                 continue
             result.insert(node.stamp)
-            if node.kind == "Edit" and node.edits.length > 0:
+            if is_edit(node.kind) and node.edits.length > 0:
                 if let input = self.graph.find(node.inputs[0]):
                     for count in 1..<node.edits.length:
                         if checkpoint(count, node.edits.length):
@@ -286,6 +299,8 @@ class Computation:
             if preview.failed_faces > 0:
                 self.preview_warning = f"{preview.failed_faces} CAD preview patches failed: {preview.first_error}"
                 self.channel.progress(node.id, 0.9, f"{preview.failed_faces} preview failures")
+            elif preview.cv_warning != "":
+                self.preview_warning = preview.cv_warning
         for index in 0..<data.instance_count():
             if data.instance_visible(index):
                 self.prepare(data.instance(index), node)

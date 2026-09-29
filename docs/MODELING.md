@@ -10,7 +10,7 @@ No placeholder nodes are listed: every registered node evaluates geometry.
 | Family | Nodes |
 | --- | --- |
 | Sources | Cube, Grid, Sphere, Cylinder, Cone, Torus, File |
-| Graph | Edit, Merge, Null, Switch, Tessellate, Group, Blast, Cache |
+| Graph | Edit Mesh, Merge, Null, Switch, Tessellate, Group, Blast, Cache |
 | Transforms/copies | Transform, Mirror, CopyTransform, CopyToPoints, MatchSize |
 | Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Loop Cut, Bridge, Fill, Dissolve, Merge Points; Subdivision (display) and Crease |
 | Deformation (verbs) | Transform Components, Smooth, Mountain, Peak, Flatten, Snap |
@@ -82,8 +82,10 @@ A 700k-face mesh saves in about 4 ms and loads in about 17 ms.
 
 ## Selection and tools
 
-Components (points, edges, faces or vertices, keys 1–4) can be selected on
-whichever node the viewport displays; the selection is a luce-geocore
+Components can be selected on whichever node the viewport displays, at a
+selection level (keys 1–5): Object (a whole piece: the faces sharing a
+`path`, else a connected component), Polygons, Edges, Vertices (points) or
+Corners. An Edit node shows its own kind's levels. The selection is a luce-geocore
 `Selection` (bits plus the connectivity they index), so select all, invert,
 grow, shrink, border, flood, loop and ring are word-parallel Base passes.
 Switching the component type carries the selection over (a face stays when
@@ -91,7 +93,8 @@ all its points were selected).
 
 Pressing a tool, as with Houdini's shelf tools:
 
-- on the active **Edit node**, appends a step to its recipe (see below);
+- on the active **Edit node** (Edit Mesh), appends a step to its recipe (see
+  below);
 - on any other displayed node, creates the tool's verb node after it (between
   it and whatever it fed), with **Group** set to the selection's expression
   (runs such as `0-5 12`, a group's name, or chained edge pairs `p3-4-5`),
@@ -154,11 +157,27 @@ guarded. Very large selections show as a summary in the Group field.
 - CopyToPoints realizes copies at target positions, with a 256-copy limit. It
   does not yet interpret orientation/scale attributes or retain instances.
 
-## The Edit node
+## Edit nodes
 
-The Edit node is a modeling engine in one node: while it is displayed and
+An Edit node is a modeling engine in one node: while it is displayed and
 selected, every tool appends a step to its recipe instead of creating a node,
 and each tool (or each drag) is one undo. There is no operation list to edit.
+There is one Edit node per kind of geometry, so each keeps its own levels and
+tools: **Edit Mesh** (polygons), with Edit CAD, Edit SDF and Edit Sketch to
+come. They share one framework (`edit_types.luc`,
+`edit_kinds.luc`): a kind supplies its selection levels, its tools and
+primitives, the geometry each level picks on, the geometry its recipe starts
+from, and the step executor that gives its verbs meaning; the recipe, undo,
+checkpoints, the selection and its hand-off, the tool amount, symmetry, soft
+selection and Keep selection, Tool → Select, the inspector rows, the level
+switcher and the tool strip are the framework's.
+
+Edit Mesh's levels are Object, Polygons, Edges, Vertices and Corners. At the
+Object level a pick selects a whole piece, and moves, rotations, scales and
+Delete act on whole pieces. It creates primitives (Box, Sphere, Cylinder,
+Cone, Torus, Grid, Plane) as recipe steps: each new piece gets its own `path`
+(`/box1`, `/box2`, …), becomes the selected Object and undoes like any step.
+Unconnected, an Edit Mesh starts from nothing.
 
 - A step is one verb run: the verb, the group expression and its type, the
   parameter values, the connectivity hash the group was selected on, and the

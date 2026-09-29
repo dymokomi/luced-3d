@@ -11,6 +11,10 @@ from node_evaluation import SourceCache
 import math
 import node_catalog
 import ui
+from edit_kinds import is_edit, edit_kind
+from geometry_data import GeometryData
+from edit_types import EditKind, EditLevel
+import edit_mesh
 
 pub class Workspace:
     pub var network: Network
@@ -22,9 +26,15 @@ pub class Workspace:
     ## Components of `geometry` (a luce-geocore Selection), on any displayed
     ## node; none when nothing is selected.
     pub var selection: Selection? = none
-    ## 0 points, 1 edges, 2 faces, 3 vertices. Node selection and display are
-    ## independent.
-    pub var component_mode: int = 2
+    ## The selection level: an index into levels() (an Edit node's kind's,
+    ## else Edit Mesh's: Object, Polygons, Edges, Vertices, Corners). Node
+    ## selection and display are independent.
+    pub var component_mode: int = 1
+    ## The level to show a create step's new piece at, when it arrives.
+    var pending_level: int = -1
+    ## Edit kinds by node kind, made once each (they hold closures).
+    let edit_kinds: map[str, EditKind]
+    let mesh_levels: list[EditLevel]
     ## A tool waiting for its components (Houdini's tool → select), or
     ## Reselect of a node's group.
     pub var prompt: ToolPrompt? = none
@@ -83,6 +93,8 @@ pub class Workspace:
         self.hull_batches = []
         self.normal_points = []
         self.sources = SourceCache()
+        self.edit_kinds = {}
+        self.mesh_levels = edit_mesh.levels()
         self.network = Network()
         self.network.sources = self.sources
         self.history = History()
@@ -114,7 +126,7 @@ pub class Workspace:
         self.history.cursor = 0
         self.selection = none
         self.prompt = none
-        self.component_mode = 2
+        self.component_mode = 1
         self.notice = ""
         self.rebuild()
 
@@ -239,13 +251,66 @@ pub class Workspace:
     pub func selecting(self) -> bool:
         return self.geometry != none
 
-    ## The selection's domain (0 points, 4 edges, 2 faces, 1 vertices) and
-    ## the Group Type verb nodes read it with.
+    ## The Edit kind of node kind `name` (kept once made), or none.
+    pub func kind_of(self, name: str) -> EditKind?:
+        if let known = self.edit_kinds[name]:
+            return known
+        let made = edit_kind(name) else return none
+        self.edit_kinds[name] = made
+        return made
+
+    ## The selected node's Edit kind, when it is an enabled Edit node.
+    pub func active_kind(self) -> EditKind?:
+        let node = self.selected() else return none
+        if not node.enabled:
+            return none
+        return self.kind_of(node.kind)
+
+    ## The selection levels: the selected Edit node's kind's, else Edit
+    ## Mesh's (any displayed mesh selects on them).
+    pub func levels(self) -> list[EditLevel]:
+        if let kind = self.active_kind():
+            return kind.levels
+        return self.mesh_levels
+
+    pub func level(self) -> EditLevel:
+        let all = self.levels()
+        return all[self.component_mode if self.component_mode < all.length else 0]
+
+    ## Whether viewport tool `name` applies at the current level: the Edit
+    ## node's kind offers it there (any tool on another node's mesh).
+    pub func tool_available(self, name: str) -> bool!:
+        let kind = self.active_kind() else return true
+        if name in kind.primitives:
+            return true
+        let tool = kind.tool(name) else return false
+        return tool.offered(self.component_mode)
+
+    ## The level that selects single elements of `domain` (Polygons rather
+    ## than Object), or the first level.
+    pub func level_of(self, domain: int) -> int:
+        let all = self.levels()
+        for index in 0..<all.length:
+            if all[index].domain_number() == domain and all[index].piece == none:
+                return index
+        for index in 0..<all.length:
+            if all[index].domain_number() == domain:
+                return index
+        return 0
+
+    ## The Edit overlay's mode for the level's domain (0 points, 1 edges,
+    ## 2 faces, 3 corners).
+    pub func overlay_mode(self) -> int:
+        let domain = self.domain()
+        return 1 if domain == 4 else (3 if domain == 1 else domain)
+
+    ## The selection's domain on the pick geometry (0 points, 4 edges,
+    ## 2 faces, 1 corners) and the Group Type steps and verb nodes read.
     pub func domain(self) -> int:
-        return [0, 4, 2, 1][self.component_mode]
+        return self.level().domain_number()
 
     pub func group_type(self) -> int:
-        return [1, 2, 3, 4][self.component_mode]
+        return self.level().group_number()
 
     ## The selection on the displayed mesh (empty when there is none).
     pub func current_selection(self) -> Selection?!:
@@ -270,7 +335,7 @@ pub class Workspace:
 
     pub func editing(self) -> bool:
         let node = self.selected() else return false
-        return node.kind == "Edit" and node.enabled and (not node.dirty or self.pending != none) and node.id == self.network.display and self.geometry != none
+        return is_edit(node.kind) and node.enabled and (not node.dirty or self.pending != none) and node.id == self.network.display and self.geometry != none
 
     pub func transforming(self) -> bool:
         let node = self.selected() else return false
@@ -355,6 +420,7 @@ pub class Workspace:
 
     pub func rebuild(self) -> unit!:
         if let session = self.compute:
+            self.network.level = self.component_mode
             session.submit(self.network, self.display_mode if self.display_mode <= 4 else 3, self.normals_visible)
             self.revision += 1
             return
@@ -379,7 +445,7 @@ pub class Workspace:
                 self.notice = failure.message
                 continue
             if node.id == graph.display:
-                self.geometry = data.mesh
+                self.geometry = self.picked(node, data)
                 self.sync_selection()
             let branch = Group()
             analytic += append_scene(data, branch, mode = self.display_mode if self.display_mode <= 4 else 3) catch failure:
@@ -397,6 +463,15 @@ pub class Workspace:
         self.normal_batch = WireBatch(self.normal_points)
         self.patch_batch = WireBatch(patches)
         self.revision += 1
+
+    ## What the viewport picks on for displayed `node`: its Edit kind's
+    ## geometry for the level, else its mesh.
+    func picked(self, node: Node, data: GeometryData) -> Mesh?!:
+        if node.enabled:
+            if let kind = self.kind_of(node.kind):
+                return kind.pick(data, self.component_mode) catch failure:
+                    recover none
+        return data.mesh
 
     ## Runtime UI uses a persistent worker; deterministic tests/scripts may cook
     ## synchronously. Published scenes remain visible while replacements compute.
@@ -451,7 +526,7 @@ pub class Workspace:
     ## the viewport shows, however the node was reached.
     pub func select_node(self, id: int) -> unit!:
         let node = self.network.require(id)
-        let shows = node.kind == "Edit" and (self.network.display != id or self.network.preview)
+        let shows = is_edit(node.kind) and (self.network.display != id or self.network.preview)
         if self.network.selected != id or shows:
             self.network.selected = id
             if shows:
@@ -631,8 +706,15 @@ pub class Workspace:
     ## expression and its guard the topology it was made on. With nothing
     ## selected a node waits for its components (Tool → Select).
     pub func model(self, operation: str) -> unit!:
-        let run = tool_run(operation, self.tool_amount()) else return
+        var run = tool_run(operation, self.tool_amount()) else return
         let mesh = self.geometry else return
+        if let kind = self.active_kind():
+            let tool = kind.tool(operation) else return
+            if not tool.offered(self.component_mode):
+                self.notice = f"{operation} does not apply to {self.level().name}"
+                self.revision += 1
+                return
+            run = ToolRun(tool.verb, tool.numbers(self.tool_amount()))
         let wants_group = not (operation in ["Subdivide", "Clean"])
         let chosen = self.current_selection() else return
         if wants_group and chosen.count() == 0:
@@ -648,10 +730,25 @@ pub class Workspace:
         else:
             self.add_tool_node(operation, run, group, mesh)
 
+    ## Create primitive `name` as a step of the displayed Edit node; its
+    ## piece becomes the selected Object.
+    pub func create(self, name: str) -> unit!:
+        let kind = self.active_kind() else return
+        if not self.editing():
+            return
+        let node = self.selected() else return
+        let step = kind.create(name) else return
+        self.perform("Create " + name, func () -> unit!:
+            node.edits.append(step)
+            self.network.invalidate(node.id)
+            self.adopt_output = true
+            self.pending_level = 0
+            self.rebuild())
+
     ## The amount the Edit node's tools use (its first parameter), 0.5 elsewhere.
     pub func tool_amount(self) -> float:
         let node = self.selected() else return 0.5
-        return node.values[0] if node.kind == "Edit" else 0.5
+        return node.values[0] if is_edit(node.kind) else 0.5
 
     ## Append one verb step to the displayed Edit node, with its settings.
     func append_step(self, label: str, verb: str, group: str, numbers: list[float], mesh: Mesh) -> unit!:
@@ -791,8 +888,8 @@ pub class Workspace:
     pub func walk_selection(self, operation: int) -> unit!:
         let mesh = self.geometry else return
         let chosen = self.current_selection() else return
-        if operation >= 4 and self.component_mode != 1:
-            self.notice = "Loops and rings need edges (2)"
+        if operation >= 4 and self.domain() != 4:
+            self.notice = "Loops and rings need the Edges level"
             self.revision += 1
             return
         self.perform("Change selection", func () -> unit!:
@@ -801,7 +898,7 @@ pub class Workspace:
     ## Switching the component type carries the selection over (a face is
     ## kept when all its points were selected; a point when any face was).
     pub func set_mode(self, mode: int) -> unit!:
-        if mode == self.component_mode or mode < 0 or mode > 3:
+        if mode == self.component_mode or mode < 0 or mode >= self.levels().length:
             return
         let mesh = self.geometry
         let chosen = self.selection
@@ -814,17 +911,28 @@ pub class Workspace:
                     let strict = domain == 2 or (domain == 4 and previous.domain() == 0)
                     self.selection = previous.on_domain(geometry, domain, strict)
         self.revision += 1
+        # An Edit kind may pick each level on other geometry (Edit CAD).
+        if self.active_kind() != none:
+            self.rebuild()
 
-    ## Click: select `id` alone, or toggle it with `extend`; -1 clears.
+    ## Click: select `id` alone, or toggle it with `extend`; -1 clears. At a
+    ## level of pieces (Object) the whole piece around `id`.
     pub func choose_component(self, id: int, extend: bool) -> unit!:
         if not self.selecting():
             return
+        let mesh = self.geometry else return
         let chosen = self.current_selection() else return
+        let piece = self.level().whole(mesh, id) if id >= 0 else ""
         self.perform("Select components", func () -> unit!:
             if id < 0:
                 if not extend: self.selection = none
                 return
-            self.selection = chosen.changed(id, 2 if extend else 3))
+            if piece == "":
+                self.selection = chosen.changed(id, 2 if extend else 3)
+            elif not extend:
+                self.selection = Selection.of(mesh, piece, self.domain())
+            else:
+                self.selection = chosen.combined(mesh, piece, 1 if chosen.contains(id) else 0))
 
     pub func select_all(self) -> unit!:
         let chosen = self.current_selection() else return
@@ -870,7 +978,7 @@ pub class Workspace:
         node.guard = mesh.topology_hash()
 
     pub func extrude(self) -> unit!:
-        if self.selected_count() == 0 or self.component_mode != 2:
+        if self.selected_count() == 0 or self.domain() != 2:
             self.notice = "Select faces to extrude"
             self.revision += 1
             return
@@ -879,7 +987,7 @@ pub class Workspace:
     ## Change the distance of the Edit node's most recent extrusion.
     pub func set_last_extrusion(self, distance: float) -> unit!:
         let node = self.selected() else return
-        if node.kind != "Edit" or node.edits.length == 0 or node.edits[-1].verb != "PolyExtrude" or node.edits[-1].numbers[0] == distance:
+        if not is_edit(node.kind) or node.edits.length == 0 or node.edits[-1].verb != "PolyExtrude" or node.edits[-1].numbers[0] == distance:
             return
         self.perform("Change extrusion", func () -> unit!:
             let numbers = node.edits[-1].numbers.copy()
@@ -894,7 +1002,7 @@ pub class Workspace:
 
     pub func clear_edits(self) -> unit!:
         let node = self.selected() else return
-        if node.kind != "Edit" or node.edits.length == 0:
+        if not is_edit(node.kind) or node.edits.length == 0:
             return
         self.perform("Clear edits", func () -> unit!:
             node.edits = []
@@ -932,18 +1040,28 @@ pub class Workspace:
     ## group, or drop a selection that no longer fits.
     func sync_selection(self) -> unit!:
         let mesh = self.geometry else return
+        if self.component_mode >= self.levels().length:
+            self.component_mode = 0
+            self.selection = none
+        # A create step's piece: selected at its level (Object).
+        if self.adopt_output and self.pending_level >= 0:
+            self.adopt_output = false
+            self.component_mode = self.pending_level
+            self.pending_level = -1
+            if mesh.group_size(".selection", self.domain()) >= 0:
+                self.selection = Selection.of(mesh, ".selection", self.domain())
+            return
         if self.pending_group != "":
             let domain = [0, 0, 4, 2, 1][self.pending_type] if self.pending_type > 0 else self.domain()
-            self.component_mode = [0, 3, 2, 0, 1][domain]
+            self.component_mode = self.level_of(domain)
             self.selection = Selection.of(mesh, self.pending_group, domain)
             self.pending_group = ""
             return
         if self.adopt_output:
             self.adopt_output = false
-            for mode in [2, 1, 0, 3]:
-                let domain = [0, 4, 2, 1][mode]
+            for domain in [2, 4, 0, 1]:
                 if mesh.group_size(".selection", domain) >= 0:
-                    self.component_mode = mode
+                    self.component_mode = self.level_of(domain)
                     self.selection = Selection.of(mesh, ".selection", domain)
                     return
         if let chosen = self.selection:
