@@ -28,54 +28,19 @@ pub class CadPreview:
                 self.normal_guides.append(p)
                 self.normal_guides.append(p.add(placement.transform_normal(delta).multiply_scalar(delta.length())))
             return
-        var batch: PolygonMesh? = none
-        for model in models:
-            var shown_edges: set[int] = {}
-            for face in 0..<model.face_count():
+        # luce-cad meshes every face's preview on its worker pool and returns
+        # display batches, deduplicated patch boundaries and normal guides.
+        for index in 0..<models.length:
+            let model = models[index]
+            let part = model.preview(func (fraction: float) -> unit!:
                 if let report = progress:
-                    report(float(face) / float(model.face_count()))
-                for edge in 0..<model.face_edge_count(face):
-                    let id = model.face_edge_id(face, edge)
-                    if id in shown_edges:
-                        continue
-                    shown_edges.insert(id)
-                    # Match the default full-circle display resolution. A coarse
-                    # independent boundary chord can sink into the shaded mesh
-                    # and make an otherwise smooth CAD edge look dashed/faceted.
-                    let divisions = 1 if model.face_edge_linear(face, edge) else 64
-                    var previous = model.face_edge_point(face, edge, 0.0)
-                    for step in 1..<divisions + 1:
-                        let point = model.face_edge_point(face, edge, float(step) / float(divisions))
-                        self.boundaries.append(previous)
-                        self.boundaries.append(point)
-                        previous = point
-                let part = preview_patch(model, face) catch failure:
-                    self.failed_faces += 1
-                    if self.first_error == "":
-                        self.first_error = f"Patch {face + 1}: {failure.message}"
-                    continue
-                if part.face_count() > 0:
-                    let middle = part.face_count() // 2
-                    let center = part.face_center(middle)
-                    let length = part.bounds().maximum.subtract(part.bounds().minimum).length() * 0.03
-                    self.normal_guides.append(center)
-                    self.normal_guides.append(center.add(part.face_normal(middle).multiply_scalar(length)))
-                if let current = batch:
-                    let same_color_schema = (current.find_attribute("Cd", 2) >= 0) == (part.find_attribute("Cd", 2) >= 0)
-                    if same_color_schema and current.point_count() + part.point_count() < 4096 and current.vertex_count() + part.vertex_count() < 16000:
-                        batch = current.merged(part)
-                    else:
-                        self.meshes.append(current)
-                        batch = part
-                else:
-                    batch = part
-        if let current = batch:
-            self.meshes.append(current)
-
-func preview_patch(model: CadModel, face: int) -> PolygonMesh!:
-    let divisions = 8 if model.face_edge_count(face) > 32 else 16
-    let result = model.preview_face(face, divisions) catch failure:
-        let coarse = model.preview_face(face, 4) catch coarse_failure:
-            recover model.preview_face(face, 16)
-        recover coarse
-    return result
+                    report((float(index) + fraction) / float(models.length)))
+            self.failed_faces += part.failed_faces()
+            if self.first_error == "":
+                self.first_error = part.first_error()
+            for at in 0..<part.mesh_count():
+                self.meshes.append(part.mesh(at))
+            for at in 0..<part.boundary_count():
+                self.boundaries.append(part.boundary(at))
+            for at in 0..<part.guide_count():
+                self.normal_guides.append(part.guide(at))

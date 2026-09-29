@@ -19,8 +19,9 @@ Fixture: `camera.step` tessellated at 16 divisions, 707k points and 655k faces.
 | Node select | under 1 ms |
 | Tessellate 16 → 8 divisions | 4.5 s |
 | First draw of a changed mesh (CPU prep) | ~1.8 s — open |
-| File-node preview | 8.5 s — open |
-| Tessellate (16 divisions) | 7.7 s — open |
+| File node displayed (load, preview, publish) | 1.2 s |
+| Tessellate (16 divisions), cook | 1.8 s |
+| Tessellate displayed after File | 3.1 s |
 
 Worker times run off the UI thread; the previous scene stays visible and
 interactive while they cook.
@@ -55,7 +56,12 @@ interactive while they cook.
   query BVH is built lazily and warmed on the worker.
 - **Process-level source caches.** Parsed files (path, size, mtime, content hash,
   tolerance) and tessellations (parsed model and options) are reused on reload.
-- **CAD.** Face jobs run on four native workers; intermediate CAD meshes skip
+- **CAD.** luce-cad runs its per-face work (layout seeding, speculative
+  crossings, meshing, normals, previews) on one persistent pool of
+  processors - 1 workers; the serial layout reconcile reuses their exact
+  results, so output does not depend on the core count. The File preview is
+  one `CadModel.preview` call that meshes faces in parallel and returns
+  display batches. Intermediate CAD meshes skip
   query-index construction; sliver dissolves update a native workspace instead
   of rebuilding the patch per edit.
 
@@ -105,10 +111,14 @@ warm up first, and note concurrent load; single runs are indicative only.
 - **First draw of a changed mesh** spends ~1.8 s of main-thread CPU in
   `Renderer.prepare` (reading expanded vertices, transforming normals, computing
   flat/smooth colors). Indexed GPU buffers and shader lighting should replace it.
-- **File-node preview (8.5 s)** of a large STEP file: make per-patch preview lazy
-  or parallel.
-- **Tessellation (7.7 s)**: parallelize trim layout planning and surface-trim
-  projection (planning is a serial prepass today); inline the vector math.
+- **Publishing a large CAD mesh** costs ~1.2 s on the worker after the 1.8 s
+  cook: the query BVH (`prepare_queries`, ~0.55 s) and normal-guide overlay
+  points (~0.3 s) in `ComputeChannel.mesh`. The BVH could be built lazily on
+  first pick, and guides on demand.
+- **Tessellation (1.8 s)**: what remains serial is geocore's final
+  `PolygonMesh` construction (~0.27 s), layout reconcile/balance (~0.2 s) and
+  the slowest faces' tails. CAD File 9.3 s and Tessellate 7.4 s cooks
+  (18.3 s File to Tessellate displayed) were the 2026-09-28 starting point.
 - Large models: `car2.step` (4.1M polygons) takes minutes from File to viewport;
   imports are whole-file, not streaming.
 - Vulkan is cross-compiled and linked but not runtime-measured here.

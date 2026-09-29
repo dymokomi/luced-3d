@@ -40,22 +40,28 @@ below were studied, not linked or copied. Python files are development tools.
 
 File outputs analytic CAD, never polygons. The explicit **Tessellate** node is the
 only CAD-to-polygon conversion in the DAG. CAD-only outputs still display through
-a disposable per-patch preview (`CadModel.preview_face`, cached in `CadPreview`),
-drawn with deduplicated analytic patch boundaries; preview failures report their
-count and keep boundary curves.
+a disposable per-patch preview (`CadModel.preview`, meshing every face's
+`preview_face` on luce-cad's worker pool and batching them in face order; cached
+in `CadPreview`), drawn with deduplicated analytic patch boundaries; preview
+failures report their count and keep boundary curves.
 
 A full tessellation (`CadModel.tessellate(segments, edge_size)`) runs:
 
 1. **Shared edge sampling.** Every B-rep edge is sampled once, by physical arc
    length and curvature, and all incident faces reuse its point IDs.
-2. **Planning (serial, on the compute worker).** Per face: choose a chart, build
+2. **Planning.** Per face: choose a chart, build
    curvature/size rows (`layout_rows`, `layout_density`, `layout_pitch`), classify
    seams (`seam_flow`), transport rows only through eligible seams
    (`layout_balance`), reconcile opposite logical-side counts (`layout_counts`,
    `layout_feasibility`), intersect grid lines with trims (`trim_layout`) and
    register every exact curve/grid root as a canonical station. Shared cuts are
-   frozen before canonical vertices are allocated.
-3. **Face jobs.** Four native workers (models with at least 16 faces) mesh
+   frozen before canonical vertices are allocated. Row setup and chart seeding
+   run per face on the worker pool; reconcile and balance stay Gauss-Seidel
+   over faces in source order, reusing an exact per-face memo of NURBS
+   inversions and crossing roots that a parallel pass fills first, and
+   skipping faces whose inputs did not change. Output is independent of the
+   core count.
+3. **Face jobs.** The pool's workers (models with at least 16 faces) mesh
    independent faces from the frozen plans. Each owns scratch and temporaries;
    shared samples are immutable. Results merge in source-face order, so output is
    deterministic. After a failure, no new jobs start; earlier in-flight jobs
@@ -76,6 +82,10 @@ A full tessellation (`CadModel.tessellate(segments, edge_size)`) runs:
    `cad_trim_grid` (clipped-grid provenance) and `cad_flow_island` (minimum local
    face ID of a compatible-flow island). Transforms inverse-transpose `N`;
    geometry-changing edits invalidate it.
+   On request (`tessellate(..., curvature=true)`, off by default) corner
+   `curvature.k1`/`curvature.k2` hold the support's principal curvatures and
+   `curvature.d1`/`d2` their directions. `N` and curvature are per corner, so
+   polygons of two B-rep faces meeting at a seam keep each face's own values.
 
 Density controls belong to Tessellate: divisions and a target edge length (0 off;
 positive values are desired source-unit spacing, **not** a minimum edge length
