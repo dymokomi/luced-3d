@@ -1,8 +1,12 @@
 ## Set verb nodes: curves, fields and conversions run on the whole geometry
 ## set (not the realized mesh), through luce-geocore's GeometryVerbs.
-from geocore import GeometryVerbs, GeometrySet
+from geocore import GeometryVerbs, GeometrySet, SetAttributes, Mesh
+from three import Vector3
 from geometry_data import GeometryData
+from node_evaluation import evaluate_operator
 import node_catalog
+import math
+import ui
 
 ## A set verb node's result, with a warning when the verb passed its input
 ## through or the group named elements that do not exist.
@@ -15,4 +19,78 @@ pub func evaluate_set_verb(kind: str, v: list[float], text: list[str], data: Geo
     made.warning = result.warning()
     if made.warning == "" and result.misses() > 0:
         made.warning = f"{result.misses()} group numbers name no element"
+    return made
+
+# -- Placement nodes: the whole set is placed, every component with it.
+
+pub func is_placement(kind: str) -> bool:
+    return kind in ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize"]
+
+## Mirror, copies and Match Size on the whole set: meshes, curves, fields
+## and CAD are placed together.
+pub func evaluate_placement(kind: str, v: list[float], data: GeometryData, second: GeometryData?) -> GeometryData!:
+    let same_size = Vector3(1.0, 1.0, 1.0)
+    if kind == "Mirror":
+        let axis = int(v[0])
+        let mirrored = data.transformed(Vector3(), Vector3(), Vector3(-1.0 if axis == 0 else 1.0, -1.0 if axis == 1 else 1.0, -1.0 if axis == 2 else 1.0))
+        return data.merged(mirrored) if v[1] != 0.0 else mirrored
+    if kind == "MatchSize":
+        if not data.geometry.has_bounds():
+            return data
+        let bounds = data.geometry.bounds()
+        let size = bounds.maximum.subtract(bounds.minimum)
+        let longest = math.max(size.x, math.max(size.y, size.z))
+        if longest < 0.000001:
+            return data
+        let scale = v[0] / longest
+        let center = bounds.minimum.add(bounds.maximum).multiply_scalar(0.5)
+        return data.transformed(center.multiply_scalar(-scale), Vector3(), Vector3(scale, scale, scale))
+    # Copies: the source set at each offset or target point.
+    var targets: Mesh? = none
+    if kind == "CopyToPoints":
+        let target = second else error(ui.invalid, "Connect target points")
+        targets = target.operand() else error(ui.invalid, "Connect target points")
+    let count = (targets else Mesh.empty()).point_count() if kind == "CopyToPoints" else int(v[0])
+    let source = data.mesh
+    let points = (source else Mesh.empty()).point_count()
+    let corners = (source else Mesh.empty()).vertex_count()
+    if count > 256 or points * count > 16384 or corners * count > 65536:
+        error(ui.invalid, "Copies exceed the modeling geometry budget")
+    var result = GeometryData()
+    for copy in 0..<count:
+        let offset = (targets else trap("targets")).point(copy) if kind == "CopyToPoints" else Vector3(v[1], v[2], v[3]).multiply_scalar(float(copy))
+        let moved = data.transformed(offset, Vector3(), same_size)
+        result = moved if copy == 0 else result.merged(moved)
+    return result
+
+# -- Attribute nodes: the mesh kernels on the mesh, luce-geocore's
+# SetAttributes on curves and point clouds.
+
+pub func evaluate_attributes(kind: str, v: list[float], text: list[str], data: GeometryData, operand: Mesh?) -> GeometryData!:
+    var result = data
+    if let mesh = operand:
+        result = data.with_operand(evaluate_operator(kind, v, text, mesh, none))
+    if not SetAttributes.present(result.geometry):
+        if operand == none:
+            return data.passed("The input has no elements this node works on; it passes through")
+        return result
+    var geometry = result.geometry
+    if kind == "Color":
+        geometry = SetAttributes.filled(geometry, "Cd", 0, [v[0], v[1], v[2]], false, false, 0.0)
+    elif kind in ["AttributeCreate", "AttributeRandomize"]:
+        let values: list[float] = []
+        for component in 0..<int(v[1]):
+            values.append(v[3 + component])
+        geometry = SetAttributes.filled(geometry, text[1], int(v[0]), values, v[2] != 0.0, kind == "AttributeRandomize", v[7])
+    elif kind == "AttributeDelete":
+        geometry = SetAttributes.removed(geometry, text[1], int(v[0]))
+    elif kind == "AttributeRename":
+        geometry = SetAttributes.renamed(geometry, text[1], text[2], int(v[0]))
+    elif kind == "Selection Group" and int(v[0]) != 4:
+        geometry = SetAttributes.grouped(geometry, text[1], int(v[0]), text[0].trim())
+    else:
+        result.warning = f"{kind} works on meshes; curves and points pass through"
+        return result
+    let made = GeometryData(geometry = geometry)
+    made.warning = result.warning
     return made

@@ -4,8 +4,8 @@ from three import Vector3, Matrix4
 from geometry_data import GeometryData
 from edit_operations import EditStep
 import node_catalog
-from node_evaluation import source_geometry, evaluate_operator, evaluate_verb, load_geometry, SourceCache
-from geometry_nodes import evaluate_set_verb
+from node_evaluation import source_geometry, evaluate_verb, load_geometry, SourceCache
+from geometry_nodes import evaluate_set_verb, is_placement, evaluate_placement, evaluate_attributes
 from cache_node import reads_file, cook_cache
 import ui
 
@@ -130,19 +130,25 @@ pub class Node:
             return data.transformed(translation, rotation, scale)
         if self.kind == "Merge":
             return data.merged(second else error(ui.invalid, "Connect the second geometry input"))
-        var mesh = data.require_mesh()
+        # Mesh operators work on the mesh component; the other components
+        # (curves, points, volumes, SDFs, CAD beside a mesh) pass through.
+        if is_placement(self.kind):
+            return evaluate_placement(self.kind, v, data, second)
+        let operand = data.operand()
         if self.kind == "Edit":
+            var mesh = operand else return data
             for edit in self.edits:
                 mesh = edit.evaluate(mesh).mesh()
-            return GeometryData(mesh)
+            return data.with_operand(mesh)
         if node_catalog.is_mesh_verb(self.kind):
+            let mesh = operand else return data.passed("The input has no polygons; it passes through")
             if self.guard != 0 and self.guard != mesh.topology_hash():
                 error(ui.invalid, "Group was selected on different topology. Reselect, or Keep IDs.")
-            return evaluate_verb(self.kind, v, self.texts, mesh)
-        var other: Mesh? = none
-        if let input = second:
-            other = input.require_mesh()
-        return GeometryData(evaluate_operator(self.kind, v, self.texts, mesh, other))
+            let result = evaluate_verb(self.kind, v, self.texts, mesh)
+            let kept = data.with_operand(result.mesh else mesh)
+            kept.warning = result.warning
+            return kept
+        return evaluate_attributes(self.kind, v, self.texts, data, operand)
 
 pub class Network:
     pub var nodes: list[Node]

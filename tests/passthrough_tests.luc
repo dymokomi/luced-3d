@@ -1,0 +1,39 @@
+## Mesh operators work on the mesh component and pass everything else
+## through: a set of a mesh, curves and a volume keeps all three through
+## PolyExtrude, Smooth, an attribute node and Transform, and the attribute
+## node reaches the curve points too.
+from network import Network
+from geocore import SetAttributes
+
+pub func passthrough_tests() -> unit!:
+    let graph = Network(false)
+    let cube = graph.add("Cube", 0.0, 0.0)
+    let circle = graph.add("Curve Circle", 100.0, 0.0)
+    let ball = graph.add("SDF Sphere", 200.0, 0.0)
+    let volume = graph.add("SDF to Volume", 200.0, 60.0)
+    volume.values[0] = 0.2
+    graph.connect(ball.id, volume.id, 0)
+    let first = graph.add("Merge", 0.0, 120.0)
+    graph.connect(cube.id, first.id, 0)
+    graph.connect(circle.id, first.id, 1)
+    let all = graph.add("Merge", 0.0, 180.0)
+    graph.connect(first.id, all.id, 0)
+    graph.connect(volume.id, all.id, 1)
+    var last = all
+    for kind in ["PolyExtrude", "Smooth", "AttributeCreate", "Transform", "Mirror"]:
+        let node = graph.add(kind, 0.0, 240.0)
+        graph.connect(last.id, node.id, 0)
+        last = node
+    let extruded = graph.find(last.id) else trap("node")
+    let data = graph.evaluate_data(extruded.id)
+    let result = data.geometry
+    assert(result.has("mesh") and result.has("curves") and result.has("volume"))
+    assert((data.mesh else trap("mesh")).face_count() == 2 * 10)
+    assert(SetAttributes.has(result, "weight", 0))
+    let text = data.description()
+    assert(text.contains("2 curves / 32 curve points") and text.contains("2 volume grids"))
+    # Curves alone pass a mesh verb through with a warning.
+    let lone = graph.add("PolyBevel", 300.0, 0.0)
+    graph.connect(circle.id, lone.id, 0)
+    let passed = graph.evaluate_data(lone.id)
+    assert(passed.geometry.has("curves") and passed.warning != "")

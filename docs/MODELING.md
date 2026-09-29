@@ -37,6 +37,21 @@ parent is a member. New elements are zero, empty and in no group. Each verb
 also returns an output selection (Extrude's front faces, Inset's inner faces,
 Fuse's merged points), which the tool flow adopts.
 
+Mesh operators work on the mesh component and pass every other component
+through unchanged, as Houdini's SOPs do. That covers verbs, the Edit node and
+the attribute nodes. The other components are curves, points, volumes, SDFs
+and CAD beside a mesh; they are shared, so passing them costs nothing.
+
+- A set with no polygons of its own passes through with a warning.
+- A set of instances has its polygons realized first, as before.
+- Attribute nodes also act on curves and point clouds. AttributeCreate,
+  AttributeRandomize, Color, AttributeDelete, AttributeRename and Selection
+  Group work there: curve vertices are their points, and primitives are
+  curves.
+- AttributePromote, Normal, Measure and UVProject are mesh-only. They warn
+  and pass curves and points through.
+- Mirror, CopyTransform, CopyToPoints and MatchSize place the whole set.
+
 Curve nodes are set verbs: they run on the whole geometry set rather than the
 realized mesh, and come from the same catalog (luce-geocore's `VerbCatalog`).
 Curve points are the point domain and curves the primitive domain, so Group
