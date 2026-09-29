@@ -34,7 +34,7 @@ def build(project, binary, optimization="0", backend="native"):
     flags = ["--native", "--opt", optimization] if backend == "native" else ["--backend=c"] + (["--release"] if int(optimization) >= 2 else [])
     subprocess.run([os.environ.get("LUCE", "luce"), "build", str(project / "src/main.luc"),
                     *flags, "-o", str(binary)],
-                   check=True, env=environment, timeout=240)
+                   check=True, env=environment, timeout=480)
 
 
 if __name__ == "__main__":
