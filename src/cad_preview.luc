@@ -1,4 +1,6 @@
-## Disposable, cached CAD display data. Never replaces the DAG's analytic payload.
+## Cached CAD display data: the models' tessellations (kept in the models),
+## their analytic boundaries, normal guides and hulls (control nets, point
+## pairs). Never replaces the DAG's analytic payload.
 from cad import CadModel
 from geocore import Mesh
 from three import Vector3, Matrix4
@@ -7,12 +9,14 @@ pub class CadPreview:
     pub let meshes: list[Mesh]
     pub let boundaries: list[Vector3]
     pub let normal_guides: list[Vector3]
+    pub let hull: list[Vector3]
     pub var failed_faces: int = 0
     pub var first_error: str = ""
     pub func init(self, models: list[CadModel], source: CadPreview? = none, matrix: Matrix4? = none, progress: func(float) -> unit!? = none) -> unit!:
         self.meshes = []
         self.boundaries = []
         self.normal_guides = []
+        self.hull = []
         if let original = source:
             let placement = matrix else Matrix4()
             self.failed_faces = original.failed_faces
@@ -21,6 +25,8 @@ pub class CadPreview:
                 self.meshes.append(mesh.placed(placement))
             for point in original.boundaries:
                 self.boundaries.append(placement.transform_point(point))
+            for point in original.hull:
+                self.hull.append(placement.transform_point(point))
             for at in 0..<original.normal_guides.length // 2:
                 let start = original.normal_guides[at * 2]
                 let delta = original.normal_guides[at * 2 + 1].subtract(start)
@@ -28,19 +34,37 @@ pub class CadPreview:
                 self.normal_guides.append(p)
                 self.normal_guides.append(p.add(placement.transform_normal(delta).multiply_scalar(delta.length())))
             return
-        # luce-cad meshes every face's preview on its worker pool and returns
-        # display batches, deduplicated patch boundaries and normal guides.
+        # A CAD model shows its tessellation at the Tessellate node's defaults,
+        # kept in the model: a Tessellate node with those settings places the
+        # same mesh (no copy, no new GPU buffers). A model that cannot be
+        # tessellated falls back to independent per-face previews.
         for index in 0..<models.length:
             let model = models[index]
-            let part = model.preview(func (fraction: float) -> unit!:
-                if let report = progress:
-                    report((float(index) + fraction) / float(models.length)))
-            self.failed_faces += part.failed_faces()
-            if self.first_error == "":
-                self.first_error = part.first_error()
-            for at in 0..<part.mesh_count():
-                self.meshes.append(part.mesh(at))
-            for at in 0..<part.boundary_count():
-                self.boundaries.append(part.boundary(at))
-            for at in 0..<part.guide_count():
-                self.normal_guides.append(part.guide(at))
+            let report = func (fraction: float) -> unit!:
+                if let callback = progress:
+                    callback((float(index) + fraction) / float(models.length))
+            let mesh = model.tessellate(16, 0.0, report, model.supports_curvature()) catch failure:
+                self.failed_faces += model.face_count()
+                if self.first_error == "":
+                    self.first_error = failure.message
+                self.append_previews(model, report)
+                continue
+            self.meshes.append(mesh)
+            let lines = model.overlay(mesh)
+            for at in 0..<lines.boundary_count():
+                self.boundaries.append(lines.boundary(at))
+            for at in 0..<lines.guide_count():
+                self.normal_guides.append(lines.guide(at))
+            for at in 0..<lines.hull_count():
+                self.hull.append(lines.hull_point(at))
+
+    ## Independent per-face previews of `model`, in display batches.
+    func append_previews(self, model: CadModel, progress: func(float) -> unit!) -> unit!:
+        let part = model.preview(progress) catch failure:
+            return
+        for at in 0..<part.mesh_count():
+            self.meshes.append(part.mesh(at))
+        for at in 0..<part.boundary_count():
+            self.boundaries.append(part.boundary(at))
+        for at in 0..<part.guide_count():
+            self.normal_guides.append(part.guide(at))

@@ -3,7 +3,7 @@
 ## times importing and cooking a mesh, its first display, selecting 1k faces,
 ## and a Move round trip (request, cook, hand-off, adopt, redraw).
 from workspace import Workspace
-from three import Vector3, Renderer, EditOverlay
+from three import Vector3, Renderer, EditOverlay, Color
 from offscreen import OffscreenView
 import theme
 import time
@@ -29,14 +29,15 @@ func frame(view: OffscreenView, w: Workspace, renderer: Renderer, overlay: EditO
     let editing = w.editing()
     renderer.set_edges(1.0 if editing else 0.0, theme.grey(90.0))
     renderer.set_wire_overlay(1.0 if editing else 0.0)
-    if editing and w.component_mode == 2:
-        if let mesh = w.geometry: renderer.set_face_selection(mesh, w.components)
+    let accent = theme.accent()
+    if editing and w.component_mode == 2 and w.selection != none:
+        renderer.set_selected_faces(w.geometry else trap("geometry"), w.selection else trap("selection"), Color(accent.red, accent.green, accent.blue), 0.45)
     else:
         renderer.clear_face_selection()
     renderer.render(w.scene, w.camera, target, true)
     if editing:
         if let mesh = w.geometry:
-            overlay.update(mesh, w.component_mode, w.components, -1)
+            overlay.show(mesh, w.component_mode, w.selection, -1)
             overlay.draw(w.camera, target, theme.grey(90.0), theme.accent(), theme.text(), wires = false)
     view.end()
     return since(start)
@@ -47,20 +48,30 @@ func run_case(label: str, path: str, tessellate: bool, view: OffscreenView) -> u
     w.enable_compute()
     settle(w)
     w.delete_selected()
-    var start = time.now()
-    w.add_node("File", 0.0, 0.0)
-    w.set_text(0, path)
-    if tessellate:
-        w.add_node("Tessellate", 0.0, 100.0)
-    w.add_node("Edit", 0.0, 200.0)
-    settle(w)
-    report(f"{label}: import and cook to an Edit node", since(start))
-    let mesh = w.geometry else trap("no mesh to edit")
-    print(f"# {label}: {mesh.point_count()} points, {mesh.face_count()} faces, {(try mesh.edge_count())} edges")
-    w.frame_cube()
     let renderer = Renderer(true)
     let overlay = EditOverlay()
     overlay.set_fill(false)
+    var start = time.now()
+    let whole = start
+    w.add_node("File", 0.0, 0.0)
+    w.set_text(0, path)
+    settle(w)
+    report(f"{label}: File (import and display cook)", since(start))
+    w.frame_cube()
+    report(f"{label}: File first display", frame(view, w, renderer, overlay))
+    if tessellate:
+        start = time.now()
+        w.add_node("Tessellate", 0.0, 100.0)
+        settle(w)
+        report(f"{label}: Tessellate", since(start))
+        report(f"{label}: Tessellate first display", frame(view, w, renderer, overlay))
+    start = time.now()
+    w.add_node("Edit", 0.0, 200.0)
+    settle(w)
+    report(f"{label}: Edit node cook", since(start))
+    report(f"{label}: import and cook to an Edit node", since(whole))
+    let mesh = w.geometry else trap("no mesh to edit")
+    print(f"# {label}: {mesh.point_count()} points, {mesh.face_count()} faces, {(try mesh.edge_count())} edges")
     report(f"{label}: first display", frame(view, w, renderer, overlay))
     w.orbit(4.0, 0.0)
     report(f"{label}: camera-only redraw", frame(view, w, renderer, overlay))

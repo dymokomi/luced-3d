@@ -39,11 +39,21 @@ below were studied, not linked or copied. Python files are development tools.
 ## Pipeline
 
 File outputs analytic CAD, never polygons. The explicit **Tessellate** node is the
-only CAD-to-polygon conversion in the DAG. CAD-only outputs still display through
-a disposable per-patch preview (`CadModel.preview`, meshing every face's
-`preview_face` on luce-cad's worker pool and batching them in face order; cached
-in `CadPreview`), drawn with deduplicated analytic patch boundaries; preview
-failures report their count and keep boundary curves.
+only CAD-to-polygon conversion in the DAG. CAD-only outputs display the model's
+tessellation at the Tessellate node's defaults (16 divisions, no target edge,
+curvature when the placement allows it), which the B-rep keeps
+(`BrepModel.mesh`): a Tessellate node with those settings places that same
+mesh in O(1), and the renderer reuses the GPU buffers already made for it. The
+display draws each edge's analytic polyline once and a normal guide per face
+(`CadModel.overlay`, which also returns the control-net hull). A model that
+cannot be tessellated falls back to the independent per-patch preview
+(`CadModel.preview`) and reports its failure.
+
+The tessellation also keeps each face's result (luce-cad `face_cache.lucb`),
+keyed by everything the face job reads, with boundary points named by their
+place in the face's boundary table. A copy of the model with moved control
+vertices (`CadModel.with_cvs_moved`) re-plans the layout and re-meshes only the
+faces whose inputs changed.
 
 A full tessellation (`CadModel.tessellate(segments, edge_size)`) runs:
 
@@ -61,7 +71,8 @@ A full tessellation (`CadModel.tessellate(segments, edge_size)`) runs:
    inversions and crossing roots that a parallel pass fills first, and
    skipping faces whose inputs did not change. Output is independent of the
    core count.
-3. **Face jobs.** The pool's workers (models with at least 16 faces) mesh
+3. **Face jobs.** The pool's workers (models with at least 16 faces, or any
+   model tessellated with its face cache) mesh
    independent faces from the frozen plans. Each owns scratch and temporaries;
    shared samples are immutable. Results merge in source-face order, so output is
    deterministic. After a failure, no new jobs start; earlier in-flight jobs
