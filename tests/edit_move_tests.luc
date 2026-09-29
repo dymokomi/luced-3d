@@ -1,0 +1,57 @@
+## Moves on tessellated CAD keep the supplied display triangles. Re-triangulating
+## cut-cell n-gons failed, so every Move on a tessellated STEP file failed.
+from three import PolygonMesh, Vector3
+from edit_operations import EditOperation
+from app import Luce3D
+import math
+
+## One 300-degree band polygon: ear clipping in its average plane fails, as it
+## does for curved CAD cells, so only its explicit strip triangles work.
+func band() -> PolygonMesh!:
+    let points: list[Vector3] = []
+    for ring in 0..<2:
+        for at in 0..<8:
+            let angle = float(at) * (300.0 / 7.0) * math.pi / 180.0
+            points.append(Vector3(math.cos(angle), math.sin(angle), float(ring)))
+    let corners = [0, 1, 2, 3, 4, 5, 6, 7, 15, 14, 13, 12, 11, 10, 9, 8]
+    let display: list[int] = []
+    for strip in 0..<7:
+        for corner in [strip, strip + 1, 14 - strip, strip, 14 - strip, 15 - strip]:
+            display.append(corner)
+    return PolygonMesh(points, [16], corners, display)
+
+func same_indices(a: PolygonMesh, b: PolygonMesh) -> unit!:
+    assert(a.index_count() == b.index_count())
+    for at in 0..<a.index_count():
+        assert(a.index(at) == b.index(at))
+
+pub func edit_move_tests() -> unit!:
+    let mesh = band()
+    let moved = EditOperation("Move", [3, 11], mesh, Vector3(0.0, 0.0, 0.05), 0.0).evaluate(mesh)
+    same_indices(moved, mesh)
+    assert(moved.point(3).z == 0.05 and moved.edge_count() == mesh.edge_count())
+    same_indices(EditOperation("Move", [0, 5], mesh, Vector3(), 0.0).evaluate(mesh), mesh)
+    # Extrusion keeps the cap's triangles and triangulates only the new walls.
+    let extruded = mesh.extruded_faces([0], 0.1)
+    for at in 0..<mesh.index_count():
+        assert(extruded.index(at) == mesh.index(at))
+    # The real Edit node path on a tessellated STEP file: the move succeeds.
+    let editor = Luce3D()
+    let w = editor.workspace
+    w.delete_selected()
+    w.add_node("File", 0.0, 0.0)
+    w.set_text(0, "tests/fixtures/cylinder.step")
+    w.add_node("Tessellate", 0.0, 100.0)
+    w.add_node("Edit", 0.0, 200.0)
+    assert(w.editing())
+    let before = w.geometry else trap("tessellated geometry")
+    w.set_mode(2)
+    w.choose_component(0, false)
+    w.move_selection(Vector3(0.0, 0.1, 0.0))
+    assert(w.notice == "")
+    let after = w.geometry else trap("moved geometry")
+    same_indices(after, before)
+    let corner = before.face_point(0, 0)
+    assert(math.abs(after.point(corner).y - before.point(corner).y - 0.1) < 0.000001)
+    editor.close()
+    print("PASS position-only edits keep CAD display triangles through Move, the Edit node and extrusion")
