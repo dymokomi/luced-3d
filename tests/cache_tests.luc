@@ -8,6 +8,7 @@ from compute_request import RequestWriter
 from project_graph import write_graph, read_graph
 from prism import Document, Value
 from three import PolygonMesh, Vector3
+from node_evaluation import SourceCache
 import time
 
 func settle(workspace: Workspace) -> unit!:
@@ -22,6 +23,7 @@ pub func cache_tests() -> unit!:
     group_stamps()
     hashed_guards()
     store_hits()
+    source_cache()
     large_edit_replay()
     print("PASS stamps ignore names/flags/tool amount, result store hits on undo, hashed guards, small deltas and one-recipe Edit replay")
 
@@ -133,6 +135,18 @@ func store_hits() -> unit!:
     assert((w.selected() else trap("Subdivide")).evaluations == cooks + 1)
     assert(w.publisher.adopted == adopted and w.geometry != none)
     (w.compute else trap("compute")).close()
+
+## Reloading an unchanged file (a new stamp) reuses its parse and tessellation.
+func source_cache() -> unit!:
+    let cache = SourceCache()
+    let first = cache.load("tests/fixtures/assembly.step", 0.0)
+    let again = cache.load("tests/fixtures/assembly.step", 0.0)
+    assert(again is first and cache.hits == 1)
+    discard(cache.load("tests/fixtures/assembly.step", 0.001))
+    assert(cache.hits == 1)
+    let tessellated = cache.tessellated(first, 8, 0.0)
+    assert(cache.tessellated(again, 8, 0.0) is tessellated and cache.hits == 2)
+    assert(not (cache.tessellated(first, 12, 0.0) is tessellated))
 
 ## A ~500k-face mesh: requests stay small, a new recipe or a gizmo step
 ## applies one recipe to the stored prefix, and undo applies none.
