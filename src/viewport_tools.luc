@@ -1,8 +1,8 @@
 ## Node-specific viewport UI. Topology and intersections remain in luce-3d.
-from ui import Painter, Event
+from ui import Painter, Event, Point
 from gpu import Rect
-from three import Vector3, EditOverlay, Renderer
-from input import EventKind
+from three import Vector3, EditOverlay, Renderer, Knife
+from input import EventKind, Key
 from workspace import Workspace
 from actions import Actions
 import math
@@ -43,6 +43,9 @@ pub class ViewportTools:
     pub var dragging: bool = false
     pub let gizmos: NodeGizmos
     pub var hovered: int = -1
+    ## A knife stroke being drawn: its start and end in the view.
+    var knifing: bool = false
+    var knife_line: list[float]
     var hover_revision: int = -1
     var hover_tool: int = -1
     var tool_scroll: float = 0.0
@@ -54,6 +57,7 @@ pub class ViewportTools:
     pub var renderer: Renderer? = none
 
     pub func init(self, workspace: Workspace, actions: Actions):
+        self.knife_line = []
         self.workspace = workspace
         self.actions = actions
         self.gizmos = NodeGizmos(workspace)
@@ -87,6 +91,9 @@ pub class ViewportTools:
             let through = kind != none and (kind else trap("kind")).see_through
             self.overlay.draw(w.camera, painter.target(), theme.grey(90.0), theme.accent(), theme.text(), wires = false, hidden = theme.grey(150.0) if through else none)
             self.draw_edit_controls(painter, height)
+        if self.knifing:
+            let line = self.knife_line
+            painter.line(Point(line[0], line[1]), Point(line[2], line[3]), 2.0, theme.accent())
         self.gizmos.draw(painter, width, height)
 
     func draw_edit_controls(self, painter: Painter, height: float) -> unit!:
@@ -156,11 +163,44 @@ pub class ViewportTools:
         self.hover_changed = before != [self.hovered, self.hover_tool, self.gizmos.hovered]
         return handled
 
+    ## The Knife tool: press, drag a line across the model (Shift snaps it to
+    ## 15°), release to cut; Escape or a lost pointer cancels.
+    func knife_event(self, event: Event, width: float, height: float) -> bool!:
+        let w = self.workspace
+        if not self.knifing:
+            if w.edit_tool != "Knife" or not w.selecting() or event.kind != EventKind.pointer_down or event.button != 0 or not event.inside or event.alt:
+                return false
+            # The level switcher and the tool strip keep their clicks.
+            if event.y <= 80.0 or (event.x <= 90.0 and event.y >= 90.0):
+                return false
+            self.knifing = true
+            self.knife_line = [event.x, event.y, event.x, event.y]
+            return true
+        if event.cancelled or event.kind in [EventKind.pointer_left, EventKind.focus_lost] or (event.kind == EventKind.key_down and event.key == Key.escape):
+            self.knifing = false
+            return true
+        if event.kind == EventKind.pointer_moved or event.kind == EventKind.pointer_up:
+            var x = event.x
+            var y = event.y
+            if event.shift:
+                let snapped = Knife.snapped(self.knife_line[0], self.knife_line[1], x, y)
+                x = snapped.x
+                y = snapped.y
+            self.knife_line = [self.knife_line[0], self.knife_line[1], x, y]
+            if event.kind == EventKind.pointer_up:
+                self.knifing = false
+                let line = self.knife_line
+                w.knife(line[0], line[1], line[2], line[3], width, height)
+            return true
+        return true
+
     func handle(self, event: Event, width: float, height: float) -> bool!:
         let w = self.workspace
         let handled = self.gizmos.event(event, width, height)
         self.dragging = self.gizmos.dragging
         if handled:
+            return true
+        if self.knife_event(event, width, height):
             return true
         if event.kind == EventKind.scroll and w.selecting() and not event.alt and event.x >= 16.0 and event.x <= 86.0 and event.y >= 94.0:
             let maximum = math.max(0.0, float((self.actions.strip().length + 1) // 2) * 36.0 - height + 144.0)

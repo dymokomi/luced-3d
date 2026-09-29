@@ -1,5 +1,5 @@
 from geocore import Mesh, Selection, Verbs
-from three import Scene, Group, Vector3, Matrix4, PerspectiveCamera, AmbientLight, DirectionalLight, WireBatch, CurveLines
+from three import Scene, Group, Vector3, Matrix4, PerspectiveCamera, AmbientLight, DirectionalLight, WireBatch, CurveLines, Knife
 from network import Network, Node
 from edit_operations import EditStep
 from tools import ToolRun, tool_run, verb_defaults
@@ -743,6 +743,11 @@ pub class Workspace:
     ## selected a node waits for its components (Tool → Select).
     pub func model(self, operation: str) -> unit!:
         let mesh = self.geometry else return
+        # The knife is a stroke in the viewport (knife below), not a click.
+        if operation == "Knife":
+            self.choose_tool("Knife")
+            self.notice = "Drag across the model to cut it; Shift snaps the stroke to 15°"
+            return
         var run = ToolRun("", [])
         if let kind = self.active_kind():
             # The kind's own tool: its verb and numbers, whether or not
@@ -791,6 +796,52 @@ pub class Workspace:
         return node.values[0] if is_edit(node.kind) else 0.5
 
     ## Append one verb step to the displayed Edit node, with its settings.
+    ## A knife stroke from (x0, y0) to (x1, y1) of the viewport: a Clip that
+    ## keeps both sides along the plane through the eye and the stroke
+    ## (recorded as a point and a normal, so replays need no camera). It
+    ## cuts the selection, or the faces the stroke passes over.
+    pub func knife(self, x0: float, y0: float, x1: float, y1: float, width: float, height: float) -> unit!:
+        let mesh = self.geometry else return
+        let plane = Knife.plane(self.camera, x0, y0, x1, y1, width, height) catch failure:
+            self.notice = failure.message
+            self.revision += 1
+            return
+        let chosen = self.current_selection() else return
+        var group = chosen.expression(mesh) if chosen.count() > 0 else ""
+        var group_type = self.group_type()
+        if group == "":
+            let under = Knife.faces_under(mesh, self.camera, x0, y0, x1, y1, width, height)
+            if under.count() == 0:
+                self.notice = "The stroke crosses no faces"
+                self.revision += 1
+                return
+            group = under.expression(mesh)
+            group_type = 3
+        let numbers = verb_defaults("Clip")
+        numbers[0] = 3.0
+        numbers[3] = 2.0
+        numbers[4] = plane.point.x
+        numbers[5] = plane.point.y
+        numbers[6] = plane.point.z
+        numbers[7] = plane.normal.x
+        numbers[8] = plane.normal.y
+        numbers[9] = plane.normal.z
+        if self.editing():
+            let node = self.selected() else return
+            self.perform("Knife", func () -> unit!:
+                node.edits.append(EditStep("Clip", group, group_type, numbers, mesh.topology_hash(), int(node.values[3]), node.values[4] != 0.0))
+                self.network.invalidate(node.id)
+                self.adopt_output = true
+                self.rebuild())
+            return
+        self.perform("Knife", func () -> unit!:
+            let node = self.insert_after_display(ToolRun("Clip", numbers))
+            node.texts[0] = group
+            node.values[node_catalog.group_type_slot] = float(group_type)
+            node.guard = mesh.topology_hash()
+            self.adopt_output = true
+            self.rebuild())
+
     func append_step(self, label: str, verb: str, group: str, numbers: list[float], mesh: Mesh) -> unit!:
         let node = self.selected() else return
         self.perform(label + " components", func () -> unit!:

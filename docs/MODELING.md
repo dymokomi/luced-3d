@@ -181,7 +181,9 @@ surfaces (Edit SDF).
 Edit Mesh's levels are Object, Polygons, Edges, Vertices and Corners. At the
 Object level a pick selects a whole piece, and moves, rotations, scales and
 Delete act on whole pieces. Besides the modeling verbs its tools include
-Knife (a Clip keeping both sides, through the selection's centroid, across X),
+Knife (drag a stroke across the model, Shift snapping it to 15°: the cut is
+the plane through the eye and the stroke, recorded as a Clip with its own
+point and normal, cutting the selection or else every face under the stroke),
 Connect (the tool amount places the new points), Edge Slide (the tool
 amount is how far), PolyMirror (Polygons: across X through the origin,
 welded), Spin (Edges: a full turn about Y in 12 steps), Crease (Edges: the
