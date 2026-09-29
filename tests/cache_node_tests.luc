@@ -5,6 +5,9 @@
 from network import Network
 from stamps import stamp_graph
 from geocore import GeometryFile
+from cad_geometry import CadGeometry
+import files
+import paths
 from prism import Document
 import node_catalog
 
@@ -47,3 +50,41 @@ pub func cache_node_tests() -> unit!:
     assert(points.rank() == 2 and points.count() == bigger.point_count() * 3)
     let key = document.get("/geometry", "key")
     assert(key.rank() == 0 and key.number_at() == float(cache.stamp))
+    cad_round_trip("tests/fixtures/assembly.step", "cad_cache.prism")
+    # The camera model, when this machine has it (the bench's default file).
+    let camera = paths.join(files.home_directory(), "Desktop/camera.step")
+    let kind = files.path_kind(camera) catch failure:
+        return
+    cad_round_trip(camera, "camera_cache.prism")
+
+## File (STEP) -> Cache writes the analytic models; switched to reading, the
+## Cache node gives back the same models (control vertices bit for bit, the
+## same tessellation) without cooking upstream: the File node now names a
+## missing file.
+func cad_round_trip(step: str, file: str) -> unit!:
+    let graph = Network(false)
+    let source = graph.add("File", 0.0, 0.0)
+    source.texts[0] = step
+    let cache = graph.add("Cache", 0.0, 60.0)
+    cache.texts[0] = file
+    graph.connect(source.id, cache.id, 0)
+    stamp_graph(graph)
+    let written = graph.evaluate_data(cache.id)
+    assert(CadGeometry.model_count(written.geometry) > 0)
+    cache.values[0] = 1.0
+    source.texts[0] = "missing.step"
+    stamp_graph(graph)
+    for node in graph.nodes:
+        node.dirty = true
+    let loaded = graph.evaluate_data(cache.id)
+    assert(CadGeometry.model_count(loaded.geometry) == CadGeometry.model_count(written.geometry))
+    for index in 0..<CadGeometry.model_count(written.geometry):
+        let a = CadGeometry.model(written.geometry, index)
+        let b = CadGeometry.model(loaded.geometry, index)
+        assert(a.face_count() == b.face_count() and a.cv_count() == b.cv_count())
+        for cv in 0..<a.cv_count():
+            let p = a.cv_position(cv)
+            let q = b.cv_position(cv)
+            assert(p.x == q.x and p.y == q.y and p.z == q.z)
+        assert(a.tessellate(8).topology_hash() == b.tessellate(8).topology_hash())
+    print(f"PASS Cache round trip of {step}: {CadGeometry.model_count(loaded.geometry)} models, no upstream cook")
