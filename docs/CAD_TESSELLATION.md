@@ -30,7 +30,7 @@ not to work. This is a maintained reference; update it with the code.
 | --- | --- |
 | `luce-step` | Bounded Part 21 scanner, entity lookup, placements, rational curve/surface data, vertex/edge identity, oriented uses, face bounds, colors and assembly paths. `Step.load_model` / `decode_model` return analytic CAD; tessellate it with `CadModel.tessellate`. |
 | `luce-cad` | Format-independent B-rep topology, support validation, one discretization per shared edge, layout planning, seam classification, per-face meshing strategies and assembly. Its `luce_cad/tessellation/` modules (exported as `tessellation`) own rational NURBS evaluation, UV trim triangulation, trim predicates, grid insertion, cell clipping (`TrimGrid`), interior improvement and quad recombination, with no STEP, CAD topology or UI policy. |
-| `luce-3d` | Immutable `PolygonMesh`, retained per-face display triangles, polygon triangulation/partition, distance and ray queries, `DissolveWorkspace`, rendering. |
+| `luce-3d` | Immutable geocore `Mesh`, retained per-face display triangles, polygon triangulation/partition, distance and ray queries, `DissolveWorkspace`, rendering. |
 | `luced-3d` | File/Tessellate nodes, the File STEP-tolerance option, background cooking, preview caches and the diagnostic tools under `tools/`. |
 
 All runtime code is original Luce Base. OCCT, Gmsh, Blender, CGAL and the papers
@@ -400,7 +400,7 @@ the wireframe looks cleaner.
   boundary budget.
 - Passes: eight trim reconciliation, 32 mapped-side balancing, 64 opposite-side
   propagation (256 intervals per edge), eight interior refinement passes.
-- Mesh (`luce-3d` `MeshBuilder`/`PolygonMesh`): storage grows on demand up to
+- Mesh (`luce-3d` `MeshBuilder`/geocore `Mesh`): storage grows on demand up to
   8,388,608 points and faces and 33,554,432 corners; 256 corners per polygon.
   `CadModel.tessellate` keeps per-face colors for up to 2,097,152 faces when merging parts.
 

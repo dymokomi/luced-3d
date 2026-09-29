@@ -160,7 +160,7 @@ Undo covers graph changes, nested deletion, parameters, Out/visibility/preview/b
 history retains 64 transactions.
 
 Geometry storage, transforms, merge, triangulation, ray intersections and region
-extrusion live in `luce-3d`'s `PolygonMesh`; luce-3d has no UI dependency.
+extrusion live in `luce-3d`'s geocore `Mesh`; luce-3d has no UI dependency.
 Editor state, graph evaluation, commands and tools stay in this project; the
 viewport is `luce-ui`'s `SceneView` widget. Rendering uses `luce-gpu`
 with retained geometry buffers; first-draw preparation is still on the CPU.

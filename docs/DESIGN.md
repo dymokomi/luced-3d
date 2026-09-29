@@ -185,7 +185,7 @@ click dismisses.
 
 ## Mesh representation
 
-`luce-3d.PolygonMesh` separates shared points, polygon corner lists, per-face
+`luce-3d.geocore Mesh` separates shared points, polygon corner lists, per-face
 normals, unique edges and optional validated display triangles. Topology is
 immutable and shared across threads by atomic owner counts; attribute-only and
 position-only edits share it. Ear-clipped triangles support concave polygons;

@@ -116,7 +116,7 @@ warm up first, and note concurrent load; single runs are indicative only.
   points (~0.3 s) in `ComputeChannel.mesh`. The BVH could be built lazily on
   first pick, and guides on demand.
 - **Tessellation (1.8 s)**: what remains serial is geocore's final
-  `PolygonMesh` construction (~0.27 s), layout reconcile/balance (~0.2 s) and
+  geocore `Mesh` construction (~0.27 s), layout reconcile/balance (~0.2 s) and
   the slowest faces' tails. CAD File 9.3 s and Tessellate 7.4 s cooks
   (18.3 s File to Tessellate displayed) were the 2026-09-28 starting point.
 - Large models: `car2.step` (4.1M polygons) takes minutes from File to viewport;
