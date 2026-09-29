@@ -3,7 +3,7 @@
 ## their mesh, filter, sort or shown selection changed; refresh stays cheap.
 from ui import Widget, Layout, Constraints, Size, Painter, Event
 from gpu import RenderTarget, Rect
-from geocore import Mesh
+from geocore import Mesh, GeometrySet
 from input import EventKind, ScrollUnit
 from workspace import Workspace
 from geocore import Selection
@@ -15,6 +15,8 @@ pub class Column:
     pub let title: str
     pub let attribute: int
     pub let component: int
+    ## A detail attribute of the set itself (not of its mesh), by name.
+    pub var detail: str = ""
     pub func init(self, title: str, attribute: int, component: int = 0):
         self.title = title
         self.attribute = attribute
@@ -25,6 +27,9 @@ pub class GeometrySheet: Widget:
     let workspace: Workspace
     pub var domain: int = 0
     pub var mesh: Mesh? = none
+    ## The node's whole set: its own detail attributes show under Detail,
+    ## with or without a mesh (Edit Sketch's plane).
+    var geometry: GeometrySet? = none
     pub var columns: list[Column]
     let rows: SheetRows
     var rows_key: str = ""
@@ -65,6 +70,7 @@ pub class GeometrySheet: Widget:
         let id = self.pinned if self.pinned >= 0 else w.network.selected
         self.failure = ""
         self.mesh = none
+        self.geometry = none
         self.columns = []
         if w.network.find(id) == none:
             self.title = "No node" if self.pinned < 0 else "Pinned node was deleted"
@@ -82,9 +88,12 @@ pub class GeometrySheet: Widget:
             self.box.invalidate()
             return
         self.mesh = data.mesh
+        self.geometry = data.geometry
         if data.has_cad() or data.instance_count() > 0:
             self.title += " / " + data.description()
         self.box.invalidate()
+        if self.domain == 3:
+            self.add_set_details(data.geometry)
         let mesh = self.mesh else return
         let names = ["P.x", "P.y", "P.z"] if self.domain == 0 else (["point", "primitive"] if self.domain == 1 else (["vertices", "N.x", "N.y", "N.z"] if self.domain == 2 else ["points", "vertices", "primitives", "edges"]))
         for index in 0..<names.length:
@@ -102,10 +111,26 @@ pub class GeometrySheet: Widget:
         if self.sort_column >= self.columns.length:
             self.sort_column = -1
 
+    ## The set's own detail attributes as columns (after the mesh's).
+    func add_set_details(self, geometry: GeometrySet) -> unit!:
+        for index in 0..<geometry.detail_count():
+            let name = geometry.detail_name(index)
+            if self.attribute_filter != "" and not name.contains(self.attribute_filter):
+                continue
+            let width = geometry.detail_width(name)
+            for component in 0..<width:
+                let column = Column(name + (("." + ["x", "y", "z", "w"][component]) if width > 1 else ""), -1, component)
+                column.detail = name
+                self.columns.append(column)
+
     ## Rows for the current mesh, filter, sort and (for "Selected") selection.
     ## Cheap when none of them changed: one identity compare and a key.
     func ensure_rows(self) -> unit!:
         let changed = self.rows.retarget(self.mesh)
+        # Detail is one row: the mesh's counts and details, and the set's.
+        if self.domain == 3:
+            self.rows.all(1 if self.mesh != none or self.columns.length > 0 else 0)
+            return
         if self.mesh == none:
             self.rows.all(0)
             return
@@ -185,8 +210,11 @@ pub class GeometrySheet: Widget:
         return chosen.contains(row)
 
     pub func value(self, row: int, column: int) -> float!:
-        let mesh = self.mesh else return 0.0
         let field = self.columns[column]
+        if field.detail != "":
+            let geometry = self.geometry else return 0.0
+            return geometry.detail_value(field.detail, field.component)
+        let mesh = self.mesh else return 0.0
         return sheet_value(mesh, self.domain, field.attribute, field.component, row)
 
     pub func draw(self, target: RenderTarget) -> unit!:
