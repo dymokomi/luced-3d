@@ -1,0 +1,62 @@
+## The line batches the viewport draws over the displayed scene: wires (mesh
+## and CAD edges), normal guides, CAD patch boundaries, curves and control
+## hulls. Made on the UI thread when the graph cooks synchronously, or taken
+## from the worker's result, where only the batches whose content changed
+## are fetched again (a CV drag keeps the CAD edges and redraws the hull).
+from three import WireBatch
+from compute_bridge import ComputeService
+from overlay_lines import OverlayLines
+
+pub class ViewportBatches:
+    pub var wire_batch: WireBatch? = none
+    pub var normal_batch: WireBatch? = none
+    pub var patch_batch: WireBatch? = none
+    ## Curves as lines, and their control hulls: one batch per displayed node
+    ## without the worker, one for the whole result with it.
+    pub let curve_batches: list[WireBatch]
+    pub let hull_batches: list[WireBatch]
+    ## The worker batches shown (ComputeService.batch_key; -1 none): wires,
+    ## normals, patches, curves, hulls.
+    var keys: list[int]
+
+    pub func init(self):
+        self.curve_batches = []
+        self.hull_batches = []
+        self.keys = [-1, -1, -1, -1, -1]
+
+    ## Start a synchronous cook: no curves or hulls yet.
+    pub func clear_curves(self):
+        self.curve_batches.clear()
+        self.hull_batches.clear()
+
+    ## The lines of a synchronous cook (curve batches were added as it went).
+    pub func publish(self, wires: OverlayLines, normals: OverlayLines, patches: OverlayLines, hulls: OverlayLines) -> unit!:
+        self.wire_batch = wires.batch()
+        self.normal_batch = normals.batch()
+        self.patch_batch = patches.batch()
+        self.keys = [-1, -1, -1, -1, -1]
+        self.hull_batches.append(hulls.batch())
+
+    ## The worker's batches, fetching only those that changed.
+    pub func adopt(self, service: ComputeService) -> unit!:
+        if self.changed(service, 0):
+            self.wire_batch = service.wires()
+        if self.changed(service, 1):
+            self.normal_batch = service.normals()
+        if self.changed(service, 2):
+            self.patch_batch = service.patches()
+        if self.changed(service, 3):
+            self.curve_batches.clear()
+            self.curve_batches.append(service.curve_lines())
+        if self.changed(service, 4):
+            self.hull_batches.clear()
+            self.hull_batches.append(service.hulls())
+
+    ## Whether the worker's batch `which` differs from the one shown (and
+    ## note the new one).
+    func changed(self, service: ComputeService, which: int) -> bool!:
+        let key = service.batch_key(which)
+        if self.keys[which] == key:
+            return false
+        self.keys[which] = key
+        return true

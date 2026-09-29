@@ -1,19 +1,26 @@
-from geocore import Mesh, Selection, Verbs
-from three import Scene, Group, Vector3, Matrix4, PerspectiveCamera, AmbientLight, DirectionalLight, WireBatch, CurveLines, Knife, SurfaceHits, SurfaceHit
-from place_prompt import PlacePrompt, placed_on_face
+## The editor's state: the node network and its undo history, the
+## displayed geometry and its component selection, the selection level, and
+## the transactions every change goes through (perform, begin/commit,
+## undo/redo). It cooks the graph (rebuild), synchronously or on the worker
+## (poll_compute), and publishes the scene. It holds the view (camera and
+## display settings, view_state.luc) and the viewport's line batches
+## (viewport_batches.luc). Commands on it live beside it: node_commands,
+## selection_commands, modeling_commands and placing_commands.
+from geocore import Mesh, Selection
+from three import Scene, Group, Vector3, Matrix4, AmbientLight, DirectionalLight, SurfaceHits, SurfaceHit
+from place_prompt import PlacePrompt
+from tool_prompt import ToolPrompt
 from network import Network, Node
-from edit_operations import EditStep
-from tools import ToolRun, tool_run, verb_defaults
+from tools import tool_run
 from history import History, Snapshot
-from scene_projection import append_scene, append_bounds, append_overlays, append_patch_boundaries, append_cad_hulls
+from scene_projection import append_bounds
+from local_cook import cook_outputs
 from overlay_lines import OverlayLines
 from compute_session import ComputeSession
-from compute_bridge import ComputeService
 from display_publisher import DisplayPublisher
 from node_evaluation import SourceCache
-import math
-import node_catalog
-import ui
+from view_state import ViewState
+from viewport_batches import ViewportBatches
 from edit_kinds import is_edit, edit_kind
 from geometry_data import GeometryData
 from edit_types import EditKind, EditLevel
@@ -24,7 +31,8 @@ pub class Workspace:
     pub let history: History
     pub let scene: Scene
     let objects: Group
-    pub let camera: PerspectiveCamera
+    pub let view: ViewState
+    pub let batches: ViewportBatches
     pub var geometry: Mesh? = none
     ## Components of `geometry` (a luce-geocore Selection), on any displayed
     ## node; none when nothing is selected.
@@ -33,8 +41,6 @@ pub class Workspace:
     ## else Edit Mesh's: Object, Polygons, Edges, Vertices, Corners). Node
     ## selection and display are independent.
     pub var component_mode: int = 1
-    ## The level to show a create step's new piece at, when it arrives.
-    var pending_level: int = -1
     ## Edit kinds by node kind, made once each (they hold closures).
     let edit_kinds: map[str, EditKind]
     let mesh_levels: list[EditLevel]
@@ -43,64 +49,36 @@ pub class Workspace:
     pub var prompt: ToolPrompt? = none
     ## A face or corners being placed in the viewport (place_prompt.luc).
     pub var placing: PlacePrompt? = none
-    ## Adopt the displayed verb's output selection (Extrude's front faces)
-    ## when its result arrives; and a group to select on the next geometry.
-    var adopt_output: bool = false
-    var pending_group: str = ""
-    var pending_type: int = 0
+    ## What the next result of the displayed node selects (sync_selection):
+    ## the displayed verb's output selection (Extrude's front faces), at
+    ## level `pending_level` for a create step's piece (-1: the output's
+    ## own); or group `pending_group` of Group Type `pending_type` (Reselect).
+    pub var adopt_output: bool = false
+    pub var pending_level: int = -1
+    pub var pending_group: str = ""
+    pub var pending_type: int = 0
     pub var edit_tool: str = "Select"
     ## A gizmo drag's frames are being previewed (preview_move and
     ## preview_parameters); commit cooks the released result in full.
     pub var dragging: bool = false
-    ## The worker overlay batches shown (ComputeService.batch_key; -1 none).
-    var batch_keys: list[int]
     pub var revision: int = 0
     pub var notice: str = ""
-    var pending: Snapshot? = none
+    ## The open transaction: the state before it, its label, and whether it
+    ## changed anything (only then does it become an undo step).
+    pub var pending: Snapshot? = none
     var pending_label: str = ""
-    var pending_changed: bool = false
-    pub var yaw: float = 0.7
-    pub var pitch: float = 0.5
-    pub var distance: float = 9.0
-    pub var target: Vector3
-    pub var grid_visible: bool = true
-    ## 0 wireframe, 1 flat + wire, 2 flat, 3 shaded, 4 shaded + wire,
-    ## 7 zebra, 8 isophotes (5 rendered and 6, the normals toggle, are not modes).
-    pub var display_mode: int = 3
-    ## Zebra and isophote stripes: count, dark share, axis (0 X, 1 Y, 2 Z,
-    ## 3 the view's up), planar instead of cylindrical, stripes without shading.
-    pub var zebra_stripes: int = 20
-    pub var zebra_duty: float = 0.5
-    pub var zebra_axis: int = 1
-    pub var zebra_planar: bool = false
-    pub var zebra_stripes_only: bool = false
-    ## Curvature (mode 9): the value shown (0 mean, 1 Gaussian, 2 k1, 3 k2,
-    ## 4 the larger |k|) and the value the map spans (0: automatic).
-    pub var curvature_kind: int = 0
-    pub var curvature_range: float = 0.0
-    pub var normals_visible: bool = false
+    pub var pending_changed: bool = false
     pub var compute: ComputeSession? = none
-    pub var wire_batch: WireBatch? = none
-    pub var normal_batch: WireBatch? = none
-    pub var patch_batch: WireBatch? = none
-    ## Curves as lines, and their control hulls: one batch per displayed node
-    ## without the worker, one for the whole result with it.
-    pub let curve_batches: list[WireBatch]
-    pub let hull_batches: list[WireBatch]
-    ## Whether control hulls (curve control polygons, CV nets) are drawn.
-    pub var hulls_visible: bool = true
     pub let publisher: DisplayPublisher
     let sources: SourceCache
     var pending_frame: bool = false
     var project_epoch: int = 0
 
     pub func init(self) -> unit!:
-        self.target = Vector3(0.0, 0.8, 0.0)
-        self.curve_batches = []
-        self.hull_batches = []
+        self.view = ViewState()
+        self.batches = ViewportBatches()
         self.sources = SourceCache()
         self.edit_kinds = {}
-        self.batch_keys = [-1, -1, -1, -1, -1]
         self.mesh_levels = edit_mesh.levels()
         self.network = Network()
         self.network.sources = self.sources
@@ -111,8 +89,6 @@ pub class Workspace:
         self.scene.add(self.objects)
         self.scene.add(AmbientLight(intensity = 0.35))
         self.scene.add(DirectionalLight(direction = Vector3(3.0, 5.0, 2.0), intensity = 0.85))
-        self.camera = PerspectiveCamera(45.0, near = 0.05, far = 500.0)
-        self.update_camera()
         self.rebuild()
 
     ## Install a validated document. Old worker generations cannot overwrite it;
@@ -137,30 +113,6 @@ pub class Workspace:
         self.notice = ""
         self.rebuild()
 
-    pub func update_camera(self) -> unit!:
-        # Keep useful depth precision across CAD units and avoid a fixed far clip
-        # slicing large parts. Lens planes follow the orbit's working scale.
-        self.camera.set_projection(45.0, math.max(0.00001, self.distance * 0.01), math.min(1000000000.0, math.max(500.0, self.distance * 20.0)))
-        let horizontal = math.cos(self.pitch) * self.distance
-        self.camera.set_position(self.target.add(Vector3(math.sin(self.yaw) * horizontal, math.sin(self.pitch) * self.distance, math.cos(self.yaw) * horizontal)))
-        self.camera.look_at(self.target)
-
-    pub func orbit(self, dx: float, dy: float) -> unit!:
-        self.yaw -= dx * 0.008
-        self.pitch = math.max(-1.5, math.min(1.5, self.pitch + dy * 0.008))
-        self.update_camera()
-
-    pub func zoom(self, delta: float) -> unit!:
-        self.distance = math.max(0.001, math.min(10000000.0, self.distance * math.exp(math.max(-2.0, math.min(2.0, -delta * 0.08)))))
-        self.update_camera()
-
-    pub func pan(self, dx: float, dy: float, height: float) -> unit!:
-        let scale = self.distance * 0.828427 / math.max(1.0, height)
-        let right = Vector3(math.cos(self.yaw), 0.0, -math.sin(self.yaw))
-        let up = Vector3(-math.sin(self.yaw) * math.sin(self.pitch), math.cos(self.pitch), -math.cos(self.yaw) * math.sin(self.pitch))
-        self.target = self.target.add(right.multiply_scalar(-dx * scale)).add(up.multiply_scalar(dy * scale))
-        self.update_camera()
-
     ## Frame the selected components while editing, else every displayed mesh.
     pub func frame_cube(self) -> unit!:
         let points: list[Vector3] = []
@@ -179,7 +131,7 @@ pub class Workspace:
             for point in self.publisher.bounds:
                 points.append(point)
         # Curves frame by their drawn lines, with the worker or without.
-        for batch in self.curve_batches:
+        for batch in self.batches.curve_batches:
             if batch.count() > 0:
                 let box = batch.bounds()
                 points.append(box.minimum)
@@ -200,57 +152,36 @@ pub class Workspace:
 
     ## Frame `points`, from at least `least` away.
     func frame_points(self, points: list[Vector3], least: float = 0.001) -> unit!:
-        if points.length > 0:
-            var minimum = points[0]
-            var maximum = points[0]
-            for point in points:
-                minimum = Vector3(math.min(minimum.x, point.x), math.min(minimum.y, point.y), math.min(minimum.z, point.z))
-                maximum = Vector3(math.max(maximum.x, point.x), math.max(maximum.y, point.y), math.max(maximum.z, point.z))
-            self.target = minimum.add(maximum).multiply_scalar(0.5)
-            # Small models (millimetre parts, OBJs in metres) frame as tightly
-            # as large ones; zoom reaches the same minimum.
-            self.distance = math.max(math.max(0.001, least), maximum.subtract(minimum).length() * 1.8)
-        else:
-            self.target = Vector3(0.0, 1.0, 0.0)
-            self.distance = 9.0
-        self.update_camera()
+        self.view.frame(points, least)
         self.revision += 1
 
     pub func reset_view(self) -> unit!:
-        self.yaw = 0.7
-        self.pitch = 0.5
+        self.view.yaw = 0.7
+        self.view.pitch = 0.5
         self.frame_cube()
 
     ## Normal guides are made on the worker only while they are shown.
     pub func toggle_normals(self) -> unit!:
-        self.normals_visible = not self.normals_visible
+        self.view.normals_visible = not self.view.normals_visible
         self.revision += 1
-        if self.compute != none and self.normals_visible:
+        if self.compute != none and self.view.normals_visible:
             self.rebuild()
 
     pub func toggle_hulls(self) -> unit!:
-        self.hulls_visible = not self.hulls_visible
+        self.view.hulls_visible = not self.view.hulls_visible
         self.revision += 1
 
     pub func toggle_grid(self) -> unit!:
-        self.grid_visible = not self.grid_visible
+        self.view.grid_visible = not self.view.grid_visible
         self.revision += 1
 
     pub func set_display_mode(self, mode: int) -> unit!:
-        if mode < 0 or mode > 9 or mode in [5, 6] or mode == self.display_mode:
-            return
-        self.display_mode = mode
-        self.revision += 1
-
-    pub func set_size(self, size: float) -> unit!:
-        self.set_parameter(0, size)
+        if self.view.set_display_mode(mode):
+            self.revision += 1
 
     pub func selected(self) -> Node?:
         return self.network.find(self.network.selected)
 
-    ## Edit tools work on the displayed Edit node's cooked mesh. During a
-    ## gesture its previews keep it recooking; the overlay and tools stay on
-    ## the latest preview.
     ## Components can be picked whenever the viewport shows a node's mesh.
     pub func selecting(self) -> bool:
         return self.geometry != none
@@ -451,55 +382,21 @@ pub class Workspace:
         if let session = self.compute:
             self.network.level = self.component_mode
             self.network.gesture = self.dragging
-            session.submit(self.network, self.display_mode if self.display_mode <= 4 else 3, self.normals_visible)
+            session.submit(self.network, self.view.mesh_mode(), self.view.normals_visible)
             self.revision += 1
             return
-        self.objects.clear()
-        self.curve_batches.clear()
-        self.hull_batches.clear()
-        self.geometry = none
-        self.notice = ""
-        let graph = self.network
-        var outputs = graph.outputs(graph.scope)
-        if graph.preview:
-            if let node = graph.find(graph.display):
-                outputs = [node]
-        var analytic = 0
-        let wires = OverlayLines.make()
-        let normals = OverlayLines.make()
-        let patches = OverlayLines.make()
-        let hulls = OverlayLines.make()
-        for node in outputs:
-            if not node.visible:
-                continue
-            let data = graph.evaluate_data(node.id) catch failure:
-                self.notice = failure.message
-                continue
-            if node.id == graph.display:
-                self.geometry = self.picked(node, data)
-                self.sync_selection()
-            let branch = Group()
-            analytic += append_scene(data, branch, mode = self.display_mode if self.display_mode <= 4 else 3) catch failure:
-                self.notice = failure.message
-                continue
-            self.objects.add(branch)
-            append_overlays(data, Matrix4(), wires, normals)
-            append_cad_hulls(data, Matrix4(), hulls)
-            if node.id == graph.display and node.enabled:
+        # The displayed Edit node's own lines (its kind's guides).
+        var guides: func(GeometryData, OverlayLines) -> unit!? = none
+        if let node = self.network.find(self.network.display):
+            if node.enabled:
                 if let kind = self.kind_of(node.kind):
-                    if let guides = kind.guides:
-                        guides(data, hulls)
-            if CurveLines.count(data.geometry) > 0:
-                self.curve_batches.append(CurveLines.batch(data.geometry))
-                self.hull_batches.append(CurveLines.batch(data.geometry, true))
-            append_patch_boundaries(data, Matrix4(), patches)
-        if analytic > 0 and self.notice == "":
-            self.notice = f"CAD preview: {analytic} patches could not be meshed; boundaries remain visible"
-        self.wire_batch = wires.batch()
-        self.normal_batch = normals.batch()
-        self.patch_batch = patches.batch()
-        self.batch_keys = [-1, -1, -1, -1, -1]
-        self.hull_batches.append(hulls.batch())
+                    guides = kind.guides
+        let cooked = cook_outputs(self.network, self.objects, self.batches, self.view.mesh_mode(), guides)
+        self.notice = cooked.notice
+        self.geometry = none
+        if let node = cooked.node:
+            self.geometry = self.picked(node, cooked.data else trap("display"))
+            self.sync_selection()
         self.revision += 1
 
     ## What the viewport picks on for displayed `node`: its Edit kind's
@@ -510,15 +407,6 @@ pub class Workspace:
                 return kind.pick(data, self.component_mode) catch failure:
                     recover none
         return data.mesh
-
-    ## Whether the worker's overlay batch `which` differs from the one shown
-    ## (and note the new one).
-    func batch_changed(self, service: ComputeService, which: int) -> bool!:
-        let key = service.batch_key(which)
-        if self.batch_keys[which] == key:
-            return false
-        self.batch_keys[which] = key
-        return true
 
     ## Runtime UI uses a persistent worker; deterministic tests/scripts may cook
     ## synchronously. Published scenes remain visible while replacements compute.
@@ -551,21 +439,7 @@ pub class Workspace:
             self.revision += 1
             return true
         if self.publisher.adopt(session.service, self.network):
-            # Only the batches whose lines changed are made again (a CV drag
-            # keeps the CAD edges and redraws the hull).
-            let service = session.service
-            if self.batch_changed(service, 0):
-                self.wire_batch = service.wires()
-            if self.batch_changed(service, 1):
-                self.normal_batch = service.normals()
-            if self.batch_changed(service, 2):
-                self.patch_batch = service.patches()
-            if self.batch_changed(service, 3):
-                self.curve_batches.clear()
-                self.curve_batches.append(service.curve_lines())
-            if self.batch_changed(service, 4):
-                self.hull_batches.clear()
-                self.hull_batches.append(service.hulls())
+            self.batches.adopt(session.service)
         self.geometry = self.publisher.geometry
         self.sync_selection()
         session.service.release_result(self.publisher.kept)
@@ -575,300 +449,9 @@ pub class Workspace:
             self.frame_cube()
         return true
 
-    ## Selecting an Edit node also displays it: its tools edit the geometry
-    ## the viewport shows, however the node was reached.
-    pub func select_node(self, id: int) -> unit!:
-        let node = self.network.require(id)
-        if node.id != self.network.selected:
-            self.placing = none
-        let shows = is_edit(node.kind) and (self.network.display != id or self.network.preview)
-        if self.network.selected != id or shows:
-            self.network.selected = id
-            if shows:
-                self.network.display = id
-                self.network.preview = false
-            self.selection = none
-            self.edit_tool = "Select"
-            self.revision += 1
-            if self.compute != none or shows:
-                self.rebuild()
-
-    pub func display_selected(self) -> unit!:
-        let node = self.selected() else return
-        self.perform("Preview node", func () -> unit!:
-            self.network.preview = not (self.network.preview and self.network.display == node.id)
-            self.network.display = node.id
-            self.selection = none
-            self.rebuild())
-
-    pub func toggle_output(self) -> unit!:
-        let node = self.selected() else return
-        let output = not self.network.is_output(node.id)
-        self.set_output(node.id, 1 if output else -1)
-
-    pub func auto_output(self) -> unit!:
-        let node = self.selected() else return
-        self.set_output(node.id, 0)
-
-    pub func set_output(self, id: int, state: int) -> unit!:
-        if state < -1 or state > 1:
-            return
-        self.perform("Change Out flag", func () -> unit!:
-            let node = self.network.require(id)
-            node.output = state
-            self.network.invalidate(id)
-            self.rebuild())
-
-    pub func toggle_visible(self) -> unit!:
-        let node = self.selected() else return
-        self.perform("Toggle visibility", func () -> unit!:
-            node.visible = not node.visible
-            if node.parent >= 0:
-                self.network.invalidate(node.parent)
-            self.rebuild())
-
-    pub func enter_group(self, id: int) -> unit!:
-        let node = self.network.require(id)
-        if node.kind != "Group":
-            return
-        if self.pending != none:
-            self.commit()
-        self.network.scope = id
-        let children = self.network.local_nodes()
-        self.network.selected = children[0].id if children.length > 0 else -1
-        self.network.display = self.network.selected
-        self.network.preview = false
-        self.selection = none
-        self.rebuild()
-
-    pub func leave_group(self) -> unit!:
-        if self.network.scope < 0:
-            return
-        let node = self.network.require(self.network.scope)
-        if self.pending != none:
-            self.commit()
-        self.network.scope = node.parent
-        self.network.selected = node.id
-        self.network.display = node.id
-        self.network.preview = false
-        self.selection = none
-        self.rebuild()
-
-    pub func reveal_node(self, id: int) -> unit!:
-        let node = self.network.require(id)
-        self.network.scope = node.parent
-        self.network.preview = false
-        self.network.display = id
-        self.network.selected = -1
-        self.select_node(id)
-        self.rebuild()
-
-    pub func toggle_enabled(self) -> unit!:
-        let node = self.selected() else return
-        self.perform("Toggle node", func () -> unit!:
-            node.enabled = not node.enabled
-            self.network.invalidate(node.id)
-            self.selection = none
-            self.rebuild())
-
-    pub func add_node(self, kind: str, x: float, y: float) -> unit!:
-        self.perform("Add " + kind, func () -> unit!:
-            let source = self.network.selected
-            let node = self.network.add(kind, x, y)
-            if node.inputs.length > 0 and source >= 0 and self.network.require(source).parent == node.parent:
-                self.network.connect(source, node.id, 0)
-            self.network.selected = node.id
-            self.network.display = node.id
-            self.network.preview = false
-            self.selection = none
-            self.edit_tool = "Select"
-            self.rebuild())
-
-    pub func delete_selected(self) -> unit!:
-        if self.selected() == none:
-            return
-        self.perform("Delete node", func () -> unit!:
-            self.network.remove(self.network.selected)
-            self.selection = none
-            self.rebuild())
-
-    pub func connect(self, source: int, target: int, port: int) -> unit!:
-        self.perform("Connect nodes", func () -> unit!:
-            self.network.connect(source, target, port)
-            self.selection = none
-            self.rebuild())
-
-    pub func disconnect(self, target: int, port: int) -> unit!:
-        self.perform("Disconnect nodes", func () -> unit!:
-            self.network.disconnect(target, port)
-            self.selection = none
-            self.rebuild())
-
-    pub func move_node(self, id: int, x: float, y: float) -> unit!:
-        self.perform("Move node", func () -> unit!:
-            let node = self.network.require(id)
-            node.x = x
-            node.y = y)
-
-    pub func rename(self, name: str) -> unit!:
-        let node = self.selected() else return
-        if name == "" or name == node.name:
-            return
-        # Names reach the worker's messages and group paths, not its stamps.
-        self.perform("Rename node", func () -> unit!:
-            node.name = name
-            if self.compute != none: self.rebuild())
-
-    pub func set_parameter(self, slot: int, value: float) -> unit!:
-        let node = self.selected() else return
-        if slot < 0 or slot >= node.values.length or not math.is_finite(value):
-            return
-        if node.values[slot] == value:
-            return
-        self.perform("Change " + node.kind, func () -> unit!:
-            if node.kind in ["Transform", "Group"] and slot >= 7 and math.abs(value) < 0.000001:
-                error(ui.invalid, "Scale cannot be zero")
-            var accepted = value
-            for parameter in node_catalog.parameters(node.kind, node.texts[0]):
-                if parameter.slot == slot:
-                    accepted = math.max(parameter.minimum, math.min(parameter.maximum, accepted))
-                    if parameter.integer:
-                        accepted = math.floor(accepted + 0.5)
-            node.values[slot] = accepted
-            self.network.invalidate(node.id)
-            self.rebuild())
-
-    pub func set_text(self, slot: int, value: str) -> unit!:
-        let node = self.selected() else return
-        if slot < 0 or slot >= node.texts.length or node.texts[slot] == value:
-            return
-        self.perform("Change " + node.kind, func () -> unit!:
-            node.texts[slot] = value
-            self.network.invalidate(node.id)
-            self.rebuild())
-
-    pub func reload_file(self) -> unit!:
-        let node = self.selected() else return
-        if node.kind != "File":
-            return
-        self.perform("Reload geometry file", func () -> unit!:
-            node.source_revision += 1
-            self.network.invalidate(node.id)
-            self.rebuild())
-
-    ## Run `tool` on the selection (see tools.luc): a step of the active Edit
-    ## node, or a new node after the displayed one, its Group the selection's
-    ## expression and its guard the topology it was made on. With nothing
-    ## selected a node waits for its components (Tool → Select).
-    pub func model(self, operation: str) -> unit!:
-        let mesh = self.geometry else return
-        # The knife is a stroke in the viewport (knife below), not a click.
-        if operation == "Knife":
-            self.choose_tool("Knife")
-            self.notice = "Drag across the model to cut it; Shift snaps the stroke to 15°"
-            return
-        var run = ToolRun("", [])
-        if let kind = self.active_kind():
-            # A drawing tool with nothing to work on draws instead.
-            if operation in kind.draw_tools and kind.drawn != none and self.editing():
-                let chosen = self.current_selection() else return
-                let tool = kind.tool(operation) else return
-                if chosen.count() == 0 or not tool.offered(self.component_mode):
-                    self.start_placing(operation, true)
-                    return
-            # The kind's own tool: its verb and numbers, whether or not
-            # tools.luc knows the name (Edit SDF's Subtract).
-            let tool = kind.tool(operation) else return
-            if not tool.offered(self.component_mode):
-                self.notice = f"{operation} does not apply to {self.level().name}"
-                self.revision += 1
-                return
-            run = ToolRun(tool.verb, tool.numbers(self.tool_amount()))
-        else:
-            run = tool_run(operation, self.tool_amount()) else return
-        let wants_group = not (operation in ["Subdivide", "Clean"])
-        let chosen = self.current_selection() else return
-        if wants_group and chosen.count() == 0:
-            if self.editing():
-                self.notice = "Select components first"
-                self.revision += 1
-                return
-            self.start_prompt(operation, run)
-            return
-        let group = chosen.expression(mesh) if wants_group else ""
-        if self.editing():
-            self.append_step(operation, run.verb, group, run.numbers, mesh)
-        else:
-            self.add_tool_node(operation, run, group, mesh)
-
-    ## Create primitive `name` as a step of the displayed Edit node; its
-    ## piece becomes the selected Object.
-    pub func create(self, name: str) -> unit!:
-        let kind = self.active_kind() else return
-        if not self.editing():
-            return
-        let node = self.selected() else return
-        if name in kind.face_primitives:
-            self.start_placing(name, false)
-            return
-        let step = kind.create(name) else return
-        self.perform("Create " + name, func () -> unit!:
-            node.edits.append(step)
-            self.network.invalidate(node.id)
-            self.adopt_output = true
-            self.pending_level = 0
-            self.rebuild())
-
-    # -- Placing on surfaces (place_prompt.luc).
-
-    func start_placing(self, name: str, drawing: bool) -> unit!:
-        let placing = PlacePrompt(name, drawing)
-        self.placing = placing
-        self.notice = placing.hint()
-        self.revision += 1
-
     ## The nearest visible surface along a view ray (the displayed scene).
     pub func surface_at(self, origin: Vector3, direction: Vector3) -> SurfaceHit!:
         return SurfaceHits.cast(self.objects, origin, direction)
-
-    ## A face was picked for the waiting face primitive: its step, with the
-    ## face's point and normal, goes on the recipe.
-    pub func place_on_face(self, point: Vector3, normal: Vector3) -> unit!:
-        let placing = self.placing else return
-        let kind = self.active_kind() else return self.cancel_placing()
-        let node = self.selected() else return self.cancel_placing()
-        let step = kind.create(placing.name) else return self.cancel_placing()
-        self.placing = none
-        self.notice = ""
-        self.perform("Create " + placing.name, func () -> unit!:
-            node.edits.append(placed_on_face(step, point, normal))
-            self.network.invalidate(node.id)
-            self.adopt_output = true
-            self.pending_level = 0
-            self.rebuild())
-
-    ## One more drawn corner.
-    pub func add_corner(self, point: Vector3) -> unit!:
-        let placing = self.placing else return
-        placing.corners.append(point)
-        self.revision += 1
-
-    ## Enter (or the first corner again): the drawing becomes one step.
-    pub func finish_placing(self) -> unit!:
-        let placing = self.placing else return
-        let kind = self.active_kind() else return self.cancel_placing()
-        let node = self.selected() else return self.cancel_placing()
-        let draw = kind.drawn else return self.cancel_placing()
-        self.placing = none
-        self.notice = ""
-        self.revision += 1
-        let made = draw(placing.name, placing.corners)
-        let step = made else return
-        self.perform(placing.name, func () -> unit!:
-            node.edits.append(step)
-            self.network.invalidate(node.id)
-            self.adopt_output = true
-            self.rebuild())
 
     pub func cancel_placing(self) -> unit!:
         if self.placing == none:
@@ -877,174 +460,6 @@ pub class Workspace:
         self.notice = ""
         self.revision += 1
 
-    ## The amount the Edit node's tools use (its first parameter), 0.5 elsewhere.
-    pub func tool_amount(self) -> float:
-        let node = self.selected() else return 0.5
-        return node.values[0] if is_edit(node.kind) else 0.5
-
-    ## Append one verb step to the displayed Edit node, with its settings.
-    ## A knife stroke from (x0, y0) to (x1, y1) of the viewport: a Clip that
-    ## keeps both sides along the plane through the eye and the stroke
-    ## (recorded as a point and a normal, so replays need no camera). It
-    ## cuts the selection, or the faces the stroke passes over.
-    pub func knife(self, x0: float, y0: float, x1: float, y1: float, width: float, height: float) -> unit!:
-        let mesh = self.geometry else return
-        let plane = Knife.plane(self.camera, x0, y0, x1, y1, width, height) catch failure:
-            self.notice = failure.message
-            self.revision += 1
-            return
-        let chosen = self.current_selection() else return
-        var group = chosen.expression(mesh) if chosen.count() > 0 else ""
-        var group_type = self.group_type()
-        if group == "":
-            let under = Knife.faces_under(mesh, self.camera, x0, y0, x1, y1, width, height)
-            if under.count() == 0:
-                self.notice = "The stroke crosses no faces"
-                self.revision += 1
-                return
-            group = under.expression(mesh)
-            group_type = 3
-        let numbers = verb_defaults("Clip")
-        numbers[0] = 3.0
-        numbers[3] = 2.0
-        numbers[4] = plane.point.x
-        numbers[5] = plane.point.y
-        numbers[6] = plane.point.z
-        numbers[7] = plane.normal.x
-        numbers[8] = plane.normal.y
-        numbers[9] = plane.normal.z
-        if self.editing():
-            let node = self.selected() else return
-            self.perform("Knife", func () -> unit!:
-                node.edits.append(EditStep("Clip", group, group_type, numbers, mesh.topology_hash(), int(node.values[3]), node.values[4] != 0.0))
-                self.network.invalidate(node.id)
-                self.adopt_output = true
-                self.rebuild())
-            return
-        self.perform("Knife", func () -> unit!:
-            let node = self.insert_after_display(ToolRun("Clip", numbers))
-            node.texts[0] = group
-            node.values[node_catalog.group_type_slot] = float(group_type)
-            node.guard = mesh.topology_hash()
-            self.adopt_output = true
-            self.rebuild())
-
-    func append_step(self, label: str, verb: str, group: str, numbers: list[float], mesh: Mesh) -> unit!:
-        let node = self.selected() else return
-        self.perform(label + " components", func () -> unit!:
-            node.edits.append(self.edit_step(node, verb, group, numbers, mesh))
-            self.network.invalidate(node.id)
-            # A kind's own verb (not a mesh verb) keeps a selection that
-            # still fits.
-            let index = Verbs.index_of(verb)
-            self.adopt_output = index >= 0 and Verbs.changes_topology(index)
-            self.rebuild())
-
-    ## A step of Edit node `node`: its soft radius and falloff reach the
-    ## transform, its symmetry and Keep selection every step.
-    func edit_step(self, node: Node, verb: str, group: str, numbers: list[float], mesh: Mesh) -> EditStep:
-        var values = numbers.copy()
-        if verb == "Transform Components" and values.length >= 15:
-            values[13] = node.values[1]
-            values[14] = node.values[2]
-        # The kind's own parameters ride after the verb's numbers.
-        if let kind = self.kind_of(node.kind):
-            values = kind.step_numbers(values, node.values)
-        return EditStep(verb, group, self.group_type(), values, mesh.topology_hash(), int(node.values[3]), node.values[4] != 0.0)
-
-    ## A verb node after the displayed node, inserted before what it fed;
-    ## display, selection and the tool's output selection move to it.
-    func add_tool_node(self, label: str, run: ToolRun, group: str, mesh: Mesh) -> unit!:
-        self.perform(label, func () -> unit!:
-            let node = self.insert_after_display(run)
-            node.texts[0] = group
-            node.guard = mesh.topology_hash() if group != "" else 0
-            self.adopt_output = true
-            self.rebuild())
-
-    func insert_after_display(self, run: ToolRun) -> Node!:
-        let source = self.network.display
-        let upstream = self.network.require(source)
-        let node = self.network.add(run.verb, upstream.x, upstream.y + 90.0)
-        for other in self.network.nodes:
-            if other.id == node.id: continue
-            for port in 0..<other.inputs.length:
-                if other.inputs[port] == source: other.inputs[port] = node.id
-        self.network.connect(source, node.id, 0)
-        for slot in 0..<run.numbers.length:
-            node.values[slot] = run.numbers[slot]
-        node.values[node_catalog.group_type_slot] = float(self.group_type())
-        self.network.selected = node.id
-        self.show(node.id)
-        self.edit_tool = "Select"
-        return node
-
-    ## Show node `id`'s result: display it, previewing it alone when it is
-    ## not one of the scope's outputs (a node feeding others).
-    func show(self, id: int) -> unit!:
-        self.network.display = id
-        self.network.preview = not self.network.is_output(id)
-
-    ## Tool → Select: the new node waits, empty, while the viewport shows its
-    ## input for picking; Enter accepts (accept_prompt), Esc removes it.
-    func start_prompt(self, label: str, run: ToolRun) -> unit!:
-        if self.pending != none:
-            return
-        self.begin(label)
-        let source = self.network.display
-        let node = self.insert_after_display(run) catch failure:
-            self.cancel()
-            self.notice = failure.message
-            self.revision += 1
-            return
-        node.texts[0] = ""
-        self.network.selected = node.id
-        self.show(source)
-        self.prompt = ToolPrompt(node.id, source, label, false)
-        self.pending_changed = true
-        self.notice = f"Select components for {label}, then Enter; Esc cancels"
-        self.revision += 1
-        self.rebuild()
-
-    ## Reselect: show node `id`'s input with its group selected, to rewrite
-    ## the group (and its guard) on Enter.
-    pub func reselect(self, id: int) -> unit!:
-        let node = self.network.require(id)
-        if not node_catalog.is_mesh_verb(node.kind) or node.inputs[0] < 0 or self.pending != none:
-            return
-        self.begin("Reselect")
-        self.prompt = ToolPrompt(node.id, node.inputs[0], "Reselect", true)
-        self.pending_group = node.texts[0] if node.texts[0].trim() != "" else "*"
-        self.pending_type = int(node.values[node_catalog.group_type_slot])
-        self.network.selected = node.id
-        self.show(node.inputs[0])
-        self.pending_changed = true
-        self.notice = "Change the selection, then Enter; Esc cancels"
-        self.revision += 1
-        self.rebuild()
-
-    ## Enter: the prompted node takes the selection as its group.
-    pub func accept_prompt(self) -> unit!:
-        let prompt = self.prompt else return
-        let mesh = self.geometry else return
-        let node = self.network.find(prompt.node) else return
-        let chosen = self.current_selection() else return
-        if chosen.count() == 0:
-            self.notice = "Select components first, or Esc to cancel"
-            self.revision += 1
-            return
-        node.texts[0] = chosen.expression(mesh)
-        node.values[node_catalog.group_type_slot] = float(self.group_type())
-        node.guard = mesh.topology_hash()
-        self.network.invalidate(node.id)
-        self.show(node.id)
-        self.prompt = none
-        self.notice = ""
-        self.adopt_output = true
-        self.pending_changed = true
-        self.commit()
-        self.rebuild()
-
     ## Esc: drop the prompted node (or the reselection) with the transaction.
     pub func cancel_prompt(self) -> unit!:
         self.prompt = none
@@ -1052,173 +467,11 @@ pub class Workspace:
         self.notice = ""
         self.cancel()
 
-    ## Keep IDs: run the node's group on the new topology as numbers (Houdini's
-    ## behaviour), clearing its guard.
-    pub func keep_ids(self, id: int) -> unit!:
-        let node = self.network.require(id)
-        if node.guard == 0:
-            return
-        self.perform("Keep IDs", func () -> unit!:
-            node.guard = 0
-            self.network.invalidate(node.id)
-            self.rebuild())
-
-    pub func invert_selection(self) -> unit!:
-        let chosen = self.current_selection() else return
-        self.perform("Invert selection", func () -> unit!:
-            self.selection = chosen.inverted())
-
-    ## Grow (0), shrink (1), border (2), flood (3), loop (4) or ring (5).
-    pub func walk_selection(self, operation: int) -> unit!:
-        let mesh = self.geometry else return
-        let chosen = self.current_selection() else return
-        if operation >= 4 and self.domain() != 4:
-            self.notice = "Loops and rings need the Edges level"
-            self.revision += 1
-            return
-        self.perform("Change selection", func () -> unit!:
-            self.selection = chosen.walked(mesh, operation, 1))
-
-    ## Switching the component type carries the selection over (a face is
-    ## kept when all its points were selected; a point when any face was).
-    pub func set_mode(self, mode: int) -> unit!:
-        if mode == self.component_mode or mode < 0 or mode >= self.levels().length:
-            return
-        let mesh = self.geometry
-        let chosen = self.selection
-        self.component_mode = mode
-        self.selection = none
-        if let geometry = mesh:
-            if let previous = chosen:
-                if previous.fits(geometry) and previous.count() > 0:
-                    let domain = self.domain()
-                    let strict = domain == 2 or (domain == 4 and previous.domain() == 0)
-                    self.selection = previous.on_domain(geometry, domain, strict)
-        self.revision += 1
-        # An Edit kind may pick each level on other geometry (Edit CAD).
-        if self.active_kind() != none:
-            self.rebuild()
-
-    ## Click: select `id` alone, or toggle it with `extend`; -1 clears. At a
-    ## level of pieces (Object) the whole piece around `id`.
-    pub func choose_component(self, id: int, extend: bool) -> unit!:
-        if not self.selecting():
-            return
-        let mesh = self.geometry else return
-        let chosen = self.current_selection() else return
-        let piece = self.level().whole(mesh, id) if id >= 0 else ""
-        self.perform("Select components", func () -> unit!:
-            if id < 0:
-                if not extend: self.selection = none
-                return
-            if piece == "":
-                self.selection = chosen.changed(id, 2 if extend else 3)
-            elif not extend:
-                self.selection = Selection.of(mesh, piece, self.domain())
-            else:
-                self.selection = chosen.combined(mesh, piece, 1 if chosen.contains(id) else 0))
-
-    pub func select_all(self) -> unit!:
-        let chosen = self.current_selection() else return
-        self.perform("Select all", func () -> unit!:
-            self.selection = chosen.filled(true))
-
     ## The components' center; the bounds center without a selection.
     pub func selection_center(self) -> Vector3!:
         let mesh = self.geometry else return Vector3()
         let chosen = self.current_selection() else return mesh.bounds().minimum.add(mesh.bounds().maximum).multiply_scalar(0.5)
         return chosen.center(mesh)
-
-    pub func move_selection(self, delta: Vector3) -> unit!:
-        if self.selected_count() == 0:
-            return
-        let mesh = self.geometry else return
-        self.perform("Move components", func () -> unit!:
-            self.append_move(mesh, delta)
-            self.rebuild())
-
-    ## A move of the selection: an Edit step on the active Edit node, else a
-    ## Transform Components node after the displayed one.
-    func append_move(self, mesh: Mesh, delta: Vector3) -> unit!:
-        let chosen = self.current_selection() else return
-        let group = chosen.expression(mesh)
-        let numbers = verb_defaults("Transform Components")
-        numbers[0] = delta.x
-        numbers[1] = delta.y
-        numbers[2] = delta.z
-        if self.editing():
-            let node = self.selected() else return
-            let step = self.edit_step(node, "Transform Components", group, numbers, mesh)
-            # Consecutive moves of one group merge into one step (D19); each
-            # drag is still its own undo entry.
-            if node.edits.length > 0 and node.edits[-1].merges(step):
-                node.edits[-1] = node.edits[-1].merged(step)
-            else:
-                node.edits.append(step)
-            self.network.invalidate(node.id)
-            return
-        let node = self.insert_after_display(ToolRun("Transform Components", numbers))
-        node.texts[0] = group
-        node.guard = mesh.topology_hash()
-
-    pub func extrude(self) -> unit!:
-        if self.selected_count() == 0 or self.domain() != 2:
-            self.notice = "Select faces to extrude"
-            self.revision += 1
-            return
-        self.model("Extrude")
-
-    ## Change the distance of the Edit node's most recent extrusion.
-    pub func set_last_extrusion(self, distance: float) -> unit!:
-        let node = self.selected() else return
-        if not is_edit(node.kind) or node.edits.length == 0 or node.edits[-1].verb != "PolyExtrude" or node.edits[-1].numbers[0] == distance:
-            return
-        self.perform("Change extrusion", func () -> unit!:
-            let numbers = node.edits[-1].numbers.copy()
-            numbers[0] = distance
-            node.edits[-1] = node.edits[-1].with_numbers(numbers)
-            self.network.invalidate(node.id)
-            self.rebuild())
-
-    pub func choose_tool(self, tool: str):
-        self.edit_tool = tool
-        self.revision += 1
-
-    pub func clear_edits(self) -> unit!:
-        let node = self.selected() else return
-        if not is_edit(node.kind) or node.edits.length == 0:
-            return
-        self.perform("Clear edits", func () -> unit!:
-            node.edits = []
-            self.selection = none
-            self.network.invalidate(node.id)
-            self.rebuild())
-
-    ## Preview each gizmo delta against the original gesture snapshot, not
-    ## against the last frame. A whole drag becomes one undo entry.
-    ## One request per pointer move: the worker applies the preview recipe to
-    ## the stored state before the gesture, never replaying the node.
-    pub func preview_move(self, delta: Vector3) -> unit!:
-        let before = self.pending else return
-        self.dragging = true
-        self.network = before.graph.copy()
-        self.selection = before.selection
-        if self.transforming():
-            let node = self.selected() else return
-            node.values[1] += delta.x
-            node.values[2] += delta.y
-            node.values[3] += delta.z
-            self.network.invalidate(node.id)
-            self.pending_changed = true
-        elif self.selecting() and self.selected_count() > 0:
-            let mesh = self.geometry else return
-            self.append_move(mesh, delta) catch failure:
-                self.cancel()
-                self.notice = failure.message
-                self.revision += 1
-                return
-            self.pending_changed = true
-        self.rebuild()
 
     ## A new result of the displayed node: adopt a tool's output selection
     ## (switching the component type, as Houdini does), a reselection's
@@ -1252,17 +505,3 @@ pub class Workspace:
         if let chosen = self.selection:
             if chosen.domain() != self.domain() or not chosen.fits(mesh):
                 self.selection = none
-
-## A tool waiting for components (or a reselection): the node that takes the
-## group and the node whose geometry is shown for picking.
-pub class ToolPrompt:
-    pub let node: int
-    pub let input: int
-    pub let label: str
-    pub let reselect: bool
-
-    pub func init(self, node: int, input: int, label: str, reselect: bool):
-        self.node = node
-        self.input = input
-        self.label = label
-        self.reselect = reselect

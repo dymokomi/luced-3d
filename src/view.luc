@@ -9,6 +9,8 @@ from actions import Actions
 import theme
 import time
 from shading_menu import mode_icon
+import modeling_commands
+import placing_commands
 
 pub class SceneViewport: Widget:
     let view: SceneView
@@ -31,7 +33,7 @@ pub class SceneViewport: Widget:
     pub func init(self, workspace: Workspace, actions: Actions) -> unit!:
         self.workspace = workspace
         self.tools = ViewportTools(workspace, actions)
-        self.view = SceneView(workspace.scene, workspace.camera, Renderer(true))
+        self.view = SceneView(workspace.scene, workspace.view.camera, Renderer(true))
         self.tools.renderer = self.view.renderer()
         self.view.layout().set_interactive(true)
         self.view.layout().set_focusable(true)
@@ -51,11 +53,11 @@ pub class SceneViewport: Widget:
         let renderer = self.view.renderer()
         # Components are shown while editing, prompting, or with a selection.
         let editing = w.editing() or w.prompt != none or w.selected_count() > 0
-        let wired = w.display_mode in [0, 1, 4]
-        renderer.set_flat(w.display_mode in [1, 2])
-        renderer.set_shading(2 if w.display_mode == 7 else (3 if w.display_mode == 8 else (6 if w.display_mode == 9 else 0)), float(w.zebra_stripes), w.zebra_duty,
-                             self.zebra_axis(), w.zebra_planar, w.zebra_stripes_only)
-        renderer.set_curvature(w.curvature_kind, w.curvature_range)
+        let wired = w.view.display_mode in [0, 1, 4]
+        renderer.set_flat(w.view.display_mode in [1, 2])
+        renderer.set_shading(2 if w.view.display_mode == 7 else (3 if w.view.display_mode == 8 else (6 if w.view.display_mode == 9 else 0)), float(w.view.zebra_stripes), w.view.zebra_duty,
+                             self.zebra_axis(), w.view.zebra_planar, w.view.zebra_stripes_only)
+        renderer.set_curvature(w.view.curvature_kind, w.view.curvature_range)
         # Selected faces are tinted in the surface pass: one bit per face.
         let accent = theme.accent()
         let tinted = w.geometry != none and w.selection != none and w.domain() == 2
@@ -64,26 +66,26 @@ pub class SceneViewport: Widget:
         else:
             renderer.clear_face_selection()
         # Polygon wires come from each mesh's GPU arrays; Edit mode keeps them on.
-        let wire_color = theme.grey(90.0) if editing else (theme.grey(175.0) if w.display_mode == 0 else theme.grey(55.0))
-        renderer.set_edges(1.0 if wired or editing else 0.0, wire_color, w.display_mode != 0)
-        renderer.set_wire_overlay(1.0 if wired or editing or w.patch_batch != none else 0.0)
+        let wire_color = theme.grey(90.0) if editing else (theme.grey(175.0) if w.view.display_mode == 0 else theme.grey(55.0))
+        renderer.set_edges(1.0 if wired or editing else 0.0, wire_color, w.view.display_mode != 0)
+        renderer.set_wire_overlay(1.0 if wired or editing or w.batches.patch_batch != none else 0.0)
         self.view.draw(target)
         if wired:
-            if let batch = w.wire_batch:
-                batch.draw(w.camera, target, theme.grey(175.0) if w.display_mode == 0 else theme.grey(55.0))
+            if let batch = w.batches.wire_batch:
+                batch.draw(w.view.camera, target, theme.grey(175.0) if w.view.display_mode == 0 else theme.grey(55.0))
         else:
-            if let batch = w.patch_batch:
-                batch.draw(w.camera, target, theme.grey(55.0))
+            if let batch = w.batches.patch_batch:
+                batch.draw(w.view.camera, target, theme.grey(55.0))
         # Curves draw in every mode, over their dimmer control hulls.
-        if w.hulls_visible:
-            for batch in w.hull_batches:
-                batch.draw(w.camera, target, theme.grey(110.0))
-        for batch in w.curve_batches:
-            batch.draw(w.camera, target, theme.grey(225.0), 1.5)
-        if w.normals_visible:
-            if let batch = w.normal_batch:
-                batch.draw(w.camera, target, theme.accent())
-        if self.workspace.grid_visible:
+        if w.view.hulls_visible:
+            for batch in w.batches.hull_batches:
+                batch.draw(w.view.camera, target, theme.grey(110.0))
+        for batch in w.batches.curve_batches:
+            batch.draw(w.view.camera, target, theme.grey(225.0), 1.5)
+        if w.view.normals_visible:
+            if let batch = w.batches.normal_batch:
+                batch.draw(w.view.camera, target, theme.accent())
+        if self.workspace.view.grid_visible:
             for category in 0..<3:
                 let lines: list[Vector3] = []
                 for index in -10..<11:
@@ -94,21 +96,21 @@ pub class SceneViewport: Widget:
                     lines.append(Vector3(10.0, -0.008, at))
                     lines.append(Vector3(at, -0.008, -10.0))
                     lines.append(Vector3(at, -0.008, 10.0))
-                WireRenderer.lines(lines, self.workspace.camera, target, theme.accent() if category == 2 else theme.grey(80.0 if category == 1 else 58.0), 1.0, 0.0)
+                WireRenderer.lines(lines, self.workspace.view.camera, target, theme.accent() if category == 2 else theme.grey(80.0 if category == 1 else 58.0), 1.0, 0.0)
         let overlay = Painter(target)
         overlay.text("PREVIEW" if self.workspace.network.preview else ("GROUP / LOCAL" if self.workspace.network.scope >= 0 else "PERSPECTIVE"), 16.0, 14.0, theme.text_muted())
         overlay.text("Y up  /  grid: 1 unit", 16.0, size.height - 28.0, theme.text_muted())
         self.tools.draw(overlay, size.width, size.height)
         overlay.rounded_rectangle(Rect(size.width - 126.0, 8.0, 32.0, 30.0), theme.surface(), 4.0)
-        mode_icon(overlay, w.display_mode, size.width - 122.0, 11.0)
+        mode_icon(overlay, w.view.display_mode, size.width - 122.0, 11.0)
         overlay.rectangle(Rect(size.width - 98.0, 34.0, 3.0, 3.0), theme.accent())
         overlay.close()
 
     ## The world axis zebra and isophote stripes run around: X, Y, Z or the view's up.
     func zebra_axis(self) -> Vector3!:
-        let axis = self.workspace.zebra_axis
+        let axis = self.workspace.view.zebra_axis
         if axis == 3:
-            return self.workspace.camera.projection(1.0).up
+            return self.workspace.view.camera.projection(1.0).up
         return Vector3(1.0 if axis == 0 else 0.0, 1.0 if axis == 1 else 0.0, 1.0 if axis == 2 else 0.0)
 
     pub func event(self, event: Event) -> unit!:
@@ -153,29 +155,29 @@ pub class SceneViewport: Widget:
             let dx = event.x - self.last_x
             let dy = event.y - self.last_y
             if self.navigation_button == 2:
-                self.workspace.pan(dx, dy, self.layout().bounds().height)
+                self.workspace.view.pan(dx, dy, self.layout().bounds().height)
             elif self.navigation_button == 1:
-                self.workspace.zoom((dx - dy) * 0.1)
+                self.workspace.view.zoom((dx - dy) * 0.1)
             else:
-                self.workspace.orbit(dx, dy)
+                self.workspace.view.orbit(dx, dy)
             self.last_x = event.x
             self.last_y = event.y
         elif event.kind == EventKind.pointer_up or event.kind == EventKind.focus_lost or event.kind == EventKind.overflow:
             self.dragging = false
             self.pending_right = false
         elif event.kind == EventKind.scroll:
-            self.workspace.zoom(event.scroll_y * (0.05 if event.scroll_unit == ScrollUnit.points else 1.0))
+            self.workspace.view.zoom(event.scroll_y * (0.05 if event.scroll_unit == ScrollUnit.points else 1.0))
         elif event.kind == EventKind.magnify:
-            self.workspace.zoom(event.scroll_y * 12.0)
+            self.workspace.view.zoom(event.scroll_y * 12.0)
         elif event.kind == EventKind.key_down:
             if event.key == Key.escape:
                 self.dragging = false
                 if self.workspace.placing != none: self.workspace.cancel_placing()
                 elif self.workspace.prompt != none: self.workspace.cancel_prompt()
             elif event.key == Key.enter and self.workspace.placing != none:
-                self.workspace.finish_placing()
+                placing_commands.finish_placing(self.workspace)
             elif event.key == Key.enter and self.workspace.prompt != none:
-                self.workspace.accept_prompt()
+                modeling_commands.accept_prompt(self.workspace)
         # Hover over the same component changes nothing on screen.
         if event.kind == EventKind.pointer_moved and not self.dragging and not self.tools.hover_changed:
             return

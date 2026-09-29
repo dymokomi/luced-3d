@@ -174,6 +174,19 @@ click dismisses.
 
 ## Interaction modules
 
+- `workspace.luc`: the editor's state (network, history, displayed geometry,
+  component selection and level) and its transactions (`perform`,
+  `begin`/`commit`, undo/redo); it cooks the graph (`rebuild`, locally
+  through `local_cook.luc` or on the worker, `poll_compute`) and holds the
+  view (`view_state.luc`: camera, display mode and analysis settings) and the
+  viewport's line batches (`viewport_batches.luc`). Commands on it live
+  beside it, each change one transaction: `node_commands.luc` (nodes, flags,
+  wiring, parameters, Groups), `selection_commands.luc` (picking, walking and
+  the selection level), `modeling_commands.luc` (tools as Edit steps or verb
+  nodes, Tool → Select and Reselect, primitives, knife, moves, gizmo
+  previews) and `placing_commands.luc` (placing on surfaces). Language rule:
+  modules cannot import each other in a cycle, so commands take the
+  Workspace rather than the Workspace holding them.
 - `actions.luc`: shared `luce-ui.Command` objects and state-dependent enabling.
 - `network_view.luc`: graph coordinates, pointer-centred zoom, pan, port hit
   testing, wiring, flags, node movement and drawing. It accepts Tab so focus
@@ -193,7 +206,7 @@ click dismisses.
 
 ## Mesh representation
 
-`luce-3d.geocore Mesh` separates shared points, polygon corner lists, per-face
+luce-geocore's `Mesh` separates shared points, polygon corner lists, per-face
 normals, unique edges and optional validated display triangles. Topology is
 immutable and shared across threads by atomic owner counts; attribute-only and
 position-only edits share it. Ear-clipped triangles support concave polygons;

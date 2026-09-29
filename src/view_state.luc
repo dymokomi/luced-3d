@@ -1,0 +1,92 @@
+## The viewport's camera and display settings: an orbit camera (yaw, pitch
+## and distance around a target), the display mode and its analysis
+## settings, and which guides are drawn. None of it is part of the graph or
+## its undo history; the Workspace holds one and bumps its revision when a
+## setting changes what is drawn.
+from three import Vector3, PerspectiveCamera
+import math
+
+pub class ViewState:
+    pub let camera: PerspectiveCamera
+    pub var yaw: float = 0.7
+    pub var pitch: float = 0.5
+    pub var distance: float = 9.0
+    pub var target: Vector3
+    pub var grid_visible: bool = true
+    ## 0 wireframe, 1 flat + wire, 2 flat, 3 shaded, 4 shaded + wire,
+    ## 7 zebra, 8 isophotes, 9 curvature (5 rendered and 6, the normals
+    ## toggle, are not modes).
+    pub var display_mode: int = 3
+    ## Zebra and isophote stripes: count, dark share, axis (0 X, 1 Y, 2 Z,
+    ## 3 the view's up), planar instead of cylindrical, stripes without shading.
+    pub var zebra_stripes: int = 20
+    pub var zebra_duty: float = 0.5
+    pub var zebra_axis: int = 1
+    pub var zebra_planar: bool = false
+    pub var zebra_stripes_only: bool = false
+    ## Curvature (mode 9): the value shown (0 mean, 1 Gaussian, 2 k1, 3 k2,
+    ## 4 the larger |k|) and the value the map spans (0: automatic).
+    pub var curvature_kind: int = 0
+    pub var curvature_range: float = 0.0
+    pub var normals_visible: bool = false
+    ## Whether control hulls (curve control polygons, CV nets) are drawn.
+    pub var hulls_visible: bool = true
+
+    pub func init(self) -> unit!:
+        self.target = Vector3(0.0, 0.8, 0.0)
+        self.camera = PerspectiveCamera(45.0, near = 0.05, far = 500.0)
+        self.update_camera()
+
+    ## The mode meshes are prepared for: the analysis modes (zebra,
+    ## isophotes, curvature) shade like Shaded.
+    pub func mesh_mode(self) -> int:
+        return self.display_mode if self.display_mode <= 4 else 3
+
+    pub func update_camera(self) -> unit!:
+        # Keep useful depth precision across CAD units and avoid a fixed far clip
+        # slicing large parts. Lens planes follow the orbit's working scale.
+        self.camera.set_projection(45.0, math.max(0.00001, self.distance * 0.01), math.min(1000000000.0, math.max(500.0, self.distance * 20.0)))
+        let horizontal = math.cos(self.pitch) * self.distance
+        self.camera.set_position(self.target.add(Vector3(math.sin(self.yaw) * horizontal, math.sin(self.pitch) * self.distance, math.cos(self.yaw) * horizontal)))
+        self.camera.look_at(self.target)
+
+    pub func orbit(self, dx: float, dy: float) -> unit!:
+        self.yaw -= dx * 0.008
+        self.pitch = math.max(-1.5, math.min(1.5, self.pitch + dy * 0.008))
+        self.update_camera()
+
+    pub func zoom(self, delta: float) -> unit!:
+        self.distance = math.max(0.001, math.min(10000000.0, self.distance * math.exp(math.max(-2.0, math.min(2.0, -delta * 0.08)))))
+        self.update_camera()
+
+    pub func pan(self, dx: float, dy: float, height: float) -> unit!:
+        let scale = self.distance * 0.828427 / math.max(1.0, height)
+        let right = Vector3(math.cos(self.yaw), 0.0, -math.sin(self.yaw))
+        let up = Vector3(-math.sin(self.yaw) * math.sin(self.pitch), math.cos(self.pitch), -math.cos(self.yaw) * math.sin(self.pitch))
+        self.target = self.target.add(right.multiply_scalar(-dx * scale)).add(up.multiply_scalar(dy * scale))
+        self.update_camera()
+
+    ## Frame `points`, from at least `least` away (the default view when
+    ## there are none).
+    pub func frame(self, points: list[Vector3], least: float = 0.001) -> unit!:
+        if points.length > 0:
+            var minimum = points[0]
+            var maximum = points[0]
+            for point in points:
+                minimum = Vector3(math.min(minimum.x, point.x), math.min(minimum.y, point.y), math.min(minimum.z, point.z))
+                maximum = Vector3(math.max(maximum.x, point.x), math.max(maximum.y, point.y), math.max(maximum.z, point.z))
+            self.target = minimum.add(maximum).multiply_scalar(0.5)
+            # Small models (millimetre parts, OBJs in metres) frame as tightly
+            # as large ones; zoom reaches the same minimum.
+            self.distance = math.max(math.max(0.001, least), maximum.subtract(minimum).length() * 1.8)
+        else:
+            self.target = Vector3(0.0, 1.0, 0.0)
+            self.distance = 9.0
+        self.update_camera()
+
+    ## Switch to display `mode`; false when it is not a mode or is current.
+    pub func set_display_mode(self, mode: int) -> bool:
+        if mode < 0 or mode > 9 or mode in [5, 6] or mode == self.display_mode:
+            return false
+        self.display_mode = mode
+        return true

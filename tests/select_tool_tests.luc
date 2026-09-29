@@ -4,16 +4,19 @@
 ## Select prompts, Reselect, Keep IDs and the Move gizmo on plain nodes.
 from workspace import Workspace
 from three import Vector3
+import modeling_commands
+import node_commands
+import selection_commands
 
 pub func select_tool_tests() -> unit!:
     let w = Workspace()
     let cube = w.network.selected
     # Any displayed node selects: here the Cube itself.
     assert(w.selecting() and not w.editing())
-    w.set_mode(1)
-    w.choose_component(2, false)
+    selection_commands.set_mode(w, 1)
+    selection_commands.choose_component(w, 2, false)
     assert(w.selected_ids() == [2])
-    w.model("Extrude")
+    modeling_commands.model(w, "Extrude")
     let extrude = w.network.require(w.network.selected)
     assert(extrude.kind == "PolyExtrude" and extrude.inputs[0] == cube and w.network.display == extrude.id)
     assert(extrude.texts[0] == "2" and extrude.guard != 0)
@@ -24,70 +27,70 @@ pub func select_tool_tests() -> unit!:
     assert(w.network.find(extrude.id) == none and w.network.display == cube)
     w.redo()
     # A tool on a node with downstream nodes inserts itself between them.
-    w.add_node("Transform", 0.0, 300.0)
+    node_commands.add_node(w, "Transform", 0.0, 300.0)
     let transform = w.network.selected
-    w.select_node(extrude.id)
-    w.display_selected()
-    w.set_mode(1)
-    w.choose_component(0, false)
-    w.model("Inset")
+    node_commands.select_node(w, extrude.id)
+    node_commands.display_selected(w)
+    selection_commands.set_mode(w, 1)
+    selection_commands.choose_component(w, 0, false)
+    modeling_commands.model(w, "Inset")
     let inset = w.network.require(w.network.selected)
     assert(inset.inputs[0] == extrude.id and w.network.require(transform).inputs[0] == inset.id)
     assert((w.geometry else trap("inset")).face_count() == 14)
     # Changing the input's topology trips the guard; Keep IDs clears it.
-    w.select_node(extrude.id)
-    w.set_text(0, "3")
-    w.select_node(inset.id)
-    w.display_selected()
+    node_commands.select_node(w, extrude.id)
+    node_commands.set_text(w, 0, "3")
+    node_commands.select_node(w, inset.id)
+    node_commands.display_selected(w)
     assert(inset.failure.contains("Reselect"))
-    w.keep_ids(inset.id)
+    node_commands.keep_ids(w, inset.id)
     assert(inset.failure == "" and inset.guard == 0)
     # Reselect shows the input with the group, and Enter writes a new one.
-    w.reselect(inset.id)
+    modeling_commands.reselect(w, inset.id)
     assert(w.prompt != none and w.network.display == extrude.id and w.selected_ids() == [0])
-    w.choose_component(5, false)
-    w.accept_prompt()
+    selection_commands.choose_component(w, 5, false)
+    modeling_commands.accept_prompt(w)
     assert(inset.texts[0] == "5" and inset.guard != 0 and w.network.display == inset.id and w.prompt == none)
     # Tool → Select: nothing selected, the node waits for its components.
     w.selection = none
-    w.model("Duplicate")
+    modeling_commands.model(w, "Duplicate")
     let waiting = w.network.require(w.network.selected)
     assert(w.prompt != none and waiting.kind == "Duplicate" and w.network.display == inset.id)
-    w.set_mode(1)
-    w.choose_component(1, false)
-    w.accept_prompt()
+    selection_commands.set_mode(w, 1)
+    selection_commands.choose_component(w, 1, false)
+    modeling_commands.accept_prompt(w)
     assert(waiting.texts[0] == "1" and w.network.display == waiting.id and waiting.failure == "")
     # Esc drops a prompted node with its transaction.
     w.selection = none
-    w.model("Reverse")
+    modeling_commands.model(w, "Reverse")
     let dropped = w.network.selected
     w.cancel_prompt()
     assert(w.network.find(dropped) == none and w.prompt == none)
     # The Move gizmo on a plain node adds a Transform Components node.
-    w.set_mode(3)
-    w.choose_component(0, false)
+    selection_commands.set_mode(w, 3)
+    selection_commands.choose_component(w, 0, false)
     let points = (w.geometry else trap("points")).point_count()
     w.begin("Move components")
-    w.preview_move(Vector3(0.0, 1.0, 0.0))
+    modeling_commands.preview_move(w, Vector3(0.0, 1.0, 0.0))
     w.commit()
     let moved = w.network.require(w.network.selected)
     assert(moved.kind == "Transform Components" and moved.values[1] == 1.0 and (w.geometry else trap("moved")).point_count() == points)
     # Vertices select corners; the node reads them as Vertices.
-    w.set_mode(4)
-    w.choose_component(4, false)
+    selection_commands.set_mode(w, 4)
+    selection_commands.choose_component(w, 4, false)
     assert(w.domain() == 1 and w.group_type() == 4 and w.selected_ids() == [4])
     # Select edges, then Bevel: a PolyBevel node for just those edges, its
     # strips selected; Loop Cut from an edge selects the new loop.
     let fresh = Workspace()
-    fresh.set_mode(2)
-    fresh.choose_component(0, false)
-    fresh.model("Bevel")
+    selection_commands.set_mode(fresh, 2)
+    selection_commands.choose_component(fresh, 0, false)
+    modeling_commands.model(fresh, "Bevel")
     let bevel = fresh.network.require(fresh.network.selected)
     assert(bevel.kind == "PolyBevel" and bevel.guard != 0 and bevel.texts[0] != "")
     assert((fresh.geometry else trap("beveled")).face_count() == 7 and fresh.component_mode == 1 and fresh.selected_count() == 1)
-    fresh.set_mode(2)
-    fresh.choose_component(0, false)
-    fresh.model("Loop Cut")
+    selection_commands.set_mode(fresh, 2)
+    selection_commands.choose_component(fresh, 0, false)
+    modeling_commands.model(fresh, "Loop Cut")
     let cut = fresh.network.require(fresh.network.selected)
     assert(cut.kind == "Loop Cut" and fresh.component_mode == 2 and fresh.selected_count() > 0)
     print("PASS selection on any node, tool → node with guard and output selection, Tool → Select, Reselect, Keep IDs, gizmo nodes, vertices, bevel and loop cut on selected edges")

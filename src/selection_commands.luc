@@ -1,0 +1,66 @@
+## Commands on the component selection of the displayed geometry: picking
+## components (whole pieces at a level of pieces), selecting all, inverting,
+## growing and walking it, and switching the selection level (the selection
+## carries over to the new level's domain).
+from geocore import Selection
+from workspace import Workspace
+
+pub func invert_selection(w: Workspace) -> unit!:
+    let chosen = w.current_selection() else return
+    w.perform("Invert selection", func () -> unit!:
+        w.selection = chosen.inverted())
+
+## Grow (0), shrink (1), border (2), flood (3), loop (4) or ring (5).
+pub func walk_selection(w: Workspace, operation: int) -> unit!:
+    let mesh = w.geometry else return
+    let chosen = w.current_selection() else return
+    if operation >= 4 and w.domain() != 4:
+        w.notice = "Loops and rings need the Edges level"
+        w.revision += 1
+        return
+    w.perform("Change selection", func () -> unit!:
+        w.selection = chosen.walked(mesh, operation, 1))
+
+## Switching the component type carries the selection over (a face is
+## kept when all its points were selected; a point when any face was).
+pub func set_mode(w: Workspace, mode: int) -> unit!:
+    if mode == w.component_mode or mode < 0 or mode >= w.levels().length:
+        return
+    let mesh = w.geometry
+    let chosen = w.selection
+    w.component_mode = mode
+    w.selection = none
+    if let geometry = mesh:
+        if let previous = chosen:
+            if previous.fits(geometry) and previous.count() > 0:
+                let domain = w.domain()
+                let strict = domain == 2 or (domain == 4 and previous.domain() == 0)
+                w.selection = previous.on_domain(geometry, domain, strict)
+    w.revision += 1
+    # An Edit kind may pick each level on other geometry (Edit CAD).
+    if w.active_kind() != none:
+        w.rebuild()
+
+## Click: select `id` alone, or toggle it with `extend`; -1 clears. At a
+## level of pieces (Object) the whole piece around `id`.
+pub func choose_component(w: Workspace, id: int, extend: bool) -> unit!:
+    if not w.selecting():
+        return
+    let mesh = w.geometry else return
+    let chosen = w.current_selection() else return
+    let piece = w.level().whole(mesh, id) if id >= 0 else ""
+    w.perform("Select components", func () -> unit!:
+        if id < 0:
+            if not extend: w.selection = none
+            return
+        if piece == "":
+            w.selection = chosen.changed(id, 2 if extend else 3)
+        elif not extend:
+            w.selection = Selection.of(mesh, piece, w.domain())
+        else:
+            w.selection = chosen.combined(mesh, piece, 1 if chosen.contains(id) else 0))
+
+pub func select_all(w: Workspace) -> unit!:
+    let chosen = w.current_selection() else return
+    w.perform("Select all", func () -> unit!:
+        w.selection = chosen.filled(true))

@@ -1,0 +1,61 @@
+## Cooking the displayed outputs on the UI thread, as tests and scripts do
+## before a worker runs (the worker's path is compute_worker.luc): each
+## visible output's scene objects go into `objects` and its lines into the
+## viewport batches; the displayed node's result comes back for picking.
+from three import Group, Matrix4, CurveLines
+from network import Network, Node
+from geometry_data import GeometryData
+from overlay_lines import OverlayLines
+from scene_projection import append_scene, append_overlays, append_patch_boundaries, append_cad_hulls
+from viewport_batches import ViewportBatches
+
+pub class LocalCook:
+    ## The displayed node and its result, when it cooked.
+    pub var node: Node? = none
+    pub var data: GeometryData? = none
+    ## The first failure, or how many CAD patches could not be meshed.
+    pub var notice: str = ""
+
+## Cook `graph`'s visible outputs (the displayed node alone when previewing)
+## into `objects` and `batches`, meshes prepared for display `mode`.
+## `guides` adds the displayed Edit node's own lines (its kind's guides).
+pub func cook_outputs(graph: Network, objects: Group, batches: ViewportBatches, mode: int, guides: func(GeometryData, OverlayLines) -> unit!?) -> LocalCook!:
+    let result = LocalCook()
+    objects.clear()
+    batches.clear_curves()
+    var outputs = graph.outputs(graph.scope)
+    if graph.preview:
+        if let node = graph.find(graph.display):
+            outputs = [node]
+    var analytic = 0
+    let wires = OverlayLines.make()
+    let normals = OverlayLines.make()
+    let patches = OverlayLines.make()
+    let hulls = OverlayLines.make()
+    for node in outputs:
+        if not node.visible:
+            continue
+        let data = graph.evaluate_data(node.id) catch failure:
+            result.notice = failure.message
+            continue
+        if node.id == graph.display:
+            result.node = node
+            result.data = data
+        let branch = Group()
+        analytic += append_scene(data, branch, mode = mode) catch failure:
+            result.notice = failure.message
+            continue
+        objects.add(branch)
+        append_overlays(data, Matrix4(), wires, normals)
+        append_cad_hulls(data, Matrix4(), hulls)
+        if node.id == graph.display and node.enabled:
+            if let add = guides:
+                add(data, hulls)
+        if CurveLines.count(data.geometry) > 0:
+            batches.curve_batches.append(CurveLines.batch(data.geometry))
+            batches.hull_batches.append(CurveLines.batch(data.geometry, true))
+        append_patch_boundaries(data, Matrix4(), patches)
+    if analytic > 0 and result.notice == "":
+        result.notice = f"CAD preview: {analytic} patches could not be meshed; boundaries remain visible"
+    batches.publish(wires, normals, patches, hulls)
+    return result

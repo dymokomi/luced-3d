@@ -5,6 +5,9 @@ from interop import Connection
 from workspace import Workspace
 from network import kinds
 from edit_kinds import is_edit, edit_tool_names, edit_primitive_names
+import modeling_commands
+import selection_commands
+import node_commands
 
 pub class Actions:
     pub let new_project: Command
@@ -62,12 +65,12 @@ pub class Actions:
         self.clear_edits = Command("Clear edits", id = "clear_edits")
         self.select_all = Command("Select all", Shortcut(Key.a, primary = true), id = "select_all")
         self.connections = [self.undo.on_trigger(workspace.undo), self.redo.on_trigger(workspace.redo),
-            self.output.on_trigger(workspace.toggle_output), self.auto_output.on_trigger(workspace.auto_output),
-            self.visibility.on_trigger(workspace.toggle_visible), self.parent.on_trigger(workspace.leave_group),
+            self.output.on_trigger(func () -> unit!: node_commands.toggle_output(workspace)), self.auto_output.on_trigger(func () -> unit!: node_commands.auto_output(workspace)),
+            self.visibility.on_trigger(func () -> unit!: node_commands.toggle_visible(workspace)), self.parent.on_trigger(func () -> unit!: node_commands.leave_group(workspace)),
             self.frame.on_trigger(workspace.frame_cube), self.grid.on_trigger(workspace.toggle_grid), self.hulls.on_trigger(workspace.toggle_hulls),
-            self.display.on_trigger(workspace.display_selected), self.enabled.on_trigger(workspace.toggle_enabled),
-            self.delete.on_trigger(workspace.delete_selected), self.extrude.on_trigger(workspace.extrude),
-            self.clear_edits.on_trigger(workspace.clear_edits), self.select_all.on_trigger(workspace.select_all)]
+            self.display.on_trigger(func () -> unit!: node_commands.display_selected(workspace)), self.enabled.on_trigger(func () -> unit!: node_commands.toggle_enabled(workspace)),
+            self.delete.on_trigger(func () -> unit!: node_commands.delete_selected(workspace)), self.extrude.on_trigger(func () -> unit!: modeling_commands.extrude(workspace)),
+            self.clear_edits.on_trigger(func () -> unit!: modeling_commands.clear_edits(workspace)), self.select_all.on_trigger(func () -> unit!: selection_commands.select_all(workspace))]
         self.add = []
         self.modeling = []
         # Every Edit kind's tools and primitives, from the kind registry
@@ -77,15 +80,15 @@ pub class Actions:
             let name = operation
             let command = Command(operation, id = "edit_" + operation)
             self.modeling.append(command)
-            self.connections.append(command.on_trigger(func () -> unit!: workspace.model(name)))
+            self.connections.append(command.on_trigger(func () -> unit!: modeling_commands.model(workspace, name)))
         self.selection_tools = [Command("Invert selection", Shortcut(Key.i, primary = true), id = "select_invert")]
-        self.connections.append(self.selection_tools[0].on_trigger(workspace.invert_selection))
+        self.connections.append(self.selection_tools[0].on_trigger(func () -> unit!: selection_commands.invert_selection(workspace)))
         let walks = ["Grow selection", "Shrink selection", "Select border", "Select connected", "Select loop", "Select ring"]
         for index in 0..<walks.length:
             let operation = index
             let command = Command(walks[index], id = "select_walk_" + str(index))
             self.selection_tools.append(command)
-            self.connections.append(command.on_trigger(func () -> unit!: workspace.walk_selection(operation)))
+            self.connections.append(command.on_trigger(func () -> unit!: selection_commands.walk_selection(workspace, operation)))
         # Selection levels 1-5: their labels follow the Edit kind's levels.
         self.modes = [Command("Object", Shortcut(Key.digit_1), id = "select_level_1"), Command("Polygons", Shortcut(Key.digit_2), id = "select_level_2"),
             Command("Edges", Shortcut(Key.digit_3), id = "select_level_3"), Command("Vertices", Shortcut(Key.digit_4), id = "select_level_4"),
@@ -93,17 +96,17 @@ pub class Actions:
         for index in 0..<self.modes.length:
             let mode = index
             self.connections.append(self.modes[index].on_trigger(func () -> unit!:
-                workspace.set_mode(mode)))
+                selection_commands.set_mode(workspace, mode)))
         # Primitives an Edit node creates (each kind offers its own).
         self.create = []
         for primitive in edit_primitive_names():
             let name = primitive
             let command = Command(primitive, id = "create_" + primitive.lower().replace(" ", "_"))
             self.create.append(command)
-            self.connections.append(command.on_trigger(func () -> unit!: workspace.create(name)))
+            self.connections.append(command.on_trigger(func () -> unit!: modeling_commands.create(workspace, name)))
         self.tools = [Command("Select", Shortcut(Key.q), id = "tool_select"), Command("Move", Shortcut(Key.m), id = "tool_move")]
-        self.connections.append(self.tools[0].on_trigger(func (): workspace.choose_tool("Select")))
-        self.connections.append(self.tools[1].on_trigger(func (): workspace.choose_tool("Move")))
+        self.connections.append(self.tools[0].on_trigger(func (): modeling_commands.choose_tool(workspace, "Select")))
+        self.connections.append(self.tools[1].on_trigger(func (): modeling_commands.choose_tool(workspace, "Move")))
         for kind in kinds():
             self.add.append(Command(kind, id = "add_" + kind))
         self.all = [self.undo, self.redo, self.frame, self.grid, self.hulls, self.display, self.output, self.auto_output, self.visibility, self.parent, self.enabled, self.delete, self.extrude, self.clear_edits, self.select_all] + self.add + self.modes + self.tools + self.modeling + self.create + self.selection_tools
@@ -167,8 +170,8 @@ pub class Actions:
             command.set_enabled(selecting and w.tool_available(command.text()) and (not w.editing() or w.selected_count() > 0 or command.text() in ["Subdivide", "Clean"] or command.text() in w.strip_kind().draw_tools))
         for command in self.selection_tools:
             command.set_enabled(selecting and w.selected_count() > 0)
-        self.grid.set_checked(w.grid_visible)
-        self.hulls.set_checked(w.hulls_visible)
+        self.grid.set_checked(w.view.grid_visible)
+        self.hulls.set_checked(w.view.hulls_visible)
 
     pub func close(self):
         for connection in self.connections:

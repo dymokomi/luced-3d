@@ -11,9 +11,11 @@ import ui
 from tool_icons import draw_icon
 from node_gizmos import NodeGizmos
 from viewport_placing import ViewportPlacing
+import modeling_commands
+import selection_commands
 
 pub func projected(workspace: Workspace, point: Vector3, width: float, height: float) -> list[float]!:
-    let projection = workspace.camera.projection(math.max(1.0, width) / math.max(1.0, height))
+    let projection = workspace.view.camera.projection(math.max(1.0, width) / math.max(1.0, height))
     let offset = point.subtract(projection.position)
     let depth = -offset.dot(projection.backward)
     if depth <= projection.near:
@@ -22,7 +24,7 @@ pub func projected(workspace: Workspace, point: Vector3, width: float, height: f
             (1.0 - offset.dot(projection.up) * projection.focal / depth) * height * 0.5, depth]
 
 pub func view_ray(workspace: Workspace, x: float, y: float, width: float, height: float) -> Vector3!:
-    let projection = workspace.camera.projection(math.max(1.0, width) / math.max(1.0, height))
+    let projection = workspace.view.camera.projection(math.max(1.0, width) / math.max(1.0, height))
     return projection.right.multiply_scalar((x / width * 2.0 - 1.0) * projection.aspect / projection.focal).add(
         projection.up.multiply_scalar((1.0 - y / height * 2.0) / projection.focal)).subtract(projection.backward).normalized()
 
@@ -65,7 +67,7 @@ pub class ViewportTools:
         for index in 0..<2:
             let x = width - 88.0 + float(index) * 38.0
             painter.rounded_rectangle(Rect(x, 8.0, 32.0, 30.0), theme.surface(), 4.0)
-            draw_icon(painter, "Frame" if index == 0 else "Grid", x + 6.0, 13.0, 20.0, theme.accent() if self.hover_tool == index + 100 or (index == 1 and w.grid_visible) else theme.text())
+            draw_icon(painter, "Frame" if index == 0 else "Grid", x + 6.0, 13.0, 20.0, theme.accent() if self.hover_tool == index + 100 or (index == 1 and w.view.grid_visible) else theme.text())
             if self.hover_tool == index + 100:
                 painter.rounded_rectangle(Rect(width - 184.0, 43.0, 168.0, 30.0), theme.surface(), 4.0)
                 painter.text("Frame geometry (F)" if index == 0 else "Toggle grid (G)", width - 176.0, 49.0, theme.text())
@@ -81,7 +83,7 @@ pub class ViewportTools:
             # SDF's proxies) shows its selection through surfaces, dimmed.
             let kind = w.active_kind()
             let through = kind != none and (kind else trap("kind")).see_through
-            self.overlay.draw(w.camera, painter.target(), theme.grey(90.0), theme.accent(), theme.text(), wires = false, hidden = theme.grey(150.0) if through else none)
+            self.overlay.draw(w.view.camera, painter.target(), theme.grey(90.0), theme.accent(), theme.text(), wires = false, hidden = theme.grey(150.0) if through else none)
             self.placing.draw(painter)
             self.draw_edit_controls(painter, height)
         if self.knifing:
@@ -135,17 +137,17 @@ pub class ViewportTools:
         # nearest point on screen.
         if mesh.face_count() == 0:
             self.overlay.show(mesh, 0, w.selection, self.hovered)
-            return self.overlay.pick(w.camera, x, y, width, height, -1)
+            return self.overlay.pick(w.view.camera, x, y, width, height, -1)
         var face = -2
         if let renderer = self.renderer:
-            face = renderer.pick_face(mesh, w.camera, x, y, width, height) catch failure:
+            face = renderer.pick_face(mesh, w.view.camera, x, y, width, height) catch failure:
                 recover -2
         if w.domain() == 2:
             if face >= -1:
                 return face
-            return mesh.ray_face(w.camera.position(), view_ray(w, x, y, width, height))
+            return mesh.ray_face(w.view.camera.position(), view_ray(w, x, y, width, height))
         self.overlay.show(mesh, w.overlay_mode(), w.selection, self.hovered)
-        return self.overlay.pick(w.camera, x, y, width, height, face)
+        return self.overlay.pick(w.view.camera, x, y, width, height, face)
 
     ## Returns true when node tools consume the input; otherwise navigation owns it.
     ## Records whether the highlight changed, so an idle pointer move over the
@@ -184,7 +186,7 @@ pub class ViewportTools:
             if event.kind == EventKind.pointer_up:
                 self.knifing = false
                 let line = self.knife_line
-                w.knife(line[0], line[1], line[2], line[3], width, height)
+                modeling_commands.knife(w, line[0], line[1], line[2], line[3], width, height)
             return true
         return true
 
@@ -239,6 +241,6 @@ pub class ViewportTools:
             self.placing.click(placing, self.overlay, self.renderer, event.x, event.y, width, height)
             return true
         if w.selecting():
-            w.choose_component(self.pick(event.x, event.y, width, height), event.shift)
+            selection_commands.choose_component(w, self.pick(event.x, event.y, width, height), event.shift)
             return true
         return false

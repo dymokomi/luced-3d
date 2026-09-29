@@ -1,0 +1,205 @@
+## Commands on the node network, each one undo step through
+## Workspace.perform: selecting, displaying and flagging nodes, entering and
+## leaving Groups, adding, deleting, wiring and moving nodes, and changing
+## their parameters, names and files.
+from workspace import Workspace
+from edit_kinds import is_edit
+import node_catalog
+import math
+import ui
+
+## Selecting an Edit node also displays it: its tools edit the geometry
+## the viewport shows, however the node was reached.
+pub func select_node(w: Workspace, id: int) -> unit!:
+    let node = w.network.require(id)
+    if node.id != w.network.selected:
+        w.placing = none
+    let shows = is_edit(node.kind) and (w.network.display != id or w.network.preview)
+    if w.network.selected != id or shows:
+        w.network.selected = id
+        if shows:
+            w.network.display = id
+            w.network.preview = false
+        w.selection = none
+        w.edit_tool = "Select"
+        w.revision += 1
+        if w.compute != none or shows:
+            w.rebuild()
+
+pub func display_selected(w: Workspace) -> unit!:
+    let node = w.selected() else return
+    w.perform("Preview node", func () -> unit!:
+        w.network.preview = not (w.network.preview and w.network.display == node.id)
+        w.network.display = node.id
+        w.selection = none
+        w.rebuild())
+
+pub func toggle_output(w: Workspace) -> unit!:
+    let node = w.selected() else return
+    let output = not w.network.is_output(node.id)
+    set_output(w, node.id, 1 if output else -1)
+
+pub func auto_output(w: Workspace) -> unit!:
+    let node = w.selected() else return
+    set_output(w, node.id, 0)
+
+pub func set_output(w: Workspace, id: int, state: int) -> unit!:
+    if state < -1 or state > 1:
+        return
+    w.perform("Change Out flag", func () -> unit!:
+        let node = w.network.require(id)
+        node.output = state
+        w.network.invalidate(id)
+        w.rebuild())
+
+pub func toggle_visible(w: Workspace) -> unit!:
+    let node = w.selected() else return
+    w.perform("Toggle visibility", func () -> unit!:
+        node.visible = not node.visible
+        if node.parent >= 0:
+            w.network.invalidate(node.parent)
+        w.rebuild())
+
+pub func enter_group(w: Workspace, id: int) -> unit!:
+    let node = w.network.require(id)
+    if node.kind != "Group":
+        return
+    if w.in_transaction():
+        w.commit()
+    w.network.scope = id
+    let children = w.network.local_nodes()
+    w.network.selected = children[0].id if children.length > 0 else -1
+    w.network.display = w.network.selected
+    w.network.preview = false
+    w.selection = none
+    w.rebuild()
+
+pub func leave_group(w: Workspace) -> unit!:
+    if w.network.scope < 0:
+        return
+    let node = w.network.require(w.network.scope)
+    if w.in_transaction():
+        w.commit()
+    w.network.scope = node.parent
+    w.network.selected = node.id
+    w.network.display = node.id
+    w.network.preview = false
+    w.selection = none
+    w.rebuild()
+
+pub func reveal_node(w: Workspace, id: int) -> unit!:
+    let node = w.network.require(id)
+    w.network.scope = node.parent
+    w.network.preview = false
+    w.network.display = id
+    w.network.selected = -1
+    select_node(w, id)
+    w.rebuild()
+
+pub func toggle_enabled(w: Workspace) -> unit!:
+    let node = w.selected() else return
+    w.perform("Toggle node", func () -> unit!:
+        node.enabled = not node.enabled
+        w.network.invalidate(node.id)
+        w.selection = none
+        w.rebuild())
+
+pub func add_node(w: Workspace, kind: str, x: float, y: float) -> unit!:
+    w.perform("Add " + kind, func () -> unit!:
+        let source = w.network.selected
+        let node = w.network.add(kind, x, y)
+        if node.inputs.length > 0 and source >= 0 and w.network.require(source).parent == node.parent:
+            w.network.connect(source, node.id, 0)
+        w.network.selected = node.id
+        w.network.display = node.id
+        w.network.preview = false
+        w.selection = none
+        w.edit_tool = "Select"
+        w.rebuild())
+
+pub func delete_selected(w: Workspace) -> unit!:
+    if w.selected() == none:
+        return
+    w.perform("Delete node", func () -> unit!:
+        w.network.remove(w.network.selected)
+        w.selection = none
+        w.rebuild())
+
+pub func connect(w: Workspace, source: int, target: int, port: int) -> unit!:
+    w.perform("Connect nodes", func () -> unit!:
+        w.network.connect(source, target, port)
+        w.selection = none
+        w.rebuild())
+
+pub func disconnect(w: Workspace, target: int, port: int) -> unit!:
+    w.perform("Disconnect nodes", func () -> unit!:
+        w.network.disconnect(target, port)
+        w.selection = none
+        w.rebuild())
+
+pub func move_node(w: Workspace, id: int, x: float, y: float) -> unit!:
+    w.perform("Move node", func () -> unit!:
+        let node = w.network.require(id)
+        node.x = x
+        node.y = y)
+
+pub func rename(w: Workspace, name: str) -> unit!:
+    let node = w.selected() else return
+    if name == "" or name == node.name:
+        return
+    # Names reach the worker's messages and group paths, not its stamps.
+    w.perform("Rename node", func () -> unit!:
+        node.name = name
+        if w.compute != none: w.rebuild())
+
+pub func set_parameter(w: Workspace, slot: int, value: float) -> unit!:
+    let node = w.selected() else return
+    if slot < 0 or slot >= node.values.length or not math.is_finite(value):
+        return
+    if node.values[slot] == value:
+        return
+    w.perform("Change " + node.kind, func () -> unit!:
+        if node.kind in ["Transform", "Group"] and slot >= 7 and math.abs(value) < 0.000001:
+            error(ui.invalid, "Scale cannot be zero")
+        var accepted = value
+        for parameter in node_catalog.parameters(node.kind, node.texts[0]):
+            if parameter.slot == slot:
+                accepted = math.max(parameter.minimum, math.min(parameter.maximum, accepted))
+                if parameter.integer:
+                    accepted = math.floor(accepted + 0.5)
+        node.values[slot] = accepted
+        w.network.invalidate(node.id)
+        w.rebuild())
+
+## The selected node's first parameter (a primitive's size).
+pub func set_size(w: Workspace, size: float) -> unit!:
+    set_parameter(w, 0, size)
+
+pub func set_text(w: Workspace, slot: int, value: str) -> unit!:
+    let node = w.selected() else return
+    if slot < 0 or slot >= node.texts.length or node.texts[slot] == value:
+        return
+    w.perform("Change " + node.kind, func () -> unit!:
+        node.texts[slot] = value
+        w.network.invalidate(node.id)
+        w.rebuild())
+
+pub func reload_file(w: Workspace) -> unit!:
+    let node = w.selected() else return
+    if node.kind != "File":
+        return
+    w.perform("Reload geometry file", func () -> unit!:
+        node.source_revision += 1
+        w.network.invalidate(node.id)
+        w.rebuild())
+
+## Keep IDs: run the node's group on the new topology as numbers (Houdini's
+## behaviour), clearing its guard.
+pub func keep_ids(w: Workspace, id: int) -> unit!:
+    let node = w.network.require(id)
+    if node.guard == 0:
+        return
+    w.perform("Keep IDs", func () -> unit!:
+        node.guard = 0
+        w.network.invalidate(node.id)
+        w.rebuild())

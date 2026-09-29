@@ -1,0 +1,337 @@
+## Modeling commands on the displayed geometry: a tool on the selection
+## becomes a step of the displayed Edit node, or a verb node inserted after
+## the displayed node (Tool → Select waits for components when nothing is
+## selected); primitives, the knife, moves, extrusion and gizmo previews.
+## Reselect rewrites a verb node's group from a new selection.
+from geocore import Mesh, Verbs
+from three import Vector3, Knife
+from workspace import Workspace
+from network import Node
+from edit_operations import EditStep
+from edit_kinds import is_edit
+from tools import ToolRun, tool_run, verb_defaults
+from tool_prompt import ToolPrompt
+import node_catalog
+import placing_commands
+
+## Run `tool` on the selection (see tools.luc): a step of the active Edit
+## node, or a new node after the displayed one, its Group the selection's
+## expression and its guard the topology it was made on. With nothing
+## selected a node waits for its components (Tool → Select).
+pub func model(w: Workspace, operation: str) -> unit!:
+    let mesh = w.geometry else return
+    # The knife is a stroke in the viewport (knife below), not a click.
+    if operation == "Knife":
+        choose_tool(w, "Knife")
+        w.notice = "Drag across the model to cut it; Shift snaps the stroke to 15°"
+        return
+    var run = ToolRun("", [])
+    if let kind = w.active_kind():
+        # A drawing tool with nothing to work on draws instead.
+        if operation in kind.draw_tools and kind.drawn != none and w.editing():
+            let chosen = w.current_selection() else return
+            let tool = kind.tool(operation) else return
+            if chosen.count() == 0 or not tool.offered(w.component_mode):
+                placing_commands.start_placing(w, operation, true)
+                return
+        # The kind's own tool: its verb and numbers, whether or not
+        # tools.luc knows the name (Edit SDF's Subtract).
+        let tool = kind.tool(operation) else return
+        if not tool.offered(w.component_mode):
+            w.notice = f"{operation} does not apply to {w.level().name}"
+            w.revision += 1
+            return
+        run = ToolRun(tool.verb, tool.numbers(tool_amount(w)))
+    else:
+        run = tool_run(operation, tool_amount(w)) else return
+    let wants_group = not (operation in ["Subdivide", "Clean"])
+    let chosen = w.current_selection() else return
+    if wants_group and chosen.count() == 0:
+        if w.editing():
+            w.notice = "Select components first"
+            w.revision += 1
+            return
+        start_prompt(w, operation, run)
+        return
+    let group = chosen.expression(mesh) if wants_group else ""
+    if w.editing():
+        append_step(w, operation, run.verb, group, run.numbers, mesh)
+    else:
+        add_tool_node(w, operation, run, group, mesh)
+
+## Create primitive `name` as a step of the displayed Edit node; its
+## piece becomes the selected Object.
+pub func create(w: Workspace, name: str) -> unit!:
+    let kind = w.active_kind() else return
+    if not w.editing():
+        return
+    let node = w.selected() else return
+    if name in kind.face_primitives:
+        placing_commands.start_placing(w, name, false)
+        return
+    let step = kind.create(name) else return
+    w.perform("Create " + name, func () -> unit!:
+        node.edits.append(step)
+        w.network.invalidate(node.id)
+        w.adopt_output = true
+        w.pending_level = 0
+        w.rebuild())
+
+## A knife stroke from (x0, y0) to (x1, y1) of the viewport: a Clip that
+## keeps both sides along the plane through the eye and the stroke
+## (recorded as a point and a normal, so replays need no camera). It
+## cuts the selection, or the faces the stroke passes over.
+pub func knife(w: Workspace, x0: float, y0: float, x1: float, y1: float, width: float, height: float) -> unit!:
+    let mesh = w.geometry else return
+    let plane = Knife.plane(w.view.camera, x0, y0, x1, y1, width, height) catch failure:
+        w.notice = failure.message
+        w.revision += 1
+        return
+    let chosen = w.current_selection() else return
+    var group = chosen.expression(mesh) if chosen.count() > 0 else ""
+    var group_type = w.group_type()
+    if group == "":
+        let under = Knife.faces_under(mesh, w.view.camera, x0, y0, x1, y1, width, height)
+        if under.count() == 0:
+            w.notice = "The stroke crosses no faces"
+            w.revision += 1
+            return
+        group = under.expression(mesh)
+        group_type = 3
+    let numbers = verb_defaults("Clip")
+    numbers[0] = 3.0
+    numbers[3] = 2.0
+    numbers[4] = plane.point.x
+    numbers[5] = plane.point.y
+    numbers[6] = plane.point.z
+    numbers[7] = plane.normal.x
+    numbers[8] = plane.normal.y
+    numbers[9] = plane.normal.z
+    if w.editing():
+        let node = w.selected() else return
+        w.perform("Knife", func () -> unit!:
+            node.edits.append(EditStep("Clip", group, group_type, numbers, mesh.topology_hash(), int(node.values[3]), node.values[4] != 0.0))
+            w.network.invalidate(node.id)
+            w.adopt_output = true
+            w.rebuild())
+        return
+    w.perform("Knife", func () -> unit!:
+        let node = insert_after_display(w, ToolRun("Clip", numbers))
+        node.texts[0] = group
+        node.values[node_catalog.group_type_slot] = float(group_type)
+        node.guard = mesh.topology_hash()
+        w.adopt_output = true
+        w.rebuild())
+
+## Append one verb step to the displayed Edit node, with its settings.
+func append_step(w: Workspace, label: str, verb: str, group: str, numbers: list[float], mesh: Mesh) -> unit!:
+    let node = w.selected() else return
+    w.perform(label + " components", func () -> unit!:
+        node.edits.append(edit_step(w, node, verb, group, numbers, mesh))
+        w.network.invalidate(node.id)
+        # A kind's own verb (not a mesh verb) keeps a selection that
+        # still fits.
+        let index = Verbs.index_of(verb)
+        w.adopt_output = index >= 0 and Verbs.changes_topology(index)
+        w.rebuild())
+
+## A step of Edit node `node`: its soft radius and falloff reach the
+## transform, its symmetry and Keep selection every step.
+func edit_step(w: Workspace, node: Node, verb: str, group: str, numbers: list[float], mesh: Mesh) -> EditStep:
+    var values = numbers.copy()
+    if verb == "Transform Components" and values.length >= 15:
+        values[13] = node.values[1]
+        values[14] = node.values[2]
+    # The kind's own parameters ride after the verb's numbers.
+    if let kind = w.kind_of(node.kind):
+        values = kind.step_numbers(values, node.values)
+    return EditStep(verb, group, w.group_type(), values, mesh.topology_hash(), int(node.values[3]), node.values[4] != 0.0)
+
+## A verb node after the displayed node, inserted before what it fed;
+## display, selection and the tool's output selection move to it.
+func add_tool_node(w: Workspace, label: str, run: ToolRun, group: str, mesh: Mesh) -> unit!:
+    w.perform(label, func () -> unit!:
+        let node = insert_after_display(w, run)
+        node.texts[0] = group
+        node.guard = mesh.topology_hash() if group != "" else 0
+        w.adopt_output = true
+        w.rebuild())
+
+func insert_after_display(w: Workspace, run: ToolRun) -> Node!:
+    let source = w.network.display
+    let upstream = w.network.require(source)
+    let node = w.network.add(run.verb, upstream.x, upstream.y + 90.0)
+    for other in w.network.nodes:
+        if other.id == node.id: continue
+        for port in 0..<other.inputs.length:
+            if other.inputs[port] == source: other.inputs[port] = node.id
+    w.network.connect(source, node.id, 0)
+    for slot in 0..<run.numbers.length:
+        node.values[slot] = run.numbers[slot]
+    node.values[node_catalog.group_type_slot] = float(w.group_type())
+    w.network.selected = node.id
+    show(w, node.id)
+    w.edit_tool = "Select"
+    return node
+
+## Show node `id`'s result: display it, previewing it alone when it is
+## not one of the scope's outputs (a node feeding others).
+func show(w: Workspace, id: int) -> unit!:
+    w.network.display = id
+    w.network.preview = not w.network.is_output(id)
+
+## Tool → Select: the new node waits, empty, while the viewport shows its
+## input for picking; Enter accepts (accept_prompt), Esc removes it.
+func start_prompt(w: Workspace, label: str, run: ToolRun) -> unit!:
+    if w.in_transaction():
+        return
+    w.begin(label)
+    let source = w.network.display
+    let node = insert_after_display(w, run) catch failure:
+        w.cancel()
+        w.notice = failure.message
+        w.revision += 1
+        return
+    node.texts[0] = ""
+    w.network.selected = node.id
+    show(w, source)
+    w.prompt = ToolPrompt(node.id, source, label, false)
+    w.pending_changed = true
+    w.notice = f"Select components for {label}, then Enter; Esc cancels"
+    w.revision += 1
+    w.rebuild()
+
+## Reselect: show node `id`'s input with its group selected, to rewrite
+## the group (and its guard) on Enter.
+pub func reselect(w: Workspace, id: int) -> unit!:
+    let node = w.network.require(id)
+    if not node_catalog.is_mesh_verb(node.kind) or node.inputs[0] < 0 or w.in_transaction():
+        return
+    w.begin("Reselect")
+    w.prompt = ToolPrompt(node.id, node.inputs[0], "Reselect", true)
+    w.pending_group = node.texts[0] if node.texts[0].trim() != "" else "*"
+    w.pending_type = int(node.values[node_catalog.group_type_slot])
+    w.network.selected = node.id
+    show(w, node.inputs[0])
+    w.pending_changed = true
+    w.notice = "Change the selection, then Enter; Esc cancels"
+    w.revision += 1
+    w.rebuild()
+
+## Enter: the prompted node takes the selection as its group.
+pub func accept_prompt(w: Workspace) -> unit!:
+    let prompt = w.prompt else return
+    let mesh = w.geometry else return
+    let node = w.network.find(prompt.node) else return
+    let chosen = w.current_selection() else return
+    if chosen.count() == 0:
+        w.notice = "Select components first, or Esc to cancel"
+        w.revision += 1
+        return
+    node.texts[0] = chosen.expression(mesh)
+    node.values[node_catalog.group_type_slot] = float(w.group_type())
+    node.guard = mesh.topology_hash()
+    w.network.invalidate(node.id)
+    show(w, node.id)
+    w.prompt = none
+    w.notice = ""
+    w.adopt_output = true
+    w.pending_changed = true
+    w.commit()
+    w.rebuild()
+
+pub func move_selection(w: Workspace, delta: Vector3) -> unit!:
+    if w.selected_count() == 0:
+        return
+    let mesh = w.geometry else return
+    w.perform("Move components", func () -> unit!:
+        append_move(w, mesh, delta)
+        w.rebuild())
+
+## A move of the selection: an Edit step on the active Edit node, else a
+## Transform Components node after the displayed one.
+func append_move(w: Workspace, mesh: Mesh, delta: Vector3) -> unit!:
+    let chosen = w.current_selection() else return
+    let group = chosen.expression(mesh)
+    let numbers = verb_defaults("Transform Components")
+    numbers[0] = delta.x
+    numbers[1] = delta.y
+    numbers[2] = delta.z
+    if w.editing():
+        let node = w.selected() else return
+        let step = edit_step(w, node, "Transform Components", group, numbers, mesh)
+        # Consecutive moves of one group merge into one step (D19); each
+        # drag is still its own undo entry.
+        if node.edits.length > 0 and node.edits[-1].merges(step):
+            node.edits[-1] = node.edits[-1].merged(step)
+        else:
+            node.edits.append(step)
+        w.network.invalidate(node.id)
+        return
+    let node = insert_after_display(w, ToolRun("Transform Components", numbers))
+    node.texts[0] = group
+    node.guard = mesh.topology_hash()
+
+pub func extrude(w: Workspace) -> unit!:
+    if w.selected_count() == 0 or w.domain() != 2:
+        w.notice = "Select faces to extrude"
+        w.revision += 1
+        return
+    model(w, "Extrude")
+
+## Change the distance of the Edit node's most recent extrusion.
+pub func set_last_extrusion(w: Workspace, distance: float) -> unit!:
+    let node = w.selected() else return
+    if not is_edit(node.kind) or node.edits.length == 0 or node.edits[-1].verb != "PolyExtrude" or node.edits[-1].numbers[0] == distance:
+        return
+    w.perform("Change extrusion", func () -> unit!:
+        let numbers = node.edits[-1].numbers.copy()
+        numbers[0] = distance
+        node.edits[-1] = node.edits[-1].with_numbers(numbers)
+        w.network.invalidate(node.id)
+        w.rebuild())
+
+pub func choose_tool(w: Workspace, tool: str):
+    w.edit_tool = tool
+    w.revision += 1
+
+pub func clear_edits(w: Workspace) -> unit!:
+    let node = w.selected() else return
+    if not is_edit(node.kind) or node.edits.length == 0:
+        return
+    w.perform("Clear edits", func () -> unit!:
+        node.edits = []
+        w.selection = none
+        w.network.invalidate(node.id)
+        w.rebuild())
+
+## Preview each gizmo delta against the original gesture snapshot, not
+## against the last frame. A whole drag becomes one undo entry.
+## One request per pointer move: the worker applies the preview recipe to
+## the stored state before the gesture, never replaying the node.
+pub func preview_move(w: Workspace, delta: Vector3) -> unit!:
+    let before = w.pending else return
+    w.dragging = true
+    w.network = before.graph.copy()
+    w.selection = before.selection
+    if w.transforming():
+        let node = w.selected() else return
+        node.values[1] += delta.x
+        node.values[2] += delta.y
+        node.values[3] += delta.z
+        w.network.invalidate(node.id)
+        w.pending_changed = true
+    elif w.selecting() and w.selected_count() > 0:
+        let mesh = w.geometry else return
+        append_move(w, mesh, delta) catch failure:
+            w.cancel()
+            w.notice = failure.message
+            w.revision += 1
+            return
+        w.pending_changed = true
+    w.rebuild()
+
+## The amount the Edit node's tools use (its first parameter), 0.5 elsewhere.
+func tool_amount(w: Workspace) -> float:
+    let node = w.selected() else return 0.5
+    return node.values[0] if is_edit(node.kind) else 0.5

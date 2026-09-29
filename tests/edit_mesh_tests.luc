@@ -7,6 +7,9 @@ from three import Vector3
 from geocore import Selection
 from viewport_tools import projected
 import math
+import modeling_commands
+import node_commands
+import selection_commands
 
 func near(a: float, b: float):
     assert(math.abs(a - b) < 0.00001)
@@ -16,35 +19,35 @@ func faces(w: Workspace) -> int!:
 
 pub func edit_mesh_tests() -> unit!:
     let w = Workspace()
-    w.delete_selected()
-    w.add_node("Edit Mesh", 0.0, 0.0)
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Edit Mesh", 0.0, 0.0)
     assert(w.editing() and faces(w) == 0)
     let names: list[str] = []
     for level in w.levels():
         names.append(level.name)
     assert(names == ["Object", "Polygons", "Edges", "Vertices", "Corners"])
     # A primitive is a step: its piece is named and selected as an Object.
-    w.create("Box")
+    modeling_commands.create(w, "Box")
     assert(faces(w) == 6 and w.component_mode == 0 and w.selected_count() == 6)
-    w.create("Sphere")
+    modeling_commands.create(w, "Sphere")
     let both = w.geometry else trap("both")
     let sphere = both.face_count() - 6
     assert(sphere > 6 and w.selected_count() == sphere and (w.selected() else trap("node")).edits.length == 2)
     let path = both.find_attribute("path", 2)
     assert(both.attribute_text(path, 0) == "/box1" and both.attribute_text(path, 6) == "/sphere1")
     # Object picks select whole pieces; Shift adds and removes one.
-    w.choose_component(2, false)
+    selection_commands.choose_component(w, 2, false)
     assert(w.selected_count() == 6)
-    w.choose_component(7, true)
+    selection_commands.choose_component(w, 7, true)
     assert(w.selected_count() == 6 + sphere)
-    w.choose_component(7, true)
+    selection_commands.choose_component(w, 7, true)
     assert(w.selected_count() == 6)
     # Moving and deleting an Object: the box alone.
-    w.move_selection(Vector3(3.0, 0.0, 0.0))
+    modeling_commands.move_selection(w, Vector3(3.0, 0.0, 0.0))
     let moved = w.geometry else trap("moved")
     near(moved.bounds().maximum.x, 4.0)
     near(moved.bounds().minimum.x, -1.0)
-    w.model("Delete")
+    modeling_commands.model(w, "Delete")
     assert(faces(w) == sphere)
     # Undo walks the recipe back: the delete, then the move.
     w.undo()
@@ -54,20 +57,20 @@ pub func edit_mesh_tests() -> unit!:
     assert((w.selected() else trap("node")).edits.length == 2)
     # A second box is named after the first; a mesh without paths picks its
     # connected components.
-    w.create("Box")
+    modeling_commands.create(w, "Box")
     let boxes = w.geometry else trap("boxes")
     assert(boxes.attribute_text(boxes.find_attribute("path", 2), 6 + sphere) == "/box2")
     let g = Workspace()
-    g.delete_selected()
-    g.add_node("Grid", 0.0, 0.0)
-    g.add_node("Edit Mesh", 0.0, 100.0)
-    g.set_mode(0)
-    g.choose_component(3, false)
+    node_commands.delete_selected(g)
+    node_commands.add_node(g, "Grid", 0.0, 0.0)
+    node_commands.add_node(g, "Edit Mesh", 0.0, 100.0)
+    selection_commands.set_mode(g, 0)
+    selection_commands.choose_component(g, 3, false)
     assert(g.selected_count() == 16)
-    g.create("Box")
-    g.choose_component(3, false)
+    modeling_commands.create(g, "Box")
+    selection_commands.choose_component(g, 3, false)
     assert(g.selected_count() == 16)
-    g.choose_component(16, false)
+    selection_commands.choose_component(g, 16, false)
     assert(g.selected_count() == 6)
     g6_tools()
     print("PASS Edit Mesh: Object, Polygons, Edges, Vertices and Corners levels; primitives as steps with their own paths; Object picks, moves, deletes and undo; Knife, Connect and Edge Slide")
@@ -75,38 +78,38 @@ pub func edit_mesh_tests() -> unit!:
 ## The G6 tools on a 4 by 4 grid over -1..1 (point z*5+x, face z*4+x).
 func g6_tools() -> unit!:
     let w = Workspace()
-    w.delete_selected()
-    w.add_node("Grid", 0.0, 0.0)
-    w.add_node("Edit Mesh", 0.0, 100.0)
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Grid", 0.0, 0.0)
+    node_commands.add_node(w, "Edit Mesh", 0.0, 100.0)
     # Knife: a stroke down the screen through face 5's middle cuts face 5
     # alone (its neighbours take the cut points); with nothing selected a
     # stroke cuts every face under it.
-    w.set_mode(1)
-    w.choose_component(5, false)
-    w.model("Knife")
+    selection_commands.set_mode(w, 1)
+    selection_commands.choose_component(w, 5, false)
+    modeling_commands.model(w, "Knife")
     assert(w.edit_tool == "Knife")
     let grid = w.geometry else trap("grid")
     let middle = projected(w, grid.face_center(5), 800.0, 600.0)
-    w.knife(middle[0] + 1.0, middle[1] - 40.0, middle[0] - 1.0, middle[1] + 40.0, 800.0, 600.0)
+    modeling_commands.knife(w, middle[0] + 1.0, middle[1] - 40.0, middle[0] - 1.0, middle[1] + 40.0, 800.0, 600.0)
     assert(faces(w) == 17 and w.domain() == 4 and w.selected_count() == 1)
     let node = w.selected() else trap("node")
     assert(node.edits[node.edits.length - 1].verb == "Clip" and node.edits[node.edits.length - 1].numbers[0] == 3.0)
     w.undo()
     w.selection = none
-    w.knife(middle[0] + 1.0, middle[1] - 200.0, middle[0] - 1.0, middle[1] + 200.0, 800.0, 600.0)
+    modeling_commands.knife(w, middle[0] + 1.0, middle[1] - 200.0, middle[0] - 1.0, middle[1] + 200.0, 800.0, 600.0)
     assert(faces(w) > 17)
     w.undo()
     # Connect: two points across face 5.
-    w.set_mode(3)
-    w.choose_component(6, false)
-    w.choose_component(12, true)
-    w.model("Connect")
+    selection_commands.set_mode(w, 3)
+    selection_commands.choose_component(w, 6, false)
+    selection_commands.choose_component(w, 12, true)
+    modeling_commands.model(w, "Connect")
     assert(faces(w) == 17)
     w.undo()
     w.undo()
     w.undo()
     # Edge Slide: the middle row's edges, half way along their rails.
-    w.set_mode(2)
+    selection_commands.set_mode(w, 2)
     w.selection = Selection.of(w.geometry else trap("grid"), "p10-11-12-13-14", 4)
-    w.model("Edge Slide")
+    modeling_commands.model(w, "Edge Slide")
     near(math.abs((w.geometry else trap("slid")).point(12).z), 0.25)
