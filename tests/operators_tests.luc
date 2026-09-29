@@ -1,16 +1,10 @@
-from geocore import Mesh, MeshOps, MeshPrimitives, TopologyTools
+from geocore import Mesh, MeshPrimitives
 from three import Vector3
-from geometry_tests import near
+from geometry_tests import near, verb
 from network import Network
 from workspace import Workspace
 from node_catalog import kinds
 from geocore import Selection
-
-func all_points(mesh: Mesh) -> list[int]:
-    let result: list[int] = []
-    for id in 0..<mesh.point_count():
-        result.append(id)
-    return result
 
 func closed(mesh: Mesh) -> unit!:
     let counts: list[int] = []
@@ -55,55 +49,47 @@ pub func operators_tests() -> unit!:
     let transform = mesh.transformed(Vector3(3.0, 0.0, 0.0), Vector3(), Vector3(-1.0, 1.0, 1.0))
     near(transform.attribute_value(transform.find_attribute("weight", 0), 5), 5.0)
     near(transform.attribute_value(transform.find_attribute("corner_id", 1), 0), 3.0)
-    let extrusion = mesh.extruded_faces([2], 0.4)
+    let extrusion = verb("PolyExtrude", mesh, "2", 3, [0.4])
     for id in cube.face_count()..<extrusion.face_count():
         near(extrusion.attribute_value(extrusion.find_attribute("material", 2), id), 30.0)
     closed(extrusion)
-    let inset = MeshOps.faces(mesh, [2], 3, 0.25)
+    let inset = verb("Inset", mesh, "2", 3, [0.25])
     assert(inset.face_count() == 10 and inset.point_count() == 12)
     closed(inset)
-    let bevel = TopologyTools.bevel(mesh, 0.2)
+    let bevel = verb("PolyBevel", mesh, "", 0, [0.2])
     assert(bevel.point_count() == 24 and bevel.face_count() == 26)
     closed(bevel)
-    let subdivided = MeshOps.subdivide(mesh)
+    let subdivided = verb("Subdivide", mesh, "", 0, [1.0, 0.0])
     assert(subdivided.point_count() == 26 and subdivided.face_count() == 24)
     closed(subdivided)
-    let smooth_subdivision = MeshOps.subdivide(mesh, true)
+    let smooth_subdivision = verb("Subdivide", mesh, "", 0, [1.0, 1.0])
     closed(smooth_subdivision)
     near(smooth_subdivision.point(0).x, -5.0 / 9.0)
     near(smooth_subdivision.point(0).y, 4.0 / 9.0)
     let first_edge_a = cube.edge_point(0, 0)
     let first_edge_b = cube.edge_point(0, 1)
     near(subdivided.attribute_value(subdivided.find_attribute("weight", 0), 8), float(first_edge_a + first_edge_b) * 0.5)
-    let triangulated = MeshOps.faces(mesh, [0, 1, 2, 3, 4, 5], 2)
+    let triangulated = verb("Triangulate", mesh, "", 0, [])
     assert(triangulated.face_count() == 12)
     closed(triangulated)
-    let reversed = MeshOps.faces(mesh, [2], 1)
+    let reversed = verb("Reverse", mesh, "2", 3, [])
     near(reversed.face_normal(2).y, -1.0)
-    let deleted = MeshOps.faces(mesh, [2], 0)
-    let boundary: list[int] = []
-    for edge in 0..<(try deleted.edge_count()):
-        var count = 0
-        for corner in 0..<deleted.vertex_count():
-            if deleted.corner_edge(corner) == edge:
-                count += 1
-        if count == 1:
-            boundary.append(edge)
-    let filled = TopologyTools.fill(deleted, boundary)
+    let deleted = verb("Delete", mesh, "2", 3, [0.0])
+    let filled = verb("Fill", deleted, "", 0, [0.0])
     assert(filled.face_count() == 6)
     closed(filled)
-    let duplicate = MeshOps.faces(mesh, [2], 4, 1.0)
+    let duplicate = verb("Duplicate", mesh, "2", 3, [1.0])
     assert(duplicate.face_count() == 7 and duplicate.point_count() == 12)
-    let split = MeshOps.faces(mesh, [0, 1, 2, 3, 4, 5], 5)
-    let fused = MeshOps.fuse(split, all_points(split), 0.001)
+    let split = verb("Split", mesh, "", 0, [])
+    let fused = verb("Fuse", split, "", 0, [0.001])
     assert(fused.point_count() == 8)
     closed(fused)
-    let empty_faces = MeshOps.faces(mesh, [0, 1, 2, 3, 4, 5], 0)
-    assert(empty_faces.face_count() == 0 and empty_faces.attribute_count() == 4)
-    let relaxed = MeshOps.points(mesh, all_points(mesh), 0, 0.2)
+    let empty_faces = verb("Delete", mesh, "", 0, [0.0])
+    assert(empty_faces.face_count() == 0 and empty_faces.find_attribute("material", 2) >= 0 and empty_faces.find_attribute("version", 3) >= 0)
+    let relaxed = verb("Smooth", mesh, "", 0, [0.2, 1.0])
     assert(relaxed.bounds().maximum.y < 2.0)
-    let noise1 = MeshOps.points(mesh, all_points(mesh), 1, 0.05)
-    let noise2 = MeshOps.points(mesh, all_points(mesh), 1, 0.05)
+    let noise1 = verb("Mountain", mesh, "", 0, [0.05, 0.0])
+    let noise2 = verb("Mountain", mesh, "", 0, [0.05, 0.0])
     near(noise1.point(3).x, noise2.point(3).x)
     let joined = mesh.merged(cube)
     near(joined.attribute_value(joined.find_attribute("weight", 0), 8), 0.0)
@@ -126,7 +112,8 @@ pub func operators_tests() -> unit!:
                 uses += 1
         if uses == 2:
             interior = edge
-    assert(TopologyTools.dissolve(grid, interior).face_count() == 3)
+    let seam = f"p{grid.edge_point(interior, 0)}-{grid.edge_point(interior, 1)}"
+    assert(verb("Dissolve", grid, seam, 2, []).face_count() == 3)
     let numbers = Selection.of(mesh, "0 2-4 7", 0)
     assert(numbers.count() == 5 and numbers.contains(3) and not numbers.contains(1) and numbers.next(4) == 7)
     let heavy = Selection.of(mesh, "@weight", 0)

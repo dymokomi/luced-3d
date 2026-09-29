@@ -344,7 +344,7 @@ the wireframe looks cleaner.
   Collapsed physical ribbons remove only the chord spanning the whole ribbon.
   Budget: 128 dissolves per patch.
 - Dissolves preserve every point ID and the source display triangles
-  (`TopologyTools.dissolve`); a bounded native `DissolveWorkspace` updates only
+  (`dissolve_edge`); a bounded native `DissolveWorkspace` updates only
   the joined faces, preserving the previous scan and tie-break order.
 
 ## Display triangles, normals and wire depth
@@ -371,7 +371,7 @@ the wireframe looks cleaner.
   rasterizer depth slope: `Renderer.set_wire_overlay(width)` sets a factor of
   sqrt(2) × half the line width in backing pixels. Depth testing stays on;
   Metal and Vulkan reset the slope on every draw.
-- `MeshOps.compact` and face filtering keep all attributes, `N` and display
+- `compacted` and face filtering (`without_faces`) keep all attributes, `N` and display
   indices; point edits and winding changes invalidate `N`.
 
 ## Tolerances and import uncertainty

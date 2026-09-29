@@ -1,10 +1,18 @@
-from geocore import Mesh, MeshOps
+from geocore import Mesh, Verbs
 from three import Vector3
 import math
 
 pub func near(a: float, b: float):
     if math.abs(a - b) >= 0.000001: print(f"near failed: actual={a}, expected={b}")
     assert(math.abs(a - b) < 0.000001)
+
+## The mesh verb `name` makes (group type: 0 guess, 1 points, 2 edges,
+## 3 faces), and its warning.
+pub func verb(name: str, mesh: Mesh, group: str, group_type: int, numbers: list[float]) -> Mesh!:
+    return Verbs.run(name, mesh, group, group_type, numbers).mesh()
+
+pub func verb_warning(name: str, mesh: Mesh, group: str, group_type: int, numbers: list[float]) -> str!:
+    return Verbs.run(name, mesh, group, group_type, numbers).warning()
 
 pub func manifold(mesh: Mesh) -> unit!:
     let counts: list[int] = []
@@ -40,17 +48,17 @@ pub func geometry_tests() -> unit!:
     assert(cube.ray_face(Vector3(0.0, 5.0, 0.0), Vector3(0.0, -1.0, 0.0)) == 2)
     near(cube.ray_distance(Vector3(0.0, 5.0, 0.0), Vector3(0.0, -1.0, 0.0)), 3.0)
     assert(cube.ray_face(Vector3(8.0, 5.0, 0.0), Vector3(0.0, -1.0, 0.0)) == -1)
-    let extruded = cube.extruded_faces([2], 0.5)
+    let extruded = verb("PolyExtrude", cube, "2", 3, [0.5])
     assert(extruded.point_count() == 12 and extruded.face_count() == 10 and (try extruded.edge_count()) == 20)
     near(extruded.bounds().maximum.y, 2.5)
     near(cube.bounds().maximum.y, 2.0)
     manifold(extruded)
-    let again = extruded.extruded_faces([2], 0.5)
+    let again = verb("PolyExtrude", extruded, "2", 3, [0.5])
     assert(again.face_count() == 14)
     near(again.bounds().maximum.y, 3.0)
     manifold(again)
     # Adjacent faces share six boundary edges, not eight separate walls.
-    let region = cube.extruded_faces([2, 4, 2], 0.5)
+    let region = verb("PolyExtrude", cube, "2 4", 3, [0.5])
     assert(region.face_count() == 12 and region.point_count() == 14)
     manifold(region)
     let transformed = cube.transformed(Vector3(4.0, 0.0, 0.0), Vector3(), Vector3(-2.0, 1.0, 1.0))
@@ -64,15 +72,10 @@ pub func geometry_tests() -> unit!:
     near(moved.bounds().maximum.y, 3.0)
     near(cube.bounds().maximum.y, 2.0)
     manifold(moved)
+    # Nothing to extrude, or a flat extrusion: the input passes with a warning.
+    assert(verb_warning("PolyExtrude", cube, "100", 3, [1.0]) != "")
+    assert(verb_warning("PolyExtrude", cube, "2", 3, [0.0]) != "")
     var rejected = false
-    discard(cube.extruded_faces([100], 1.0)) catch failure:
-        rejected = true
-    assert(rejected)
-    rejected = false
-    discard(cube.extruded_faces([2], 0.0)) catch failure:
-        rejected = true
-    assert(rejected)
-    rejected = false
     discard(cube.transformed(Vector3(), Vector3(), Vector3(0.0, 1.0, 1.0))) catch failure:
         rejected = true
     assert(rejected)
@@ -102,7 +105,7 @@ func compaction_normals() -> unit!:
     let source = Mesh([Vector3(9.0,9.0,9.0),Vector3(),Vector3(1.0,0.0,0.0),Vector3(1.0,1.0,0.0),Vector3(0.0,1.0,0.0),Vector3(-9.0,-9.0,-9.0)],[4],[1,2,3,4])
     let values = [0.0,0.6,0.8, 0.6,0.0,0.8, 0.0,-0.6,0.8, -0.6,0.0,0.8]
     let authored = source.with_attribute("N",1,3,values).with_attribute("tag",0,1,[10.0,11.0,12.0,13.0,14.0,15.0])
-    for compacted in [MeshOps.compact(authored),MeshOps.compact(MeshOps.compact(authored))]:
+    for compacted in [authored.compacted(),authored.compacted().compacted()]:
         assert(compacted.point_count() == 4 and compacted.face_count() == 1)
         let normal = compacted.find_attribute("N",1)
         assert(normal >= 0)
@@ -118,7 +121,7 @@ func compaction_normals() -> unit!:
     for corner in 0..<4: assert(moved.vertex(corner).normal.dot(moved.face_normal(0)) > 0.99)
     let two = Mesh([Vector3(),Vector3(1.0,0.0,0.0),Vector3(1.0,1.0,0.0),Vector3(0.0,1.0,0.0)],[3,3],[0,1,2,0,2,3]).with_attribute("N",1,3,[0.6,0.0,0.8,0.6,0.0,0.8,0.6,0.0,0.8,0.0,0.6,0.8,0.0,0.6,0.8,0.0,0.6,0.8])
     for selected in [0,1]:
-        let part = MeshOps.compact(MeshOps.faces(two,[1-selected],0))
+        let part = two.without_faces([1-selected])
         assert(part.find_attribute("N",1) >= 0)
         for corner in 0..<3: assert(part.vertex(corner).normal.subtract(two.vertex(selected*3+corner).normal).length() == 0.0)
-    assert(MeshOps.faces(two,[0],1).find_attribute("N",1) < 0)
+    assert(verb("Reverse",two,"0",3,[]).find_attribute("N",1) < 0)
