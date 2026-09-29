@@ -15,6 +15,7 @@ No placeholder nodes are listed: every registered node evaluates geometry.
 | Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Loop Cut, Bridge, Fill, Dissolve, Merge Points; Subdivision (display) and Crease |
 | Deformation (verbs) | Transform Components, Smooth, Mountain, Peak, Flatten, Snap |
 | Curves (set verbs) | Curve Line, Curve Circle, Curve Arc, Curve Spiral, Resample Curve, Trim Curve, Fillet Curve, Reverse Curve, Set Curve Type, Curve to Mesh, Mesh to Curve |
+| Volumes (set verbs) | SDF Sphere, SDF Box, SDF Torus, SDF Capsule, SDF Cylinder, SDF Boolean, SDF Modify, SDF to Volume, Mesh to SDF, Volume from Points, Convert to Mesh, Volume Slice |
 | Attributes | AttributeCreate, AttributeRandomize, AttributeDelete, AttributeRename, AttributePromote, Selection Group, Normal, Measure, UVProject, Color |
 
 Modeling and deformation nodes are luce-geocore verbs (after Houdini's SOP
@@ -44,6 +45,12 @@ evaluated curves in every shading mode, and their control hulls (control
 polygons, Bezier handles, control points) behind the **Control hulls** toggle;
 the hull overlay is generic, for any family's control nets. Curve to Mesh
 takes an optional profile curve on its second input.
+
+Volume nodes work on SDFs and sparse level-set or fog volumes, also as set
+verbs. The viewport draws each SDF or volume by its surface preview, built
+once per component. An SDF's preview lies on the exact surface. Convert to
+Mesh makes real geometry of that surface. Volume Slice shows a colored plane
+through the field: blue inside, orange outside, with contour bands.
 
 The **Cache** node (Houdini's File Cache) writes its input's cooked geometry
 to a `.prism` file and passes it through. It uses luce-geocore's geometry

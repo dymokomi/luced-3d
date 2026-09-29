@@ -1,0 +1,64 @@
+## Volume and SDF nodes: in the catalog, cooked on geometry sets, previewed
+## as surfaces in the viewport (with the worker and without), meshed, and
+## cached to disk.
+from network import Network
+from workspace import Workspace
+from stamps import stamp_graph
+from geocore import GeometryFile
+import node_catalog
+import time
+
+pub func field_node_tests() -> unit!:
+    assert("SDF Sphere" in node_catalog.kinds() and node_catalog.category("SDF Boolean") == "Volumes")
+    assert("SDF Box" in node_catalog.sources() and node_catalog.input_count("SDF Boolean") == 2 and node_catalog.requires_second("SDF Boolean"))
+    assert("Volumes" in node_catalog.categories())
+    let graph = Network(false)
+    let ball = graph.add("SDF Sphere", 0.0, 0.0)
+    let box = graph.add("SDF Box", 100.0, 0.0)
+    box.values[4] = 0.8
+    let carve = graph.add("SDF Boolean", 0.0, 60.0)
+    carve.values[0] = 1.0
+    graph.connect(ball.id, carve.id, 0)
+    graph.connect(box.id, carve.id, 1)
+    let carved = graph.evaluate_data(carve.id)
+    assert(carved.description() == "SDF of 3 ops")
+    let preview = carved.field_preview() else trap("preview")
+    assert(preview.face_count() > 1000 and carved.field_preview() is preview)
+    # Meshed, and through a volume.
+    let mesh = graph.add("Convert to Mesh", 0.0, 120.0)
+    graph.connect(carve.id, mesh.id, 0)
+    assert(graph.evaluate(mesh.id).face_count() > 1000)
+    let volume = graph.add("SDF to Volume", 100.0, 120.0)
+    graph.connect(carve.id, volume.id, 0)
+    let sampled = graph.evaluate_data(volume.id)
+    assert(sampled.description().starts_with("1 volume grids / ") and sampled.field_preview() != none)
+    # A slice with value and color attributes, beside the field.
+    let slice = graph.add("Volume Slice", 200.0, 120.0)
+    graph.connect(volume.id, slice.id, 0)
+    let plane = graph.evaluate(slice.id)
+    assert(plane.find_attribute("Cd", 0) >= 0 and plane.face_count() > 0)
+    # The volume cached to disk, then read back without cooking upstream.
+    let cache = graph.add("Cache", 100.0, 180.0)
+    cache.texts[0] = "field.prism"
+    graph.connect(volume.id, cache.id, 0)
+    stamp_graph(graph)
+    discard(graph.evaluate_data(cache.id))
+    assert(GeometryFile.key("field.prism") == cache.stamp)
+    cache.values[0] = 1.0
+    stamp_graph(graph)
+    for node in graph.nodes:
+        node.dirty = true
+    let loaded = graph.evaluate_data(cache.id)
+    assert(loaded.description() == sampled.description())
+    # The viewport shows the preview surface, with the worker too.
+    let workspace = Workspace()
+    let sphere = workspace.network.add("SDF Torus", 300.0, 0.0)
+    workspace.network.display = sphere.id
+    workspace.network.preview = true
+    workspace.rebuild()
+    workspace.enable_compute()
+    let session = workspace.compute else trap("compute")
+    let deadline = time.now() + 20000000000
+    while session.busy and time.now() < deadline:
+        discard(workspace.poll_compute())
+    assert(not session.busy and workspace.notice == "" and workspace.publisher.bounds.length >= 2)
