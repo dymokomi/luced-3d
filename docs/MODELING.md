@@ -12,7 +12,7 @@ No placeholder nodes are listed: every registered node evaluates geometry.
 | Sources | Cube, Grid, Sphere, Cylinder, Cone, Torus, File |
 | Graph | Edit, Merge, Null, Switch, Tessellate, Group, Blast |
 | Transforms/copies | Transform, Mirror, CopyTransform, CopyToPoints, MatchSize |
-| Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Loop Cut, Bridge, Fill, Dissolve |
+| Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Loop Cut, Bridge, Fill, Dissolve, Merge Points |
 | Deformation (verbs) | Transform Components, Smooth, Mountain, Peak, Flatten, Snap |
 | Attributes | AttributeCreate, AttributeRandomize, AttributeDelete, AttributeRename, AttributePromote, Selection Group, Normal, Measure, UVProject, Color |
 
@@ -91,10 +91,16 @@ guarded. Very large selections show as a summary in the Group field.
   with a warning.
 - Subdivide operates on the whole mesh, Catmull–Clark or linear, with edges used
   by more than two faces kept as creases. There are no crease weights yet.
-- Fill caps one boundary loop of the group's edges. Dissolve joins faces across
-  up to 128 edges.
+- Fill caps each closed loop of the group's boundary edges with one face, or
+  (Fan) triangles around a new center point. Dissolve joins the faces across
+  the group's interior edges, one face per region; a point group dissolves
+  every edge at its points and removes points left between two edges.
+  Regions with holes or pinches stay as they were.
 - Fuse merges the group's points within a distance into the first of them,
-  dropping faces that collapse.
+  dropping faces that collapse. Merge Points merges them at their center, at
+  the first or last, per connected island or by distance.
+- A kernel that would make degenerate faces (a bridge between coplanar
+  loops, say) passes its input through with a warning.
 - CopyToPoints realizes copies at target positions, with a 256-copy limit. It
   does not yet interpret orientation/scale attributes or retain instances.
 
