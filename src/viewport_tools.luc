@@ -1,7 +1,7 @@
 ## Node-specific viewport UI. Topology and intersections remain in luce-3d.
-from ui import Painter, Point, Event
+from ui import Painter, Event
 from gpu import Rect
-from three import Vector3, PolygonMesh, WireRenderer
+from three import Vector3, EditOverlay
 from input import EventKind
 from workspace import Workspace
 from actions import Actions
@@ -10,21 +10,6 @@ import theme
 import ui
 from tool_icons import draw_icon
 from node_gizmos import NodeGizmos
-
-func append_line(points: list[Point], ax: float, ay: float, bx: float, by: float, width: float):
-    let dx = bx - ax
-    let dy = by - ay
-    let length = math.sqrt(dx * dx + dy * dy)
-    if length < 0.00001:
-        return
-    let nx = -dy * width * 0.5 / length
-    let ny = dx * width * 0.5 / length
-    let a = Point(ax + nx, ay + ny)
-    let b = Point(bx + nx, by + ny)
-    let c = Point(bx - nx, by - ny)
-    let d = Point(ax - nx, ay - ny)
-    for point in [a, b, c, a, c, d]:
-        points.append(point)
 
 pub func projected(workspace: Workspace, point: Vector3, width: float, height: float) -> list[float]!:
     let projection = workspace.camera.projection(math.max(1.0, width) / math.max(1.0, height))
@@ -61,54 +46,22 @@ pub class ViewportTools:
     var hover_revision: int = -1
     var hover_tool: int = -1
     var tool_scroll: float = 0.0
-    var cached_revision: int = -1
-    var cached_view: list[float]
-    var projected_points: list[list[float]]
-    var visible_points: list[bool]
+    ## Wires, selection and point markers stay in Base, keyed by the mesh and
+    ## the selection, so hover and camera frames never loop over the mesh here.
+    pub let overlay: EditOverlay
+    pub var hover_changed: bool = false
 
     pub func init(self, workspace: Workspace, actions: Actions):
         self.workspace = workspace
         self.actions = actions
         self.gizmos = NodeGizmos(workspace)
-        self.cached_view = []
-        self.projected_points = []
-        self.visible_points = []
+        self.overlay = EditOverlay()
 
     pub func has_gizmo(self) -> bool:
         return self.gizmos.available()
 
     pub func gizmo_center(self) -> Vector3!:
         return self.gizmos.origin()
-
-    func visible(self, mesh: PolygonMesh, point: Vector3) -> bool!:
-        let origin = self.workspace.camera.position()
-        let offset = point.subtract(origin)
-        let distance = offset.length()
-        if distance < 0.00001:
-            return false
-        let nearest = mesh.ray_distance(origin, offset.multiply_scalar(1.0 / distance))
-        return nearest < 0.0 or nearest >= distance - math.max(0.002, distance * 0.0001)
-
-    ## Hover redraws reuse projection/occlusion results. Camera or model changes
-    ## invalidate the cache; pointer movement alone never rebuilds it.
-    func project_mesh(self, width: float, height: float) -> unit!:
-        let w = self.workspace
-        let signature = [w.yaw, w.pitch, w.distance, w.target.x, w.target.y, w.target.z, width, height]
-        if self.cached_revision == w.revision and self.cached_view == signature:
-            return
-        self.cached_revision = w.revision
-        self.cached_view = signature
-        self.projected_points = []
-        self.visible_points = []
-        let mesh = w.geometry else return
-        let projection = w.camera.projection(math.max(1.0, width) / math.max(1.0, height))
-        for id in 0..<mesh.point_count():
-            let point = mesh.point(id)
-            let offset = point.subtract(projection.position)
-            let depth = -offset.dot(projection.backward)
-            self.projected_points.append([(offset.dot(projection.right) * projection.focal / projection.aspect / math.max(projection.near, depth) + 1.0) * width * 0.5,
-                (1.0 - offset.dot(projection.up) * projection.focal / math.max(projection.near, depth)) * height * 0.5, depth if depth > projection.near else -1.0])
-            self.visible_points.append(depth > projection.near and (w.component_mode != 0 or self.visible(mesh, point)))
 
     pub func draw(self, painter: Painter, width: float, height: float) -> unit!:
         let w = self.workspace
@@ -123,54 +76,8 @@ pub class ViewportTools:
             self.hovered = -1
         if w.editing():
             let mesh = w.geometry else return
-            if w.component_mode == 0:
-                self.project_mesh(width, height)
-            # Selected faces are tinted; selection edges/points remain legible.
-            if w.component_mode == 2:
-                let accent = theme.accent()
-                let face_triangles: list[Vector3] = []
-                let hover_lines: list[Vector3] = []
-                let faces = w.components.copy()
-                if self.hovered >= 0 and not (self.hovered in faces):
-                    faces.append(self.hovered)
-                for face in faces:
-                    if not (face in w.components):
-                        # Triangle primitives currently have opaque vertex color;
-                        # outline hover so it cannot look like committed selection.
-                        for corner in 0..<mesh.face_size(face):
-                            hover_lines.append(mesh.point(mesh.face_point(face, corner)))
-                            hover_lines.append(mesh.point(mesh.face_point(face, (corner + 1) % mesh.face_size(face))))
-                        continue
-                    for triangle in 0..<mesh.index_count() // 3:
-                        if mesh.triangle_face(triangle) != face:
-                            continue
-                        for corner in 0..<3:
-                            face_triangles.append(mesh.vertex(mesh.index(triangle * 3 + corner)).position)
-                WireRenderer.triangles(face_triangles, w.camera, painter.target(), accent)
-                WireRenderer.lines(hover_lines, w.camera, painter.target(), accent, 3.0)
-            let selected_points = w.selected_points()
-            let ordinary_lines: list[Vector3] = []
-            let accent_lines: list[Vector3] = []
-            for edge in 0..<mesh.edge_count():
-                let a_id = mesh.edge_point(edge, 0)
-                let b_id = mesh.edge_point(edge, 1)
-                let selected = edge in w.components if w.component_mode == 1 else (a_id in selected_points and b_id in selected_points)
-                let hover = w.component_mode == 1 and edge == self.hovered
-                let lines = accent_lines if selected or hover else ordinary_lines
-                lines.append(mesh.point(a_id))
-                lines.append(mesh.point(b_id))
-            WireRenderer.lines(ordinary_lines, w.camera, painter.target(), theme.grey(90.0))
-            WireRenderer.lines(accent_lines, w.camera, painter.target(), theme.accent(), 2.5)
-            if w.component_mode == 0:
-                let ordinary_points: list[Point] = []
-                let accent_points: list[Point] = []
-                for id in 0..<mesh.point_count():
-                    let at = self.projected_points[id]
-                    if at[2] > 0.0 and self.visible_points[id]:
-                        let radius = 4.5 if id == self.hovered else 3.0
-                        append_line(accent_points if id in w.components or id == self.hovered else ordinary_points, at[0] - radius, at[1], at[0] + radius, at[1], radius * 2.0)
-                painter.mesh(ordinary_points, theme.text())
-                painter.mesh(accent_points, theme.accent())
+            self.overlay.update(mesh, w.component_mode, w.components, self.hovered)
+            self.overlay.draw(w.camera, painter.target(), theme.grey(90.0), theme.accent(), theme.text())
             self.draw_edit_controls(painter, height)
         self.gizmos.draw(painter, width, height)
 
@@ -207,40 +114,21 @@ pub class ViewportTools:
     pub func pick(self, x: float, y: float, width: float, height: float) -> int!:
         let w = self.workspace
         let mesh = w.geometry else return -1
-        let ray = view_ray(w, x, y, width, height)
         if w.component_mode == 2:
-            return mesh.ray_face(w.camera.position(), ray)
-        self.project_mesh(width, height)
-        var found = -1
-        var best = 11.0
-        if w.component_mode == 0:
-            for id in 0..<mesh.point_count():
-                let at = self.projected_points[id]
-                let distance = math.hypot(at[0] - x, at[1] - y)
-                if at[2] > 0.0 and distance < best and self.visible_points[id]:
-                    best = distance
-                    found = id
-        else:
-            for id in 0..<mesh.edge_count():
-                let pa = self.projected_points[mesh.edge_point(id, 0)]
-                let pb = self.projected_points[mesh.edge_point(id, 1)]
-                let distance = line_distance(x, y, pa[0], pa[1], pb[0], pb[1])
-                if pa[2] > 0.0 and pb[2] > 0.0 and distance < best:
-                    let dx = pb[0] - pa[0]
-                    let dy = pb[1] - pa[1]
-                    let length = dx * dx + dy * dy
-                    let t = math.clamp(((x - pa[0]) * dx + (y - pa[1]) * dy) / math.max(0.000001, length), 0.0, 1.0)
-                    # Perspective-correct location under the cursor, not edge midpoint.
-                    let blend = (t / pb[2]) / ((1.0 - t) / pa[2] + t / pb[2])
-                    let a = mesh.point(mesh.edge_point(id, 0))
-                    let b = mesh.point(mesh.edge_point(id, 1))
-                    if self.visible(mesh, a.add(b.subtract(a).multiply_scalar(blend))):
-                        best = distance
-                        found = id
-        return found
+            return mesh.ray_face(w.camera.position(), view_ray(w, x, y, width, height))
+        self.overlay.update(mesh, w.component_mode, w.components, self.hovered)
+        return self.overlay.pick(w.camera, x, y, width, height)
 
     ## Returns true when node tools consume the input; otherwise navigation owns it.
+    ## Records whether the highlight changed, so an idle pointer move over the
+    ## same face requests no frame and a hover change requests exactly one.
     pub func event(self, event: Event, width: float, height: float) -> bool!:
+        let before = [self.hovered, self.hover_tool, self.gizmos.hovered]
+        let handled = self.handle(event, width, height)
+        self.hover_changed = before != [self.hovered, self.hover_tool, self.gizmos.hovered]
+        return handled
+
+    func handle(self, event: Event, width: float, height: float) -> bool!:
         let w = self.workspace
         let handled = self.gizmos.event(event, width, height)
         self.dragging = self.gizmos.dragging
