@@ -1,10 +1,10 @@
 ## Adopts worker results by content key. A key the UI already holds keeps its
-## mesh (and so the renderer's cache for it), and an unchanged scene keeps its
-## objects: re-publishing an unchanged stamp (a rename, a selection, a
-## visibility toggle elsewhere) rebuilds nothing.
+## mesh, scene object and renderer cache, so re-publishing an unchanged stamp
+## (a rename, a selection, a visibility toggle elsewhere) rebuilds nothing.
 ## A few keys that just left the scene stay held, so toggling a node back on
 ## or undoing a display change needs no new copy either.
 from geocore import Mesh
+import three
 from three import Group, Vector3
 from compute_bridge import ComputeService
 from network import Network
@@ -14,6 +14,7 @@ from scene_projection import display_mesh
 pub class DisplayPublisher:
     let objects: Group
     let held: map[int, Mesh]
+    let shown: map[int, three.Mesh]
     var shown_keys: list[int]
     var product_keys: list[int]
     ## Every key the worker may re-publish without copying: this result's
@@ -27,6 +28,7 @@ pub class DisplayPublisher:
     pub func init(self, objects: Group):
         self.objects = objects
         self.held = {}
+        self.shown = {}
         self.shown_keys = []
         self.product_keys = []
         self.kept = []
@@ -62,17 +64,24 @@ pub class DisplayPublisher:
         self.product_keys = products
         return changed
 
-    ## Scene objects are cheap wrappers; they are rebuilt only when the list of
-    ## displayed keys changes. (Retaining them in a Luce map across frames hit
-    ## a native-backend lifetime fault; the renderer caches by geometry.)
+    ## The scene objects of the displayed keys: a key still on screen keeps its
+    ## object, a newly shown one gets one.
     func show(self, displayed: list[int]) -> unit!:
         self.objects.clear()
         self.bounds.clear()
+        let shown: map[int, three.Mesh] = {}
         for key in displayed:
             let mesh = self.held[key] else continue
-            self.objects.add(display_mesh(mesh))
+            if let existing = self.shown[key]:
+                shown[key] = existing
+            else:
+                shown[key] = display_mesh(mesh)
+            self.objects.add(shown[key] else continue)
             self.bounds.append(mesh.bounds().minimum)
             self.bounds.append(mesh.bounds().maximum)
+        self.shown.clear()
+        for key in shown.keys():
+            self.shown[key] = shown[key] else continue
         self.shown_keys = displayed
 
     ## Keep this result's keys plus the six most recent dropped ones.
