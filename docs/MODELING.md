@@ -116,6 +116,26 @@ The USD rows:
 Import warnings, such as dropped faces or skipped prim types, appear as the
 node's warning.
 
+## FBX files
+
+The File node reads `.fbx` files (binary and ASCII, FBX 6.1 to 7.7) through
+luce-fbx's `Fbx.load`, as luce-fbx's docs/MAPPING.md describes:
+
+- every model's mesh is placed by its full FBX transform (pivots, pre- and
+  post-rotation, rotation order, inherit type, geometric transform) and
+  merged into one mesh, each face carrying its model's path as `path` and its
+  material's name as `material`;
+- normals, tangents, UV and color sets, smoothing, creases, holes and edge
+  visibility become attributes; lines and NURBS curves become curves.
+
+The FBX rows:
+
+- **Import**: *Merge into one mesh*, or *Keep hierarchy* to keep each model's
+  mesh in its own space, placed as an instance;
+- **Instancing**: a mesh several models share loads once, as instances;
+- **Convert to Y-up meters**;
+- **Import normals**.
+
 ## Selection and tools
 
 Components can be selected on whichever node the viewport displays, at a

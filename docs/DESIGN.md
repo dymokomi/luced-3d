@@ -155,14 +155,14 @@ and picking live in `node_gizmos`/`gizmo_math`, independent of evaluation.
 | Package | Scope | Not supported |
 | --- | --- | --- |
 | luce-obj | Shared positions, polygons, positive/negative indices, corner UVs/N; `Obj.write` | MTL/textures, curves, vertex-color extensions |
-| luce-fbx | ASCII/binary 7.x raw meshes, compressed arrays, 32/64-bit headers | Scene transforms/hierarchy, instances, UV/material layers, animation |
+| luce-fbx | Binary and ASCII 6.1–7.7 scenes: hierarchy with full transforms, meshes with every layer element, materials, instances, curves | Animation, skins and blend shapes (rest pose), NURBS surfaces, cameras and lights |
 | luce-step | STEP → CAD: shared edges, conics, rational splines, colors, unique rigid assemblies | General p-curves, repeated/mapped instances, automatic units |
 | luce-cad | Analytic topology, NURBS/analytic trims, per-face previews, tessellation | Booleans, disconnected-shell healing, certified deviation |
 
 File has Browse, a path field and explicit Reload; it performs no scaling or
 tessellation. STEP produces analytic CAD (`Step.load_model` / `decode_model`;
-convert with `CadModel.tessellate`); OBJ/FBX produce polygons. FBX imports
-mesh-local definitions, so objects may overlap at their origins. STEP files get
+convert with `CadModel.tessellate`); OBJ/FBX produce polygons. FBX places each
+model's mesh by its world transform (see [MODELING.md](MODELING.md#fbx-files)). STEP files get
 the per-File import tolerance described in
 [CAD_TESSELLATION.md](CAD_TESSELLATION.md#tolerances-and-import-uncertainty).
 Imports are whole-file (no streaming, no file watching). OBJ import preflights

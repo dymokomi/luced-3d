@@ -89,7 +89,8 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   joining branches. Cycles are rejected. See [capabilities](docs/MODELING.md).
 - Tab or right-click opens a menu at the pointer, kept inside the window.
   Browse categories/submenus or type to filter; arrows and Enter choose.
-- File imports OBJ, raw mesh-local FBX, USD (.usd, .usda, .usdc, .usdz; see
+- File imports OBJ, FBX (scene hierarchy, transforms, layers and instances; see
+  [FBX files](docs/MODELING.md#fbx-files)), USD (.usd, .usda, .usdc, .usdz; see
   [USD files](docs/MODELING.md#usd-files)) and a bounded STEP subset. Export
   writes a node's result to USD, OBJ or prism. Browse or enter
   a path, then Reload for disk changes. STEP remains analytic: use Transform for
