@@ -126,7 +126,8 @@ luce-fbx's `Fbx.load`, as luce-fbx's docs/MAPPING.md describes:
   merged into one mesh, each face carrying its model's path as `path` and its
   material's name as `material`;
 - normals, tangents, UV and color sets, smoothing, creases, holes and edge
-  visibility become attributes; lines and NURBS curves become curves.
+  visibility become attributes; lines and NURBS curves become curves;
+- animation, blend shapes and skins are evaluated at a chosen frame.
 
 The FBX rows:
 
@@ -134,7 +135,11 @@ The FBX rows:
   mesh in its own space, placed as an instance;
 - **Instancing**: a mesh several models share loads once, as instances;
 - **Convert to Y-up meters**;
-- **Import normals**.
+- **Import normals**;
+- **Set frame** and **Frame**: the first animation stack evaluated at that
+  frame (off: the file's pose as saved);
+- **Deform**: blend shapes and skins applied (skinned meshes are placed by
+  their bones).
 
 ## Selection and tools
 
