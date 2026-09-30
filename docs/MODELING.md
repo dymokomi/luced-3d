@@ -86,6 +86,8 @@ the input on. The extension picks the format:
 - `.usda`, `.usdc`, `.usd` or `.usdz` (luce-usd): prims split by the `path`
   attribute, with **Root prim** for the rest (empty: `geo`) and **Precise
   points** for double precision;
+- `.fbx` (luce-fbx): binary FBX 7.4, one model per `path` (see
+  [FBX files](#fbx-files));
 - `.obj` (luce-obj): the realized mesh;
 - `.prism`: the geometry codec, as the Cache node writes it.
 
@@ -140,6 +142,14 @@ The FBX rows:
   frame (off: the file's pose as saved);
 - **Deform**: blend shapes and skins applied (skinned meshes are placed by
   their bones).
+
+The Export node writes `.fbx` with luce-fbx's `Fbx.save`: the mesh split by
+`path` into models (missing ancestors as nulls) with their normals, UV and
+color sets, smoothing, creases, holes and edge visibility as layer elements
+and `material` as materials; instances as models sharing their prototype's
+geometry, placed by translation, rotation and scale; curves as lines and
+NURBS curves; the `fbx.*` details (axes, unit, frame rate) as the file's
+settings, else Y-up meters. Blender and ufbx read the files back.
 
 ## Selection and tools
 
