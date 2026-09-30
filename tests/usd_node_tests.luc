@@ -3,13 +3,15 @@
 from network import Network
 from stamps import stamp_graph
 from usd import Usd
+from usd_nodes import compose_usd
 from geocore import GeometryFile
 from obj import Obj
 import node_catalog
 
 pub func usd_node_tests() -> unit!:
     assert("Export" in node_catalog.kinds() and node_catalog.category("Export") == "File I/O")
-    # A USD path brings the USD rows: import mode, time, purposes, units, subdivision.
+    # A USD path brings the USD rows: import mode, time, purposes, units, subdivision
+    # (the variant menus come with a composed stage).
     assert(node_catalog.parameters("File", "stage.usdc").length == 8)
     assert(node_catalog.file_format("a.USDZ") == "usd" and node_catalog.file_format("a.stp") == "step" and node_catalog.file_format("a.obj") == "")
     let graph = Network(false)
@@ -45,3 +47,39 @@ pub func usd_node_tests() -> unit!:
     graph.invalidate(file.id)
     stamp_graph(graph)
     assert(graph.evaluate(file.id).face_count() == 7)
+    composition_tests(graph)
+
+## A composed stage's rows: what it holds, a menu per variant set, and the
+## Variants and Load payloads texts, each changing what the node loads.
+func composition_tests(graph: Network) -> unit!:
+    let room = graph.add("File", 400.0, 0.0)
+    assert(room.texts == ["", "", ""])
+    room.texts[0] = "tests/fixtures/room.usda"
+    for parameter in node_catalog.parameters("File", room.texts[0]):
+        room.values[parameter.slot] = parameter.initial
+    room.values[8] = 0.0
+    let stage = compose_usd(room.texts[0], room.texts)
+    assert(stage.description() == "2 layers, 7 prims, 2 instances, 1 variant set")
+    var menus = 0
+    for row in node_catalog.fields("File", room.texts[0], stage):
+        if row.kind == "menu" and row.slot == 9:
+            assert(row.name == "Table top" and row.items == "Authored (quad)|quad|triangles")
+            menus += 1
+        if row.kind == "info":
+            assert(row.text == stage.description())
+    assert(menus == 1)
+    let faces = func () -> int!:
+        graph.invalidate(room.id)
+        stamp_graph(graph)
+        let mesh = graph.evaluate_data(room.id).geometry.mesh() else trap("no mesh")
+        return mesh.face_count()
+    # The table's quad top and the lamp's three faces (the chairs are instances).
+    assert(faces() == 4)
+    room.values[9] = 2.0
+    assert(faces() == 5)
+    room.values[9] = 0.0
+    room.texts[1] = "/Room/Table{top=triangles}"
+    assert(faces() == 5)
+    room.texts[2] = "-"
+    assert(faces() == 2)
+    assert(compose_usd(room.texts[0], room.texts).description() == "1 layer, 5 prims, 2 instances, 1 variant set")

@@ -14,16 +14,97 @@ pub func is_usd_path(path: str) -> bool:
     let lower = path.trim().lower()
     return lower.ends_with(".usd") or lower.ends_with(".usda") or lower.ends_with(".usdc") or lower.ends_with(".usdz")
 
+## A File node's USD slots: value slots 1-8 the load options (usd_fields),
+## 9-15 menus over the stage's first variant sets; text slot 1 variant
+## selections in USD path syntax, text slot 2 the payload globs.
+pub let first_variant_slot: int = 9
+pub let variant_menus: int = 7
+
 ## A File node's stage at the options its USD rows hold: 1 import mode
 ## (flatten everything when 1), 2 set time, 3 time, 4-6 render, proxy and
-## guide purposes, 7 convert to Y-up meters, 8 subdivide as authored.
-pub func load_usd(path: str, values: list[float]) -> GeometryData!:
+## guide purposes, 7 convert to Y-up meters, 8 subdivide as authored, then
+## the variant menus; `texts` its Variants and Load payloads text.
+pub func load_usd(path: str, values: list[float], texts: list[str]) -> GeometryData!:
     let at = values[3] if values[2] != 0.0 else math.nan
     let purposes = (1 if values[4] != 0.0 else 0) + (2 if values[5] != 0.0 else 0) + (4 if values[6] != 0.0 else 0)
-    let geometry = Usd.load(path, time = at, flatten = values[1] == 1.0, purposes = purposes, convert_units = values[7] != 0.0, subdivide = values[8] != 0.0)
+    let geometry = Usd.load(path, time = at, flatten = values[1] == 1.0, purposes = purposes, convert_units = values[7] != 0.0, subdivide = values[8] != 0.0,
+                            variants = variant_selections(path, values, texts), payloads = texts[2].trim())
     let data = GeometryData(geometry = geometry)
     data.warning = summary(Usd.warnings())
     return data
+
+## The stage a File node composes, as the Parameters pane shows it: counts
+## and variant sets (Usd.composition's text).
+pub func compose_usd(path: str, texts: list[str]) -> Composition!:
+    return Composition(Usd.composition(path, variants = texts[1].trim(), payloads = texts[2].trim()))
+
+## The node's variant selections: its Variants text, then each menu not on
+## Authored (0) selecting its set's option.
+func variant_selections(path: str, values: list[float], texts: list[str]) -> str!:
+    let written = texts[1].trim()
+    var chosen = false
+    for slot in first_variant_slot..<first_variant_slot + variant_menus:
+        chosen = chosen or values[slot] >= 1.0
+    if not chosen:
+        return written
+    let parts = [written]
+    let sets = compose_usd(path, texts).menu_sets()
+    for index in 0..<sets.length:
+        let option = int(values[first_variant_slot + index]) - 1
+        if option >= 0 and option < sets[index].options.length:
+            parts.append(f"{sets[index].prim}{{{sets[index].name}={sets[index].options[option]}}}")
+    return parts.join(" ").trim()
+
+## One variant set of a composed stage: its prim, name, the selection
+## composition made ("" for none) and its options.
+pub struct VariantSet:
+    pub let prim: str
+    pub let name: str
+    pub let selection: str
+    pub let options: list[str]
+
+## A composed stage's summary, parsed from Usd.composition's text.
+pub class Composition:
+    pub var layers: int = 0
+    pub var prims: int = 0
+    pub var instances: int = 0
+    pub let sets: list[VariantSet]
+
+    pub func init(self, text: str) -> unit!:
+        self.sets = []
+        let lines = text.lines()
+        if lines.length == 0:
+            return
+        let counts = lines[0].split("\t")
+        if counts.length == 3:
+            self.layers = int(counts[0])
+            self.prims = int(counts[1])
+            self.instances = int(counts[2])
+        for line in lines[1..]:
+            let fields = line.split("\t")
+            if fields.length == 4:
+                self.sets.append(VariantSet(prim = fields[0], name = fields[1], selection = fields[2], options = fields[3].split("|")))
+
+    ## The sets the node's menus show: the shallowest prims' first, in
+    ## stage order, at most `variant_menus`.
+    pub func menu_sets(self) -> list[VariantSet]:
+        let result: list[VariantSet] = []
+        var depth = 1
+        while result.length < variant_menus and depth < 64:
+            for entry in self.sets:
+                if result.length < variant_menus and entry.prim.split("/").length - 1 == depth:
+                    result.append(entry)
+            depth += 1
+        return result
+
+    ## One line for the pane: "229 layers, 452 prims, 425 instances, 64+ variant sets".
+    pub func description(self) -> str:
+        let sets = counted(self.sets.length, "variant set", "+" if self.sets.length >= 64 else "")
+        return f"{counted(self.layers, "layer")}, {counted(self.prims, "prim")}, {counted(self.instances, "instance")}, {sets}"
+
+## "1 layer", "2 layers", "64+ variant sets".
+func counted(count: int, noun: str, more: str = "") -> str:
+    return f"{count}{more} {noun}" + ("" if count == 1 else "s")
 
 ## The Export node's cook: write `data` to `path` (options in `values`: 0
 ## split by path, 1 precise points; `root` the root prim for USD) and pass

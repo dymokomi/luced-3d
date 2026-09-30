@@ -10,6 +10,7 @@ from actions import Actions
 from node_catalog import Parameter
 import node_catalog
 from edit_kinds import is_edit
+from usd_nodes import Composition, compose_usd
 import modeling_commands
 import node_commands
 
@@ -29,11 +30,15 @@ pub class Inspector:
     let generic_rows: VStack
     let connections: list[Connection]
     ## The catalog rows the panel shows, and what each row is to the inspector:
-    ## "value", "text", "reload", "extrude", "clear", "last", "edits" or "operation".
+    ## "value", "text", "info", "reload", "extrude", "clear", "last", "edits" or "operation".
     var rows: list[Parameter]
     var roles: list[str]
     ## What the panel was built for: node kind, file format and edit count.
     var built: str = ""
+    ## A USD File node's composed stage, and the file, texts and revision
+    ## it was composed for.
+    var stage: Composition? = none
+    var stage_key: str = ""
     var showing: int = -2
 
     pub func init(self, workspace: Workspace, actions: Actions, font: Font) -> unit!:
@@ -117,10 +122,10 @@ pub class Inspector:
         self.rows = []
         self.roles = []
         var specs: list[ParameterSpec] = []
-        for row in node_catalog.fields(kind, path):
+        for row in node_catalog.fields(kind, path, self.stage):
             specs.append(spec_of(row))
             self.rows.append(row)
-            self.roles.append("text" if row.kind in ["text", "path"] else ("reload" if row.kind == "button" else "value"))
+            self.roles.append("text" if row.kind in ["text", "path"] else ("reload" if row.kind == "button" else ("info" if row.kind == "info" else "value")))
         if is_edit(kind):
             self.add(specs, "edits", ParameterSpec(name = "edits", label = "Edits", kind = ParameterKind.info))
             self.add(specs, "extrude", ParameterSpec(name = "extrude", label = "Extrude faces", kind = ParameterKind.button, join = true,
@@ -149,9 +154,8 @@ pub class Inspector:
         let node = self.workspace.selected() else return
         let changed = node.id != self.showing
         let file = node.kind == "File"
-        let path = node.texts[0].trim().lower()
-        let format = "step" if file and (path.ends_with(".step") or path.ends_with(".stp")) else ""
-        let key = f"{node.kind}|{format}"
+        let format = node_catalog.file_format(node.texts[0]) if file else ""
+        let key = f"{node.kind}|{format}|{self.compose(node.texts, node.source_revision) if format == "usd" else ""}"
         if key != self.built:
             self.build(node.kind, node.texts[0])
             self.built = key
@@ -178,6 +182,8 @@ pub class Inspector:
                 let baked = row.name == "Group" and text.byte_count > 16384
                 self.parameters.set_text(index, f"‹selection of {text.byte_count // 1024} KB›" if baked else text)
                 self.parameters.set_enabled(index, not baked)
+            elif role == "info":
+                self.parameters.set_text(index, row.text)
             elif role == "edits":
                 self.parameters.set_text(index, f"{node.edits.length} edits / {self.workspace.selected_count()} selected")
             elif role == "last":
@@ -199,6 +205,18 @@ pub class Inspector:
             self.stats.set_text(data.description())
         else:
             self.stats.set_text("No evaluated geometry")
+
+    ## Compose a USD File node's stage when its file, texts or revision
+    ## changed (a failure shows as the node's cook error); the key composed.
+    func compose(self, texts: list[str], revision: int) -> str:
+        let key = f"{texts[0].trim()}|{texts[1]}|{texts[2]}|{revision}"
+        if key != self.stage_key:
+            self.stage_key = key
+            self.stage = none
+            let composed = compose_usd(texts[0].trim(), texts) catch failure:
+                return key
+            self.stage = composed
+        return key
 
     pub func close(self):
         self.on_browse = none

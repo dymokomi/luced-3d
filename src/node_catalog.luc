@@ -14,7 +14,7 @@ from geocore import Verbs, VerbCatalog
 import math
 from edit_kinds import is_edit, edit_kind_names, edit_kind
 from edit_types import first_kind_slot, most_kind_parameters
-from usd_nodes import is_usd_path
+from usd_nodes import is_usd_path, Composition, first_variant_slot
 
 ## Value slots a node has, and the one verb nodes keep their Group Type in.
 pub let value_slots: int = 16
@@ -228,8 +228,9 @@ pub func parameters(kind: str, path: str = "") -> list[Parameter]!:
             result.append(Parameter(row.name + " " + ["X", "Y", "Z", "W"][component], row.slot + component, value, row.minimum, row.maximum, row.step, row.integer, row.decimals))
     return result
 
-## Every row of a node's parameter pane, in order.
-pub func fields(kind: str, path: str = "") -> list[Parameter]!:
+## Every row of a node's parameter pane, in order; a USD File node's
+## composition rows come from its composed `stage`.
+pub func fields(kind: str, path: str = "", stage: Composition? = none) -> list[Parameter]!:
     let rows: list[Parameter] = []
     if kind == "File":
         rows.append(entry("File", 0, "The geometry file: OBJ, FBX, STEP or USD (.usd, .usda, .usdc, .usdz).", "path"))
@@ -240,7 +241,7 @@ pub func fields(kind: str, path: str = "") -> list[Parameter]!:
         if source.ends_with(".step") or source.ends_with(".stp"):
             rows.append(number("STEP tolerance", 0, 0.0, 0.0, 1.0, 0.00001, "Model tolerance in file units; 0 uses the file's own.", decimals = 9))
         if is_usd_path(source):
-            for row in usd_fields():
+            for row in usd_fields(stage):
                 rows.append(row)
     if kind == "Cache":
         rows.append(entry("File", 0, "The .prism file the cooked geometry is saved to (and loaded from).", "path"))
@@ -261,7 +262,27 @@ pub func fields(kind: str, path: str = "") -> list[Parameter]!:
 
 ## A File node's rows for a USD stage (usd_nodes.load_usd reads them), in
 ## value slots from 1: slot 0 keeps a STEP tolerance across format changes.
-func usd_fields() -> list[Parameter]:
+## Then its composition: what the stage holds, the variant selections text
+## and a menu for each of its first variant sets, and the payload globs.
+func usd_fields(stage: Composition?) -> list[Parameter]:
+    let rows = load_fields()
+    if let composed = stage:
+        let summary = heading("Stage", "info")
+        summary.text = composed.description()
+        rows.append(summary)
+    rows.append(entry("Variants", 1, "Variant selections in USD path syntax, blank separated: /Kitchen{look=clean} /Kitchen/Chair{size=big}. The menus below select after them."))
+    if let composed = stage:
+        let sets = composed.menu_sets()
+        for index in 0..<sets.length:
+            let shown = sets[index]
+            let authored = shown.selection if shown.selection != "" else "none"
+            rows.append(menu(f"{shown.prim.split("/")[-1]} {shown.name}", first_variant_slot + index, f"Authored ({authored})|" + shown.options.join("|"), 0.0,
+                             f"{shown.prim}: variant set {shown.name}. Authored keeps the stage's own selection."))
+    rows.append(entry("Load payloads", 2, "Load only the payloads of prims whose path matches one of these globs (* any run, ? one character), blank separated. Empty loads every payload, - none."))
+    return rows
+
+## The load options of a USD File node, value slots 1 to 8.
+func load_fields() -> list[Parameter]:
     let set_time = toggle("Set time", 2, 0.0, "Off: the stage's start time, else each attribute's first sample. On: the time below.")
     set_time.key = "settime"
     let at = number("Time", 3, 0.0, -1000000.0, 1000000.0, 1.0, "The time code values are read at.")
