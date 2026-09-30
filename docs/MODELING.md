@@ -215,8 +215,10 @@ guarded. Very large selections show as a summary in the Group field.
   the first or last, per connected island or by distance.
 - A kernel that would make degenerate faces (a bridge between coplanar
   loops, say) passes its input through with a warning.
-- CopyToPoints realizes copies at target positions, with a 256-copy limit. It
-  does not yet interpret orientation/scale attributes or retain instances.
+- CopyToPoints realizes copies at target positions, as many as there are
+  points (CopyTransform, as many as asked), joined pairwise so a large count
+  stays O(n log n). It does not yet interpret orientation/scale attributes
+  or retain instances.
 
 ## Edit nodes
 

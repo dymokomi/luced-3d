@@ -55,17 +55,22 @@ pub func evaluate_placement(kind: str, v: list[float], data: GeometryData, secon
         let target = second else error(ui.invalid, "Connect target points")
         targets = target.operand() else error(ui.invalid, "Connect target points")
     let count = (targets else Mesh.empty()).point_count() if kind == "CopyToPoints" else int(v[0])
-    let source = data.mesh
-    let points = (source else Mesh.empty()).point_count()
-    let corners = (source else Mesh.empty()).vertex_count()
-    if count > 256 or points * count > 16384 or corners * count > 65536:
-        error(ui.invalid, "Copies exceed the modeling geometry budget")
-    var result = GeometryData()
+    if count <= 0:
+        return GeometryData()
+    # Any number of copies of any size, joined pairwise in rounds so each
+    # element is copied O(log count) times rather than once per later copy.
+    var pieces: list[GeometryData] = []
     for copy in 0..<count:
         let offset = (targets else trap("targets")).point(copy) if kind == "CopyToPoints" else Vector3(v[1], v[2], v[3]).multiply_scalar(float(copy))
-        let moved = data.transformed(offset, Vector3(), same_size)
-        result = moved if copy == 0 else result.merged(moved)
-    return result
+        pieces.append(data.transformed(offset, Vector3(), same_size))
+    while pieces.length > 1:
+        let joined: list[GeometryData] = []
+        var at = 0
+        while at < pieces.length:
+            joined.append(pieces[at].merged(pieces[at + 1]) if at + 1 < pieces.length else pieces[at])
+            at += 2
+        pieces = joined
+    return pieces[0]
 
 # -- Attribute nodes: the mesh kernels on the mesh, luce-geocore's
 # SetAttributes on curves and point clouds.
