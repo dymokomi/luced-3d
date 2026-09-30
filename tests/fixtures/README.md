@@ -10,6 +10,6 @@ a payload and two instances, also luce-usd's) are the USD File node's.
 tests/fixtures/UFBX-LICENSE.txt), and `skinned.fbx` (ufbx's
 `maya_dq_weights_7500_binary.fbx`, an animated dual quaternion skin) are the
 FBX File node's. The format packages
-keep their own fixtures (FBX: luce-fbx; STEP: luce-step). `step_limits.step`
-(made with luce-step's tests/generate_fixtures.py: a 64-hole plate, past
-the 64-loop face budget, beside a square) checks the File node's warning.
+keep their own fixtures (FBX: luce-fbx; STEP: luce-step). `step_skip.step`
+(two unit squares on a plane, the second with a corner 0.1 above it, so no
+mesher follows it) checks the tessellation's skipped-face warning.
