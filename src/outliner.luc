@@ -1,5 +1,5 @@
 ## Outliner projection: exposed nodes plus Group containment, never wire ancestry.
-from ui import Widget, Layout, Constraints, Size, Painter, Event
+from ui import Widget, Layout, Constraints, Size, Painter, Event, Font
 from gpu import RenderTarget, Rect
 from input import EventKind, Key
 from workspace import Workspace
@@ -25,6 +25,7 @@ pub class OutlineRow:
 pub class Outliner: Widget:
     let box: Layout
     let workspace: Workspace
+    let font: Font
     pub var rows: list[OutlineRow]
     var collapsed: list[int]
     var collapsed_paths: list[str]
@@ -33,8 +34,9 @@ pub class Outliner: Widget:
     var last_node: int = -1
     var last_click: int = 0
 
-    pub func init(self, workspace: Workspace) -> unit!:
+    pub func init(self, workspace: Workspace, font: Font? = none) -> unit!:
         self.workspace = workspace
+        self.font = font else Font()
         self.rows = []
         self.collapsed = []
         self.collapsed_paths = []
@@ -49,10 +51,13 @@ pub class Outliner: Widget:
     pub func measure(self, available: Constraints) -> Size!:
         return Size(300.0, 210.0)
 
+    func row_height(self) -> float:
+        return self.font.line_height() + 6.0
+
     pub func refresh(self) -> unit!:
         self.rows = []
         self.append_scope(-1, 0, true)
-        self.scroll = math.clamp(self.scroll, 0.0, math.max(0.0, float(self.rows.length) * 28.0 - self.box.bounds().height))
+        self.scroll = math.clamp(self.scroll, 0.0, math.max(0.0, float(self.rows.length) * self.row_height() - self.box.bounds().height))
         self.box.invalidate()
 
     func append_scope(self, parent: int, depth: int, visible: bool) -> unit!:
@@ -86,28 +91,29 @@ pub class Outliner: Widget:
         p.rectangle(Rect(0.0, 0.0, size.width, size.height), theme.backdrop())
         for index in 0..<self.rows.length:
             let row = self.rows[index]
-            let y = float(index) * 28.0 - self.scroll
-            if y + 28.0 < 0.0 or y > size.height:
+            let y = float(index) * self.row_height() - self.scroll
+            if y + self.row_height() < 0.0 or y > size.height:
                 continue
             let node = self.workspace.network.require(row.id)
             let selected = row.path == "" and node.id == self.workspace.network.selected
             if selected or self.hovered == index:
-                p.rectangle(Rect(0.0, y, size.width, 27.0), theme.surface() if not selected else theme.grey(74.0))
+                p.rectangle(Rect(0.0, y, size.width, self.row_height() - 1.0), theme.surface() if not selected else theme.grey(74.0))
             if selected:
-                p.rectangle(Rect(0.0, y, 3.0, 27.0), theme.accent())
+                p.rectangle(Rect(0.0, y, 3.0, self.row_height() - 1.0), theme.accent())
             let x = 10.0 + float(row.depth) * 18.0
+            let text_y = y + (self.row_height() - self.font.height()) * 0.5
             let ink = theme.text() if row.visible else theme.text_muted()
             if row.path != "" and row.branch:
-                p.text(">" if f"{node.id}:{row.path}" in self.collapsed_paths else "v", x, y + 5.0, ink)
+                p.text(">" if f"{node.id}:{row.path}" in self.collapsed_paths else "v", x, text_y, ink, self.font)
             elif row.path == "" and node.kind == "Group":
-                p.text(">" if node.id in self.collapsed else "v", x, y + 5.0, ink)
-            draw_icon(p, ("Group" if row.branch else "Cube") if row.path != "" else node.kind, x + 17.0, y + 6.0, 16.0, ink)
-            let limit = int(math.max(1.0, (size.width - x - 75.0) / 8.0))
+                p.text(">" if node.id in self.collapsed else "v", x, text_y, ink, self.font)
+            draw_icon(p, ("Group" if row.branch else "Cube") if row.path != "" else node.kind, x + 17.0, y + (self.row_height() - self.font.height()) * 0.5, self.font.height(), ink)
+            let limit = int(math.max(1.0, (size.width - x - 75.0) / self.font.advance()))
             let label = row.path.split("/")[-1] if row.path != "" else node.name
-            p.text(label if label.length <= limit else label[0..<limit] + "…", x + 40.0, y + 5.0, ink)
-            if row.path == "": p.text("o" if node.visible else "-", size.width - 23.0, y + 5.0, ink)
+            p.text(label if label.length <= limit else label[0..<limit] + "…", x + 40.0, text_y, ink, self.font)
+            if row.path == "": p.text("o" if node.visible else "-", size.width - 23.0, text_y, ink, self.font)
         if self.rows.length == 0:
-            p.text("No exposed outputs", 12.0, 12.0, theme.text_muted())
+            p.text("No exposed outputs", 12.0, 12.0, theme.text_muted(), self.font)
         p.close()
 
     pub func event(self, event: Event) -> unit!:
@@ -115,11 +121,11 @@ pub class Outliner: Widget:
             self.last_node = -1
             return
         if event.kind == EventKind.scroll:
-            self.scroll = math.clamp(self.scroll - event.scroll_y * 24.0, 0.0, math.max(0.0, float(self.rows.length) * 28.0 - self.box.bounds().height))
+            self.scroll = math.clamp(self.scroll - event.scroll_y * 24.0, 0.0, math.max(0.0, float(self.rows.length) * self.row_height() - self.box.bounds().height))
         elif event.kind == EventKind.key_down and event.key == Key.enter:
             node_commands.enter_group(self.workspace, self.workspace.network.selected)
         elif event.kind == EventKind.pointer_down and event.button == 0 and event.inside:
-            let index = int((event.y + self.scroll) / 28.0)
+            let index = int((event.y + self.scroll) / self.row_height())
             if index >= 0 and index < self.rows.length:
                 let row = self.rows[index]
                 let node = self.workspace.network.require(row.id)
@@ -151,7 +157,7 @@ pub class Outliner: Widget:
                     self.last_click = now
                 self.refresh()
         elif event.kind == EventKind.pointer_moved:
-            let index = int((event.y + self.scroll) / 28.0)
+            let index = int((event.y + self.scroll) / self.row_height())
             self.hovered = index if event.inside and index >= 0 and index < self.rows.length else -1
         elif event.kind == EventKind.pointer_left:
             self.hovered = -1
