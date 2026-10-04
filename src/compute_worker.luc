@@ -151,7 +151,7 @@ class Computation:
                 self.channel.progress(node.id, fraction, "Tessellating" if node.kind == "Tessellate" else "Computing")
             result = node.compute(input, second, progress, self.sources) catch failure:
                 return self.own(node, failure.code, failure.message)
-        discard(self.store.put(node.stamp, result))
+        _ = self.store.put(node.stamp, result)
         self.channel.progress(node.id, 1.0, "Complete")
         return result
 
@@ -178,7 +178,7 @@ class Computation:
             self.recipes += 1
             self.channel.check()
             if at + 1 < node.edits.length and checkpoint(at + 1, node.edits.length):
-                discard(self.store.put(prefix_stamp(node, base, at + 1), result))
+                _ = self.store.put(prefix_stamp(node, base, at + 1), result)
         return result
 
     func upstream(self, node: Node, input: Node, depth: int) -> GeometryData!:
@@ -192,7 +192,7 @@ class Computation:
     func own(self, node: Node, code: ErrorCode, message: str) -> GeometryData!:
         if message == "Computation superseded":
             error(code, message)
-        discard(self.store.fail(node.stamp, message))
+        _ = self.store.fail(node.stamp, message)
         error(code, self.failed(node, message))
 
     func failed(self, node: Node, message: str) -> str:
@@ -255,16 +255,16 @@ class Computation:
             error(failure.code, failure.message)
         self.channel.end()
         self.store.refresh(node.stamp)
-        discard(self.display(data, Matrix4(), node, 0))
+        _ = self.display(data, Matrix4(), node, 0)
         # CAD edges are keyed by what they are drawn from, so a CV drag keeps
         # them held; normal guides follow the result.
         let edges = data.edges_key()
         if edges != 0:
-            self.publish_lines(hash((edges, "cad-edges")), node, data, true, false)
+            self.publish_lines((edges, "cad-edges").hash(), node, data, true, false)
             if self.graph.show_normals:
-                self.publish_lines(hash((node.stamp, "guides")), node, data, false, true)
+                self.publish_lines((node.stamp, "guides").hash(), node, data, false, true)
         else:
-            self.publish_lines(hash((node.stamp, "overlays", self.graph.show_normals)), node, data, true, self.graph.show_normals)
+            self.publish_lines((node.stamp, "overlays", self.graph.show_normals).hash(), node, data, true, self.graph.show_normals)
         self.publish_curves(node, data)
         self.publish_cad_hulls(node, data)
         self.publish_guides(node, data)
@@ -277,7 +277,7 @@ class Computation:
             return
         let kind = edit_kind(node.kind) else return
         let guides = kind.guides else return
-        let key = hash((data.geometry.detail_key(), node.kind, "edit-guides"))
+        let key = (data.geometry.detail_key(), node.kind, "edit-guides").hash()
         if self.channel.holds(key):
             self.channel.reuse(key, node.id, false, false)
             return
@@ -303,7 +303,7 @@ class Computation:
 
     ## CAD control nets go to the shared hull product, under their own key.
     func publish_cad_hulls(self, node: Node, data: GeometryData) -> unit!:
-        let key = hash((node.stamp, "cad-hull"))
+        let key = (node.stamp, "cad-hull").hash()
         if self.channel.holds(key):
             self.channel.reuse(key, node.id, false, false)
             return
@@ -314,7 +314,7 @@ class Computation:
 
     ## Curves are drawn as lines, published under their own content key.
     func publish_curves(self, node: Node, data: GeometryData) -> unit!:
-        let key = hash((node.stamp, "curves"))
+        let key = (node.stamp, "curves").hash()
         if self.channel.holds(key):
             self.channel.reuse(key, node.id, false, false)
             return
@@ -357,7 +357,7 @@ class Computation:
 
     func show(self, mesh: Mesh, matrix: Matrix4, node: Node, ordinal: int, overlays: bool) -> unit!:
         let identity = matrix.is_identity()
-        let key = self.key_of(mesh, hash((node.stamp, ordinal))) if identity else hash((node.stamp, ordinal))
+        let key = self.key_of(mesh, (node.stamp, ordinal).hash()) if identity else (node.stamp, ordinal).hash()
         # Picking runs on the GPU; a query index is built by its first query.
         var shown: Mesh? = none
         if self.channel.holds(key):
@@ -367,13 +367,13 @@ class Computation:
             shown = placed
             # A subdivided mesh's display is made here, off the UI thread: the
             # renderer then finds it cached (by connectivity and positions).
-            discard(Subdivision.display(placed))
+            _ = Subdivision.display(placed)
             self.channel.mesh(placed, key, node.id, true, false)
             if identity:
                 self.meshes.append(mesh)
                 self.keys.append(key)
         if overlays and self.graph.show_normals:
-            let guides = hash((key, "guides"))
+            let guides = (key, "guides").hash()
             if self.channel.holds(guides):
                 self.channel.reuse(guides, node.id, false, false)
             else:
@@ -384,7 +384,7 @@ class Computation:
     ## `level`: the Edit node's level whose pick geometry `mesh` is (-1 a
     ## node's own mesh), part of the key since levels pick on other meshes.
     func inspect(self, node: Node, mesh: Mesh, level: int = -1) -> unit!:
-        let key = self.key_of(mesh, hash((node.stamp, "inspect", level)))
+        let key = self.key_of(mesh, (node.stamp, "inspect", level).hash())
         if self.channel.holds(key) or self.listed(key):
             self.channel.reuse(key, node.id, false, true)
             return
