@@ -7,8 +7,8 @@ from luce_geocore.geocore import Mesh, Vector3, invalid
 extern func printf(format: c.str, ...) -> c.int
 
 struct Quality:
-    var low: Vector3 = Vector3(1e100,1e100,1e100)
-    var high: Vector3 = Vector3(-1e100,-1e100,-1e100)
+    var low: Vector3 = Vector3(1e100, 1e100, 1e100)
+    var high: Vector3 = Vector3(-1e100, -1e100, -1e100)
     var quads: i64 = 0
     var triangles: i64 = 0
     var ngons: i64 = 0
@@ -23,53 +23,53 @@ struct Quality:
 
 pub func report(mesh: interop.Reference[Mesh], count: i64) -> !:
     let data = mesh.value()
-    let owner = data.find_attribute("cad_face",2)
-    let clipped = data.find_attribute("cad_trim_grid",2)
-    let method = data.find_attribute("cad_mesher",2)
-    if owner < 0 or count <= 0: error(invalid,"quality audit requires CAD face ownership")
-    let stats = try alloc Quality[(usize)count] in memory.heap
+    let owner = data.find_attribute("cad_face", 2)
+    let clipped = data.find_attribute("cad_trim_grid", 2)
+    let method = data.find_attribute("cad_mesher", 2)
+    if owner < 0 or count <= 0: error(invalid, "quality audit requires CAD face ownership")
+    let stats = try new Quality[(usize)count] --- in memory.heap
     defer free(stats) in memory.heap
     for at in 0..<stats.length: stats[at] = Quality()
     for face in 0..<data.face_count():
-        let parent = (i64)(try data.attribute_value(owner,face))
-        if parent < 0 or parent >= count: error(invalid,"invalid CAD face ownership")
+        let parent = (i64)(try data.attribute_value(owner, face))
+        if parent < 0 or parent >= count: error(invalid, "invalid CAD face ownership")
         let q = &stats[(usize)parent]
-        if method >= 0: q.method = (i64)(try data.attribute_value(method,face))
+        if method >= 0: q.method = (i64)(try data.attribute_value(method, face))
         let n = try data.face_size(face)
         if n == 4: q.quads += 1
         elif n == 3: q.triangles += 1
         else: q.ngons += 1
-        if clipped >= 0 and (try data.attribute_value(clipped,face)) > 0.0: q.clipped += 1
+        if clipped >= 0 and (try data.attribute_value(clipped, face)) > 0.0: q.clipped += 1
         var lengths: f64[4]
         var minimum: f64 = 1e100
         var maximum: f64 = 0.0
         var sine: f64 = 1.0
         for corner in 0..<n:
-            let p = try data.point(try data.face_point(face,corner))
-            q.low = Vector3(math.min(q.low.x,p.x),math.min(q.low.y,p.y),math.min(q.low.z,p.z))
-            q.high = Vector3(math.max(q.high.x,p.x),math.max(q.high.y,p.y),math.max(q.high.z,p.z))
+            let p = try data.point(try data.face_point(face, corner))
+            q.low = Vector3(math.min(q.low.x, p.x), math.min(q.low.y, p.y), math.min(q.low.z, p.z))
+            q.high = Vector3(math.max(q.high.x, p.x), math.max(q.high.y, p.y), math.max(q.high.z, p.z))
             if n != 4: continue
-            let next = (try data.point(try data.face_point(face,(corner+1)%n))).subtract(p)
-            let previous = (try data.point(try data.face_point(face,(corner+n-1)%n))).subtract(p)
+            let next = (try data.point(try data.face_point(face, (corner + 1) % n))).subtract(p)
+            let previous = (try data.point(try data.face_point(face, (corner + n - 1) % n))).subtract(p)
             let length = next.length()
             lengths[(usize)corner] = length
-            minimum = math.min(minimum,length)
-            maximum = math.max(maximum,length)
-            sine = math.min(sine,next.cross(previous).length()/math.max(1e-30,length*previous.length()))
+            minimum = math.min(minimum, length)
+            maximum = math.max(maximum, length)
+            sine = math.min(sine, next.cross(previous).length() / math.max(1e-30, length * previous.length()))
         if n != 4: continue
-        let ratio = maximum/math.max(1e-30,minimum)
-        q.ratio = math.max(q.ratio,ratio)
-        q.sine = math.min(q.sine,sine)
+        let ratio = maximum / math.max(1e-30, minimum)
+        q.ratio = math.max(q.ratio, ratio)
+        q.sine = math.min(q.sine, sine)
         for axis in 0..<(usize)2:
-            q.opposite = math.max(q.opposite,math.max(lengths[axis],lengths[axis+2])/math.max(1e-30,math.min(lengths[axis],lengths[axis+2])))
+            q.opposite = math.max(q.opposite, math.max(lengths[axis], lengths[axis + 2]) / math.max(1e-30, math.min(lengths[axis], lengths[axis + 2])))
         if ratio > 20.0: q.stretched += 1
         if sine < 0.1: q.skewed += 1
-    for triangle in 0..<data.index_count()//3:
-        var positions = [Vector3(),Vector3(),Vector3()]
-        var normals = [Vector3(),Vector3(),Vector3()]
+    for triangle in 0..<data.index_count() // 3:
+        var positions = [Vector3(), Vector3(), Vector3()]
+        var normals = [Vector3(), Vector3(), Vector3()]
         var parent: usize = 0
         for at in 0..<3:
-            let index = data.index(triangle*3+at)
+            let index = data.index(triangle * 3 + at)
             defer index.release()
             let id = try index.get()
             let vertex = data.vertex(id)
@@ -77,13 +77,12 @@ pub func report(mesh: interop.Reference[Mesh], count: i64) -> !:
             let v = try vertex.get()
             positions[(usize)at] = v.position
             normals[(usize)at] = v.normal
-            if at == 0: parent = (usize)(try data.attribute_value(owner,try data.corner_face(id)))
+            if at == 0: parent = (usize)(try data.attribute_value(owner, try data.corner_face(id)))
         let cross = positions[1].subtract(positions[0]).cross(positions[2].subtract(positions[0]))
         var folded = false
-        for n in normals: folded = folded or cross.dot(n) <= cross.length()*1e-10
+        for n in normals: folded = folded or cross.dot(n) <= cross.length() * 1e-10
         if folded: stats[parent].folded += 1
-    discard(printf("# quality: patch quads triangles ngons clipped stretched20 skewed01 max_edge_ratio max_opposite_ratio min_corner_sine low_xyz high_xyz method folded_display_triangles\n"))
+    _ = printf("# quality: patch quads triangles ngons clipped stretched20 skewed01 max_edge_ratio max_opposite_ratio min_corner_sine low_xyz high_xyz method folded_display_triangles\n")
     for at in 0..<stats.length:
         let q = stats[at]
-        discard(printf("quality %lld %lld %lld %lld %lld %lld %lld %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %lld %lld\n",(i64)at,q.quads,q.triangles,q.ngons,q.clipped,q.stretched,q.skewed,q.ratio,q.opposite,q.sine,q.low.x,q.low.y,q.low.z,q.high.x,q.high.y,q.high.z,q.method,q.folded))
-
+        _ = printf("quality %lld %lld %lld %lld %lld %lld %lld %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %lld %lld\n", (i64)at, q.quads, q.triangles, q.ngons, q.clipped, q.stretched, q.skewed, q.ratio, q.opposite, q.sine, q.low.x, q.low.y, q.low.z, q.high.x, q.high.y, q.high.z, q.method, q.folded)

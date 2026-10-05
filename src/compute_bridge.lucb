@@ -77,7 +77,7 @@ struct State:
     let entry: interop.WorkerEntry[i64, str, unit]
 
     ## Drop the current result; untaken fresh copies are freed.
-    mutating func clear():
+    func clear():
         for product in self.products[..<self.count]:
             if let mesh = product.mesh:
                 mesh.close()
@@ -113,7 +113,7 @@ func copy_points(points: const Vector3[]) -> Vector3[]!:
     var empty: Vector3[]
     if points.length == 0:
         return empty
-    let output = try alloc Vector3[points.length] in memory.heap
+    let output = try new Vector3[points.length] --- in memory.heap
     memory.copy(output, points, points.length)
     return output
 
@@ -121,8 +121,8 @@ func copy_points(points: const Vector3[]) -> Vector3[]!:
 pub struct ComputeChannel:
     let state: State*
 
-    pub mutating func close():
-        discard(self.state)
+    pub func close():
+        _ = self.state
 
     ## Cancellation point. A newer request cancels publishing, and a cook only
     ## when that request no longer wants the stamp being cooked.
@@ -295,7 +295,7 @@ pub struct ComputeService:
     pub func init(entry: interop.WorkerEntry[i64, str, unit]) -> !:
         let state = try new State(entry = entry) in memory.heap
         errdefer free(state) in memory.heap
-        state.queue = try alloc Request[16] in memory.heap
+        state.queue = try new Request[16] --- in memory.heap
         errdefer free(state.queue) in memory.heap
         state.handle = try thread.spawn(run, (void*)state, name = "luced-3d compute")
         self.state = state
@@ -305,18 +305,18 @@ pub struct ComputeService:
         let state = self.state else error(invalid, "Compute service closed")
         let message = try interop.text_transfer.copy(text)
         errdefer message.release()
-        let stamps = try alloc i64[wanted.length + 1] in memory.heap
+        let stamps = try new i64[wanted.length + 1] --- in memory.heap
         errdefer free(stamps) in memory.heap
         memory.copy(stamps, wanted, wanted.length)
         stamps[wanted.length] = 0
         state.lock.lock()
         defer state.lock.unlock()
         if state.queued == state.queue.length:
-            let grown = try alloc Request[state.queue.length * 2] in memory.heap
+            let grown = try new Request[state.queue.length * 2] --- in memory.heap
             memory.copy(grown, state.queue, state.queued)
             free(state.queue) in memory.heap
             state.queue = grown
-        let current = try alloc i64[wanted.length + 1] in memory.heap
+        let current = try new i64[wanted.length + 1] --- in memory.heap
         memory.copy(current, stamps, stamps.length)
         if state.wanted.length > 0:
             free(state.wanted) in memory.heap
@@ -361,17 +361,23 @@ pub struct ComputeService:
 
     pub func mesh_count() -> i64:
         return (i64)(self.state else return 0).count
+
     pub func mesh_key(index: i64) -> i64:
         return (self.state else return 0).products[(usize)index].key
+
     pub func mesh_node(index: i64) -> i64:
         return (self.state else return -1).products[(usize)index].node
+
     pub func mesh_display(index: i64) -> bool:
         return (self.state else return false).products[(usize)index].display
+
     pub func mesh_inspect(index: i64) -> bool:
         return (self.state else return false).products[(usize)index].inspect
+
     ## Whether the product carries a new mesh to adopt (else the UI holds it).
     pub func mesh_fresh(index: i64) -> bool:
         return (self.state else return false).products[(usize)index].mesh != none
+
     pub func take_mesh(index: i64) -> interop.Reference[geocore.Mesh]!:
         let state = self.state else error(invalid, "Compute service closed")
         if index < 0 or (usize)index >= state.count or state.completed == 0:
@@ -383,12 +389,16 @@ pub struct ComputeService:
     ## Combined overlays of the current result: fresh and held keys.
     pub func wires() -> interop.Reference[WireBatch]!:
         return try self.batch(0)
+
     pub func normals() -> interop.Reference[WireBatch]!:
         return try self.batch(1)
+
     pub func patches() -> interop.Reference[WireBatch]!:
         return try self.batch(2)
+
     pub func curve_lines() -> interop.Reference[WireBatch]!:
         return try self.batch(3)
+
     ## Every published hull: curve control polygons and handles, CV nets.
     pub func hulls() -> interop.Reference[WireBatch]!:
         return try self.batch(4)
@@ -407,7 +417,7 @@ pub struct ComputeService:
         var total: usize = 0
         for product in state.products[..<state.count]:
             total += overlay_of(state, product, which).length
-        let points = try alloc Vector3[total] in memory.heap
+        let points = try new Vector3[total] --- in memory.heap
         defer free(points) in memory.heap
         var at: usize = 0
         for product in state.products[..<state.count]:
@@ -418,6 +428,7 @@ pub struct ComputeService:
 
     pub func report() -> str:
         return ((self.state else trap("closed compute service")).report else interop.Packet[str]("")).value
+
     pub func failed() -> bool:
         return (self.state else trap("closed compute service")).failed
 
@@ -456,7 +467,7 @@ pub struct ComputeService:
         state.completed = 0
         state.changed.broadcast()
 
-    pub mutating func close():
+    pub func close():
         let state = self.state else return
         state.lock.lock()
         state.stopping = true
