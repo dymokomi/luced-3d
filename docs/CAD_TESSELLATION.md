@@ -433,12 +433,12 @@ the wireframe looks cleaner.
 
 ## Validation and probing
 
-Portable regressions live with the code: `./test.sh` in luce-cad runs the Base
+Portable regressions live with the code: `luc test` in luce-cad runs the Base
 contracts (layout, trim predicates and domains, chart, feasibility, sliver,
 spacing, distance...) and the Luce CAD modules (quad flow, seams, spacing,
 periodic/closed/spherical grids, grooved and mixed charts, planar slivers and
-spacing). luced-3d's `tests/run.py` covers File, Tessellate, background cooking
-and the editor. Both run native and C backends.
+spacing). luced-3d's `tests/editor` covers File, Tessellate, background cooking
+and the editor.
 
 The Desktop models are opt-in, read-only inputs; they are never committed.
 

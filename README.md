@@ -192,7 +192,7 @@ still has known difficult trims and poorly distributed regions under active work
 ## Verification
 
 ```sh
-python3 tests/run.py
+luc test
 python3 tools/preview.py --scene edit  # macOS desktop / Metal capture
 python3 tools/profile.py             # CPU phase timings
 python3 tools/profile.py native      # native orbit frame intervals
@@ -202,9 +202,9 @@ Tests cover topology and concave triangulation, region extrusion, ray picking,
 branching DAGs, invalid links, caching, bypass, topology guards, transactions,
 Tab search, actual wire and parameter gestures, face picking, extrusion,
 translation handles, File/Tessellate and background cooking, and resized UI
-rendering. `python3 tests/run.py --backend c` runs the same suite through the C
-backend. CAD-only tessellation regressions live in luce-cad (`./test.sh` there);
-format tests live in luce-step, luce-obj and luce-fbx.
+rendering, in the test program `tests/editor`. CAD-only tessellation regressions
+live in luce-cad (`luc test` there); format tests live in luce-step, luce-obj and
+luce-fbx.
 
 See [DESIGN.md](docs/DESIGN.md) for module boundaries and architectural references.
 See [PERFORMANCE.md](docs/PERFORMANCE.md) for measured timings and how to reproduce them.
