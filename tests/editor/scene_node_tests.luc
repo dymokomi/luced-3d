@@ -1,0 +1,62 @@
+## Camera, Light and Render nodes: objects added to their input or made
+## alone, placed by Transform, kept by Group, checked by Render, and drawn
+## as viewport helpers.
+from network import Network
+from luce_3d.graphics import Vector3
+from overlay_lines import OverlayLines
+from geometry_tests import near
+import node_catalog
+
+## Why node `id` fails to cook ("" when it cooks).
+func failure_of(graph: Network, id: int) -> str!:
+    _ = graph.evaluate_data(id) catch failure:
+        return failure.message
+    return ""
+
+pub func scene_node_tests() -> unit!:
+    let graph = Network(false)
+    let cube = graph.add("Cube", 0.0, 0.0)
+    let camera = graph.add("Camera", 0.0, 100.0)
+    graph.connect(cube.id, camera.id, 0)
+    let light = graph.add("Light", 0.0, 200.0)
+    graph.connect(camera.id, light.id, 0)
+    let render = graph.add("Render", 0.0, 300.0)
+    graph.connect(light.id, render.id, 0)
+    assert(camera.texts[0] == f"/camera{camera.id}" and light.texts[0] == f"/light{light.id}")
+    assert(node_catalog.category("Light") == "Render" and node_catalog.optional_input("Camera") and not node_catalog.optional_input("Render"))
+    # The chain keeps the cube and gains both objects.
+    let data = graph.evaluate_data(render.id)
+    assert(data.mesh != none and data.warning == "")
+    let scene = data.geometry.scene()
+    assert(scene.count() == 2 and scene.is_camera(0) and scene.path(1) == light.texts[0])
+    let lens = scene.object(0).camera
+    near(lens.focal_length, 50.0)
+    near(scene.object(0).matrix.translation.z, 6.0)
+    # The default area light hangs at y = 4 shining straight down.
+    let key = scene.object(1)
+    near(key.matrix.translation.y, 4.0)
+    near(key.matrix.transform_direction(Vector3(0.0, 0.0, -1.0)).y, -1.0)
+    # Unconnected, a Light is just its light; Render needs a camera.
+    let alone = graph.add("Light", 200.0, 0.0)
+    let lonely = graph.add("Render", 200.0, 100.0)
+    graph.connect(alone.id, lonely.id, 0)
+    assert(graph.evaluate_data(alone.id).geometry.scene().count() == 1)
+    assert(failure_of(graph, lonely.id).contains("Add a Camera node"))
+    # A named camera that is missing is an error; no lights is a warning.
+    let lit_off = graph.add("Render", 400.0, 0.0)
+    graph.connect(camera.id, lit_off.id, 0)
+    assert(graph.evaluate_data(lit_off.id).warning.contains("no lights"))
+    lit_off.texts[0] = "/nowhere"
+    graph.invalidate(lit_off.id)
+    assert(failure_of(graph, lit_off.id).contains("No camera at /nowhere"))
+    # Transform and Group place cameras like geometry.
+    let move = graph.add("Transform", 0.0, 400.0)
+    graph.connect(light.id, move.id, 0)
+    move.values[1] = 10.0
+    let moved = graph.evaluate_data(move.id).geometry.scene()
+    near(moved.object(0).matrix.translation.x, 10.0)
+    # Helpers: a perspective frustum is 4 + 4 + 3 segments, an area light 4 + 2 + 1.
+    let lines = OverlayLines.make()
+    lines.add_scene(data.geometry)
+    assert(lines.count() == 18)
+    print("PASS Camera, Light and Render nodes: chained and alone, Transform, render checks and viewport helpers")

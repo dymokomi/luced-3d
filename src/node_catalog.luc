@@ -18,7 +18,7 @@ from usd_nodes import is_usd_path, Composition, first_variant_slot
 from fbx_nodes import is_fbx_path
 
 ## Value slots a node has, and the one verb nodes keep their Group Type in.
-pub let value_slots: int = 16
+pub let value_slots: int = 32
 pub let group_type_slot: int = 15
 
 pub func is_verb(kind: str) -> bool:
@@ -176,7 +176,7 @@ pub func sources() -> list[str]:
     return ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus", "File", "Group"] + generators()
 
 pub func categories() -> list[str]:
-    return ["Primitives", "Modeling", "Deform", "Curves", "Volumes", "Transform / Copy", "Attributes", "Utility", "File I/O", "All"]
+    return ["Primitives", "Modeling", "Deform", "Curves", "Volumes", "Transform / Copy", "Attributes", "Utility", "File I/O", "Render", "All"]
 
 pub func category(kind: str) -> str:
     let verb = VerbCatalog.index_of(kind)
@@ -184,6 +184,8 @@ pub func category(kind: str) -> str:
         return VerbCatalog.category(verb)
     if kind in ["File", "Cache", "Export"]:
         return "File I/O"
+    if kind in scene_kinds():
+        return "Render"
     if kind == "Group":
         return "Utility"
     if kind in sources():
@@ -197,13 +199,22 @@ pub func category(kind: str) -> str:
     return "Modeling"
 
 pub func kinds() -> list[str]:
-    return sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Switch"] + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Normal", "Measure", "UVProject", "Color"]
+    return sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Switch"] + scene_kinds() + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Normal", "Measure", "UVProject", "Color"]
 
 pub func input_count(kind: str) -> int:
     let verb = VerbCatalog.index_of(kind)
     if verb >= 0:
         return VerbCatalog.inputs(verb)
     return 0 if kind in sources() else (2 if kind in ["Merge", "Switch", "CopyToPoints"] else 1)
+
+## Nodes that put cameras and lights in the geometry, and the Render node.
+pub func scene_kinds() -> list[str]:
+    return ["Camera", "Light", "Render"]
+
+## Nodes that cook from nothing when their input is unconnected: an Edit
+## node creates, a Camera or Light makes just its object.
+pub func optional_input(kind: str) -> bool:
+    return is_edit(kind) or kind in ["Camera", "Light"]
 
 pub func has_group(kind: str) -> bool:
     let verb = VerbCatalog.index_of(kind)
@@ -252,6 +263,11 @@ pub func fields(kind: str, path: str = "", stage: Composition? = none) -> list[P
     if kind == "Export":
         rows.append(entry("File", 0, "Where the input is written, in the format its extension names: .usd, .usda, .usdc, .usdz, .fbx, .obj or .prism.", "path"))
         rows.append(entry("Root prim", 1, "USD: the prim elements without a path attribute go under (empty: geo); it becomes the default prim."))
+    if kind in ["Camera", "Light"]:
+        rows.append(entry("Path", 0, "The object's path in the scene, as USD names prims: /cameras/hero."))
+    if kind == "Render":
+        rows.append(entry("Camera", 0, "The path of the camera to render through; empty takes the first camera."))
+        rows.append(entry("Output", 1, "Where the image is written (.exr); empty only shows it.", "path"))
     if has_group(kind):
         rows.append(entry("Group", 0, "Elements to work on, in Houdini's group syntax: empty or * for all, 0 2-5 and 0-99:2 for numbers, names and globs, @P.y>0 or @name tests, ^ to remove, & to intersect, grow(x) and loop(x)."))
     if is_verb(kind) and has_group(kind):
@@ -356,6 +372,12 @@ func value_fields(kind: str) -> list[Parameter]:
                 vector("Rotate", 4, [0.0, 0.0, 0.0], "Rotation about X, then Y, then Z, in degrees, about the pivot.", suffix = "°"),
                 vector("Scale", 7, [1.0, 1.0, 1.0], "Scale along each axis about the pivot; never zero."),
                 vector("Pivot", 10, [0.0, 0.0, 0.0], "The point rotation and scale happen about.")]
+    if kind == "Camera":
+        return camera_fields()
+    if kind == "Light":
+        return light_fields()
+    if kind == "Render":
+        return render_fields()
     if kind == "Mirror":
         return [menu("Axis", 0, "X|Y|Z", 0.0, "The axis the mirror plane faces."),
                 toggle("Keep original", 1, 1.0, "Keep the input beside its mirror image.")]
@@ -398,6 +420,74 @@ func value_fields(kind: str) -> list[Parameter]:
                 menu("Symmetry", 3, "None|X|Y|Z", 0.0, "Mirror every tool across the plane through the origin normal to this axis."),
                 toggle("Keep selection", 4, 0.0, "Keep the selected components through topology tools, instead of selecting what the tool made.")] + kind_rows(kind)
     return []
+
+## Where a Camera or Light sits: Translate in slots 1-3 and Rotate in 4-6,
+## as on Transform. They look and shine down their local -Z.
+func placement_fields(position: list[float], rotation: list[float]) -> list[Parameter]:
+    return [vector("Translate", 1, position, "Where the object sits."),
+            vector("Rotate", 4, rotation, "Rotation about X, then Y, then Z, in degrees; the object faces down its local -Z.", suffix = "°")]
+
+## A camera as USD describes one (UsdGeomCamera): a lens and film back in
+## millimetres, clipping and focus in scene units.
+func camera_fields() -> list[Parameter]:
+    let projection = menu("Projection", 0, "Perspective|Orthographic", 0.0, "Perspective, or parallel rays across the film back.")
+    projection.key = "projection"
+    let f_stop = number("F-stop", 12, 0.0, 0.0, 128.0, 0.1, "Lens aperture as an f-number; 0 is a pinhole with everything in focus.", soft = 22.0)
+    f_stop.key = "fstop"
+    let focus = number("Focus distance", 13, 5.0, 0.001, 100000.0, 0.1, "The distance that is sharp.", soft = 50.0)
+    focus.disable_when = "{ fstop == 0 }"
+    return [projection] + placement_fields([0.0, 1.0, 6.0], [-8.0, 0.0, 0.0]) + [
+            number("Focal length", 7, 50.0, 1.0, 2000.0, 1.0, "Lens focal length in millimetres.", soft = 200.0, suffix = " mm"),
+            number("Horizontal aperture", 8, 36.0, 0.1, 500.0, 0.1, "Film back width in millimetres (36 is full frame).", suffix = " mm"),
+            number("Vertical aperture", 9, 24.0, 0.1, 500.0, 0.1, "Film back height in millimetres; the render resolution's aspect crops it.", suffix = " mm"),
+            number("Near clip", 10, 0.1, 0.0001, 100000.0, 0.01, "Nothing nearer than this is seen."),
+            number("Far clip", 11, 10000.0, 0.01, 10000000.0, 10.0, "Nothing farther than this is seen."),
+            f_stop, focus]
+
+## A light as UsdLux describes one; Area is USD's RectLight.
+func light_fields() -> list[Parameter]:
+    let shape = menu("Type", 0, "Area|Disk|Sphere|Distant", 0.0, "Area: a rectangle. Disk and Sphere: round emitters. Distant: parallel light from far away, like the sun.")
+    shape.key = "type"
+    let color = vector("Color", 7, [1.0, 1.0, 1.0], "Linear RGB, multiplied by the intensity.", 0.0, 1.0)
+    color.kind = "color"
+    let use_temperature = toggle("Use temperature", 12, 0.0, "Tint the light by a blackbody color temperature.")
+    use_temperature.key = "usetemperature"
+    let temperature = number("Temperature", 13, 6500.0, 1000.0, 20000.0, 100.0, "Color temperature in Kelvin; 6500 is daylight white.", suffix = " K")
+    temperature.disable_when = "{ usetemperature == 0 }"
+    let width = number("Width", 14, 1.0, 0.0, 100000.0, 0.1, "The rectangle's size along its local X.", soft = 10.0)
+    width.hide_when = "{ type != 0 }"
+    let height = number("Height", 15, 1.0, 0.0, 100000.0, 0.1, "The rectangle's size along its local Y.", soft = 10.0)
+    height.hide_when = "{ type != 0 }"
+    let radius = number("Radius", 16, 0.5, 0.0, 100000.0, 0.05, "The disk's or sphere's radius.", soft = 5.0)
+    radius.hide_when = "{ type == 0 } { type == 3 }"
+    let angle = number("Angle", 17, 0.53, 0.0, 180.0, 0.01, "The sun's angular diameter in degrees (0.53 is the real sun); larger softens shadows.", suffix = "°")
+    angle.hide_when = "{ type != 3 }"
+    return [shape] + placement_fields([0.0, 4.0, 0.0], [-90.0, 0.0, 0.0]) + [
+            color,
+            number("Intensity", 10, 10.0, 0.0, 1000000.0, 0.1, "Brightness, multiplied by 2 to the exposure.", soft = 100.0),
+            number("Exposure", 11, 0.0, -30.0, 30.0, 0.1, "Brightness in stops: each step doubles it.", soft = 10.0),
+            use_temperature, temperature, width, height, radius, angle,
+            toggle("Normalize", 18, 1.0, "Keep the emitted power as the size changes, so resizing changes only softness."),
+            toggle("Visible to camera", 19, 0.0, "Show the emitter itself in the image; its light reaches the scene either way.")]
+
+## What the Render node asks of its engine.
+func render_fields() -> list[Parameter]:
+    let resolution = Parameter("Resolution", 1, 1920.0, 1.0, 16384.0, 1.0, true)
+    resolution.kind = "vector"
+    resolution.components = 2
+    resolution.rest = [1080.0]
+    resolution.doc = "Image width and height in pixels."
+    return [menu("Engine", 0, "Luce Path", 0.0, "The renderer. Luce Path is luce-render's spectral GPU path tracer."),
+            resolution,
+            whole("Samples", 3, 128.0, 1.0, 65536.0, "Paths per pixel at most; adaptive sampling stops earlier where the image is clean."),
+            menu("Color", 4, "Spectral|RGB", 0.0, "Spectral traces random wavelengths (dispersion, exact color mixing); RGB traces three channels, a little faster."),
+            whole("Max bounces", 5, 12.0, 0.0, 1024.0, "The longest a path may get."),
+            whole("Diffuse bounces", 6, 4.0, 0.0, 1024.0, "The most diffuse reflections on a path."),
+            whole("Glossy bounces", 7, 8.0, 0.0, 1024.0, "The most glossy reflections on a path."),
+            whole("Transmission bounces", 8, 12.0, 0.0, 1024.0, "The most refractions on a path."),
+            number("Noise threshold", 9, 0.01, 0.0, 1.0, 0.001, "Adaptive sampling stops a pixel at this noise level; 0 always takes every sample.", decimals = 4),
+            number("Clamp indirect", 10, 10.0, 0.0, 1000000.0, 1.0, "Clip bright indirect samples to cut fireflies; 0 is off.", soft = 100.0),
+            toggle("Denoise", 11, 1.0, "Denoise the final image.")]
 
 ## An Edit kind's own parameters, in value slots from first_kind_slot.
 func kind_rows(kind: str) -> list[Parameter]:
@@ -447,6 +537,12 @@ pub func description(kind: str) -> str:
         return "Nested network / double-click to enter"
     if is_edit(kind):
         return "Select and edit in the viewport; each edit is a step you can undo"
+    if kind == "Camera":
+        return "A camera in the scene / adds to its input when connected"
+    if kind == "Light":
+        return "A light in the scene / adds to its input when connected"
+    if kind == "Render":
+        return "Render the input's scene through its camera"
     if kind == "Cache":
         return "Save the cooked input to disk, or load it back and freeze upstream"
     if kind == "Export":

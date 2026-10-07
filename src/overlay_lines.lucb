@@ -11,6 +11,8 @@ from luce_geocore.geocore import Vector3, Matrix4, Bounds, Mesh, invalid, mesh_o
 from luce_geocore.core.growing import Growing
 from luce_3d.graphics import WireBatch, wire_batch_type
 from luce_cad.model import CadOverlay, CadPreviewSet
+from luce_geocore.geocore import GeometrySet, SceneKind, LightShape, Projection, Camera, Light
+from luce_geocore.kernel import SceneObjects, scene_flattened
 
 pub struct OverlayLines:
     var points: Growing[Vector3]
@@ -92,6 +94,82 @@ pub struct OverlayLines:
             try self.points.push(origin.add(u.multiply_scalar(t)).add(v.multiply_scalar(half)))
             try self.points.push(origin.add(v.multiply_scalar(t)).subtract(u.multiply_scalar(half)))
             try self.points.push(origin.add(v.multiply_scalar(t)).add(u.multiply_scalar(half)))
+
+    ## Every camera and light of `set` (and its instances) as viewport
+    ## helpers: a camera's frustum to one unit ahead with an up marker, a
+    ## light's emitter outline with its direction.
+    pub func add_scene(set: interop.Reference[GeometrySet]) -> !:
+        var objects = SceneObjects()
+        defer objects.close()
+        try scene_flattened(try set.get(), Matrix4(), &objects)
+        for index in 0..<objects.count():
+            let item = objects.object(index)
+            if item.kind == SceneKind.camera: try self.add_camera(item.camera, item.matrix)
+            else: try self.add_light(item.light, item.matrix)
+
+    func segment(matrix: Matrix4, a: Vector3, b: Vector3) -> !:
+        try self.points.push(matrix.transform_point(a))
+        try self.points.push(matrix.transform_point(b))
+
+    ## The closed outline through `corners`.
+    func loop(matrix: Matrix4, corners: const Vector3[]) -> !:
+        for at in 0..<corners.length: try self.segment(matrix, corners[at], corners[(at + 1) % corners.length])
+
+    ## A circle of `radius` in the plane of unit axes `u` and `v`.
+    func circle(matrix: Matrix4, center: Vector3, u: Vector3, v: Vector3, radius: f64) -> !:
+        let steps: i64 = 32
+        for step in 0..<steps:
+            let a = 2.0 * math.pi * (f64)step / (f64)steps
+            let b = 2.0 * math.pi * (f64)(step + 1) / (f64)steps
+            try self.segment(matrix, center.add(u.multiply_scalar(radius * math.cos(a))).add(v.multiply_scalar(radius * math.sin(a))),
+                             center.add(u.multiply_scalar(radius * math.cos(b))).add(v.multiply_scalar(radius * math.sin(b))))
+
+    func add_camera(camera: Camera, matrix: Matrix4) -> !:
+        # Perspective: the film back seen one unit ahead. Orthographic: the
+        # apertures in tenths of a unit (USD's convention), one unit deep.
+        let perspective = camera.projection == Projection.perspective
+        let w = 0.5 * camera.horizontal_aperture / camera.focal_length if perspective else 0.05 * camera.horizontal_aperture
+        let h = 0.5 * camera.vertical_aperture / camera.focal_length if perspective else 0.05 * camera.vertical_aperture
+        let far: Vector3[4] = [Vector3(-w, -h, -1.0), Vector3(w, -h, -1.0), Vector3(w, h, -1.0), Vector3(-w, h, -1.0)]
+        try self.loop(matrix, far)
+        if perspective:
+            for corner in far: try self.segment(matrix, Vector3(), corner)
+        else:
+            let near: Vector3[4] = [Vector3(-w, -h, 0.0), Vector3(w, -h, 0.0), Vector3(w, h, 0.0), Vector3(-w, h, 0.0)]
+            try self.loop(matrix, near)
+            for at in 0..<(usize)4: try self.segment(matrix, near[at], far[at])
+        let up: Vector3[3] = [Vector3(-0.5 * w, h * 1.1, -1.0), Vector3(0.5 * w, h * 1.1, -1.0), Vector3(0.0, h * 1.5, -1.0)]
+        try self.loop(matrix, up)
+
+    func add_light(light: Light, matrix: Matrix4) -> !:
+        let x = Vector3(1.0, 0.0, 0.0)
+        let y = Vector3(0.0, 1.0, 0.0)
+        let z = Vector3(0.0, 0.0, 1.0)
+        var reach: f64 = 0.5
+        if light.shape == LightShape.rect:
+            let w = 0.5 * light.width
+            let h = 0.5 * light.height
+            let corners: Vector3[4] = [Vector3(-w, -h, 0.0), Vector3(w, -h, 0.0), Vector3(w, h, 0.0), Vector3(-w, h, 0.0)]
+            try self.loop(matrix, corners)
+            try self.segment(matrix, corners[0], corners[2])
+            try self.segment(matrix, corners[1], corners[3])
+            reach = math.max(0.25, math.max(w, h))
+        elif light.shape == LightShape.disk:
+            try self.circle(matrix, Vector3(), x, y, light.radius)
+            reach = math.max(0.25, light.radius)
+        elif light.shape == LightShape.sphere:
+            try self.circle(matrix, Vector3(), x, y, light.radius)
+            try self.circle(matrix, Vector3(), y, z, light.radius)
+            try self.circle(matrix, Vector3(), z, x, light.radius)
+            reach = math.max(0.25, light.radius)
+        else:
+            # Distant: three parallel rays with an arrowhead on the middle one.
+            for offset in [-0.2, 0.0, 0.2]: try self.segment(matrix, Vector3(offset, 0.0, 0.0), Vector3(offset, 0.0, -1.0))
+            try self.segment(matrix, Vector3(0.0, 0.0, -1.0), Vector3(-0.08, 0.0, -0.85))
+            try self.segment(matrix, Vector3(0.0, 0.0, -1.0), Vector3(0.08, 0.0, -0.85))
+            return
+        # Which way it shines: down its local -Z.
+        try self.segment(matrix, Vector3(), Vector3(0.0, 0.0, -reach))
 
     ## A GPU batch of the segments.
     pub func batch() -> interop.Reference[WireBatch]!:

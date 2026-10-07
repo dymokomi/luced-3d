@@ -35,13 +35,34 @@ disconnects consumers, so no dangling IDs remain. The workspace supports up to
 Selected and displayed node IDs are independent. Disabled operators pass through
 their first input (including Merge); disabled generators return empty geometry.
 An invalid displayed branch clears the old mesh rather than pretending it is the
-current output. Grid and lights are viewport helpers outside the user's graph.
+current output. The grid and the viewport's own shading lights are helpers
+outside the user's graph; scene cameras and lights are nodes (below).
 
 The DAG carries `GeometryData`: polygon and CAD components, including mixed
 results from Merge, and Group instance branches. Transform preserves analytic
 control nets; Null, Switch and bypass preserve the payload. Polygon-only tools
 reject untessellated CAD with an explicit conversion message; CAD is never
 silently tessellated.
+
+## Cameras, lights and rendering
+
+Cameras and lights are luce-geocore's `scene` component, so they travel in
+the geometry: Transform places them, Merge joins them, Group instances them and
+Blast filters them by path. There is no separate scene context; Groups organize
+a scene. Their parameters follow USD (UsdGeomCamera; UsdLux's rect, disk,
+sphere and distant lights), and each looks or shines down its local -Z.
+`GeometrySet.scene()` flattens a result and its instances to world space.
+
+- **Camera** and **Light** (`scene_nodes.luc`) add their object to their input,
+  or make just the object when unconnected, as an Edit node creates. Their
+  Translate and Rotate use Transform's slots. Light's Type starts at Area
+  (USD's RectLight).
+- **Render** passes its input on once the scene has the camera its Camera text
+  names (or any camera) and warns when it has no lights. Its Engine menu
+  chooses the renderer; the first is Luce Path, luce-render's spectral GPU path
+  tracer (built on luce-gpu compute).
+- The viewport draws a camera's frustum one unit deep and a light's emitter
+  outline and direction with the guide lines (`OverlayLines.add_scene`).
 
 ## Background computation
 

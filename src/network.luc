@@ -11,6 +11,7 @@ from usd_nodes import is_usd_path, load_usd, cook_export
 from fbx_nodes import is_fbx_path, load_fbx, export_fbx
 from luce_ui import ui
 from edit_kinds import is_edit, edit_kind
+from scene_nodes import add_camera, add_light, check_render
 
 pub func kinds() -> list[str]:
     return node_catalog.kinds()
@@ -68,6 +69,10 @@ pub class Node:
         for parameter in node_catalog.parameters(kind):
             self.values[parameter.slot] = parameter.initial
         self.texts = ["0" if kind == "PolyExtrude" else "", "group" if kind == "Selection Group" else ("geo" if kind == "Export" else "weight"), "renamed"]
+        if kind == "Camera" or kind == "Light":
+            self.texts = [f"/{kind.lower()}{id}", "", ""]
+        if kind == "Render":
+            self.texts = ["", "", ""]
         if kind == "File":
             # USD's Variants and Load payloads, empty: the stage as authored.
             self.texts = ["", "", ""]
@@ -132,6 +137,12 @@ pub class Node:
             return GeometryData(source_geometry(self.kind, v))
         if not self.enabled or self.kind in ["Switch", "Null"]:
             return data
+        if self.kind == "Camera":
+            return add_camera(self.id, v, self.texts, data)
+        if self.kind == "Light":
+            return add_light(self.id, v, self.texts, data)
+        if self.kind == "Render":
+            return check_render(self.texts, data)
         if self.kind == "Cache":
             return cook_cache(reads_file(self.kind, self.enabled, self.values), self.texts[0], self.stamp, data)
         if self.kind == "Export":
@@ -434,8 +445,9 @@ pub class Network:
         if node.kind in node_catalog.sources() or reads_file(node.kind, node.enabled, node.values):
             return node.compute(GeometryData())
         let port = int(node.values[0]) if node.kind == "Switch" and node.enabled else 0
-        # An Edit node starts from nothing when unconnected (it can create).
-        if is_edit(node.kind) and node.inputs[0] < 0:
+        # An Edit node starts from nothing when unconnected (it can create);
+        # a Camera or Light makes just its object.
+        if node_catalog.optional_input(node.kind) and node.inputs[0] < 0:
             return node.compute(GeometryData())
         if port < 0 or port >= node.inputs.length or node.inputs[port] < 0:
             error(ui.invalid, "Connect a geometry input")

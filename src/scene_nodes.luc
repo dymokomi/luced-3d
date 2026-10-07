@@ -1,0 +1,61 @@
+## Camera, Light and Render nodes. Cameras and lights are luce-geocore's
+## scene component: they travel in the geometry like everything else, so
+## Transform, Merge, Group and Blast work on them. A Camera or Light adds its
+## object to its input (or makes just the object when unconnected); Render
+## checks the scene it is given and passes it on. Parameter rows and slots
+## are in node_catalog (camera_fields, light_fields, render_fields).
+from luce_3d.graphics import Vector3
+from geometry_data import GeometryData
+from luce_ui import ui
+
+let radians_per_degree: float = 0.017453292519943295
+
+## The engines a Render node offers, in its Engine menu's order.
+pub func engines() -> list[str]:
+    return ["Luce Path"]
+
+## The object's path: the node's Path text, or a default from its kind.
+func object_path(text: str, fallback: str) -> str:
+    let path = text.trim()
+    if path == "":
+        return fallback
+    return path if path.starts_with("/") else "/" + path
+
+func placement(v: list[float]) -> (Vector3, Vector3):
+    return (Vector3(v[1], v[2], v[3]), Vector3(v[4], v[5], v[6]).multiply_scalar(radians_per_degree))
+
+## `data` with this Camera node's camera added.
+pub func add_camera(id: int, v: list[float], texts: list[str], data: GeometryData) -> GeometryData!:
+    let (translation, rotation) = placement(v)
+    let geometry = data.geometry.with_camera(object_path(texts[0], f"/camera{id}"), translation, rotation, int(v[0]),
+                                             v[7], v[8], v[9], v[10], v[11], v[12], v[13])
+    return data.with_geometry(geometry)
+
+## `data` with this Light node's light added.
+pub func add_light(id: int, v: list[float], texts: list[str], data: GeometryData) -> GeometryData!:
+    let (translation, rotation) = placement(v)
+    let temperature = v[13] if v[12] != 0.0 else 0.0
+    let geometry = data.geometry.with_light(object_path(texts[0], f"/light{id}"), translation, rotation, int(v[0]),
+                                            Vector3(v[7], v[8], v[9]), v[10], v[11], temperature, v[18] != 0.0,
+                                            v[14], v[15], v[16], v[17], v[19] != 0.0)
+    return data.with_geometry(geometry)
+
+## The input passed on once its scene can be rendered: the camera named in
+## the Camera text (or a first camera) must exist. A scene without lights
+## renders black, which is a warning rather than an error.
+pub func check_render(texts: list[str], data: GeometryData) -> GeometryData!:
+    let scene = data.geometry.scene()
+    let wanted = texts[0].trim()
+    var camera = -1
+    var lights = 0
+    for index in 0..<scene.count():
+        if scene.is_camera(index):
+            if camera < 0 and (wanted == "" or scene.path(index) == wanted):
+                camera = index
+        else:
+            lights += 1
+    if camera < 0:
+        error(ui.invalid, "Add a Camera node upstream" if wanted == "" else f"No camera at {wanted}")
+    if lights == 0:
+        return data.passed("The scene has no lights; only emissive surfaces will show")
+    return data
