@@ -12,6 +12,7 @@ from network import kinds
 from geometry_sheet import GeometrySheet
 from outliner import Outliner
 from shading_menu import ShadingMenu
+from render_view import RenderView
 import node_commands
 
 pub class Panels:
@@ -21,6 +22,7 @@ pub class Panels:
     pub let inspector: Inspector
     pub let spreadsheet: GeometrySheet
     pub let outliner: Outliner
+    pub let render_view: RenderView
     let path: Text
     pub let search: NodeMenu
     pub let shading: ShadingMenu
@@ -49,6 +51,7 @@ pub class Panels:
         self.inspector = Inspector(workspace, self.actions, font)
         self.spreadsheet = GeometrySheet(workspace)
         self.outliner = Outliner(workspace, font)
+        self.render_view = RenderView()
         self.search = NodeMenu(self.actions.add)
         self.shading = ShadingMenu(workspace)
         self.view.on_shading = self.open_shading
@@ -78,6 +81,9 @@ pub class Panels:
         self.dock = DStack([viewport], font = font)
         self.dock.add(parameters, viewport, DockPosition.right)
         self.dock.set_fraction(viewport, 0.75)
+        let rendered = Panel("Render", self.render_view, minimum = Size(440.0, 270.0), closable = false, id = "render")
+        self.dock.add(rendered, viewport, DockPosition.tab)
+        self.dock.select(viewport)
         self.dock.add(network, viewport, DockPosition.bottom)
         self.dock.set_fraction(viewport, 0.63)
         let outliner = Panel("Outliner", self.outliner, minimum = Size(260.0, 150.0), closable = false, id = "outliner")
@@ -92,7 +98,7 @@ pub class Panels:
         let spreadsheet = Panel("Geometry Spreadsheet", sheet_body, minimum = Size(460.0, 200.0), closable = false, id = "geometry_spreadsheet")
         self.dock.add(spreadsheet, network, DockPosition.tab)
         self.dock.select(network)
-        self.dock_layout = DockLayout(self.dock, [viewport, parameters, outliner, network, spreadsheet])
+        self.dock_layout = DockLayout(self.dock, [viewport, rendered, parameters, outliner, network, spreadsheet])
         self.connections.append(self.actions.reset_layout.on_trigger(self.dock_layout.reset))
         self.dock.layout().set_flex()
         self.status = Text("", font = font, muted = true)
@@ -126,6 +132,21 @@ pub class Panels:
             self.dock.select(panel)
         self.refresh()
 
+    ## Render the selected Render node's input in the Render panel.
+    pub func render(self) -> unit!:
+        let node = self.workspace.selected() else return
+        if node.kind != "Render":
+            return
+        let data = self.workspace.network.evaluate_data(node.id) catch failure:
+            self.report_error(failure.message)
+            return
+        self.render_view.start(data, node.values, node.texts) catch failure:
+            self.report_error(f"Render: {failure.message}")
+            return
+        if let panel = self.dock.find("render"):
+            self.dock.select(panel)
+        self.refresh()
+
     pub func refresh(self) -> unit!:
         self.projects.refresh()
         self.path.set_text(self.workspace.network.path())
@@ -147,6 +168,8 @@ pub class Panels:
             self.graph.layout().invalidate()
         if self.shown_revision != self.workspace.revision:
             self.refresh()
+        if self.render_view.running():
+            self.render_view.layout().invalidate()
 
     pub func report_error(self, message: str) -> unit!:
         self.workspace.notice = message
@@ -161,4 +184,5 @@ pub class Panels:
             connection.disconnect()
         self.connections.clear()
         self.inspector.close()
+        self.render_view.stop()
         self.actions.close()

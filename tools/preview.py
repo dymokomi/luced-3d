@@ -2,6 +2,8 @@
 """Capture a real Metal frame using luce-gpu's observer, without screen access."""
 from pathlib import Path
 import argparse
+import os
+import re
 import shutil
 import struct
 import subprocess
@@ -10,11 +12,25 @@ import tempfile
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "tests"))
-from run import prepare, build
+
+
+def prepare(project):
+    """A copy of the package whose path dependencies point at the siblings."""
+    shutil.copytree(ROOT / "src", project / "src")
+    manifest = (ROOT / "package.prisma").read_text()
+    manifest = re.sub(r'"\.\./([^"]+)"', lambda m: f'"{ROOT.parent / m.group(1)}"', manifest)
+    (project / "package.prisma").write_text(manifest)
+
+
+def build(project, binary, optimization="0"):
+    cache = Path(os.environ.get("LUCE_TEST_CACHE", str(ROOT / "build/test-cache")))
+    cache.mkdir(parents=True, exist_ok=True)
+    environment = dict(os.environ, LUCE_CACHE=str(cache))
+    subprocess.run([os.environ.get("LUCE", "luce"), "build", str(project / "src/main.luc"), "--native", "--opt", optimization, "-o", str(binary)],
+                   check=True, env=environment, timeout=480)
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--scene", choices=["default", "edit", "modeling", "spreadsheet", "occlusion", "menu", "shading", "outliner", "cad", "cad_wire", "analytic", "gizmo_move", "gizmo_rotate", "gizmo_scale", "gizmo_pivot", "param_copy", "param_ladder", "param_menu"], default="default")
+parser.add_argument("--scene", choices=["default", "edit", "modeling", "spreadsheet", "occlusion", "menu", "shading", "outliner", "cad", "cad_wire", "analytic", "gizmo_move", "gizmo_rotate", "gizmo_scale", "gizmo_pivot", "param_copy", "param_ladder", "param_menu", "render"], default="default")
 parser.add_argument("--background", action="store_true", help="Run actual background graph computation while capturing")
 parser.add_argument("--file", type=Path, help="External STEP file for the cad scene")
 parser.add_argument("--edge-size", type=float, default=0.0)
@@ -51,7 +67,7 @@ with tempfile.TemporaryDirectory(prefix="luced-3d-preview-") as temporary:
     project = Path(temporary)
     prepare(project)
     shutil.copy2(ROOT / "tools/preview.luc", project / "src/main.luc")
-    native = (ROOT.parent / "luce-gpu/tests/programs/gpu/native.lucb").read_text()
+    native = (ROOT.parent / "luce-gpu/tests/gpu/native.lucb").read_text()
     native += "\n" + (ROOT / "tools/readback.lucb").read_text()
     (project / "src/probe.lucb").write_text(native)
     binary = project / "preview"

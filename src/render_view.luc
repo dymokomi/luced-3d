@@ -1,0 +1,82 @@
+## The Render panel: shows a Render node's image as luce-render traces it,
+## progressively. The render runs on the GPU a pass per frame; the app's poll
+## asks for frames while it runs. Scroll changes the display exposure, V toggles
+## between neutral tone mapping and standard (clipped) display.
+from luce_ui.ui import Widget, Layout, Constraints, Size, Painter, Event
+from luce_gpu.gpu import RenderTarget, Rect
+from luce_window.input import EventKind, Key, ScrollUnit
+from luce_render.render import RenderSession
+from geometry_data import GeometryData
+import theme
+
+pub class RenderView: Widget:
+    let box: Layout
+    let session: RenderSession
+    var busy: bool = false
+    var neutral: bool = true
+
+    pub func init(self) -> unit!:
+        self.box = Layout()
+        self.box.set_flex()
+        self.box.set_interactive(true)
+        self.box.set_focusable(true)
+        self.box.set_takes_scroll(true)
+        self.session = RenderSession.make()
+
+    pub func layout(self) -> Layout:
+        return self.box
+
+    pub func measure(self, available: Constraints) -> Size!:
+        return Size(440.0, 270.0)
+
+    ## Render `data`'s scene with a Render node's values and texts (node_catalog
+    ## render_fields: resolution in slots 1-2, samples 3, color 4, bounces 5;
+    ## the camera's path in text 0).
+    pub func start(self, data: GeometryData, values: list[float], texts: list[str]) -> unit!:
+        self.session.start(data.geometry, texts[0].trim(), int(values[1]), int(values[2]), int(values[3]), int(values[5]), values[4] == 0.0)
+        self.busy = true
+        self.box.invalidate()
+
+    ## End the render (when the app closes).
+    pub func stop(self):
+        self.session.stop()
+        self.busy = false
+
+    ## Whether frames are still wanted (the app's poll invalidates while so).
+    pub func running(self) -> bool:
+        return self.busy
+
+    pub func draw(self, target: RenderTarget) -> unit!:
+        let size = target.size()
+        let painter = Painter(target)
+        painter.rectangle(Rect(0.0, 0.0, size.width, size.height), theme.backdrop())
+        painter.close()
+        let top = 30.0
+        self.busy = self.session.draw(target, 8.0, top, size.width - 16.0, size.height - top - 8.0)
+        let overlay = Painter(target)
+        let problem = self.session.problem()
+        if problem != "":
+            overlay.text(problem, 16.0, 8.0, theme.accent())
+        elif self.session.has_image() or self.session.running():
+            let done = self.session.samples_done()
+            let total = self.session.samples()
+            let color = "spectral" if self.session.spectral() else "RGB"
+            let state = "rendering" if self.busy else "done"
+            overlay.text(f"{self.session.width()} × {self.session.height()}  /  {color}  /  {done} of {total} samples  /  {self.session.seconds():.1f} s {state}", 16.0, 8.0, theme.text_muted())
+            let exposure = self.session.exposure()
+            overlay.text(f"exposure {exposure:+.2f}  /  {"neutral" if self.neutral else "standard"}", size.width - 220.0, 8.0, theme.text_muted())
+        else:
+            overlay.text("Select a Render node and press Render", 16.0, 8.0, theme.text_muted())
+        overlay.close()
+
+    pub func event(self, event: Event) -> unit!:
+        if event.kind == EventKind.scroll and event.inside:
+            let step = event.scroll_y * (0.01 if event.scroll_unit == ScrollUnit.points else 0.25)
+            self.session.set_display(self.session.exposure() + step, 1 if self.neutral else 0)
+            self.box.invalidate()
+        elif event.kind == EventKind.key_down and event.key == Key.v:
+            self.neutral = not self.neutral
+            self.session.set_display(self.session.exposure(), 1 if self.neutral else 0)
+            self.box.invalidate()
+        elif event.kind == EventKind.pointer_down and event.inside:
+            self.box.request_focus()
