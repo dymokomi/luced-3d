@@ -1,10 +1,11 @@
-## Camera, Light and Render nodes. Cameras and lights are luce-geocore's
+## Camera, Light, Render, Material and Assign Material nodes. Cameras and lights are luce-geocore's
 ## scene component: they travel in the geometry like everything else, so
 ## Transform, Merge, Group and Blast work on them. A Camera or Light adds its
 ## object to its input (or makes just the object when unconnected); Render
 ## checks the scene it is given and passes it on. Parameter rows and slots
 ## are in node_catalog (camera_fields, light_fields, render_fields).
 from luce_3d.graphics import Vector3
+from luce_geocore.geocore import MaterialAssignment
 from geometry_data import GeometryData
 from luce_ui import ui
 
@@ -57,3 +58,42 @@ pub func check_render(texts: list[str], data: GeometryData) -> GeometryData!:
     if lights == 0:
         return data.passed("The scene has no lights; only emissive surfaces will show")
     return data
+
+## The OpenPBR parameters node_catalog.material_fields lays out from a first
+## slot: each name, its offset from that slot and its width.
+func material_names() -> list[str]:
+    return ["base_color", "base_metalness", "base_diffuse_roughness", "specular_weight", "specular_color", "specular_roughness",
+            "specular_ior", "specular_roughness_anisotropy", "emission_luminance", "emission_color"]
+
+func material_offsets() -> list[int]:
+    return [0, 3, 4, 5, 6, 9, 10, 11, 12, 13]
+
+func material_widths() -> list[int]:
+    return [3, 1, 1, 1, 3, 1, 1, 1, 1, 3]
+
+## `data` with this Material node's material added to its library.
+pub func add_material(id: int, v: list[float], texts: list[str], data: GeometryData) -> GeometryData!:
+    let names = material_names()
+    let offsets = material_offsets()
+    let widths = material_widths()
+    let values: list[float] = []
+    for at in 0..<names.length:
+        for k in 0..<4:
+            values.append(v[offsets[at] + k] if k < widths[at] else 0.0)
+    return data.with_geometry(data.geometry.with_material(object_path(texts[0], f"materials/material{id}"), "openpbr", names.join("\n"), values))
+
+## The geometry with the group's faces bound to a material of the library on
+## the second input (by path; empty takes the first), and that library passed on.
+pub func assign_material(texts: list[str], data: GeometryData, materials: GeometryData) -> GeometryData!:
+    let listed = materials.geometry.material_paths()
+    let paths: list[str] = [] if listed == "" else listed.split("\n")
+    let wanted = texts[1].trim()
+    if paths.length == 0:
+        error(ui.invalid, "The second input has no materials; connect Material nodes")
+    let path = paths[0] if wanted == "" else wanted
+    let mesh = data.operand() else return GeometryData(geometry = data.geometry.with_materials_from(materials.geometry)).passed("The input has no polygons to assign to")
+    let bound = data.with_operand(MaterialAssignment.faces(mesh, texts[0], "material", path))
+    let result = GeometryData(geometry = bound.geometry.with_materials_from(materials.geometry))
+    if not (path in paths):
+        result.warning = f"No material at {path}; those faces render with the default material"
+    return result

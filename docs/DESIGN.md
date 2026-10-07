@@ -64,6 +64,20 @@ sphere and distant lights), and each looks or shines down its local -Z.
 - The viewport draws a camera's frustum one unit deep and a light's emitter
   outline and direction with the guide lines (`OverlayLines.add_scene`).
 
+Materials work the same way: they are luce-geocore's `materials` component, a
+library of definitions (path, shader, named parameters) carried with the
+geometry, and a face's material is its `material` text attribute, the binding
+luce-usd reads and writes as `material:binding`.
+
+- **Material** defines an OpenPBR material at a path; like Camera it adds to its
+  input when connected, so a chain of Material nodes (or a Merge, or a Group of
+  them) is a library.
+- **Assign Material** takes geometry and a library: the faces its Group names
+  take the Material path (empty: the library's first), other faces keep theirs,
+  and the library passes on with the geometry.
+- **Render** shows the input in the Render panel; faces with no material, or an
+  unknown one, take its Default material.
+
 ## Background computation
 
 Runtime node evaluation runs on a persistent worker. `Node.compute` receives

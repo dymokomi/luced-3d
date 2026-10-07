@@ -176,7 +176,7 @@ pub func sources() -> list[str]:
     return ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus", "File", "Group"] + generators()
 
 pub func categories() -> list[str]:
-    return ["Primitives", "Modeling", "Deform", "Curves", "Volumes", "Transform / Copy", "Attributes", "Utility", "File I/O", "Render", "All"]
+    return ["Primitives", "Modeling", "Deform", "Curves", "Volumes", "Transform / Copy", "Attributes", "Utility", "File I/O", "Materials", "Render", "All"]
 
 pub func category(kind: str) -> str:
     let verb = VerbCatalog.index_of(kind)
@@ -186,6 +186,8 @@ pub func category(kind: str) -> str:
         return "File I/O"
     if kind in scene_kinds():
         return "Render"
+    if kind in material_kinds():
+        return "Materials"
     if kind == "Group":
         return "Utility"
     if kind in sources():
@@ -199,28 +201,32 @@ pub func category(kind: str) -> str:
     return "Modeling"
 
 pub func kinds() -> list[str]:
-    return sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Switch"] + scene_kinds() + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Normal", "Measure", "UVProject", "Color"]
+    return sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Switch"] + scene_kinds() + material_kinds() + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Normal", "Measure", "UVProject", "Color"]
 
 pub func input_count(kind: str) -> int:
     let verb = VerbCatalog.index_of(kind)
     if verb >= 0:
         return VerbCatalog.inputs(verb)
-    return 0 if kind in sources() else (2 if kind in ["Merge", "Switch", "CopyToPoints"] else 1)
+    return 0 if kind in sources() else (2 if kind in ["Merge", "Switch", "CopyToPoints", "Assign Material"] else 1)
 
 ## Nodes that put cameras and lights in the geometry, and the Render node.
 pub func scene_kinds() -> list[str]:
     return ["Camera", "Light", "Render"]
 
+## Material defines a material; Assign Material binds one to faces.
+pub func material_kinds() -> list[str]:
+    return ["Material", "Assign Material"]
+
 ## Nodes that cook from nothing when their input is unconnected: an Edit
-## node creates, a Camera or Light makes just its object.
+## node creates, a Camera, Light or Material makes just its own.
 pub func optional_input(kind: str) -> bool:
-    return is_edit(kind) or kind in ["Camera", "Light"]
+    return is_edit(kind) or kind in ["Camera", "Light", "Material"]
 
 pub func has_group(kind: str) -> bool:
     let verb = VerbCatalog.index_of(kind)
     if verb >= 0:
         return VerbCatalog.grouped(verb)
-    return kind in ["Blast", "Selection Group"]
+    return kind in ["Blast", "Selection Group", "Assign Material"]
 
 pub func has_attribute_name(kind: str) -> bool:
     return kind in ["AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group"]
@@ -265,6 +271,8 @@ pub func fields(kind: str, path: str = "", stage: Composition? = none) -> list[P
         rows.append(entry("Root prim", 1, "USD: the prim elements without a path attribute go under (empty: geo); it becomes the default prim."))
     if kind in ["Camera", "Light"]:
         rows.append(entry("Path", 0, "The object's path in the scene, like other paths: cameras/hero."))
+    if kind == "Material":
+        rows.append(entry("Path", 0, "The material's path: what Assign Material binds faces to (materials/red_plastic)."))
     if kind == "Render":
         let start = heading("Render", "button")
         start.doc = "Render the input in the Render panel, progressively."
@@ -275,6 +283,8 @@ pub func fields(kind: str, path: str = "", stage: Composition? = none) -> list[P
         rows.append(entry("Group", 0, "Elements to work on, in Houdini's group syntax: empty or * for all, 0 2-5 and 0-99:2 for numbers, names and globs, @P.y>0 or @name tests, ^ to remove, & to intersect, grow(x) and loop(x)."))
     if is_verb(kind) and has_group(kind):
         rows.append(menu("Group Type", group_type_slot, "Guess from group|Points|Edges|Primitives|Vertices", 0.0, "What the group's numbers name; Guess reads the named groups' type, else the operation's own."))
+    if kind == "Assign Material":
+        rows.append(entry("Material", 1, "The path of the material the group's faces take, from the second input; empty takes its first."))
     if has_attribute_name(kind):
         rows.append(entry("Attribute", 1, "The attribute's name."))
     if kind == "AttributeRename":
@@ -381,6 +391,8 @@ func value_fields(kind: str) -> list[Parameter]:
         return light_fields()
     if kind == "Render":
         return render_fields()
+    if kind == "Material":
+        return material_fields(0, "OpenPBR")
     if kind == "Mirror":
         return [menu("Axis", 0, "X|Y|Z", 0.0, "The axis the mirror plane faces."),
                 toggle("Keep original", 1, 1.0, "Keep the input beside its mirror image.")]
@@ -490,26 +502,27 @@ func render_fields() -> list[Parameter]:
             whole("Transmission bounces", 8, 12.0, 0.0, 1024.0, "The most refractions on a path."),
             number("Noise threshold", 9, 0.01, 0.0, 1.0, 0.001, "Adaptive sampling stops a pixel at this noise level; 0 always takes every sample.", decimals = 4),
             number("Clamp indirect", 10, 10.0, 0.0, 1000000.0, 1.0, "Clip bright indirect samples to cut fireflies; 0 is off.", soft = 100.0),
-            toggle("Denoise", 11, 1.0, "Denoise the final image.")] + material_fields()
+            toggle("Denoise", 11, 1.0, "Denoise the final image.")] + material_fields(12, "Default material")
 
-## The OpenPBR material every surface renders with, until materials are
-## assigned per object: value slots 12 to 27 of the Render node.
-func material_fields() -> list[Parameter]:
-    let base = vector("Base color", 12, [0.8, 0.8, 0.8], "Linear ACEScg: the diffuse color, and a metal's color at normal incidence.", 0.0, 1.0)
+## OpenPBR parameters in 16 value slots from `first` (scene_nodes.material_layout
+## names them): a Material node's from 0; the Render node's default material,
+## which faces without an assigned material take, from 12.
+func material_fields(first: int, title: str) -> list[Parameter]:
+    let base = vector("Base color", first, [0.8, 0.8, 0.8], "Linear ACEScg: the diffuse color, and a metal's color at normal incidence.", 0.0, 1.0)
     base.kind = "color"
-    let specular = vector("Specular color", 18, [1.0, 1.0, 1.0], "Tints the specular reflection; a metal's color at grazing angles.", 0.0, 1.0)
+    let specular = vector("Specular color", first + 6, [1.0, 1.0, 1.0], "Tints the specular reflection; a metal's color at grazing angles.", 0.0, 1.0)
     specular.kind = "color"
-    let emission = vector("Emission color", 25, [1.0, 1.0, 1.0], "The color of the emitted light.", 0.0, 1.0)
+    let emission = vector("Emission color", first + 13, [1.0, 1.0, 1.0], "The color of the emitted light.", 0.0, 1.0)
     emission.kind = "color"
-    return [heading("Material"), base,
-            number("Metalness", 15, 0.0, 0.0, 1.0, 0.05, "0 is a dielectric (plastic, paint, wood); 1 a metal.", true),
-            number("Diffuse roughness", 16, 0.0, 0.0, 1.0, 0.05, "0 is Lambertian; higher flattens the diffuse look, like clay or the moon.", true),
-            number("Specular weight", 17, 1.0, 0.0, 1.0, 0.05, "How strong the specular reflection is.", true),
+    return [heading(title), base,
+            number("Metalness", first + 3, 0.0, 0.0, 1.0, 0.05, "0 is a dielectric (plastic, paint, wood); 1 a metal.", true),
+            number("Diffuse roughness", first + 4, 0.0, 0.0, 1.0, 0.05, "0 is Lambertian; higher flattens the diffuse look, like clay or the moon.", true),
+            number("Specular weight", first + 5, 1.0, 0.0, 1.0, 0.05, "How strong the specular reflection is.", true),
             specular,
-            number("Specular roughness", 21, 0.3, 0.0, 1.0, 0.05, "0 is a mirror; 1 is fully rough.", true),
-            number("Specular IOR", 22, 1.5, 1.0, 3.0, 0.01, "Index of refraction: 1.5 for plastic and glass, 1.33 water, 2.4 diamond."),
-            number("Anisotropy", 23, 0.0, 0.0, 1.0, 0.05, "Stretches highlights along the surface's tangent, like brushed metal.", true),
-            number("Emission", 24, 0.0, 0.0, 100000.0, 1.0, "Emitted luminance in nits.", soft = 100.0),
+            number("Specular roughness", first + 9, 0.3, 0.0, 1.0, 0.05, "0 is a mirror; 1 is fully rough.", true),
+            number("Specular IOR", first + 10, 1.5, 1.0, 3.0, 0.01, "Index of refraction: 1.5 for plastic and glass, 1.33 water, 2.4 diamond."),
+            number("Anisotropy", first + 11, 0.0, 0.0, 1.0, 0.05, "Stretches highlights along the surface's tangent, like brushed metal.", true),
+            number("Emission", first + 12, 0.0, 0.0, 100000.0, 1.0, "Emitted luminance in nits.", soft = 100.0),
             emission]
 
 ## An Edit kind's own parameters, in value slots from first_kind_slot.
@@ -560,6 +573,10 @@ pub func description(kind: str) -> str:
         return "Nested network / double-click to enter"
     if is_edit(kind):
         return "Select and edit in the viewport; each edit is a step you can undo"
+    if kind == "Material":
+        return "An OpenPBR material / adds to its input's library when connected"
+    if kind == "Assign Material":
+        return "Input 1: geometry / Input 2: materials; binds the group's faces"
     if kind == "Camera":
         return "A camera in the scene / adds to its input when connected"
     if kind == "Light":
