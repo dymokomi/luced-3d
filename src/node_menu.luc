@@ -1,10 +1,12 @@
 ## Cursor-anchored modal node browser. Empty query browses categories;
-## typing searches all node names, independent of the open category.
+## typing searches all node names, independent of the open category. Inside a
+## Material it offers shader nodes alone, elsewhere the rest.
 from luce_ui.ui import Widget, Layout, Size, Constraints, Event, Painter, Command
 from luce_gpu.gpu import RenderTarget, Rect
 from luce_window.input import EventKind, Key
 from luce_std import math
 import node_catalog
+from shader_nodes import is_shader
 import theme
 from tool_icons import draw_icon
 
@@ -18,6 +20,8 @@ pub class NodeMenu: Widget:
     var expanded: bool = false
     var first: int = 0
     var matches: list[int]
+    ## Offering shader nodes (inside a Material).
+    var shading: bool = false
 
     pub func init(self, actions: list[Command]) -> unit!:
         self.actions = actions
@@ -40,8 +44,12 @@ pub class NodeMenu: Widget:
     pub func result_count(self) -> int:
         return self.matches.length
     pub func measure(self, available: Constraints) -> Size!:
-        return Size(330.0 if self.text != "" else (500.0 if self.expanded else 200.0), math.max(400.0, 88.0 + float(node_catalog.categories().length) * 30.0))
-    pub func open(self, x: float = 0.0, y: float = 0.0) -> unit!:
+        return Size(330.0 if self.text != "" else (500.0 if self.expanded else 200.0), math.max(400.0, 88.0 + float(self.categories().length) * 30.0))
+    func categories(self) -> list[str]:
+        return node_catalog.categories(self.shading)
+
+    pub func open(self, x: float = 0.0, y: float = 0.0, shading: bool = false) -> unit!:
+        self.shading = shading
         self.text = ""
         self.category = 0
         self.submenu = false
@@ -54,8 +62,10 @@ pub class NodeMenu: Widget:
         self.matches = []
         let kinds = node_catalog.kinds()
         for index in 0..<kinds.length:
+            if is_shader(kinds[index]) != self.shading:
+                continue
             if self.text == "":
-                if self.category == node_catalog.categories().length - 1 or node_catalog.category(kinds[index]) == node_catalog.categories()[self.category]:
+                if self.category == self.categories().length - 1 or node_catalog.category(kinds[index]) == self.categories()[self.category]:
                     self.matches.append(index)
             else:
                 var found = true
@@ -84,11 +94,11 @@ pub class NodeMenu: Widget:
         p.rectangle(Rect(5.0, 35.0, size.width - 10.0, 30.0), theme.backdrop())
         p.text("Search" if self.text == "" else self.text + "|", 12.0, 41.0, theme.text_muted() if self.text == "" else theme.text())
         if self.text == "":
-            for index in 0..<node_catalog.categories().length:
+            for index in 0..<self.categories().length:
                 let y = 72.0 + float(index) * 30.0
                 if index == self.category:
                     p.rectangle(Rect(4.0, y, 190.0, 29.0), theme.accent())
-                p.text(node_catalog.categories()[index], 12.0, y + 5.0, theme.grey(0.0) if index == self.category else theme.text())
+                p.text(self.categories()[index], 12.0, y + 5.0, theme.grey(0.0) if index == self.category else theme.text())
                 p.text(">", 178.0, y + 5.0, theme.text_muted())
         let left = 204.0 if self.text == "" else 8.0
         let count = int(math.max(1.0, (size.height - 98.0) / 30.0))
@@ -132,7 +142,7 @@ pub class NodeMenu: Widget:
             elif event.key == Key.up or event.key == Key.down or event.key == Key.tab:
                 let delta = -1 if event.key == Key.up or event.shift else 1
                 if self.text == "" and not self.submenu:
-                    let count = node_catalog.categories().length
+                    let count = self.categories().length
                     self.category = (self.category + delta + count) % count
                     self.filter()
                 elif self.matches.length > 0:
@@ -140,7 +150,7 @@ pub class NodeMenu: Widget:
         elif (event.kind == EventKind.pointer_moved or event.kind == EventKind.pointer_down) and event.inside and event.y >= 72.0:
             let row = int((event.y - 72.0) / 30.0)
             if self.text == "" and event.x < 198.0:
-                let count = node_catalog.categories().length
+                let count = self.categories().length
                 if row < count:
                     self.expanded = true
                 if row < count and row != self.category:

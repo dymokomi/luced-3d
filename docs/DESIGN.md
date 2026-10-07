@@ -72,6 +72,19 @@ luce-usd reads and writes as `material:binding`.
 - **Material** defines an OpenPBR material at a path; like Camera it adds to its
   input when connected, so a chain of Material nodes (or a Merge, or a Group of
   them) is a library.
+  - **Inside it, shader nodes** (shader_nodes.luc). Double-click to enter: the
+    menu offers shader nodes alone, and only a Material holds them.
+  - **Its OpenPBR Surface** holds the material's parameters. Other nodes
+    (Texture Coordinate, Position, Value, RGB, Image/Checker/Noise Texture,
+    Math, Mix Color, Map Range, Clamp, Separate/Combine RGB, Color Ramp,
+    Normal Map) drive its inputs.
+  - **Sockets are typed**, values grey and colors or vectors orange. Nodes draw
+    left to right with labeled sockets, and a link records which output it
+    takes (`Node.sources`).
+  - **Cooking:** the Material resolves its nodes into luce-render's graph text
+    (`Network.resolve_material`), carried as the text parameter `shader_graph`;
+    each engine compiles it (luce-render: an SVM-style program). Its stamp
+    covers every node inside.
 - **Assign Material** takes geometry and a library: the faces its Group names
   take the Material path (empty: the library's first), other faces keep theirs,
   and the library passes on with the geometry.

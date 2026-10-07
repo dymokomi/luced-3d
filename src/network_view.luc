@@ -10,9 +10,15 @@ import time
 from tool_icons import draw_icon
 from edit_kinds import is_edit
 import node_commands
+import shader_nodes
 
 pub let node_width: float = 96.0
 pub let node_height: float = 40.0
+## Inside a Material, shader nodes: a header, then a row a socket (outputs on
+## the right, then inputs on the left), wired left to right.
+let shader_width: float = 176.0
+let shader_header: float = 24.0
+let shader_row: float = 19.0
 
 pub class NetworkView: Widget:
     let box: Layout
@@ -42,6 +48,8 @@ pub class NetworkView: Widget:
     var hovered: int = -1
     var last_click: int = 0
     var last_node: int = -1
+    ## Frame the nodes at the next draw (a new scope shows them whole).
+    var frame_pending: bool = false
 
     pub func reset_scope(self) -> unit!:
         self.mode = ""
@@ -50,6 +58,7 @@ pub class NetworkView: Widget:
         self.pan_y = 20.0
         self.zoom = 1.0
         self.last_node = -1
+        self.frame_pending = true
         self.box.invalidate()
 
     pub func init(self, workspace: Workspace, actions: Actions, font: Font) -> unit!:
@@ -71,8 +80,27 @@ pub class NetworkView: Widget:
         return Point((x - self.pan_x) / self.zoom, (y - self.pan_y) / self.zoom)
     pub func to_screen(self, x: float, y: float) -> Point:
         return Point(x * self.zoom + self.pan_x, y * self.zoom + self.pan_y)
+    ## Whether the network shown is a Material's shader nodes.
+    func shading(self) -> bool:
+        return self.workspace.network.in_material()
+
+    ## A node's box in graph units.
+    func size_of(self, node: Node) -> Size:
+        if not self.shading():
+            return Size(node_width, node_height)
+        let rows = shader_nodes.outputs(node.kind).length + shader_nodes.inputs(node.kind).length
+        return Size(shader_width, shader_header + shader_row * float(rows) + 6.0)
+
     pub func port_point(self, node: Node, output: bool, port: int = 0) -> Point:
+        if self.shading():
+            let outputs = shader_nodes.outputs(node.kind).length
+            let row = float(port) if output else float(outputs + port)
+            return self.to_screen(node.x + (shader_width if output else 0.0), node.y + shader_header + shader_row * (row + 0.5))
         return self.to_screen(node.x + (node_width * 0.5 if output else node_width * float(port + 1) / float(node.inputs.length + 1)), node.y + (node_height if output else 0.0))
+
+    func inside_node(self, node: Node, at: Point) -> bool:
+        let size = self.size_of(node)
+        return at.x >= node.x and at.x <= node.x + size.width and at.y >= node.y and at.y <= node.y + size.height
 
     pub func zoom_about(self, factor: float, x: float, y: float):
         let before = self.to_graph(x, y)
@@ -85,15 +113,18 @@ pub class NetworkView: Widget:
         let nodes = self.workspace.network.local_nodes()
         if nodes.length == 0:
             return
+        # Geometry nodes' captions run to their right.
+        let caption = 0.0 if self.shading() else 170.0
         var left = nodes[0].x
         var top = nodes[0].y
-        var right = left + node_width + 170.0
-        var bottom = top + node_height
+        var right = left + self.size_of(nodes[0]).width + caption
+        var bottom = top + self.size_of(nodes[0]).height
         for node in nodes:
+            let box = self.size_of(node)
             left = math.min(left, node.x)
             top = math.min(top, node.y)
-            right = math.max(right, node.x + node_width + 170.0)
-            bottom = math.max(bottom, node.y + node_height)
+            right = math.max(right, node.x + box.width + caption)
+            bottom = math.max(bottom, node.y + box.height)
         let bounds = self.box.bounds()
         self.zoom = math.max(0.3, math.min(1.4, math.min((bounds.width - 80.0) / (right - left), (bounds.height - 70.0) / (bottom - top))))
         self.pan_x = (bounds.width - (right - left) * self.zoom) * 0.5 - left * self.zoom
@@ -101,6 +132,9 @@ pub class NetworkView: Widget:
         self.box.invalidate()
 
     pub func draw(self, target: RenderTarget) -> unit!:
+        if self.frame_pending and self.box.bounds().width > 0.0:
+            self.frame_pending = false
+            self.frame_all()
         let size = target.size()
         let p = Painter(target)
         p.rectangle(Rect(0.0, 0.0, size.width, size.height), theme.backdrop())
@@ -122,8 +156,12 @@ pub class NetworkView: Widget:
         for node in graph.local_nodes():
             for port in 0..<node.inputs.length:
                 if let source = graph.find(node.inputs[port]):
-                    self.wire(p, self.port_point(source, true), self.port_point(node, false, port))
+                    self.wire(p, self.port_point(source, true, node.sources[port]), self.port_point(node, false, port))
+        let shading = self.shading()
         for node in graph.local_nodes():
+            if shading:
+                self.draw_shader_node(p, node, node.id == graph.selected, size.width, size.height)
+                continue
             let at = self.to_screen(node.x, node.y)
             let w = node_width * self.zoom
             let h = node_height * self.zoom
@@ -156,7 +194,7 @@ pub class NetworkView: Widget:
                 let port = self.port_point(node, self.from_output, self.wire_port)
                 let pointer = Point(self.pointer_x, self.pointer_y)
                 self.wire(p, port if self.from_output else pointer, pointer if self.from_output else port)
-        if self.hovered >= 0 and self.mode == "":
+        if self.hovered >= 0 and self.mode == "" and not shading:
             if let node = graph.find(self.hovered):
                 let at = self.to_graph(self.pointer_x, self.pointer_y)
                 let hint = "Bypass (B)" if at.x < node.x + 15.0 else ("Out (O)" if at.x > node.x + 81.0 else node.kind + " / geometry")
@@ -170,28 +208,70 @@ pub class NetworkView: Widget:
                     p.text(["B", "O", "i"][flag], flag_x + 5.0, flag_y + 2.0, theme.accent() if (flag == 0 and not node.enabled) or (flag == 1 and node.id in exposed) else theme.text())
         p.close()
 
+    ## A shader node: its name over its outputs (right) and inputs (left),
+    ## each a labeled socket.
+    func draw_shader_node(self, p: Painter, node: Node, selected: bool, view_width: float, view_height: float) -> unit!:
+        let at = self.to_screen(node.x, node.y)
+        let box = self.size_of(node)
+        let w = box.width * self.zoom
+        let h = box.height * self.zoom
+        if at.x + w < 0.0 or at.x > view_width or at.y + h < 0.0 or at.y > view_height:
+            return
+        let radius = 4.0 * self.zoom
+        p.rounded_rectangle(Rect(at.x - 1.5, at.y - 1.5, w + 3.0, h + 3.0), theme.accent() if selected else (theme.text_muted() if self.hovered == node.id else theme.grey(78.0)), radius + 1.0)
+        p.rounded_rectangle(Rect(at.x, at.y, w, h), theme.grey(64.0) if node.enabled else theme.tab_strip(), radius)
+        p.rectangle(Rect(at.x, at.y + shader_header * self.zoom - 1.0, w, 1.0), theme.grey(78.0))
+        let ink = theme.text() if node.enabled else theme.text_muted()
+        p.text(node.name, at.x + 8.0 * self.zoom, at.y + 4.0 * self.zoom, ink, self.font)
+        let outputs = shader_nodes.outputs(node.kind)
+        for port in 0..<outputs.length:
+            let point = self.port_point(node, true, port)
+            let label = outputs[port].label
+            p.text(label, point.x - (10.0 + 7.0 * float(label.length)) * self.zoom, point.y - 8.0 * self.zoom, theme.text_muted(), self.font)
+            self.draw_socket(p, point, outputs[port].width, true)
+        let inputs = shader_nodes.inputs(node.kind)
+        for port in 0..<inputs.length:
+            let point = self.port_point(node, false, port)
+            p.text(inputs[port].label, point.x + 10.0 * self.zoom, point.y - 8.0 * self.zoom, ink if node.inputs[port] >= 0 else theme.text_muted(), self.font)
+            self.draw_socket(p, point, inputs[port].width, node.inputs[port] >= 0)
+
+    ## A socket: grey for a value, accent for a color or vector.
+    func draw_socket(self, p: Painter, at: Point, width: int, filled: bool) -> unit!:
+        let r = math.max(3.0, 4.5 * self.zoom)
+        p.rounded_rectangle(Rect(at.x - r, at.y - r, 2.0 * r, 2.0 * r), theme.accent() if width == 3 else theme.grey(170.0), r)
+        if not filled:
+            p.rounded_rectangle(Rect(at.x - r * 0.45, at.y - r * 0.45, r * 0.9, r * 0.9), theme.grey(64.0), r * 0.45)
+
     func draw_port(self, p: Painter, at: Point, connected: bool) -> unit!:
         let width = math.max(8.0, 14.0 * self.zoom)
         let height = math.max(3.0, 4.0 * self.zoom)
         p.rounded_rectangle(Rect(at.x - width * 0.5, at.y - height * 0.5, width, height), theme.text() if connected else theme.grey(90.0), 1.5)
 
     func wire(self, p: Painter, a: Point, b: Point) -> unit!:
-        let reach = math.max(35.0, math.abs(b.y - a.y) * 0.5)
+        # Downward between geometry nodes, rightward between shader nodes.
+        let across = self.shading()
+        let reach = math.max(35.0, math.abs(b.x - a.x if across else b.y - a.y) * 0.5)
+        let ax = a.x + reach if across else a.x
+        let ay = a.y if across else a.y + reach
+        let bx = b.x - reach if across else b.x
+        let by = b.y if across else b.y - reach
         var previous = a
         for step in 1..<21:
             let t = float(step) / 20.0
             let u = 1.0 - t
-            let point = Point(u * u * u * a.x + 3.0 * u * u * t * a.x + 3.0 * u * t * t * b.x + t * t * t * b.x,
-                u * u * u * a.y + 3.0 * u * u * t * (a.y + reach) + 3.0 * u * t * t * (b.y - reach) + t * t * t * b.y)
+            let point = Point(u * u * u * a.x + 3.0 * u * u * t * ax + 3.0 * u * t * t * bx + t * t * t * b.x,
+                u * u * u * a.y + 3.0 * u * u * t * ay + 3.0 * u * t * t * by + t * t * t * b.y)
             p.line(previous, point, math.max(1.0, 1.5 * self.zoom), theme.grey(150.0))
             previous = point
 
     ## [node ID, port index, output flag]. Port hit radius stays usable zoomed out.
     pub func hit_port(self, x: float, y: float) -> list[int]:
         for node in self.workspace.network.local_nodes().reversed():
-            let output = self.port_point(node, true)
-            if math.abs(output.x - x) <= 10.0 and math.abs(output.y - y) <= 10.0:
-                return [node.id, 0, 1]
+            let outputs = shader_nodes.outputs(node.kind).length if self.shading() else 1
+            for port in 0..<outputs:
+                let output = self.port_point(node, true, port)
+                if math.abs(output.x - x) <= 10.0 and math.abs(output.y - y) <= 10.0:
+                    return [node.id, port, 1]
             for port in 0..<node.inputs.length:
                 let input = self.port_point(node, false, port)
                 if math.abs(input.x - x) <= 10.0 and math.abs(input.y - y) <= 10.0:
@@ -279,9 +359,15 @@ pub class NetworkView: Widget:
                     let at = self.to_graph(event.x, event.y)
                     self.mode = "pan"
                     for node in self.workspace.network.local_nodes().reversed():
-                        if at.x >= node.x and at.x <= node.x + node_width and at.y >= node.y and at.y <= node.y + node_height:
+                        if self.inside_node(node, at):
                             node_commands.select_node(self.workspace, node.id)
-                            if at.x <= node.x + 15.0:
+                            if self.shading():
+                                self.mode = "move"
+                                self.moving = node.id
+                                self.node_x = node.x
+                                self.node_y = node.y
+                                self.workspace.begin("Move node")
+                            elif at.x <= node.x + 15.0:
                                 self.actions.enabled.trigger()
                                 self.mode = ""
                             elif at.x >= node.x + 81.0:
@@ -289,7 +375,7 @@ pub class NetworkView: Widget:
                                 self.mode = ""
                             else:
                                 let now = time.now()
-                                if node.kind == "Group" and self.last_node == node.id and now - self.last_click < 400000000:
+                                if node.kind in ["Group", "Material"] and self.last_node == node.id and now - self.last_click < 400000000:
                                     self.mode = ""
                                     self.last_node = -1
                                     node_commands.enter_group(self.workspace, node.id)
@@ -312,7 +398,7 @@ pub class NetworkView: Widget:
             if event.inside:
                 let at = self.to_graph(event.x, event.y)
                 for node in self.workspace.network.local_nodes().reversed():
-                    if at.x >= node.x and at.x <= node.x + node_width and at.y >= node.y and at.y <= node.y + node_height:
+                    if self.inside_node(node, at):
                         self.hovered = node.id
                         break
             if self.mode == "pan":
@@ -340,6 +426,6 @@ pub class NetworkView: Widget:
     func finish_wire(self, port: list[int]) -> unit!:
         if port.length > 0 and (port[2] == 1) != self.from_output:
             if self.from_output:
-                node_commands.connect(self.workspace, self.wire_node, port[0], port[1])
+                node_commands.connect(self.workspace, self.wire_node, port[0], port[1], self.wire_port)
             else:
-                node_commands.connect(self.workspace, port[0], self.wire_node, self.wire_port)
+                node_commands.connect(self.workspace, port[0], self.wire_node, self.wire_port, port[1])

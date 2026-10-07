@@ -12,6 +12,8 @@ from fbx_nodes import is_fbx_path, load_fbx, export_fbx
 from luce_ui import ui
 from edit_kinds import is_edit, edit_kind
 from scene_nodes import add_camera, add_light, check_render, add_material, assign_material
+from shader_nodes import is_shader, graph_kind, math_operations
+import shader_nodes
 
 pub func kinds() -> list[str]:
     return node_catalog.kinds()
@@ -29,6 +31,8 @@ pub class Node:
     pub var x: float
     pub var y: float
     pub var inputs: list[int]
+    ## Which output of each input's node it takes (shader nodes have several).
+    pub var sources: list[int]
     # Size, translate XYZ, rotate XYZ in degrees, scale XYZ.
     pub var values: list[float]
     pub var texts: list[str]
@@ -51,6 +55,11 @@ pub class Node:
     ## Content stamp of the recipe (stamps.luc) and of the last result reported.
     pub var stamp: int = 0
     pub var cooked: int = 0
+    ## A Material's shader, resolved from its nodes before it cooks
+    ## (Network.resolve_material): its OpenPBR Surface's values and the
+    ## renderer's graph text.
+    pub var surface_values: list[float]
+    pub var shader_graph: str = ""
 
     pub func init(self, id: int, kind: str, x: float, y: float) -> unit!:
         if not (kind in kinds()):
@@ -61,8 +70,11 @@ pub class Node:
         self.x = x
         self.y = y
         self.inputs = []
+        self.sources = []
         for port in 0..<node_catalog.input_count(kind):
             self.inputs.append(-1)
+            self.sources.append(0)
+        self.surface_values = []
         self.values = []
         for _ in 0..<node_catalog.value_slots:
             self.values.append(0.0)
@@ -74,8 +86,7 @@ pub class Node:
         if kind == "Render" or kind == "Assign Material":
             self.texts = ["", "", ""]
         if kind == "Material":
-            # The path, then the base color, roughness, metalness and normal maps.
-            self.texts = [f"materials/material{id}", "", "", "", ""]
+            self.texts = [f"materials/material{id}", "", ""]
         if kind == "File":
             # USD's Variants and Load payloads, empty: the stage as authored.
             self.texts = ["", "", ""]
@@ -92,6 +103,9 @@ pub class Node:
         result.output = self.output
         result.visible = self.visible
         result.inputs = self.inputs.copy()
+        result.sources = self.sources.copy()
+        result.surface_values = self.surface_values.copy()
+        result.shader_graph = self.shader_graph
         result.values = self.values.copy()
         result.texts = self.texts.copy()
         result.edits = self.edits.copy()
@@ -147,7 +161,7 @@ pub class Node:
         if self.kind == "Render":
             return check_render(self.texts, data)
         if self.kind == "Material":
-            return add_material(self.id, v, self.texts, data)
+            return add_material(self.id, self.surface_values, self.texts, data, self.shader_graph)
         if self.kind == "Assign Material":
             return assign_material(self.texts, data, second else error(ui.invalid, "Connect the materials input"))
         if self.kind == "Cache":
@@ -226,16 +240,25 @@ pub class Network:
         var depth = 0
         while ancestor >= 0:
             let group = self.require(ancestor)
-            if group.kind != "Group":
-                error(ui.invalid, "Only a Group can contain nodes")
+            if group.kind != "Group" and group.kind != "Material":
+                error(ui.invalid, "Only a Group or a Material can contain nodes")
             ancestor = group.parent
             depth += 1
         if depth >= 16:
             error(ui.invalid, "Group nesting is limited to 16 levels")
+        # A Material holds shader nodes, and only it does.
+        if self.in_material() != is_shader(kind):
+            error(ui.invalid, "Shader nodes go inside a Material" if is_shader(kind) else "Inside a Material, only shader nodes")
         let node = Node(self.next_id, kind, x, y)
         node.parent = self.scope
         self.next_id += 1
         self.nodes.append(node)
+        # A new Material starts with the surface its nodes feed.
+        if kind == "Material":
+            let surface = Node(self.next_id, "OpenPBR Surface", 300.0, 60.0)
+            surface.parent = node.id
+            self.next_id += 1
+            self.nodes.append(surface)
         if self.scope >= 0:
             self.invalidate(self.scope)
         return node
@@ -252,6 +275,51 @@ pub class Network:
         for node in self.nodes:
             result.nodes.append(node.copy())
         return result
+
+    ## Whether the network shown is a Material's shader nodes.
+    pub func in_material(self) -> bool:
+        let scope = self.find(self.scope) else return false
+        return scope.kind == "Material"
+
+    ## Fill a Material's shader from its nodes: the OpenPBR Surface's values
+    ## (the defaults without one) and the renderer's graph text, one statement
+    ## a `;`: each node, its unlinked inputs' constants and its links.
+    pub func resolve_material(self, material: Node) -> unit!:
+        let nodes = self.children(material.id)
+        var surface: Node? = none
+        for node in nodes:
+            if node.kind == "OpenPBR Surface" and node.enabled:
+                surface = node
+        material.surface_values = (surface else Node(0, "OpenPBR Surface", 0.0, 0.0)).values.copy()
+        let statements: list[str] = []
+        for node in nodes:
+            if not node.enabled:
+                continue
+            var setting = ""
+            if node.kind == "Math":
+                let operations = math_operations()
+                let chosen = operations[int(node.values[0])]
+                setting = " " + chosen.lower()
+            if node.kind == "Image Texture":
+                if node.texts[0].trim() == "":
+                    continue
+                setting = " " + node.texts[0].trim() + (" data" if node.values[0] != 0.0 else "")
+            statements.append(f"node n{node.id} {graph_kind(node.kind)}{setting}")
+            let sockets = shader_nodes.inputs(node.kind)
+            for port in 0..<sockets.length:
+                let socket = sockets[port]
+                if let source = self.find(node.inputs[port]):
+                    if not source.enabled or (source.kind == "Image Texture" and source.texts[0].trim() == ""):
+                        continue
+                    let outputs = shader_nodes.outputs(source.kind)
+                    let output = outputs[node.sources[port]].name if node.sources[port] < outputs.length else outputs[0].name
+                    statements.append(f"link n{node.id} {socket.name} n{source.id} {output}")
+                elif socket.slot >= 0 and node.kind != "OpenPBR Surface":
+                    var line = f"input n{node.id} {socket.name}"
+                    for k in 0..<socket.width:
+                        line = line + f" {node.values[socket.slot + k]}"
+                    statements.append(line)
+        material.shader_graph = statements.join("; ")
 
     pub func local_nodes(self) -> list[Node]:
         return self.children(self.scope)
@@ -334,16 +402,21 @@ pub class Network:
                 pending.append(input)
         return false
 
-    pub func connect(self, source: int, target: int, port: int) -> unit!:
+    ## Connect `source`'s output `output` (shader nodes have several) to
+    ## `target`'s input `port`.
+    pub func connect(self, source: int, target: int, port: int, output: int = 0) -> unit!:
         let upstream = self.require(source)
         let node = self.require(target)
         if upstream.parent != node.parent:
             error(ui.invalid, "Connections must stay inside one Group; connect the Group's result instead")
         if port < 0 or port >= node.inputs.length:
             error(ui.invalid, "That node has no such geometry input")
+        if output < 0 or (is_shader(upstream.kind) and output >= shader_nodes.outputs(upstream.kind).length) or (not is_shader(upstream.kind) and output != 0):
+            error(ui.invalid, "That node has no such output")
         if self.depends_on(source, target):
             error(ui.invalid, "Connection rejected: it would create a cycle")
         node.inputs[port] = source
+        node.sources[port] = output
         self.invalidate(target)
 
     pub func disconnect(self, target: int, port: int) -> unit!:
@@ -351,6 +424,7 @@ pub class Network:
         if port < 0 or port >= node.inputs.length:
             error(ui.invalid, "That node has no such geometry input")
         node.inputs[port] = -1
+        node.sources[port] = 0
         self.invalidate(target)
 
     pub func remove(self, id: int) -> unit!:
@@ -443,6 +517,11 @@ pub class Network:
         return result
 
     func cook(self, node: Node, visiting: list[int]) -> GeometryData!:
+        # Shader nodes make no geometry: their Material reads them.
+        if is_shader(node.kind):
+            return GeometryData()
+        if node.kind == "Material":
+            self.resolve_material(node)
         if node.kind == "Group":
             var children = GeometryData()
             if node.enabled:

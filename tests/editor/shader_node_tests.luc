@@ -1,0 +1,70 @@
+## Shader nodes inside a Material: a Material is made with its OpenPBR
+## Surface; only shader nodes go inside it and only there; links name which
+## output they take; the Material's material carries the graph the renderer
+## compiles; the node menu offers shader nodes alone inside.
+from network import Network
+import node_catalog
+from shader_nodes import is_shader, shader_kinds, outputs
+
+## Why `id` fails to cook ("" when it cooks).
+func failure_of(graph: Network, id: int) -> str!:
+    _ = graph.evaluate_data(id) catch failure:
+        return failure.message
+    return ""
+
+pub func shader_node_tests() -> unit!:
+    let graph = Network(false)
+    let material = graph.add("Material", 0.0, 0.0)
+    let inside = graph.children(material.id)
+    assert(inside.length == 1 and inside[0].kind == "OpenPBR Surface")
+    let surface = inside[0]
+    # Shader nodes stay out of geometry networks, geometry nodes out of Materials.
+    let outside = graph.add("Noise Texture", 0.0, 0.0) catch failure:
+        assert(failure.message.contains("inside a Material"))
+        return shader_inside(graph, material.id, surface.id)
+    _ = outside
+    assert(false)
+
+func shader_inside(graph: Network, material: int, surface: int) -> unit!:
+    graph.scope = material
+    assert(graph.in_material())
+    let cube = graph.add("Cube", 0.0, 0.0) catch failure:
+        assert(failure.message.contains("only shader nodes"))
+        return shader_graph(graph, material, surface)
+    _ = cube
+    assert(false)
+
+func shader_graph(graph: Network, material: int, surface: int) -> unit!:
+    let noise = graph.add("Noise Texture", -200.0, 0.0)
+    let separate = graph.add("Separate RGB", 0.0, 0.0)
+    let math = graph.add("Math", 0.0, 120.0)
+    math.values[0] = 2.0
+    math.values[2] = 0.5
+    # Noise's second output (Color) into Separate; Separate's G into Math's A;
+    # Math into the surface's roughness (input 5).
+    graph.connect(noise.id, separate.id, 0, 1)
+    graph.connect(separate.id, math.id, 0, 1)
+    graph.connect(math.id, surface, 5)
+    assert(separate.sources[0] == 1 and outputs(noise.kind)[1].name == "color")
+    graph.connect(noise.id, math.id, 1, 7) catch failure:
+        assert(failure.message.contains("no such output"))
+        return shader_cooks(graph, material, surface)
+    assert(false)
+
+func shader_cooks(graph: Network, material: int, surface: int) -> unit!:
+    let node = graph.require(material)
+    graph.resolve_material(node)
+    let text = node.shader_graph
+    for expected in ["node n" + f"{surface} openpbr_surface", "math multiply", "link n" + f"{surface} specular_roughness",
+                     "noise", "separate", " g", " color"]:
+        assert(text.contains(expected))
+    # A shader node cooks to nothing; the Material carries the graph to the renderer.
+    graph.scope = -1
+    assert(failure_of(graph, material) == "")
+    let data = graph.evaluate_data(material)
+    assert(data.geometry.material_paths() == node.texts[0])
+    # The menu: shader kinds inside a Material, the rest outside.
+    assert(node_catalog.categories(true).contains("Texture") and not node_catalog.categories(false).contains("Texture"))
+    for kind in shader_kinds():
+        assert(is_shader(kind) and node_catalog.category(kind) in node_catalog.categories(true))
+    print("PASS shader nodes: Materials hold them, typed outputs, the graph the renderer compiles, menu filtering")

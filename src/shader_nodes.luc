@@ -1,0 +1,126 @@
+## Shader nodes: what a Material node holds inside. Each computes values at the
+## shaded point and feeds the OpenPBR Surface, whose linked inputs drive the
+## material (luce-render's shader_graph: the kinds' graph names, sockets and
+## defaults follow it). A socket is a value (1 wide) or a color or vector (3);
+## an unlinked input's constant is the node's value in `slot`.
+
+pub class Socket:
+    pub let label: str
+    ## The renderer graph's name for it.
+    pub let name: str
+    pub let width: int
+    ## The value slot holding its constant (-1: none, a vector input's
+    ## default is the point's texture coordinates).
+    pub let slot: int
+    pub let initial: list[float]
+
+    pub func init(self, label: str, name: str, width: int, slot: int, initial: list[float]):
+        self.label = label
+        self.name = name
+        self.width = width
+        self.slot = slot
+        self.initial = initial
+
+func value(label: str, name: str, slot: int, initial: float) -> Socket:
+    return Socket(label, name, 1, slot, [initial])
+
+func color(label: str, name: str, slot: int, initial: list[float]) -> Socket:
+    return Socket(label, name, 3, slot, initial)
+
+func vector(label: str, name: str) -> Socket:
+    return Socket(label, name, 3, -1, [0.0, 0.0, 0.0])
+
+pub func shader_kinds() -> list[str]:
+    return ["OpenPBR Surface", "Texture Coordinate", "Position", "Value", "RGB", "Image Texture", "Checker Texture", "Noise Texture",
+            "Math", "Mix Color", "Map Range", "Clamp", "Separate RGB", "Combine RGB", "Color Ramp", "Normal Map"]
+
+pub func is_shader(kind: str) -> bool:
+    return kind in shader_kinds()
+
+pub func shader_categories() -> list[str]:
+    return ["Input", "Texture", "Converter", "Vector", "Output", "All"]
+
+pub func shader_category(kind: str) -> str:
+    if kind == "OpenPBR Surface":
+        return "Output"
+    if kind in ["Texture Coordinate", "Position", "Value", "RGB"]:
+        return "Input"
+    if kind in ["Image Texture", "Checker Texture", "Noise Texture"]:
+        return "Texture"
+    if kind == "Normal Map":
+        return "Vector"
+    return "Converter"
+
+## The kind's name in the renderer's graph.
+pub func graph_kind(kind: str) -> str:
+    let names = ["openpbr_surface", "uv", "position", "value", "color", "image", "checker", "noise",
+                 "math", "mix", "map_range", "clamp", "separate", "combine", "ramp", "normal_map"]
+    return names[shader_kinds().index_of(kind) else 0]
+
+## Math's operations, in the menu's order (the graph's names lower-cased).
+pub func math_operations() -> list[str]:
+    return ["Add", "Subtract", "Multiply", "Divide", "Power", "Minimum", "Maximum", "Absolute", "Sine", "Cosine", "Floor", "Fraction"]
+
+## The OpenPBR Surface's inputs: the parameters a graph may drive, in the
+## value slots the Material fields keep them (node_catalog.material_fields).
+func surface_inputs() -> list[Socket]:
+    return [color("Base color", "base_color", 0, [0.8, 0.8, 0.8]), value("Metalness", "base_metalness", 3, 0.0),
+            value("Diffuse roughness", "base_diffuse_roughness", 4, 0.0), value("Specular", "specular_weight", 5, 1.0),
+            color("Specular color", "specular_color", 6, [1.0, 1.0, 1.0]), value("Specular roughness", "specular_roughness", 9, 0.3),
+            value("Coat", "coat_weight", 16, 0.0), color("Coat color", "coat_color", 17, [1.0, 1.0, 1.0]),
+            value("Coat roughness", "coat_roughness", 20, 0.0), value("Transmission", "transmission_weight", 23, 0.0),
+            color("Transmission color", "transmission_color", 24, [1.0, 1.0, 1.0]), vector("Normal", "geometry_normal")]
+
+pub func inputs(kind: str) -> list[Socket]:
+    if kind == "OpenPBR Surface":
+        return surface_inputs()
+    if kind == "Value":
+        return [value("Value", "value", 0, 0.5)]
+    if kind == "RGB":
+        return [color("Color", "color", 0, [0.8, 0.8, 0.8])]
+    if kind == "Image Texture":
+        return [vector("Vector", "vector")]
+    if kind == "Checker Texture":
+        return [vector("Vector", "vector"), color("Color 1", "color1", 0, [0.8, 0.8, 0.8]), color("Color 2", "color2", 3, [0.2, 0.2, 0.2]), value("Scale", "scale", 6, 5.0)]
+    if kind == "Noise Texture":
+        return [vector("Vector", "vector"), value("Scale", "scale", 0, 5.0), value("Detail", "detail", 1, 2.0), value("Roughness", "roughness", 2, 0.5)]
+    if kind == "Math":
+        return [value("A", "a", 1, 0.5), value("B", "b", 2, 0.5)]
+    if kind == "Mix Color":
+        return [value("Factor", "fac", 0, 0.5), color("A", "a", 1, [0.5, 0.5, 0.5]), color("B", "b", 4, [0.5, 0.5, 0.5])]
+    if kind == "Map Range":
+        return [value("Value", "value", 0, 0.5), value("From min", "from_min", 1, 0.0), value("From max", "from_max", 2, 1.0), value("To min", "to_min", 3, 0.0), value("To max", "to_max", 4, 1.0)]
+    if kind == "Clamp":
+        return [value("Value", "value", 0, 0.5), value("Min", "min", 1, 0.0), value("Max", "max", 2, 1.0)]
+    if kind == "Separate RGB":
+        return [color("Color", "color", 0, [0.8, 0.8, 0.8])]
+    if kind == "Combine RGB":
+        return [value("R", "r", 0, 0.0), value("G", "g", 1, 0.0), value("B", "b", 2, 0.0)]
+    if kind == "Color Ramp":
+        return [value("Factor", "fac", 0, 0.5), color("Color 1", "color1", 1, [0.0, 0.0, 0.0]), color("Color 2", "color2", 4, [1.0, 1.0, 1.0]), value("Position 1", "position1", 7, 0.0), value("Position 2", "position2", 8, 1.0)]
+    if kind == "Normal Map":
+        return [color("Color", "color", 0, [0.5, 0.5, 1.0]), value("Strength", "strength", 3, 1.0)]
+    return []
+
+pub func outputs(kind: str) -> list[Socket]:
+    if kind == "OpenPBR Surface":
+        return []
+    if kind == "Texture Coordinate":
+        return [vector("UV", "uv")]
+    if kind == "Position":
+        return [vector("Position", "position")]
+    if kind == "Value":
+        return [value("Value", "value", -1, 0.0)]
+    if kind == "Image Texture":
+        return [color("Color", "color", -1, [0.0, 0.0, 0.0]), value("Alpha", "alpha", -1, 0.0)]
+    if kind == "Checker Texture":
+        return [color("Color", "color", -1, [0.0, 0.0, 0.0]), value("Factor", "fac", -1, 0.0)]
+    if kind == "Noise Texture":
+        return [value("Factor", "fac", -1, 0.0), color("Color", "color", -1, [0.0, 0.0, 0.0])]
+    if kind in ["Math", "Map Range", "Clamp"]:
+        return [value("Value", "value", -1, 0.0)]
+    if kind == "Separate RGB":
+        return [value("R", "r", -1, 0.0), value("G", "g", -1, 0.0), value("B", "b", -1, 0.0)]
+    if kind == "Normal Map":
+        return [vector("Normal", "normal")]
+    return [color("Color", "color", -1, [0.0, 0.0, 0.0])]

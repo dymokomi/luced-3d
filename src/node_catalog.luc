@@ -16,6 +16,8 @@ from edit_kinds import is_edit, edit_kind_names, edit_kind
 from edit_types import first_kind_slot, most_kind_parameters
 from usd_nodes import is_usd_path, Composition, first_variant_slot
 from fbx_nodes import is_fbx_path
+from shader_nodes import is_shader, shader_kinds, shader_categories, shader_category, math_operations
+import shader_nodes
 
 ## Value slots a node has, and the one verb nodes keep their Group Type in.
 pub let value_slots: int = 32
@@ -175,10 +177,16 @@ func larger(a: float, b: float) -> float:
 pub func sources() -> list[str]:
     return ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus", "File", "Group"] + generators()
 
-pub func categories() -> list[str]:
+## The menu's categories: geometry nodes', or inside a Material (`shading`)
+## shader nodes'.
+pub func categories(shading: bool = false) -> list[str]:
+    if shading:
+        return shader_categories()
     return ["Primitives", "Modeling", "Deform", "Curves", "Volumes", "Transform / Copy", "Attributes", "Utility", "File I/O", "Materials", "Render", "All"]
 
 pub func category(kind: str) -> str:
+    if is_shader(kind):
+        return shader_category(kind)
     let verb = VerbCatalog.index_of(kind)
     if verb >= 0:
         return VerbCatalog.category(verb)
@@ -201,9 +209,11 @@ pub func category(kind: str) -> str:
     return "Modeling"
 
 pub func kinds() -> list[str]:
-    return sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Switch"] + scene_kinds() + material_kinds() + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Normal", "Measure", "UVProject", "Color"]
+    return sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Switch"] + scene_kinds() + material_kinds() + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Normal", "Measure", "UVProject", "Color"] + shader_kinds()
 
 pub func input_count(kind: str) -> int:
+    if is_shader(kind):
+        return shader_nodes.inputs(kind).length
     let verb = VerbCatalog.index_of(kind)
     if verb >= 0:
         return VerbCatalog.inputs(verb)
@@ -276,11 +286,9 @@ pub func fields(kind: str, path: str = "", stage: Composition? = none) -> list[P
         image.hide_when = "{ type != 4 }"
         rows.append(image)
     if kind == "Material":
-        rows.append(entry("Path", 0, "The material's path: what Assign Material binds faces to (materials/red_plastic)."))
-        rows.append(entry("Base color map", 1, "An image (PNG, JPEG or OpenEXR) replacing the base color, mapped by the faces' uv: sRGB for 8-bit files.", "path"))
-        rows.append(entry("Roughness map", 2, "An image whose red channel replaces the specular roughness (stored linearly).", "path"))
-        rows.append(entry("Metalness map", 3, "An image whose red channel replaces the metalness (stored linearly).", "path"))
-        rows.append(entry("Normal map", 4, "A tangent-space normal map (0.5 + 0.5 n, stored linearly), in the frame the faces' uv gives.", "path"))
+        rows.append(entry("Path", 0, "The material's path: what Assign Material binds faces to (materials/red_plastic). Double-click the node to build its shader from nodes."))
+    if kind == "Image Texture":
+        rows.append(entry("Image", 0, "The image (PNG, JPEG or OpenEXR), mapped by the faces' uv unless Vector is linked.", "path"))
     if kind == "Render":
         let start = heading("Render", "button")
         start.doc = "Render the input in the Render panel, progressively."
@@ -399,8 +407,10 @@ func value_fields(kind: str) -> list[Parameter]:
         return light_fields()
     if kind == "Render":
         return render_fields()
-    if kind == "Material":
+    if kind == "OpenPBR Surface":
         return material_fields(0, "OpenPBR", true)
+    if is_shader(kind):
+        return shader_fields(kind)
     if kind == "Mirror":
         return [menu("Axis", 0, "X|Y|Z", 0.0, "The axis the mirror plane faces."),
                 toggle("Keep original", 1, 1.0, "Keep the input beside its mirror image.")]
@@ -513,6 +523,25 @@ func render_fields() -> list[Parameter]:
             number("Clamp indirect", 10, 0.0, 0.0, 1000000.0, 1.0, "Clip bright indirect samples. Biased: it removes light (most of a caustic) and the image never converges to the true one; 0 is off.", soft = 100.0),
             toggle("Path guiding", 11, 0.0, "Learn where light comes from and send paths there: for interiors lit by bounced light. About a quarter slower a sample.")] + material_fields(12, "Default material", false)
 
+## A shader node's parameters: its settings, then its inputs' constants
+## (shader_nodes; a linked input takes its link instead).
+func shader_fields(kind: str) -> list[Parameter]:
+    let rows: list[Parameter] = []
+    if kind == "Math":
+        rows.append(menu("Operation", 0, math_operations().join("|"), 0.0, "What it computes from A and B (A alone for Absolute, Sine, Cosine, Floor and Fraction)."))
+    if kind == "Image Texture":
+        rows.append(toggle("Non-color data", 0, 0.0, "Read the image as stored (roughness, normal maps) rather than as sRGB color."))
+    for socket in shader_nodes.inputs(kind):
+        if socket.slot < 0:
+            continue
+        if socket.width == 3:
+            let row = vector(socket.label, socket.slot, socket.initial, "", 0.0, 1.0)
+            row.kind = "color"
+            rows.append(row)
+        else:
+            rows.append(number(socket.label, socket.slot, socket.initial[0], -1000.0, 1000.0, 0.05))
+    return rows
+
 ## OpenPBR parameters in value slots from `first` (scene_nodes.material_values
 ## names them): a Material node's from 0, `full` with coat, transmission and
 ## opacity and dispersion (30 slots); the Render node's default material, which faces without
@@ -611,7 +640,9 @@ pub func description(kind: str) -> str:
     if is_edit(kind):
         return "Select and edit in the viewport; each edit is a step you can undo"
     if kind == "Material":
-        return "An OpenPBR material / adds to its input's library when connected"
+        return "An OpenPBR material / double-click to build its shader from nodes"
+    if is_shader(kind):
+        return "Shader node / feeds the OpenPBR Surface"
     if kind == "Assign Material":
         return "Input 1: geometry / Input 2: materials; binds the group's faces"
     if kind == "Camera":
