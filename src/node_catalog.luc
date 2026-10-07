@@ -392,7 +392,7 @@ func value_fields(kind: str) -> list[Parameter]:
     if kind == "Render":
         return render_fields()
     if kind == "Material":
-        return material_fields(0, "OpenPBR")
+        return material_fields(0, "OpenPBR", true)
     if kind == "Mirror":
         return [menu("Axis", 0, "X|Y|Z", 0.0, "The axis the mirror plane faces."),
                 toggle("Keep original", 1, 1.0, "Keep the input beside its mirror image.")]
@@ -500,14 +500,13 @@ func render_fields() -> list[Parameter]:
             whole("Diffuse bounces", 6, 4.0, 0.0, 1024.0, "The most diffuse reflections on a path."),
             whole("Glossy bounces", 7, 8.0, 0.0, 1024.0, "The most glossy reflections on a path."),
             whole("Transmission bounces", 8, 12.0, 0.0, 1024.0, "The most refractions on a path."),
-            number("Noise threshold", 9, 0.01, 0.0, 1.0, 0.001, "Adaptive sampling stops a pixel at this noise level; 0 always takes every sample.", decimals = 4),
-            number("Clamp indirect", 10, 10.0, 0.0, 1000000.0, 1.0, "Clip bright indirect samples to cut fireflies; 0 is off.", soft = 100.0),
-            toggle("Denoise", 11, 1.0, "Denoise the final image.")] + material_fields(12, "Default material")
+            number("Clamp indirect", 10, 10.0, 0.0, 1000000.0, 1.0, "Clip bright indirect samples to cut fireflies; 0 is off.", soft = 100.0)] + material_fields(12, "Default material", false)
 
-## OpenPBR parameters in 16 value slots from `first` (scene_nodes.material_layout
-## names them): a Material node's from 0; the Render node's default material,
-## which faces without an assigned material take, from 12.
-func material_fields(first: int, title: str) -> list[Parameter]:
+## OpenPBR parameters in value slots from `first` (scene_nodes.material_values
+## names them): a Material node's from 0, `full` with coat, transmission and
+## opacity (28 slots); the Render node's default material, which faces without
+## an assigned material take, from 12 (the first 16).
+func material_fields(first: int, title: str, full: bool) -> list[Parameter]:
     let base = vector("Base color", first, [0.8, 0.8, 0.8], "Linear ACEScg: the diffuse color, and a metal's color at normal incidence.", 0.0, 1.0)
     base.kind = "color"
     let specular = vector("Specular color", first + 6, [1.0, 1.0, 1.0], "Tints the specular reflection; a metal's color at grazing angles.", 0.0, 1.0)
@@ -523,7 +522,29 @@ func material_fields(first: int, title: str) -> list[Parameter]:
             number("Specular IOR", first + 10, 1.5, 1.0, 3.0, 0.01, "Index of refraction: 1.5 for plastic and glass, 1.33 water, 2.4 diamond."),
             number("Anisotropy", first + 11, 0.0, 0.0, 1.0, 0.05, "Stretches highlights along the surface's tangent, like brushed metal.", true),
             number("Emission", first + 12, 0.0, 0.0, 100000.0, 1.0, "Emitted luminance in nits.", soft = 100.0),
-            emission]
+            emission] + (layer_fields(first) if full else [])
+
+## Coat, transmission and opacity: slots first + 16 to first + 27.
+func layer_fields(first: int) -> list[Parameter]:
+    let coat_color = vector("Coat color", first + 17, [1.0, 1.0, 1.0], "Tints what is seen through the coat, like a colored lacquer.", 0.0, 1.0)
+    coat_color.kind = "color"
+    let coat = number("Coat", first + 16, 0.0, 0.0, 1.0, 0.05, "A clear layer over everything: lacquer, varnish, car paint.", true)
+    coat.key = "coat"
+    let roughness = number("Coat roughness", first + 20, 0.0, 0.0, 1.0, 0.05, "0 is a mirror-like clear coat.", true)
+    roughness.disable_when = "{ coat == 0 }"
+    let ior = number("Coat IOR", first + 21, 1.6, 1.0, 3.0, 0.01, "The coat's index of refraction.")
+    ior.disable_when = "{ coat == 0 }"
+    let darkening = number("Coat darkening", first + 22, 1.0, 0.0, 1.0, 0.05, "How much light trapped under the coat darkens and saturates the base.", true)
+    darkening.disable_when = "{ coat == 0 }"
+    coat_color.disable_when = "{ coat == 0 }"
+    let transmission_color = vector("Transmission color", first + 24, [1.0, 1.0, 1.0], "Tints light refracted through the surface.", 0.0, 1.0)
+    transmission_color.kind = "color"
+    let transmission = number("Transmission", first + 23, 0.0, 0.0, 1.0, 0.05, "How much of the base is clear like glass or water instead of opaque.", true)
+    transmission.key = "transmission"
+    transmission_color.disable_when = "{ transmission == 0 }"
+    return [heading("Coat"), coat, coat_color, roughness, ior, darkening,
+            heading("Transmission"), transmission, transmission_color,
+            heading("Geometry"), number("Opacity", first + 27, 1.0, 0.0, 1.0, 0.05, "Below 1 cuts the surface away, like a leaf's outline; it casts a full shadow for now.", true)]
 
 ## An Edit kind's own parameters, in value slots from first_kind_slot.
 func kind_rows(kind: str) -> list[Parameter]:
