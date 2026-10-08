@@ -1,0 +1,54 @@
+## A Material's look while its shader nodes are edited: a sphere on a grey
+## floor under a soft dome and a key light, rendered small by luce-render in
+## the Network panel's corner, again whenever the Material's nodes change.
+from luce_gpu.gpu import RenderTarget
+from luce_render.render import RenderSession
+from luce_geocore.geocore import Vector3, MeshPrimitives, GeometrySet, MaterialAssignment, AttributeKernels
+from geometry_data import GeometryData
+from network import Network, Node
+from scene_nodes import add_material
+
+pub class MaterialPreview:
+    let session: RenderSession
+    ## What the render shows: the material's values and graph (empty: none).
+    var shown: str = ""
+
+    pub func init(self) -> unit!:
+        self.session = RenderSession.make()
+
+    ## Render `material` (a Material node of `graph`) if it changed since the
+    ## last render, at `size` pixels square.
+    pub func update(self, graph: Network, material: Node, size: int) -> unit!:
+        graph.resolve_material(material)
+        var key = material.shader_graph + f"|{size}|"
+        for value in material.surface_values:
+            key = key + f"{value},"
+        if key == self.shown:
+            return
+        self.shown = key
+        let path = "materials/preview"
+        let ball = MeshPrimitives.sphere(1.0, 48)
+        # Resting on the floor; planar texture coordinates, so image and checker nodes show.
+        let mapped = AttributeKernels.uv_project(ball, 0.5)
+        let sphere = GeometrySet.of_mesh(MaterialAssignment.faces(mapped, "", "material", path))
+        # The floor has no material: it takes the session's grey default.
+        let both = GeometryData(geometry = sphere.merged(GeometrySet.of_mesh(MeshPrimitives.grid(60.0, 4))))
+        var scene = add_material(material.id, material.surface_values, [path, "", ""], both, material.shader_graph).geometry
+        scene = scene.with_camera("/preview", Vector3(0.0, 1.3, 4.6), Vector3(-0.06, 0.0, 0.0), 0, 55.0, 36.0, 36.0, 0.1, 100.0, 0.0, 4.6)
+        scene = scene.with_light("/dome", Vector3(), Vector3(), 4, Vector3(0.75, 0.8, 0.9), 0.5, 0.0, 0.0, false, 1.0, 1.0, 0.5, 0.0, true)
+        scene = scene.with_light("/key", Vector3(2.5, 4.0, 2.5), Vector3(-0.95, 0.78, 0.0), 0, Vector3(1.0, 0.95, 0.9), 12.0, 0.0, 0.0, false, 2.0, 2.0, 0.5, 0.0, false)
+        self.session.set_material("base_color\nspecular_roughness", [0.18, 0.18, 0.18, 0.0, 0.6, 0.0, 0.0, 0.0])
+        self.session.set_limits(1024, 1024, 1024, 0.0, 0.0, false, 0.5)
+        self.session.start(scene, "/preview", size, size, 256, 8, true)
+
+    ## Draw the render into (x, y, size, size) of `target`; whether passes are
+    ## still coming.
+    pub func draw(self, target: RenderTarget, x: float, y: float, size: float) -> bool!:
+        return self.session.draw(target, x, y, size, size)
+
+    pub func problem(self) -> str!:
+        return self.session.problem()
+
+    pub func stop(self):
+        self.session.stop()
+        self.shown = ""

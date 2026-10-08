@@ -11,6 +11,8 @@ from tool_icons import draw_icon
 from edit_kinds import is_edit
 import node_commands
 import shader_nodes
+from luce_ui import ui
+from material_preview import MaterialPreview
 
 pub let node_width: float = 96.0
 pub let node_height: float = 40.0
@@ -50,6 +52,8 @@ pub class NetworkView: Widget:
     var last_node: int = -1
     ## Frame the nodes at the next draw (a new scope shows them whole).
     var frame_pending: bool = false
+    ## The Material's look, while its shader nodes are shown (made at first use).
+    var preview: MaterialPreview? = none
 
     pub func reset_scope(self) -> unit!:
         self.mode = ""
@@ -206,7 +210,33 @@ pub class NetworkView: Widget:
                     let flag_y = screen.y + node_height * self.zoom * 0.5 - 10.0 if flag != 2 else screen.y - 27.0
                     p.rounded_rectangle(Rect(flag_x, flag_y, 20.0, 20.0), theme.surface(), 4.0)
                     p.text(["B", "O", "i"][flag], flag_x + 5.0, flag_y + 2.0, theme.accent() if (flag == 0 and not node.enabled) or (flag == 1 and node.id in exposed) else theme.text())
+        if shading:
+            let side = math.min(230.0, math.min(size.width, size.height) * 0.4)
+            p.rectangle(Rect(size.width - side - 13.0, size.height - side - 13.0, side + 2.0, side + 2.0), theme.border())
         p.close()
+        if shading:
+            # A preview that cannot render says why in its place, not stopping the app.
+            self.draw_preview(target, size.width, size.height) catch failure:
+                let side = math.min(230.0, math.min(size.width, size.height) * 0.4)
+                let note = Painter(target)
+                note.text(failure.message, size.width - side - 12.0, size.height - side - 32.0, theme.warning())
+                note.close()
+
+    ## The Material's render in the bottom-right corner, restarted when its
+    ## nodes change (at twice the size, for sharp high-density screens);
+    ## redrawn while passes come.
+    func draw_preview(self, target: RenderTarget, width: float, height: float) -> unit!:
+        let side = math.min(230.0, math.min(width, height) * 0.4)
+        if self.preview == none:
+            self.preview = MaterialPreview()
+        let preview = self.preview else return
+        let graph = self.workspace.network
+        preview.update(graph, graph.require(graph.scope), int(side * 2.0))
+        if preview.draw(target, width - side - 12.0, height - side - 12.0, side):
+            self.box.invalidate()
+        let problem = preview.problem()
+        if problem != "":
+            error(ui.invalid, problem)
 
     ## A shader node: its name over its outputs (right) and inputs (left),
     ## each a labeled socket.
