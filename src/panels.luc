@@ -41,6 +41,9 @@ pub class Panels:
     var shown_scope: int = -2
     var add_x: float = 70.0
     var add_y: float = 70.0
+    ## The node menu was opened over the viewport: its Group groups the
+    ## objects picked there, even one.
+    var from_viewport: bool = false
 
     pub func init(self, workspace: Workspace, font: Font) -> unit!:
         self.workspace = workspace
@@ -61,11 +64,18 @@ pub class Panels:
         self.search = NodeMenu(self.actions.add)
         self.shading = ShadingMenu(workspace)
         self.view.on_shading = self.open_shading
+        self.view.on_search = self.open_viewport_search
         let types = kinds()
         for index in 0..<types.length:
             let kind = types[index]
             self.connections.append(self.actions.add[index].on_trigger(func () -> unit!:
-                node_commands.add_node(workspace, kind, self.add_x, self.add_y)
+                # Group with nodes picked (two, or any over the viewport)
+                # groups them; otherwise it adds an empty Group.
+                let picked = workspace.network.selection().length
+                if kind == "Group" and (picked >= 2 or (self.from_viewport and picked >= 1)):
+                    node_commands.group_selected(workspace)
+                else:
+                    node_commands.add_node(workspace, kind, self.add_x, self.add_y)
                 self.refresh()))
         let add = Button("Add node / Tab", font = font)
         let fit = Button("Frame nodes", font = font)
@@ -123,7 +133,19 @@ pub class Panels:
         self.body.layout().set_flex()
         self.refresh()
 
+    ## The node menu over the viewport, at its pointer; nodes it adds go
+    ## below the network's selected node.
+    pub func open_viewport_search(self) -> unit!:
+        self.from_viewport = true
+        if let node = self.workspace.selected():
+            self.add_x = node.x
+            self.add_y = node.y + 110.0
+        let view_bounds = self.view.layout().bounds()
+        let body_bounds = self.body.layout().bounds()
+        self.search.open(view_bounds.x - body_bounds.x + self.view.pointer_x, view_bounds.y - body_bounds.y + self.view.pointer_y, self.workspace.network.in_material())
+
     pub func open_search(self) -> unit!:
+        self.from_viewport = false
         let at = self.graph.to_graph(self.graph.pointer_x, self.graph.pointer_y)
         self.add_x = at.x
         self.add_y = at.y
@@ -197,6 +219,7 @@ pub class Panels:
     pub func close(self):
         self.projects.close()
         self.view.on_shading = none
+        self.view.on_search = none
         self.graph.on_search = none
         self.graph.on_inspect = none
         for connection in self.connections:

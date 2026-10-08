@@ -8,11 +8,13 @@ from shader_nodes import is_shader
 import node_catalog
 from luce_std import math
 from luce_ui import ui
+from grouping import group_nodes
 
 ## Selecting an Edit node also displays it: its tools edit the geometry
 ## the viewport shows, however the node was reached.
 pub func select_node(w: Workspace, id: int) -> unit!:
     let node = w.network.require(id)
+    w.network.picked = [id]
     if node.id != w.network.selected:
         w.placing = none
     let shows = is_edit(node.kind) and (w.network.display != id or w.network.preview)
@@ -60,13 +62,45 @@ pub func toggle_visible(w: Workspace) -> unit!:
         w.network.visibility_changed(node)
         w.rebuild())
 
-## Put the selected node, and the nodes feeding it, in a new Group.
+## Put the picked nodes, and the nodes feeding them, in a new Group.
 pub func group_selected(w: Workspace) -> unit!:
-    let node = w.selected() else return
+    let ids = w.network.selection()
+    if ids.length == 0:
+        return
     w.perform("Group", func () -> unit!:
-        _ = w.network.group_node(node.id)
+        _ = group_nodes(w.network, ids)
         w.selection = none
         w.rebuild())
+
+## Pick node `id` alone, or with `toggle` add it to the picked nodes (it
+## becomes the selected one) or take it out.
+pub func pick_node(w: Workspace, id: int, toggle: bool) -> unit!:
+    if not toggle:
+        select_node(w, id)
+        return
+    let picked = w.network.selection()
+    if let at = picked.index_of(id):
+        _ = picked.remove_at(at)
+        if picked.length == 0:
+            return
+        select_node(w, picked[picked.length - 1])
+    else:
+        picked.append(id)
+        select_node(w, id)
+    w.network.picked = picked
+    w.revision += 1
+
+## Pick `ids` (a box), added to the picked nodes with `add`.
+pub func pick_nodes(w: Workspace, ids: list[int], add: bool) -> unit!:
+    let picked = w.network.selection() if add else []
+    for id in ids:
+        if not (id in picked):
+            picked.append(id)
+    if picked.length == 0:
+        return
+    select_node(w, picked[picked.length - 1])
+    w.network.picked = picked
+    w.revision += 1
 
 pub func enter_group(w: Workspace, id: int) -> unit!:
     let node = w.network.require(id)
@@ -128,10 +162,13 @@ pub func add_node(w: Workspace, kind: str, x: float, y: float) -> unit!:
         w.rebuild())
 
 pub func delete_selected(w: Workspace) -> unit!:
-    if w.selected() == none:
+    let ids = w.network.selection()
+    if ids.length == 0:
         return
-    w.perform("Delete node", func () -> unit!:
-        w.network.remove(w.network.selected)
+    w.perform("Delete node" if ids.length == 1 else "Delete nodes", func () -> unit!:
+        for id in ids:
+            if w.network.find(id) != none:
+                w.network.remove(id)
         w.selection = none
         w.rebuild())
 

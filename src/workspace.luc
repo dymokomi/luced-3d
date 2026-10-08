@@ -70,6 +70,9 @@ pub class Workspace:
     pub var pending_changed: bool = false
     pub var compute: ComputeSession? = none
     pub let publisher: DisplayPublisher
+    ## Without the worker: the meshes on screen and their nodes.
+    var local_nodes: list[int]
+    var local_meshes: list[Mesh]
     let sources: SourceCache
     var pending_frame: bool = false
     var project_epoch: int = 0
@@ -86,6 +89,8 @@ pub class Workspace:
         self.scene = Scene()
         self.objects = Group()
         self.publisher = DisplayPublisher(self.objects)
+        self.local_nodes = []
+        self.local_meshes = []
         self.scene.add(self.objects)
         self.scene.add(AmbientLight(intensity = 0.35))
         self.scene.add(DirectionalLight(direction = Vector3(3.0, 5.0, 2.0), intensity = 0.85))
@@ -179,8 +184,23 @@ pub class Workspace:
         if self.view.set_display_mode(mode):
             self.revision += 1
 
+    ## The meshes on screen (world space) and the node each came from.
+    pub func on_screen(self) -> (list[int], list[Mesh]):
+        if self.compute != none:
+            return (self.publisher.nodes, self.publisher.meshes)
+        return (self.local_nodes, self.local_meshes)
+
     pub func selected(self) -> Node?:
         return self.network.find(self.network.selected)
+
+    ## At the Object level, unless an Edit node is displayed (its Object
+    ## level picks pieces) or a tool waits for components, the viewport picks
+    ## objects: the displayed nodes.
+    pub func picking_objects(self) -> bool:
+        if self.component_mode != 0 or self.prompt != none or self.placing != none:
+            return false
+        let node = self.network.find(self.network.display) else return true
+        return not (node.enabled and is_edit(node.kind))
 
     ## Components can be picked whenever the viewport shows a node's mesh.
     pub func selecting(self) -> bool:
@@ -393,6 +413,8 @@ pub class Workspace:
                     guides = kind.guides
         let cooked = cook_outputs(self.network, self.objects, self.batches, self.view.mesh_mode(), guides)
         self.notice = cooked.notice
+        self.local_nodes = cooked.nodes
+        self.local_meshes = cooked.meshes
         self.geometry = none
         if let node = cooked.node:
             self.geometry = self.picked(node, cooked.data else trap("display"))

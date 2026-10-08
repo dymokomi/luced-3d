@@ -222,6 +222,10 @@ pub class Network:
     pub var nodes: list[Node]
     pub var next_id: int = 1
     pub var selected: int = 1
+    ## Nodes picked with the selected one (Shift-click, box): what Group,
+    ## Delete and moving act on. It counts only while it holds `selected`
+    ## (selection()), so setting `selected` alone picks just that node.
+    pub var picked: list[int]
     pub var display: int = 1
     pub var scope: int = -1
     pub var preview: bool = false
@@ -243,6 +247,7 @@ pub class Network:
 
     pub func init(self, seed: bool = true) -> unit!:
         self.nodes = []
+        self.picked = []
         self.takes = [Take("Main")]
         if seed:
             _ = self.add("Cube", 40.0, 70.0)
@@ -290,6 +295,7 @@ pub class Network:
         let result = Network(false)
         result.next_id = self.next_id
         result.selected = self.selected
+        result.picked = self.picked.copy()
         result.display = self.display
         result.scope = self.scope
         result.preview = self.preview
@@ -301,6 +307,18 @@ pub class Network:
         result.take = self.take
         for node in self.nodes:
             result.nodes.append(node.copy())
+        return result
+
+    ## The picked nodes in this scope, the selected one among them.
+    pub func selection(self) -> list[int]:
+        let primary = self.find(self.selected) else return []
+        if not (primary.id in self.picked):
+            return [primary.id]
+        let result: list[int] = []
+        for id in self.picked:
+            if let node = self.find(id):
+                if node.parent == self.scope:
+                    result.append(id)
         return result
 
     ## Whether the network shown is a Material's shader nodes.
@@ -453,54 +471,6 @@ pub class Network:
         node.inputs[port] = -1
         node.sources[port] = 0
         self.invalidate(target)
-
-    ## Move node `id` and the nodes feeding it into a new Group where it sat;
-    ## what read the node reads the Group. The feeding nodes must feed
-    ## nothing else outside.
-    pub func group_node(self, id: int) -> Node!:
-        let node = self.require(id)
-        if is_shader(node.kind) or node.kind == "OpenPBR Surface":
-            error(ui.invalid, "Shader nodes stay in their Material")
-        let members: list[int] = [id]
-        var at = 0
-        while at < members.length:
-            for input in self.require(members[at]).inputs:
-                if input >= 0 and not (input in members):
-                    members.append(input)
-            at += 1
-        for other in self.children(node.parent):
-            if other.id in members:
-                continue
-            for input in other.inputs:
-                if input in members and input != id:
-                    error(ui.invalid, f"{self.require(input).name} also feeds {other.name}; group the node they meet at")
-        let outside = node.parent
-        let saved = self.scope
-        self.scope = outside
-        let group = self.add("Group", node.x, node.y) catch failure:
-            self.scope = saved
-            error(failure.code, failure.message)
-        self.scope = saved
-        group.name = node.name + " group"
-        group.visible = node.visible
-        for member in members:
-            let inner = self.require(member)
-            inner.parent = group.id
-            inner.visible = true
-        if node.output < 0:
-            node.output = 0
-        for other in self.children(outside):
-            for port in 0..<other.inputs.length:
-                if other.inputs[port] == id:
-                    other.inputs[port] = group.id
-                    other.sources[port] = 0
-                    self.invalidate(other.id)
-        if self.selected in members:
-            self.selected = group.id
-        if self.display in members:
-            self.display = group.id
-        self.invalidate(group.id)
-        return group
 
     pub func remove(self, id: int) -> unit!:
         let parent = self.require(id).parent

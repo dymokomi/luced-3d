@@ -1,8 +1,15 @@
-## Grouping: Group (Cmd/Ctrl+G) moves the selected node and what feeds it into
-## a new Group where it sat, rewiring its readers; the Group's transform and
-## visibility travel with its result, so renders downstream follow them.
+## Grouping: Group (Cmd/Ctrl+G, or Group in the Tab menu with nodes picked)
+## moves the picked nodes and what feeds them into a new Group where they
+## sat, rewiring their readers; the Group's transform and visibility travel
+## with its result, so renders downstream follow them. Nodes are picked by
+## Shift-click and boxes in the Network panel, and at the Object level by
+## clicks and boxes in the viewport.
 from workspace import Workspace
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
 import node_commands
+import selection_commands
 
 pub func grouping_tests() -> unit!:
     let w = Workspace()
@@ -39,4 +46,81 @@ pub func grouping_tests() -> unit!:
     let count = w.network.nodes.length
     node_commands.group_selected(w)
     assert(w.network.nodes.length == count and w.notice.contains("also feeds"))
-    print("PASS grouping: Group the selected node with its inputs, rewired readers, the Group's transform and visibility downstream")
+    picking_tests()
+    print("PASS grouping: Group the picked nodes with their inputs, rewired readers, the Group's transform and visibility downstream, picking in both panels, Tab → Group")
+
+func type_text(editor: Luce3D, text: str) -> unit!:
+    let ascii = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    for at in 0..<text.length:
+        let index = ascii.index_of(text[at..<at + 1]) else continue
+        editor.app.dispatch(Event(kind = EventKind.text_input, codepoint = index + 32))
+
+## A drag from (x0, y0) to (x1, y1), `shift` held or not.
+func drag(editor: Luce3D, x0: float, y0: float, x1: float, y1: float) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = x0, y = y0, button = 0))
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = (x0 + x1) * 0.5, y = (y0 + y1) * 0.5))
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = x1, y = y1))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = x1, y = y1, button = 0))
+
+func picking_tests() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    let cube = w.network.nodes[0].id
+    # A cube, and a sphere moved 3 along X beside it: two outputs.
+    node_commands.add_node(w, "Sphere", 300.0, 70.0)
+    let sphere = w.network.selected
+    node_commands.add_node(w, "Transform", 300.0, 170.0)
+    let moved = w.network.selected
+    node_commands.set_parameter(w, 1, 3.0)
+    assert(w.network.outputs(-1).length == 2)
+
+    # Shift-click picks a second node; a click alone picks one again.
+    node_commands.pick_node(w, cube, false)
+    node_commands.pick_node(w, moved, true)
+    assert(w.network.selection() == [cube, moved] and w.network.selected == moved)
+    node_commands.pick_node(w, cube, true)
+    assert(w.network.selection() == [moved])
+
+    # A box in the Network panel around every node picks them all.
+    editor.panels.refresh()
+    let graph = editor.panels.graph
+    graph.frame_all()
+    editor.app.layout(1600.0, 1000.0)
+    let area = graph.layout().bounds()
+    # From just above-left of the cube (at 40, 70) past the transform's end.
+    let a = graph.to_screen(30.0, 60.0)
+    let b = graph.to_screen(400.0, 215.0)
+    drag(editor, area.x + a.x, area.y + a.y, area.x + b.x, area.y + b.y)
+    assert(w.network.selection().length == 3)
+
+    # Tab, "Group", Enter: the picked nodes in one Group, both exposed.
+    editor.app.focus(graph.layout())
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.tab))
+    type_text(editor, "Group")
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    let group = w.network.require(w.network.selected)
+    assert(group.kind == "Group" and w.network.outputs(group.id).length == 2 and w.network.require(sphere).parent == group.id)
+    w.undo()
+    assert(w.network.require(cube).parent == -1)
+
+    # The viewport at the Object level: a box over both objects picks them;
+    # Tab → Group there groups them (with the sphere feeding the transform).
+    selection_commands.set_mode(w, 0)
+    w.frame_cube()
+    editor.app.layout(1600.0, 1000.0)
+    let view = editor.panels.view.layout().bounds()
+    drag(editor, view.x + 110.0, view.y + 90.0, view.x + view.width - 20.0, view.y + view.height - 40.0)
+    assert(w.network.selection().length == 2 and cube in w.network.selection() and moved in w.network.selection())
+    # A click on empty space keeps only the selected node picked.
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = view.x + 110.0, y = view.y + 90.0, button = 0))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = view.x + 110.0, y = view.y + 90.0, button = 0))
+    assert(w.network.selection().length == 1)
+    drag(editor, view.x + 110.0, view.y + 90.0, view.x + view.width - 20.0, view.y + view.height - 40.0)
+    editor.app.focus(editor.panels.view.layout())
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.tab))
+    type_text(editor, "Group")
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    let viewed = w.network.require(w.network.selected)
+    assert(viewed.kind == "Group" and w.network.outputs(viewed.id).length == 2 and w.network.require(sphere).parent == viewed.id)
+    editor.close()

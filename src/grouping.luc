@@ -1,0 +1,89 @@
+## Grouping nodes: picked nodes, and the nodes feeding them, move into a new
+## Group where they sat. Wires cannot cross a Group's edge, so a feeding node
+## must feed nothing left outside; what read a grouped node reads the Group,
+## whose result is its exposed children: the grouped nodes something outside
+## read, or that were outputs (else the group's last nodes).
+from network import Network, Node
+from shader_nodes import is_shader
+from luce_ui import ui
+
+pub func group_nodes(graph: Network, ids: list[int]) -> Node!:
+    if ids.length == 0:
+        error(ui.invalid, "Select nodes to group")
+    let outside = graph.require(ids[0]).parent
+    var x = 0.0
+    var y = 0.0
+    var any_visible = false
+    for id in ids:
+        let node = graph.require(id)
+        if is_shader(node.kind):
+            error(ui.invalid, "Shader nodes stay in their Material")
+        if node.parent != outside:
+            error(ui.invalid, "Group nodes of one network")
+        x += node.x / float(ids.length)
+        y += node.y / float(ids.length)
+        any_visible = any_visible or node.visible
+    # The picked nodes and everything feeding them.
+    let members = ids.copy()
+    var at = 0
+    while at < members.length:
+        for input in graph.require(members[at]).inputs:
+            if input >= 0 and not (input in members):
+                members.append(input)
+        at += 1
+    let readers: list[Node] = []
+    for other in graph.children(outside):
+        if other.id in members:
+            continue
+        var reads = false
+        for input in other.inputs:
+            if input in members:
+                if not (input in ids):
+                    error(ui.invalid, f"{graph.require(input).name} also feeds {other.name}; pick it too, or group from where they meet")
+                reads = true
+        if reads:
+            readers.append(other)
+    let exposed: list[int] = []
+    for member in members:
+        var read = graph.is_output(member)
+        for reader in readers:
+            read = read or member in reader.inputs
+        if read:
+            exposed.append(member)
+    if exposed.length == 0:
+        for member in members:
+            var last = true
+            for other in members:
+                last = last and not (member in graph.require(other).inputs)
+            if last:
+                exposed.append(member)
+    let saved = graph.scope
+    graph.scope = outside
+    let group = graph.add("Group", x, y) catch failure:
+        graph.scope = saved
+        error(failure.code, failure.message)
+    graph.scope = saved
+    if ids.length == 1:
+        group.name = graph.require(ids[0]).name + " group"
+    # Hidden together, the Group is hidden; otherwise each keeps its flag.
+    group.visible = any_visible
+    for member in members:
+        let node = graph.require(member)
+        node.parent = group.id
+        if not any_visible:
+            node.visible = true
+        if member in exposed:
+            node.output = 1
+    for reader in readers:
+        for port in 0..<reader.inputs.length:
+            if reader.inputs[port] in members:
+                reader.inputs[port] = group.id
+                reader.sources[port] = 0
+        graph.invalidate(reader.id)
+    if graph.selected in members:
+        graph.selected = group.id
+    if graph.display in members:
+        graph.display = group.id
+    graph.picked = [group.id]
+    graph.invalidate(group.id)
+    return group

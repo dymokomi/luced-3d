@@ -52,6 +52,9 @@ pub class NetworkView: Widget:
     var last_node: int = -1
     ## Frame the nodes at the next draw (a new scope shows them whole).
     var frame_pending: bool = false
+    ## A move drags every picked node: their ids and where each started.
+    var moving_ids: list[int]
+    var moving_from: list[Point]
     ## The Material's look, while its shader nodes are shown (made at first use).
     var preview: MaterialPreview? = none
 
@@ -70,6 +73,8 @@ pub class NetworkView: Widget:
         self.actions = actions
         self.base_font = font
         self.font = font
+        self.moving_ids = []
+        self.moving_from = []
         self.box = Layout()
         self.box.set_flex()
         self.box.set_interactive(true)
@@ -162,16 +167,17 @@ pub class NetworkView: Widget:
                 if let source = graph.find(node.inputs[port]):
                     self.wire(p, self.port_point(source, true, node.sources[port]), self.port_point(node, false, port))
         let shading = self.shading()
+        let picked = graph.selection()
         for node in graph.local_nodes():
             if shading:
-                self.draw_shader_node(p, node, node.id == graph.selected, size.width, size.height)
+                self.draw_shader_node(p, node, node.id in picked, size.width, size.height)
                 continue
             let at = self.to_screen(node.x, node.y)
             let w = node_width * self.zoom
             let h = node_height * self.zoom
             if at.x + w + 170.0 * self.zoom < 0.0 or at.x > size.width or at.y + h < 0.0 or at.y > size.height:
                 continue
-            let selected = node.id == graph.selected
+            let selected = node.id in picked
             let radius = 10.0 * self.zoom if node.kind in ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus"] else 3.0 * self.zoom
             p.rounded_rectangle(Rect(at.x - 1.5, at.y - 1.5, w + 3.0, h + 3.0), theme.accent() if selected else (theme.text_muted() if self.hovered == node.id else theme.grey(78.0)), radius + 1.0)
             p.rounded_rectangle(Rect(at.x, at.y, w, h), theme.grey(64.0) if node.enabled else theme.tab_strip(), radius)
@@ -193,6 +199,13 @@ pub class NetworkView: Widget:
             for port in 0..<node.inputs.length:
                 self.draw_port(p, self.port_point(node, false, port), node.inputs[port] >= 0)
             self.draw_port(p, self.port_point(node, true), true)
+        if self.mode == "box":
+            let left = math.min(self.start_x, self.last_x)
+            let top = math.min(self.start_y, self.last_y)
+            let width = math.abs(self.last_x - self.start_x)
+            let height = math.abs(self.last_y - self.start_y)
+            for edge in [Rect(left, top, width, 1.0), Rect(left, top + height - 1.0, width, 1.0), Rect(left, top, 1.0, height), Rect(left + width - 1.0, top, 1.0, height)]:
+                p.rectangle(edge, theme.accent())
         if self.mode == "wire":
             if let node = graph.find(self.wire_node):
                 let port = self.port_point(node, self.from_output, self.wire_port)
@@ -387,16 +400,24 @@ pub class NetworkView: Widget:
                         self.from_output = port[2] == 1
                 else:
                     let at = self.to_graph(event.x, event.y)
-                    self.mode = "pan"
+                    # Empty canvas: a box picks the nodes it touches.
+                    self.mode = "box"
                     for node in self.workspace.network.local_nodes().reversed():
                         if self.inside_node(node, at):
-                            node_commands.select_node(self.workspace, node.id)
+                            # Shift adds or removes a node; a picked node
+                            # keeps the others picked, to move them together.
+                            if event.shift:
+                                node_commands.pick_node(self.workspace, node.id, true)
+                                self.mode = ""
+                                break
+                            let together = self.workspace.network.selection()
+                            if node.id in together:
+                                self.workspace.network.selected = node.id
+                                self.workspace.revision += 1
+                            else:
+                                node_commands.select_node(self.workspace, node.id)
                             if self.shading():
-                                self.mode = "move"
-                                self.moving = node.id
-                                self.node_x = node.x
-                                self.node_y = node.y
-                                self.workspace.begin("Move node")
+                                self.start_move(node)
                             elif at.x <= node.x + 15.0:
                                 self.actions.enabled.trigger()
                                 self.mode = ""
@@ -412,11 +433,7 @@ pub class NetworkView: Widget:
                                     return
                                 self.last_node = node.id
                                 self.last_click = now
-                                self.mode = "move"
-                                self.moving = node.id
-                                self.node_x = node.x
-                                self.node_y = node.y
-                                self.workspace.begin("Move node")
+                                self.start_move(node)
                             break
         elif event.kind == EventKind.pointer_moved:
             var retained = -1
@@ -435,12 +452,16 @@ pub class NetworkView: Widget:
                 self.pan_x += event.x - self.last_x
                 self.pan_y += event.y - self.last_y
             elif self.mode == "move" and (event.x != self.start_x or event.y != self.start_y):
-                node_commands.move_node(self.workspace, self.moving, self.node_x + (event.x - self.start_x) / self.zoom, self.node_y + (event.y - self.start_y) / self.zoom)
+                for k in 0..<self.moving_ids.length:
+                    let origin = self.moving_from[k]
+                    node_commands.move_node(self.workspace, self.moving_ids[k], origin.x + (event.x - self.start_x) / self.zoom, origin.y + (event.y - self.start_y) / self.zoom)
             self.last_x = event.x
             self.last_y = event.y
         elif event.kind == EventKind.pointer_up:
             if self.mode == "move":
                 self.workspace.commit()
+            elif self.mode == "box":
+                self.finish_box(event.shift)
             elif self.mode == "wire":
                 let port = self.hit_port(event.x, event.y)
                 # A click starts a persistent wire; a drag connects on release.
@@ -452,6 +473,36 @@ pub class NetworkView: Widget:
         elif event.kind == EventKind.pointer_left:
             self.hovered = -1
         self.box.invalidate()
+
+    ## Begin dragging `node` and the nodes picked with it.
+    func start_move(self, node: Node) -> unit!:
+        self.mode = "move"
+        self.moving = node.id
+        self.moving_ids = self.workspace.network.selection()
+        if not (node.id in self.moving_ids):
+            self.moving_ids = [node.id]
+        self.moving_from = []
+        for id in self.moving_ids:
+            let picked = self.workspace.network.require(id)
+            self.moving_from.append(Point(picked.x, picked.y))
+        self.workspace.begin("Move node")
+
+    ## Pick the nodes the box touches (added to the picked with Shift); a
+    ## click on empty canvas leaves the selected node alone picked.
+    func finish_box(self, add: bool) -> unit!:
+        let a = self.to_graph(math.min(self.start_x, self.last_x), math.min(self.start_y, self.last_y))
+        let b = self.to_graph(math.max(self.start_x, self.last_x), math.max(self.start_y, self.last_y))
+        let inside: list[int] = []
+        for node in self.workspace.network.local_nodes():
+            let size = self.size_of(node)
+            if node.x <= b.x and node.x + size.width >= a.x and node.y <= b.y and node.y + size.height >= a.y:
+                inside.append(node.id)
+        let dragged = math.abs(self.last_x - self.start_x) > 3.0 or math.abs(self.last_y - self.start_y) > 3.0
+        if dragged and inside.length > 0:
+            node_commands.pick_nodes(self.workspace, inside, add)
+        elif not add:
+            self.workspace.network.picked = [self.workspace.network.selected]
+            self.workspace.revision += 1
 
     func finish_wire(self, port: list[int]) -> unit!:
         if port.length > 0 and (port[2] == 1) != self.from_output:

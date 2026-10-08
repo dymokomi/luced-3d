@@ -1,0 +1,63 @@
+## Objects in the viewport: which displayed node's mesh is under a point, or
+## shows inside a box. Rays go to each mesh's shared query index (Base); a
+## box casts a bounded grid of them, so it picks what is visible inside, not
+## everything whose bounds overlap.
+from luce_3d.graphics import Vector3
+from luce_gpu.gpu import Rect
+from workspace import Workspace
+from luce_std import math
+import gizmo_math
+
+## The node whose mesh the ray through (x, y) meets first, or -1.
+pub func object_at(w: Workspace, x: float, y: float, width: float, height: float) -> int!:
+    let (nodes, meshes) = w.on_screen()
+    let origin = w.view.camera.position()
+    let direction = gizmo_math.ray(w, x, y, width, height).normalized()
+    var nearest = -1.0
+    var found = -1
+    for at in 0..<meshes.length:
+        let distance = meshes[at].ray_distance(origin, direction)
+        if distance >= 0.0 and (nearest < 0.0 or distance < nearest):
+            nearest = distance
+            found = nodes[at]
+    return found
+
+## The nodes seen inside the box from (x0, y0) to (x1, y1): the first object
+## along rays at most every 6 pixels, at most 48 a side.
+pub func objects_in(w: Workspace, x0: float, y0: float, x1: float, y1: float, width: float, height: float) -> list[int]!:
+    let found: list[int] = []
+    let columns = int(math.clamp(math.abs(x1 - x0) / 6.0, 1.0, 48.0))
+    let rows = int(math.clamp(math.abs(y1 - y0) / 6.0, 1.0, 48.0))
+    for row in 0..<rows + 1:
+        for column in 0..<columns + 1:
+            let x = x0 + (x1 - x0) * float(column) / float(columns)
+            let y = y0 + (y1 - y0) * float(row) / float(rows)
+            let id = object_at(w, x, y, width, height)
+            if id >= 0 and not (id in found):
+                found.append(id)
+    return found
+
+## Where node `id`'s meshes sit on screen (their bounds' corners in front of
+## the camera), or none.
+pub func screen_bounds(w: Workspace, id: int, width: float, height: float) -> Rect?!:
+    let (nodes, meshes) = w.on_screen()
+    var left = 1.0e30
+    var top = 1.0e30
+    var right = -1.0e30
+    var bottom = -1.0e30
+    for at in 0..<meshes.length:
+        if nodes[at] != id:
+            continue
+        let box = meshes[at].bounds()
+        for corner in 0..<8:
+            let point = Vector3(box.maximum.x if corner % 2 == 1 else box.minimum.x, box.maximum.y if (corner // 2) % 2 == 1 else box.minimum.y, box.maximum.z if corner >= 4 else box.minimum.z)
+            let screen = gizmo_math.project(w, point, width, height)
+            if screen[2] <= 0.0:
+                continue
+            left = math.min(left, screen[0])
+            top = math.min(top, screen[1])
+            right = math.max(right, screen[0])
+            bottom = math.max(bottom, screen[1])
+    if right < left:
+        return none
+    return Rect(left, top, right - left, bottom - top)

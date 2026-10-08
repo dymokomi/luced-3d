@@ -1,6 +1,6 @@
 ## Node-specific viewport UI. Topology and intersections remain in luce-3d.
 from luce_ui.ui import Painter, Event, Point
-from luce_gpu.gpu import Rect
+from luce_gpu.gpu import Rect, Color
 from luce_3d.graphics import Vector3, EditOverlay, Renderer, Knife
 from luce_window.input import EventKind, Key
 from workspace import Workspace
@@ -13,6 +13,8 @@ from node_gizmos import NodeGizmos
 from viewport_placing import ViewportPlacing
 import modeling_commands
 import selection_commands
+import node_commands
+from viewport_objects import object_at, objects_in, screen_bounds
 
 pub func projected(workspace: Workspace, point: Vector3, width: float, height: float) -> list[float]!:
     let projection = workspace.view.camera.projection(math.max(1.0, width) / math.max(1.0, height))
@@ -51,9 +53,13 @@ pub class ViewportTools:
     pub var hover_changed: bool = false
     ## The viewport's renderer: faces are picked from its GPU id pass.
     pub var renderer: Renderer? = none
+    ## An object pick in progress: where it started and the pointer now.
+    var boxing: bool = false
+    var box: list[float]
 
     pub func init(self, workspace: Workspace, actions: Actions):
         self.knife_line = []
+        self.box = []
         self.workspace = workspace
         self.actions = actions
         self.gizmos = NodeGizmos(workspace)
@@ -86,10 +92,52 @@ pub class ViewportTools:
             self.overlay.draw(w.view.camera, painter.target(), theme.grey(90.0), theme.accent(), theme.text(), wires = false, hidden = theme.grey(150.0) if through else none)
             self.placing.draw(painter)
             self.draw_edit_controls(painter, height)
+        if w.picking_objects():
+            self.draw_objects(painter, width, height)
         if self.knifing:
             let line = self.knife_line
             painter.line(Point(line[0], line[1]), Point(line[2], line[3]), 2.0, theme.accent())
         self.gizmos.draw(painter, width, height)
+
+    ## The picked objects' screen bounds, and the box being dragged.
+    func draw_objects(self, painter: Painter, width: float, height: float) -> unit!:
+        for id in self.workspace.network.selection():
+            let bounds = screen_bounds(self.workspace, id, width, height) else continue
+            outline(painter, bounds, theme.accent())
+        if self.boxing and self.dragged():
+            outline(painter, Rect(math.min(self.box[0], self.box[2]), math.min(self.box[1], self.box[3]), math.abs(self.box[2] - self.box[0]), math.abs(self.box[3] - self.box[1])), theme.text())
+
+    func dragged(self) -> bool:
+        return math.abs(self.box[2] - self.box[0]) > 4.0 or math.abs(self.box[3] - self.box[1]) > 4.0
+
+    ## Object picking: a click picks the object under it, a drag the ones
+    ## seen in the box; Shift adds (a click on a picked one removes it).
+    func object_event(self, event: Event, width: float, height: float) -> bool!:
+        let w = self.workspace
+        if not self.boxing:
+            return false
+        if event.cancelled or event.kind in [EventKind.pointer_left, EventKind.focus_lost] or (event.kind == EventKind.key_down and event.key == Key.escape):
+            self.boxing = false
+            return true
+        if event.kind == EventKind.pointer_moved:
+            self.box = [self.box[0], self.box[1], event.x, event.y]
+            return true
+        if event.kind == EventKind.pointer_up:
+            self.boxing = false
+            self.box = [self.box[0], self.box[1], event.x, event.y]
+            if self.dragged():
+                let ids = objects_in(w, self.box[0], self.box[1], self.box[2], self.box[3], width, height)
+                if ids.length > 0:
+                    node_commands.pick_nodes(w, ids, event.shift)
+            else:
+                let id = object_at(w, event.x, event.y, width, height)
+                if id >= 0:
+                    node_commands.pick_node(w, id, event.shift)
+                elif not event.shift:
+                    w.network.picked = [w.network.selected]
+                    w.revision += 1
+            return true
+        return true
 
     func draw_edit_controls(self, painter: Painter, height: float) -> unit!:
         let w = self.workspace
@@ -198,6 +246,8 @@ pub class ViewportTools:
             return true
         if self.knife_event(event, width, height):
             return true
+        if self.object_event(event, width, height):
+            return true
         if event.kind == EventKind.scroll and w.selecting() and not event.alt and event.x >= 16.0 and event.x <= 86.0 and event.y >= 94.0:
             let maximum = math.max(0.0, float((self.actions.strip().length + 1) // 2) * 36.0 - height + 144.0)
             self.tool_scroll = math.max(0.0, math.min(maximum, self.tool_scroll - event.scroll_y * 12.0))
@@ -208,7 +258,7 @@ pub class ViewportTools:
             self.hover_revision = w.revision
             if event.inside and not event.alt and event.y >= 8.0 and event.y <= 38.0 and event.x >= width - 88.0 and event.x <= width - 18.0:
                 self.hover_tool = 100 + int((event.x - width + 88.0) / 38.0)
-            elif event.inside and not event.alt and not self.dragging and w.selecting():
+            elif event.inside and not event.alt and not self.dragging and w.selecting() and not w.picking_objects():
                 if event.x >= 16.0 and event.x <= 86.0 and event.y >= 94.0:
                     self.hover_tool = self.hit_tool(event.x, event.y, height)
                 elif not (event.y >= 44.0 and event.y <= 74.0 and event.x <= 250.0):
@@ -240,7 +290,17 @@ pub class ViewportTools:
         if let placing = w.placing:
             self.placing.click(placing, self.overlay, self.renderer, event.x, event.y, width, height)
             return true
+        if w.picking_objects():
+            self.boxing = true
+            self.box = [event.x, event.y, event.x, event.y]
+            return true
         if w.selecting():
             selection_commands.choose_component(w, self.pick(event.x, event.y, width, height), event.shift)
             return true
         return false
+
+func outline(painter: Painter, r: Rect, color: Color) -> unit!:
+    painter.rectangle(Rect(r.x, r.y, r.width, 1.0), color)
+    painter.rectangle(Rect(r.x, r.y + r.height - 1.0, r.width, 1.0), color)
+    painter.rectangle(Rect(r.x, r.y, 1.0, r.height), color)
+    painter.rectangle(Rect(r.x + r.width - 1.0, r.y, 1.0, r.height), color)
