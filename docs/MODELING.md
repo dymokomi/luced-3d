@@ -174,12 +174,15 @@ Pressing a tool, as with Houdini's shelf tools:
   and when it cooks its output selection (Extrude's front faces, Inset's inner
   faces) becomes the viewport selection, switching the component type. The
   Move gizmo on a plain node makes a Transform Components node the same way.
-- with nothing selected, the new node waits (Tool → Select): the viewport shows
-  its input, Enter takes the selection as the group, Esc removes the node.
+- with nothing selected, the new node waits (Tool → Select): the viewport picks
+  on its input, and each change of the selection (a click, Shift to add, Select
+  All, Grow) becomes the node's group at once, its result shown; with nothing
+  picked the input shows. Enter finishes, Esc removes the node.
 
 If the input's topology later changes, a guarded node fails with "Group was
-selected on different topology. Reselect, or Keep IDs." **Reselect** shows the
-input with the group selected for a new pick; **Keep IDs** clears the guard and
+selected on different topology. Reselect, or Keep IDs." **Reselect** picks on the
+input with the group selected, the node's result rewritten and shown as the
+selection changes (Enter finishes, Esc restores the old group); **Keep IDs** clears the guard and
 applies the numbers as they are (Houdini's behaviour). Typed groups are never
 guarded. Very large selections show as a summary in the Group field.
 
