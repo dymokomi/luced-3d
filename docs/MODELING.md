@@ -301,8 +301,11 @@ Fusion 360: points, lines, circles and arcs held by constraints and
 dimensions, solved by luce-cad (`CadSketch`, luce-cad's docs/MODELING.md,
 Sketches). It keeps the sketch as text and solves it on every evaluation;
 its result is the curves Extrude and Revolve read. **Plane** picks XY (as
-from the front), XZ (the ground, as from above) or YZ (as from the right),
-moved along its normal by **Offset**.
+from the front), XZ (the ground, as from above), YZ (as from the right) or
+**Face**: a flat face of the body connected to its input, picked with
+**Pick face** (one click on the body), kept by the face's name so the sketch
+follows it as features upstream change the body. **Offset** moves the plane
+along its normal; starting to edit (or a new face) looks straight at it.
 
 Selected and displayed, it is edited in the viewport (`sketch_editor.luc`,
 `sketch_view.luc`, after docs/research/FUSION-SKETCH-STUDY.md). Its curves
