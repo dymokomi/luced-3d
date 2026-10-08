@@ -7,6 +7,7 @@
 from luce_cad.cad_geometry import CadGeometry
 from luce_cad.solids import CadSolids
 from luce_cad.modeling import CadModeling
+from luce_cad.model import CadModel
 from geometry_data import GeometryData
 from luce_ui import ui
 
@@ -16,7 +17,11 @@ pub func solid_kinds() -> list[str]:
 
 ## Nodes only a CAD node holds.
 pub func cad_only_kinds() -> list[str]:
-    return ["Extrude"] + solid_kinds()
+    return ["Extrude", "Boolean"] + solid_kinds()
+
+## Features with a second input (Boolean's tool, Extrude's target bodies).
+pub func two_inputs(kind: str) -> bool:
+    return kind in ["Extrude", "Boolean"]
 
 pub func is_cad_only(kind: str) -> bool:
     return kind in cad_only_kinds()
@@ -41,14 +46,36 @@ pub func cad_categories() -> list[str]:
 pub func cad_category(kind: str) -> str:
     if kind == "Edit Sketch":
         return "Sketch"
+    if kind == "Boolean":
+        return "Modify"
     if is_cad_only(kind):
         return "Create"
     if kind in ["Edit CAD", "Transform"]:
         return "Modify"
     return "Utility"
 
-## A CAD feature's result from its input `data` and values `v`.
-pub func evaluate_cad(kind: str, v: list[float], data: GeometryData) -> GeometryData!:
+## The bodies of `data` as one: each CAD model of its set, unioned.
+func body_of(data: GeometryData, role: str) -> CadModel!:
+    let count = CadGeometry.model_count(data.geometry)
+    if count == 0:
+        error(ui.invalid, f"The {role} input has no solid body")
+    var body = CadGeometry.model(data.geometry, 0)
+    for at in 1..<count:
+        body = CadModeling.combined(body, CadGeometry.model(data.geometry, at), 0)
+    return body
+
+## `made` combined with the bodies of `target` by operation `operation`
+## (0 a new body beside them, 1 join, 2 cut, 3 intersect).
+func operated(made: CadModel, target: GeometryData?, operation: int) -> GeometryData!:
+    let other = target else return GeometryData(geometry = CadGeometry.of_model(made))
+    if operation == 0:
+        return other.merged(GeometryData(geometry = CadGeometry.of_model(made)))
+    let body = body_of(other, "target")
+    return GeometryData(geometry = CadGeometry.of_model(CadModeling.combined(body, made, operation - 1)))
+
+## A CAD feature's result from its input `data`, its second input and
+## values `v`.
+pub func evaluate_cad(kind: str, v: list[float], data: GeometryData, second: GeometryData? = none) -> GeometryData!:
     if kind == "Solid Box":
         return GeometryData(geometry = CadGeometry.of_model(CadSolids.box(v[0], v[1], v[2])))
     if kind == "Solid Cylinder":
@@ -60,5 +87,11 @@ pub func evaluate_cad(kind: str, v: list[float], data: GeometryData) -> Geometry
     if kind == "Solid Torus":
         return GeometryData(geometry = CadGeometry.of_model(CadSolids.torus(v[0], v[1])))
     if kind == "Extrude":
-        return GeometryData(geometry = CadGeometry.of_model(CadModeling.extruded(data.geometry, v[0])))
+        let made = CadModeling.extruded(data.geometry, v[0])
+        if int(v[1]) != 0 and second == none:
+            error(ui.invalid, "Join, Cut and Intersect need target bodies: connect them to the second input")
+        return operated(made, second, int(v[1]))
+    if kind == "Boolean":
+        let tool = second else error(ui.invalid, "Connect the tool body to the second input")
+        return GeometryData(geometry = CadGeometry.of_model(CadModeling.combined(body_of(data, "first"), body_of(tool, "second"), int(v[0]))))
     error(ui.invalid, f"{kind} is not a CAD feature")

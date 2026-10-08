@@ -4,10 +4,23 @@
 ## node places its bodies like a Group.
 from workspace import Workspace
 from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadModel
 import node_commands
 import modeling_commands
 import node_catalog
 from cad_nodes import solid_kinds
+
+## Whether `model`'s tessellated volume is `expected` (to 0.5%).
+func near_volume(model: CadModel, expected: float) -> bool!:
+    let mesh = model.tessellate(16)
+    var total = 0.0
+    for triangle in 0..<mesh.index_count() // 3:
+        let a = mesh.vertex(mesh.index(triangle * 3)).position
+        let b = mesh.vertex(mesh.index(triangle * 3 + 1)).position
+        let c = mesh.vertex(mesh.index(triangle * 3 + 2)).position
+        total += a.dot(b.cross(c)) / 6.0
+    if total < expected * 0.995 or total > expected * 1.005: print(f"volume {total}, expected {expected}")
+    return total >= expected * 0.995 and total <= expected * 1.005
 
 pub func cad_node_tests() -> unit!:
     let w = Workspace()
@@ -37,8 +50,29 @@ pub func cad_node_tests() -> unit!:
     for at in 0..<solids.length:
         node_commands.add_node(w, solids[at], 200.0 + 120.0 * float(at), 0.0)
         assert(CadGeometry.model(w.network.evaluate_data(w.network.selected).geometry, 0).face_count() == faces[at])
+    # Extrude cutting a box: the rectangle (2 x 1, on XY) swept from z 0 to
+    # 3 takes 2 x 1 x 1 out of a 2 x 2 x 2 box.
+    node_commands.add_node(w, "Solid Box", 400.0, 200.0)
+    let box = w.network.selected
+    w.network.connect(box, extrude, 1)
+    node_commands.select_node(w, extrude)
+    node_commands.set_parameter(w, 1, 2.0)
+    let cut = CadGeometry.model(w.network.evaluate_data(extrude).geometry, 0)
+    assert(near_volume(cut, 6.0))
+    # A Boolean node: the box without a cylinder through it.
+    node_commands.add_node(w, "Solid Cylinder", 600.0, 0.0)
+    node_commands.set_parameter(w, 0, 0.5)
+    node_commands.set_parameter(w, 1, 3.0)
+    let pin = w.network.selected
+    node_commands.select_node(w, box)
+    node_commands.add_node(w, "Boolean", 400.0, 320.0)
+    let boolean = w.network.selected
+    w.network.connect(pin, boolean, 1)
+    node_commands.set_parameter(w, 0, 1.0)
+    let drilled = CadGeometry.model(w.network.evaluate_data(boolean).geometry, 0)
+    assert(drilled.face_count() == 7 and near_volume(drilled, 8.0 - 3.14159265 * 0.25 * 2.0))
     # Outside, the CAD node places its bodies as one instance.
     node_commands.leave_group(w)
     let placed = w.network.evaluate_data(cad)
     assert(placed.instance_count() == 1)
-    print("PASS CAD node: CAD nodes inside only, sketch → Extrude body, solid primitives, the CAD node places its bodies")
+    print("PASS CAD node: CAD nodes inside only, sketch → Extrude body, solid primitives, Extrude Cut, the Boolean node, the CAD node places its bodies")
