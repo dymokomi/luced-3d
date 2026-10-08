@@ -10,6 +10,7 @@ from luce_cad.modeling import CadModeling
 from luce_cad.model import CadModel
 from geometry_data import GeometryData
 from luce_ui import ui
+from luce_3d.graphics import Vector3
 
 ## The solid primitives (analytic B-reps, centered on the origin along +Y).
 pub func solid_kinds() -> list[str]:
@@ -17,7 +18,7 @@ pub func solid_kinds() -> list[str]:
 
 ## Nodes only a CAD node holds.
 pub func cad_only_kinds() -> list[str]:
-    return ["Extrude", "Revolve", "Boolean", "Fillet", "Chamfer"] + solid_kinds()
+    return ["Extrude", "Revolve", "Boolean", "Fillet", "Chamfer", "Mirror Body", "Pattern"] + solid_kinds()
 
 ## Features with a second input (Boolean's tool, Extrude's target bodies).
 pub func two_inputs(kind: str) -> bool:
@@ -46,7 +47,7 @@ pub func cad_categories() -> list[str]:
 pub func cad_category(kind: str) -> str:
     if kind == "Edit Sketch":
         return "Sketch"
-    if kind in ["Boolean", "Fillet", "Chamfer"]:
+    if kind in ["Boolean", "Fillet", "Chamfer", "Mirror Body", "Pattern"]:
         return "Modify"
     if is_cad_only(kind):
         return "Create"
@@ -113,6 +114,37 @@ pub func evaluate_cad(kind: str, v: list[float], data: GeometryData, second: Geo
         let body = body_of(data, "first")
         let made = CadModeling.filleted(body, edges, v[0]) if kind == "Fillet" else CadModeling.chamfered(body, edges, v[0])
         return GeometryData(geometry = CadGeometry.of_model(made))
+    if kind == "Mirror Body":
+        # Across the plane facing X, Y or Z through the origin.
+        let body = body_of(data, "first")
+        let axis = int(v[0])
+        let flip = Vector3(-1.0 if axis == 0 else 1.0, -1.0 if axis == 1 else 1.0, -1.0 if axis == 2 else 1.0)
+        let reflected = body.transformed(Vector3(), Vector3(), flip)
+        if v[1] != 0.0:
+            return GeometryData(geometry = CadGeometry.of_model(body)).merged(GeometryData(geometry = CadGeometry.of_model(reflected)))
+        return GeometryData(geometry = CadGeometry.of_model(CadModeling.combined(body, reflected, 0)))
+    if kind == "Pattern":
+        # Copies along an axis (spacing apart) or around it (over an angle).
+        let body = body_of(data, "first")
+        let count = int(v[1])
+        let axis = int(v[2])
+        let direction = Vector3(1.0 if axis == 0 else 0.0, 1.0 if axis == 1 else 0.0, 1.0 if axis == 2 else 0.0)
+        var result = body
+        var separate = GeometryData(geometry = CadGeometry.of_model(body))
+        for at in 1..<count:
+            var copy = body
+            if int(v[0]) == 0:
+                copy = body.transformed(direction.multiply_scalar(v[3] * float(at)), Vector3(), Vector3(1.0, 1.0, 1.0))
+            else:
+                let step = v[4] * 0.017453292519943295 / float(count if v[4] >= 359.999 else count - 1)
+                copy = body.transformed(Vector3(), direction.multiply_scalar(step * float(at)), Vector3(1.0, 1.0, 1.0))
+            if v[5] != 0.0:
+                separate = separate.merged(GeometryData(geometry = CadGeometry.of_model(copy)))
+            else:
+                result = CadModeling.combined(result, copy, 0)
+        if v[5] != 0.0:
+            return separate
+        return GeometryData(geometry = CadGeometry.of_model(result))
     if kind == "Boolean":
         let tool = second else error(ui.invalid, "Connect the tool body to the second input")
         return GeometryData(geometry = CadGeometry.of_model(CadModeling.combined(body_of(data, "first"), body_of(tool, "second"), int(v[0]))))
