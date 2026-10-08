@@ -9,7 +9,8 @@ import node_commands
 import modeling_commands
 import selection_commands
 import node_catalog
-from cad_nodes import solid_kinds
+from cad_nodes import solid_kinds, edges_summary
+from luce_cad.modeling import CadModeling
 
 ## Whether `model`'s tessellated volume is `expected` (to 0.5%).
 func near_volume(model: CadModel, expected: float) -> bool!:
@@ -102,30 +103,36 @@ pub func cad_node_tests() -> unit!:
     # Every edge: a rounded box (sphere corners).
     assert(CadGeometry.model(w.network.evaluate_data(fillet).geometry, 0).face_count() == 26)
     let source = CadGeometry.model(w.network.evaluate_data(plain).geometry, 0)
-    var uprights = ""
+    let uprights: list[int] = []
     for face in 0..<source.face_count():
         for use in 0..<source.face_edge_count(face):
             let a = source.face_edge_point(face, use, 0.0)
             let b = source.face_edge_point(face, use, 1.0)
-            let id = f"{source.face_edge_id(face, use)}"
-            if a.x == b.x and a.z == b.z and not uprights.split(" ").contains(id):
-                uprights = (uprights + " " + id).trim()
-    node_commands.set_text(w, 0, uprights)
+            let id = source.face_edge_id(face, use)
+            if a.x == b.x and a.z == b.z and not (id in uprights):
+                uprights.append(id)
+    # Edges are kept as references: their faces' names and where they are.
+    node_commands.set_text(w, 0, CadModeling.edge_references(source, uprights))
     assert(CadGeometry.model(w.network.evaluate_data(fillet).geometry, 0).face_count() == 10)
     # Pick edges: the input box shows its edges; picking one upright edge's
-    # piece and Enter writes its B-rep number into Edges.
+    # piece and Enter writes its reference into Edges.
     modeling_commands.pick_edges(w, fillet)
     let pick = w.geometry else trap("the box has no pick geometry")
     let owner = pick.find_attribute("cad_edge", 4)
-    let wanted = uprights.split(" ")[0]
     var target = -1
     for edge in 0..<pick.edge_count():
-        if target < 0 and f"{int(pick.attribute_value(owner, edge))}" == wanted: target = edge
+        if target < 0 and int(pick.attribute_value(owner, edge)) == uprights[0]: target = edge
     assert(target >= 0 and w.prompt != none)
     selection_commands.choose_component(w, target, false)
     modeling_commands.accept_prompt(w)
-    assert(w.network.require(fillet).texts[0] == wanted and w.prompt == none and w.network.selected == fillet)
+    assert(w.network.require(fillet).texts[0] == CadModeling.edge_references(source, [uprights[0]]) and w.prompt == none and w.network.selected == fillet)
     assert(CadGeometry.model(w.network.evaluate_data(fillet).geometry, 0).face_count() == 7)
+    assert(edges_summary(w.network.require(fillet).texts[0]) == "1 edge")
+    # The box made taller upstream: the same edge is still the one filleted.
+    node_commands.select_node(w, plain)
+    node_commands.set_parameter(w, 1, 3.0)
+    let taller = CadGeometry.model(w.network.evaluate_data(fillet).geometry, 0)
+    assert(taller.face_count() == 7 and w.network.require(fillet).failure == "")
     # Mirror and Pattern: a unit box off the YZ plane mirrored (two boxes),
     # patterned three times apart (three), and overlapping (joined: one).
     node_commands.add_node(w, "Solid Box", 1200.0, 0.0)
@@ -150,4 +157,4 @@ pub func cad_node_tests() -> unit!:
     node_commands.leave_group(w)
     let placed = w.network.evaluate_data(cad)
     assert(placed.instance_count() == 1)
-    print("PASS CAD node: CAD nodes inside only, sketch → Extrude body (one way, symmetric), Revolve, solid primitives, Extrude Cut, the Boolean node, Chamfer and Fillet (edges picked in the viewport), Mirror Body, Pattern, the CAD node places its bodies")
+    print("PASS CAD node: CAD nodes inside only, sketch → Extrude body (one way, symmetric), Revolve, solid primitives, Extrude Cut, the Boolean node, Chamfer and Fillet (edges picked in the viewport, kept by reference through an upstream change), Mirror Body, Pattern, the CAD node places its bodies")

@@ -74,52 +74,53 @@ func operated(made: CadModel, target: GeometryData?, operation: int) -> Geometry
     let body = body_of(other, "target")
     return GeometryData(geometry = CadGeometry.of_model(CadModeling.combined(body, made, operation - 1)))
 
-## B-rep edge numbers from text: numbers apart by spaces or commas (empty:
-## none, meaning every edge the feature can take).
-pub func edge_numbers(text: str) -> list[int]!:
-    let numbers: list[int] = []
-    for part in text.replace(",", " ").split(" "):
-        let word = part.trim()
-        if word == "":
-            continue
-        var value = 0
-        for at in 0..<word.length:
-            let digit = "0123456789".index_of(word[at..<at + 1]) else error(ui.invalid, "Edges are B-rep edge numbers, apart by spaces")
-            value = value * 10 + digit
-        numbers.append(value)
-    return numbers
+## What a blend's Edges text (edge references apart by `;`) shows.
+pub func edges_summary(text: str) -> str:
+    if text.trim() == "":
+        return "All straight edges"
+    let count = text.split(";").length
+    return "1 edge" if count == 1 else f"{count} edges"
+
+## The tag that names the faces node `id` makes (luce-cad's naming).
+pub func tag_of(id: int) -> str:
+    return f"#{id}"
+
+## A primitive's body, its faces named for `tag`.
+func primitive(kind: str, v: list[float], tag: str) -> CadModel!:
+    if kind == "Solid Box":
+        return CadModeling.tagged(CadSolids.box(v[0], v[1], v[2]), tag)
+    if kind == "Solid Cylinder":
+        return CadModeling.tagged(CadSolids.cylinder(v[0], v[1]), tag)
+    if kind == "Solid Cone":
+        return CadModeling.tagged(CadSolids.cone(v[0], v[1], v[2]), tag)
+    if kind == "Solid Sphere":
+        return CadModeling.tagged(CadSolids.sphere(v[0]), tag)
+    return CadModeling.tagged(CadSolids.torus(v[0], v[1]), tag)
 
 ## A CAD feature's result from its input `data`, its second input, values
-## `v` and texts `texts`.
-pub func evaluate_cad(kind: str, v: list[float], data: GeometryData, second: GeometryData? = none, texts: list[str]? = none) -> GeometryData!:
-    if kind == "Solid Box":
-        return GeometryData(geometry = CadGeometry.of_model(CadSolids.box(v[0], v[1], v[2])))
-    if kind == "Solid Cylinder":
-        return GeometryData(geometry = CadGeometry.of_model(CadSolids.cylinder(v[0], v[1])))
-    if kind == "Solid Cone":
-        return GeometryData(geometry = CadGeometry.of_model(CadSolids.cone(v[0], v[1], v[2])))
-    if kind == "Solid Sphere":
-        return GeometryData(geometry = CadGeometry.of_model(CadSolids.sphere(v[0])))
-    if kind == "Solid Torus":
-        return GeometryData(geometry = CadGeometry.of_model(CadSolids.torus(v[0], v[1])))
+## `v` and texts `texts`; the faces it makes are named for `tag` (tag_of).
+pub func evaluate_cad(kind: str, v: list[float], data: GeometryData, tag: str, second: GeometryData? = none, texts: list[str]? = none) -> GeometryData!:
+    if kind in solid_kinds():
+        return GeometryData(geometry = CadGeometry.of_model(primitive(kind, v, tag)))
     if kind == "Extrude" or kind == "Revolve":
         # Extrude: distance, operation, symmetric. Revolve: axis, operation.
         let symmetric = kind == "Extrude" and v[2] != 0.0
-        let made = CadModeling.extruded(data.geometry, v[0], -v[0] * 0.5 if symmetric else 0.0) if kind == "Extrude" else CadModeling.revolved(data.geometry, int(v[0]))
+        let made = CadModeling.extruded(data.geometry, v[0], -v[0] * 0.5 if symmetric else 0.0, tag) if kind == "Extrude" else CadModeling.revolved(data.geometry, int(v[0]), tag)
         if int(v[1]) != 0 and second == none:
             error(ui.invalid, "Join, Cut and Intersect need target bodies: connect them to the second input")
         return operated(made, second, int(v[1]))
     if kind == "Fillet" or kind == "Chamfer":
-        let edges = edge_numbers((texts else ["", "", ""])[0])
+        let edges = (texts else ["", "", ""])[0]
         let body = body_of(data, "first")
-        let made = CadModeling.filleted(body, edges, v[0]) if kind == "Fillet" else CadModeling.chamfered(body, edges, v[0])
+        let made = CadModeling.filleted(body, edges, v[0], tag) if kind == "Fillet" else CadModeling.chamfered(body, edges, v[0], tag)
         return GeometryData(geometry = CadGeometry.of_model(made))
     if kind == "Mirror Body":
         # Across the plane facing X, Y or Z through the origin.
         let body = body_of(data, "first")
         let axis = int(v[0])
         let flip = Vector3(-1.0 if axis == 0 else 1.0, -1.0 if axis == 1 else 1.0, -1.0 if axis == 2 else 1.0)
-        let reflected = body.transformed(Vector3(), Vector3(), flip)
+        # The copy's faces named apart from the original's.
+        let reflected = CadModeling.prefixed(body, f"{tag}.1:").transformed(Vector3(), Vector3(), flip)
         if v[1] != 0.0:
             return GeometryData(geometry = CadGeometry.of_model(body)).merged(GeometryData(geometry = CadGeometry.of_model(reflected)))
         return GeometryData(geometry = CadGeometry.of_model(CadModeling.combined(body, reflected, 0)))
@@ -132,12 +133,13 @@ pub func evaluate_cad(kind: str, v: list[float], data: GeometryData, second: Geo
         var result = body
         var separate = GeometryData(geometry = CadGeometry.of_model(body))
         for at in 1..<count:
-            var copy = body
+            # Each copy's faces named apart (copy k: `tag.k:` before them).
+            var copy = CadModeling.prefixed(body, f"{tag}.{at}:")
             if int(v[0]) == 0:
-                copy = body.transformed(direction.multiply_scalar(v[3] * float(at)), Vector3(), Vector3(1.0, 1.0, 1.0))
+                copy = copy.transformed(direction.multiply_scalar(v[3] * float(at)), Vector3(), Vector3(1.0, 1.0, 1.0))
             else:
                 let step = v[4] * 0.017453292519943295 / float(count if v[4] >= 359.999 else count - 1)
-                copy = body.transformed(Vector3(), direction.multiply_scalar(step * float(at)), Vector3(1.0, 1.0, 1.0))
+                copy = copy.transformed(Vector3(), direction.multiply_scalar(step * float(at)), Vector3(1.0, 1.0, 1.0))
             if v[5] != 0.0:
                 separate = separate.merged(GeometryData(geometry = CadGeometry.of_model(copy)))
             else:

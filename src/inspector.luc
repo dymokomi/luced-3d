@@ -16,6 +16,7 @@ from edit_kinds import is_edit
 from usd_nodes import Composition, compose_usd
 import modeling_commands
 import node_commands
+import cad_nodes
 
 pub class Inspector:
     pub var on_browse: func() -> unit!? = none
@@ -35,7 +36,8 @@ pub class Inspector:
     let generic_rows: VStack
     let connections: list[Connection]
     ## The catalog rows the panel shows, and what each row is to the inspector:
-    ## "value", "text", "info", "reload", "extrude", "clear", "last", "edits" or "operation".
+    ## "value", "text", "info", "reload", "extrude", "clear", "last", "edits",
+    ## "operation", or a blend's "edges", "pick_edges" and "all_edges".
     var rows: list[Parameter]
     var roles: list[str]
     ## What the panel was built for: node kind, file format and edit count.
@@ -104,6 +106,8 @@ pub class Inspector:
             self.actions.clear_edits.trigger()
         elif role == "pick_edges":
             if let node = self.workspace.selected(): modeling_commands.pick_edges(self.workspace, node.id)
+        elif role == "all_edges":
+            node_commands.set_text(self.workspace, 0, "")
         elif role == "reselect":
             if let node = self.workspace.selected(): modeling_commands.reselect(self.workspace, node.id)
         elif role == "keep_ids":
@@ -146,9 +150,15 @@ pub class Inspector:
                                                    doc = "Change the distance of the most recent extrusion."))
         # A verb node made from a selection: pick its components again, or keep
         # its numbers on a changed topology (Houdini's behaviour).
+        # A blend's edges: references to them by their faces (luce-cad's
+        # names), which survive changes upstream; shown as a count.
         if kind in ["Fillet", "Chamfer"]:
-            self.add(specs, "pick_edges", ParameterSpec(name = "pick_edges", label = "Pick edges", kind = ParameterKind.button,
-                                                        doc = "Show the input body and pick the edges to blend (Enter accepts)."))
+            self.add(specs, "edges", ParameterSpec(name = "edges", label = "Edges", kind = ParameterKind.info,
+                                                   doc = "The edges to blend, remembered by the faces they lie between, so they stay the same edges when anything upstream changes. None picked: every straight convex edge between flat faces."))
+            self.add(specs, "pick_edges", ParameterSpec(name = "pick_edges", label = "Pick edges", kind = ParameterKind.button, join = true,
+                                                        doc = "Show the input body and pick the edges to blend (Enter accepts). Hole rims can be picked too."))
+            self.add(specs, "all_edges", ParameterSpec(name = "all_edges", label = "All edges", kind = ParameterKind.button,
+                                                       doc = "Forget the picked edges: blend every straight convex edge between flat faces."))
         if node_catalog.is_mesh_verb(kind):
             self.add(specs, "reselect", ParameterSpec(name = "reselect", label = "Reselect", kind = ParameterKind.button, join = true,
                                                       doc = "Show the input and pick the group's components again (Enter accepts)."))
@@ -202,6 +212,10 @@ pub class Inspector:
                 self.parameters.set_text(index, row.text)
             elif role == "edits":
                 self.parameters.set_text(index, f"{node.edits.length} edits / {self.workspace.selected_count()} selected")
+            elif role == "edges":
+                self.parameters.set_text(index, cad_nodes.edges_summary(node.texts[0]))
+            elif role == "all_edges":
+                self.parameters.set_enabled(index, node.texts[0] != "")
             elif role == "last":
                 let last = node.edits.length > 0 and node.edits[-1].verb == "PolyExtrude"
                 self.parameters.set_hidden(index, not last)
