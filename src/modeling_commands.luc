@@ -214,7 +214,7 @@ pub func reselect(w: Workspace, id: int) -> unit!:
     w.pending_group = node.texts[0] if node.texts[0].trim() != "" else "*"
     w.pending_type = int(node.values[node_catalog.group_type_slot])
     w.network.selected = node.inputs[0]
-    show(w, node.id)
+    show_prompt(w)
     w.pending_changed = true
     w.notice = "Change the selection, then Enter; Esc cancels"
     w.revision += 1
@@ -230,7 +230,7 @@ pub func pick_edges(w: Workspace, id: int) -> unit!:
     w.begin("Pick edges")
     w.prompt = ToolPrompt(node.id, node.inputs[0], "Pick edges", true)
     w.network.selected = node.inputs[0]
-    show(w, node.id if node.texts[0].trim() != "" else node.inputs[0])
+    show_prompt(w)
     w.component_mode = 2
     w.selection = none
     w.pending_changed = true
@@ -238,17 +238,36 @@ pub func pick_edges(w: Workspace, id: int) -> unit!:
     w.revision += 1
     w.rebuild()
 
+## What a prompt shows: its node's result, or its input while peeking or
+## while the node has no group yet (an empty group means everything).
+func show_prompt(w: Workspace) -> unit!:
+    let prompt = w.prompt else return
+    let node = w.network.find(prompt.node) else return
+    show(w, prompt.input if w.peeking or node.texts[0].trim() == "" else node.id)
+
+## Shift or Cmd pressed or released (`held`) during a tool prompt: peek at
+## its input, or show the tool's result again.
+pub func set_peek(w: Workspace, held: bool) -> unit!:
+    let peeking = held and w.prompt != none
+    if peeking == w.peeking:
+        return
+    w.peeking = peeking
+    show_prompt(w)
+    w.revision += 1
+    w.rebuild()
+
 ## The selection changed during a prompt: the prompted node takes it (its
 ## group, or for a blend references to the picked edges) and its result
-## shows, its input still picked on. With nothing picked the input shows,
-## since an empty group means everything.
+## shows (show_prompt), its input still picked on.
 pub func follow_prompt(w: Workspace) -> unit!:
     let prompt = w.prompt else return
     let node = w.network.find(prompt.node) else return
     let mesh = w.geometry else return
     let chosen = w.current_selection() else return
     if chosen.count() == 0:
-        show(w, prompt.input)
+        node.texts[0] = ""
+        w.network.invalidate(node.id)
+        show_prompt(w)
         w.rebuild()
         return
     if node.kind in ["Fillet", "Chamfer"]:
@@ -259,7 +278,7 @@ pub func follow_prompt(w: Workspace) -> unit!:
         node.values[node_catalog.group_type_slot] = float(w.group_type())
         node.guard = mesh.topology_hash()
     w.network.invalidate(node.id)
-    show(w, node.id)
+    show_prompt(w)
     w.notice = ""
     w.pending_changed = true
     w.rebuild()
@@ -300,6 +319,7 @@ pub func accept_prompt(w: Workspace) -> unit!:
     w.network.selected = node.id
     show(w, node.id)
     w.prompt = none
+    w.peeking = false
     w.notice = ""
     if node.kind in ["Fillet", "Chamfer"]:
         w.selection = none
