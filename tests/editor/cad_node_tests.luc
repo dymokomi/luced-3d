@@ -1,0 +1,44 @@
+## The CAD node: a container of CAD nodes. Inside, a sketch's rectangle
+## extruded is a closed six-faced body; geometry nodes stay out of it and
+## CAD features stay inside; the menu offers CAD categories there; the CAD
+## node places its bodies like a Group.
+from workspace import Workspace
+from luce_cad.cad_geometry import CadGeometry
+import node_commands
+import modeling_commands
+import node_catalog
+from cad_nodes import solid_kinds
+
+pub func cad_node_tests() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Extrude", 0.0, 0.0)
+    assert(w.notice.contains("inside a CAD node") and w.network.nodes.length == 0)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    let cad = w.network.selected
+    node_commands.enter_group(w, cad)
+    assert(w.network.context() == "cad" and node_catalog.categories("cad").contains("Create"))
+    node_commands.add_node(w, "Cube", 0.0, 0.0)
+    assert(w.notice.contains("only CAD nodes"))
+    # A rectangle on XY, extruded 3 along Z.
+    node_commands.add_node(w, "Edit Sketch", 0.0, 0.0)
+    modeling_commands.create(w, "Plane XY")
+    modeling_commands.create(w, "Rectangle")
+    node_commands.add_node(w, "Extrude", 0.0, 120.0)
+    node_commands.set_parameter(w, 0, 3.0)
+    let extrude = w.network.selected
+    let body = w.network.evaluate_data(extrude)
+    assert(CadGeometry.model_count(body.geometry) == 1 and CadGeometry.model(body.geometry, 0).face_count() == 6)
+    let bounds = CadGeometry.model(body.geometry, 0).tessellate(8).bounds()
+    assert(bounds.maximum.z - bounds.minimum.z > 2.999 and bounds.maximum.z - bounds.minimum.z < 3.001)
+    # Every solid primitive cooks to its closed B-rep.
+    let faces = [6, 3, 2, 2, 1]
+    let solids = solid_kinds()
+    for at in 0..<solids.length:
+        node_commands.add_node(w, solids[at], 200.0 + 120.0 * float(at), 0.0)
+        assert(CadGeometry.model(w.network.evaluate_data(w.network.selected).geometry, 0).face_count() == faces[at])
+    # Outside, the CAD node places its bodies as one instance.
+    node_commands.leave_group(w)
+    let placed = w.network.evaluate_data(cad)
+    assert(placed.instance_count() == 1)
+    print("PASS CAD node: CAD nodes inside only, sketch → Extrude body, solid primitives, the CAD node places its bodies")

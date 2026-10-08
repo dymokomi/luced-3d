@@ -15,6 +15,7 @@ from scene_nodes import add_camera, add_light, check_render, add_material, assig
 from shader_nodes import is_shader, graph_kind, math_operations
 from take import Take
 import shader_nodes
+import cad_nodes
 
 pub func kinds() -> list[str]:
     return node_catalog.kinds()
@@ -150,12 +151,16 @@ pub class Node:
         let pivot = Vector3(v[10], v[11], v[12])
         let translation = Vector3(v[1], v[2], v[3]).add(pivot).subtract(Matrix4.compose(Vector3(), rotation, scale).transform_point(pivot))
         # A Group places its children as one instance, hidden with it.
-        if self.kind == "Group":
+        if node_catalog.places_children(self.kind):
             return GeometryData().with_instance(data, translation, rotation, scale, self.visible)
         if node_catalog.is_set_verb(self.kind):
             if not self.enabled:
                 return data
             return evaluate_set_verb(self.kind, v, self.texts, data, second)
+        if cad_nodes.is_cad_only(self.kind):
+            if not self.enabled:
+                return data
+            return cad_nodes.evaluate_cad(self.kind, v, data)
         if self.kind in node_catalog.sources():
             if not self.enabled:
                 return GeometryData()
@@ -270,15 +275,20 @@ pub class Network:
         var depth = 0
         while ancestor >= 0:
             let group = self.require(ancestor)
-            if group.kind != "Group" and group.kind != "Material":
-                error(ui.invalid, "Only a Group or a Material can contain nodes")
+            if not node_catalog.holds_nodes(group.kind):
+                error(ui.invalid, "Only a Group, a CAD node or a Material can contain nodes")
             ancestor = group.parent
             depth += 1
         if depth >= 16:
             error(ui.invalid, "Group nesting is limited to 16 levels")
-        # A Material holds shader nodes, and only it does.
-        if self.in_material() != is_shader(kind):
-            error(ui.invalid, "Shader nodes go inside a Material" if is_shader(kind) else "Inside a Material, only shader nodes")
+        # A Material holds shader nodes, a CAD node CAD nodes, and only they do.
+        let context = self.context()
+        if not cad_nodes.allowed(kind, context, is_shader(kind)):
+            if context == "shading":
+                error(ui.invalid, "Inside a Material, only shader nodes")
+            if context == "cad":
+                error(ui.invalid, "Inside a CAD node, only CAD nodes (sketches, features, solids)")
+            error(ui.invalid, "Shader nodes go inside a Material" if is_shader(kind) else f"{kind} goes inside a CAD node")
         let node = Node(self.next_id, kind, x, y)
         node.parent = self.scope
         self.next_id += 1
@@ -322,6 +332,16 @@ pub class Network:
                 if node.parent == self.scope:
                     result.append(id)
         return result
+
+    ## What the network shown holds: "shading" (a Material's shader nodes),
+    ## "cad" (a CAD node's) or "geometry".
+    pub func context(self) -> str:
+        let scope = self.find(self.scope) else return "geometry"
+        if scope.kind == "Material":
+            return "shading"
+        if scope.kind == "CAD":
+            return "cad"
+        return "geometry"
 
     ## Whether the network shown is a Material's shader nodes.
     pub func in_material(self) -> bool:
@@ -505,7 +525,7 @@ pub class Network:
     ## After `node`'s visibility flag changed: the Group holding it instances
     ## it by the flag, and a Group's own result carries it.
     pub func visibility_changed(self, node: Node):
-        if node.kind == "Group":
+        if node_catalog.places_children(node.kind):
             self.invalidate(node.id)
         elif node.parent >= 0:
             self.invalidate(node.parent)
@@ -577,7 +597,7 @@ pub class Network:
             return GeometryData()
         if node.kind == "Material":
             self.resolve_material(node)
-        if node.kind == "Group":
+        if node_catalog.places_children(node.kind):
             var children = GeometryData()
             if node.enabled:
                 for child in self.outputs(node.id):

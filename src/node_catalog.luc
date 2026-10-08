@@ -18,6 +18,7 @@ from usd_nodes import is_usd_path, Composition, first_variant_slot
 from fbx_nodes import is_fbx_path
 from shader_nodes import is_shader, shader_kinds, shader_categories, shader_category, math_operations
 import shader_nodes
+from cad_nodes import solid_kinds, cad_only_kinds, is_cad_only, cad_categories, cad_category
 
 ## Value slots a node has, and the one verb nodes keep their Group Type in.
 pub let value_slots: int = 32
@@ -175,18 +176,36 @@ func larger(a: float, b: float) -> float:
     return a if a > b else b
 
 pub func sources() -> list[str]:
-    return ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus", "File", "Group"] + generators()
+    return ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus", "File", "Group", "CAD"] + generators() + solid_kinds()
 
-## The menu's categories: geometry nodes', or inside a Material (`shading`)
-## shader nodes'.
-pub func categories(shading: bool = false) -> list[str]:
-    if shading:
+## Nodes holding nodes: Groups (geometry nodes), CAD nodes (CAD features)
+## and Materials (shader nodes).
+pub func holds_nodes(kind: str) -> bool:
+    return kind in ["Group", "CAD", "Material"]
+
+## Containers whose result is their exposed children placed as one instance,
+## by their transform and visibility.
+pub func places_children(kind: str) -> bool:
+    return kind in ["Group", "CAD"]
+
+## The menu's categories in a network's context: geometry nodes', inside a
+## CAD node ("cad") CAD nodes', inside a Material ("shading") shader nodes'.
+pub func categories(context: str = "geometry") -> list[str]:
+    if context == "shading":
         return shader_categories()
+    if context == "cad":
+        return cad_categories()
     return ["Primitives", "Modeling", "Deform", "Curves", "Volumes", "Transform / Copy", "Attributes", "Utility", "File I/O", "Materials", "Render", "All"]
+
+## A node's category in the menu of `context`.
+pub func category_in(kind: str, context: str) -> str:
+    return cad_category(kind) if context == "cad" else category(kind)
 
 pub func category(kind: str) -> str:
     if is_shader(kind):
         return shader_category(kind)
+    if is_cad_only(kind):
+        return cad_category(kind)
     let verb = VerbCatalog.index_of(kind)
     if verb >= 0:
         return VerbCatalog.category(verb)
@@ -196,7 +215,7 @@ pub func category(kind: str) -> str:
         return "Render"
     if kind in material_kinds():
         return "Materials"
-    if kind == "Group":
+    if kind in ["Group", "CAD"]:
         return "Utility"
     if kind in sources():
         return "Primitives"
@@ -209,7 +228,7 @@ pub func category(kind: str) -> str:
     return "Modeling"
 
 pub func kinds() -> list[str]:
-    return sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Switch"] + scene_kinds() + material_kinds() + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Name", "Normal", "Measure", "UVProject", "Color"] + shader_kinds()
+    return sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Switch"] + scene_kinds() + material_kinds() + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Name", "Normal", "Measure", "UVProject", "Color"] + ["Extrude"] + shader_kinds()
 
 pub func input_count(kind: str) -> int:
     if is_shader(kind):
@@ -398,11 +417,13 @@ func value_fields(kind: str) -> list[Parameter]:
         elif kind in ["Cylinder", "Cone"]:
             result.append(number("Height", 2, 2.0, 0.001, 100.0, 0.1, "Length along Y.", true, 10.0))
         return result
-    if kind in ["Transform", "Group"]:
+    if kind in ["Transform", "Group", "CAD"]:
         return [vector("Translate", 1, [0.0, 0.0, 0.0], "Moves the geometry, after rotating and scaling."),
                 vector("Rotate", 4, [0.0, 0.0, 0.0], "Rotation about X, then Y, then Z, in degrees, about the pivot.", suffix = "°"),
                 vector("Scale", 7, [1.0, 1.0, 1.0], "Scale along each axis about the pivot; never zero."),
                 vector("Pivot", 10, [0.0, 0.0, 0.0], "The point rotation and scale happen about.")]
+    if kind in cad_only_kinds():
+        return cad_fields(kind)
     if kind == "Camera":
         return camera_fields()
     if kind == "Light":
@@ -639,6 +660,10 @@ pub func description(kind: str) -> str:
         return VerbCatalog.description(verb)
     if kind == "Group":
         return "Nested network / double-click to enter"
+    if kind == "CAD":
+        return "Solid bodies from sketches and features / double-click to model"
+    if is_cad_only(kind):
+        return "CAD feature / makes a solid body"
     if is_edit(kind):
         return "Select and edit in the viewport; each edit is a step you can undo"
     if kind == "Material":
@@ -666,3 +691,20 @@ pub func description(kind: str) -> str:
     if kind == "Name":
         return "Names faces: Group fields elsewhere pick them by @name=…"
     return "Geometry operator"
+
+## A CAD feature's parameters.
+func cad_fields(kind: str) -> list[Parameter]:
+    if kind == "Solid Box":
+        return [vector("Size", 0, [2.0, 2.0, 2.0], "Width (X), height (Y) and depth (Z), centered on the origin.", 0.001, 100000.0)]
+    if kind in ["Solid Cylinder", "Solid Cone"]:
+        let rows = [number("Radius", 0, 1.0, 0.001, 100000.0, 0.05, "The base's radius.", soft = 5.0), number("Height", 1, 2.0, 0.001, 100000.0, 0.05, "Along +Y, centered on the origin.", soft = 10.0)]
+        if kind == "Solid Cone":
+            rows.append(number("Top radius", 2, 0.0, 0.0, 100000.0, 0.05, "0 is a pointed cone; otherwise a frustum.", soft = 5.0))
+        return rows
+    if kind == "Solid Sphere":
+        return [number("Radius", 0, 1.0, 0.001, 100000.0, 0.05, "Centered on the origin.", soft = 5.0)]
+    if kind == "Solid Torus":
+        return [number("Radius", 0, 1.0, 0.001, 100000.0, 0.05, "The ring's radius, about +Y.", soft = 5.0), number("Tube", 1, 0.25, 0.001, 100000.0, 0.05, "The tube's radius; less than the ring's.", soft = 2.0)]
+    if kind == "Extrude":
+        return [number("Distance", 0, 1.0, -100000.0, 100000.0, 0.05, "How far the sketch's profiles sweep along its plane's normal; negative goes the other way.", soft = 10.0)]
+    return []
