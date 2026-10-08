@@ -1,0 +1,100 @@
+## Takes: one scene, several named states of its switches, for rendering
+## variations without copying the network. A take records each node's
+## visibility, which lights are on (a Light node's bypass) and the camera the
+## Render nodes look through. The active take's state lives in the nodes, so
+## ordinary edits change it; switching records the state into the take left
+## and applies the one chosen. The first take, Main, is where a scene starts.
+from network import Network, Node
+from take import Take
+from shader_nodes import is_shader
+
+## The network's state, recorded as a take named `name`.
+pub func capture(graph: Network, name: str) -> Take:
+    let take = Take(name)
+    for node in graph.nodes:
+        if is_shader(node.kind):
+            continue
+        take.ids.append(node.id)
+        take.visible.append(node.visible)
+        take.enabled.append(node.enabled)
+        take.cameras.append(node.texts[0] if node.kind == "Render" else "")
+    return take
+
+## Put `take`'s state into the nodes it recorded (others keep theirs),
+## invalidating what changed.
+pub func apply(graph: Network, take: Take):
+    for at in 0..<take.ids.length:
+        let node = graph.find(take.ids[at]) else continue
+        if node.visible != take.visible[at]:
+            node.visible = take.visible[at]
+            # Groups instance their children by it.
+            if node.parent >= 0:
+                graph.invalidate(node.parent)
+        if node.kind == "Light" and node.enabled != take.enabled[at]:
+            node.enabled = take.enabled[at]
+            graph.invalidate(node.id)
+        if node.kind == "Render" and node.texts[0] != take.cameras[at]:
+            node.texts[0] = take.cameras[at]
+            graph.invalidate(node.id)
+
+## The takes with the active one's state as the nodes hold it now.
+pub func current(graph: Network) -> list[Take]:
+    let result: list[Take] = []
+    for at in 0..<graph.takes.length:
+        result.append(capture(graph, graph.takes[at].name) if at == graph.take else graph.takes[at].copy())
+    return result
+
+## Make take `index` active.
+pub func switch_to(graph: Network, index: int):
+    if index == graph.take or index < 0 or index >= graph.takes.length:
+        return
+    graph.takes[graph.take] = capture(graph, graph.takes[graph.take].name)
+    apply(graph, graph.takes[index])
+    graph.take = index
+
+## A new take of the current state, made active.
+pub func add_take(graph: Network):
+    graph.takes[graph.take] = capture(graph, graph.takes[graph.take].name)
+    var number = graph.takes.length
+    var name = f"Take {number}"
+    while names(graph).contains(name):
+        number += 1
+        name = f"Take {number}"
+    graph.takes.append(capture(graph, name))
+    graph.take = graph.takes.length - 1
+
+## Remove take `index` (not Main); removing the active one returns to Main.
+pub func remove_take(graph: Network, index: int):
+    if index <= 0 or index >= graph.takes.length:
+        return
+    if index == graph.take:
+        switch_to(graph, 0)
+    _ = graph.takes.remove_at(index)
+    if graph.take > index:
+        graph.take -= 1
+
+pub func names(graph: Network) -> list[str]:
+    let result: list[str] = []
+    for take in graph.takes:
+        result.append(take.name)
+    return result
+
+## The nodes of `kind`, in authoring order.
+pub func scene_nodes(graph: Network, kind: str) -> list[Node]:
+    let result: list[Node] = []
+    for node in graph.nodes:
+        if node.kind == kind:
+            result.append(node)
+    return result
+
+## A Camera node's camera path, as the Render node names it.
+pub func camera_path(node: Node) -> str:
+    let path = node.texts[0].trim()
+    return f"camera{node.id}" if path == "" else path
+
+## The camera the Render nodes look through ("" the first; mixed: the first
+## Render node's).
+pub func render_camera(graph: Network) -> str:
+    for node in scene_nodes(graph, "Render"):
+        return node.texts[0].trim()
+    return ""

@@ -1,0 +1,151 @@
+## The Takes pane's list: the takes (click one to switch to it), then what the
+## active take holds: the camera the Render nodes look through, which lights
+## are on and which outputs are visible. A square marks a choice that is on.
+from luce_ui.ui import Widget, Layout, Constraints, Size, Painter, Event, Font
+from luce_gpu.gpu import RenderTarget, Rect
+from luce_window.input import EventKind
+from workspace import Workspace
+import theme
+from luce_std import math
+from tool_icons import draw_icon
+import takes
+import take_commands
+
+## A row: a heading, a take, a camera choice, a light or an output.
+class TakeRow:
+    let kind: str
+    let label: str
+    ## The take's index, the light's or output's node, or -1.
+    let id: int
+    ## A camera choice's path.
+    let path: str
+    let depth: int
+    let on: bool
+
+    func init(self, kind: str, label: str, id: int = -1, path: str = "", depth: int = 0, on: bool = false):
+        self.kind = kind
+        self.label = label
+        self.id = id
+        self.path = path
+        self.depth = depth
+        self.on = on
+
+pub class TakesList: Widget:
+    let box: Layout
+    let workspace: Workspace
+    let font: Font
+    var rows: list[TakeRow]
+    var scroll: float = 0.0
+    var hovered: int = -1
+
+    pub func init(self, workspace: Workspace, font: Font? = none) -> unit!:
+        self.workspace = workspace
+        self.font = font else Font()
+        self.rows = []
+        self.box = Layout()
+        self.box.set_flex()
+        self.box.set_interactive(true)
+        self.box.set_takes_scroll(true)
+
+    pub func layout(self) -> Layout:
+        return self.box
+    pub func measure(self, available: Constraints) -> Size!:
+        return Size(300.0, 210.0)
+
+    func row_height(self) -> float:
+        return self.font.line_height() + 6.0
+
+    pub func refresh(self) -> unit!:
+        let graph = self.workspace.network
+        self.rows = [TakeRow("heading", "Takes")]
+        for at in 0..<graph.takes.length:
+            self.rows.append(TakeRow("take", graph.takes[at].name, id = at, on = at == graph.take))
+        let renders = takes.scene_nodes(graph, "Render")
+        if renders.length > 0:
+            let chosen = takes.render_camera(graph)
+            self.rows.append(TakeRow("heading", "Camera"))
+            self.rows.append(TakeRow("camera", "First camera", on = chosen == ""))
+            for camera in takes.scene_nodes(graph, "Camera"):
+                let path = takes.camera_path(camera)
+                self.rows.append(TakeRow("camera", camera.name, path = path, on = chosen == path))
+        let lights = takes.scene_nodes(graph, "Light")
+        if lights.length > 0:
+            self.rows.append(TakeRow("heading", "Lights"))
+            for light in lights:
+                self.rows.append(TakeRow("light", light.name, id = light.id, on = light.enabled))
+        self.rows.append(TakeRow("heading", "Visibility"))
+        self.append_outputs(-1, 0)
+        self.scroll = math.clamp(self.scroll, 0.0, self.most_scroll())
+        self.box.invalidate()
+
+    ## Exposed outputs and, inside Groups, theirs.
+    func append_outputs(self, parent: int, depth: int) -> unit!:
+        for node in self.workspace.network.outputs(parent):
+            self.rows.append(TakeRow("output", node.name, id = node.id, depth = depth, on = node.visible))
+            if node.kind == "Group":
+                self.append_outputs(node.id, depth + 1)
+
+    func most_scroll(self) -> float:
+        return math.max(0.0, float(self.rows.length) * self.row_height() - self.box.bounds().height)
+
+    pub func draw(self, target: RenderTarget) -> unit!:
+        let size = target.size()
+        let p = Painter(target)
+        p.rectangle(Rect(0.0, 0.0, size.width, size.height), theme.backdrop())
+        let h = self.row_height()
+        for index in 0..<self.rows.length:
+            let row = self.rows[index]
+            let y = float(index) * h - self.scroll
+            if y + h < 0.0 or y > size.height:
+                continue
+            let text_y = y + (h - self.font.height()) * 0.5
+            if row.kind == "heading":
+                p.text(row.label, 10.0, text_y, theme.text_muted(), self.font)
+                continue
+            let active = row.kind == "take" and row.on
+            if active or self.hovered == index:
+                p.rectangle(Rect(0.0, y, size.width, h - 1.0), theme.grey(74.0) if active else theme.surface())
+            if active:
+                p.rectangle(Rect(0.0, y, 3.0, h - 1.0), theme.accent())
+            let x = 14.0 + float(row.depth) * 18.0
+            var label_x = x
+            if row.kind != "take":
+                # The choice's square: filled while on.
+                let side = math.floor(self.font.height() * 0.6)
+                let top = y + (h - side) * 0.5
+                p.rectangle(Rect(x, top, side, side), theme.accent() if row.on else theme.border())
+                if not row.on:
+                    p.rectangle(Rect(x + 1.0, top + 1.0, side - 2.0, side - 2.0), theme.backdrop())
+                label_x = x + side + 10.0
+            if row.kind == "light" or row.kind == "output":
+                let node = self.workspace.network.require(row.id)
+                draw_icon(p, node.kind, label_x, text_y, self.font.height(), theme.text() if row.on else theme.text_muted())
+                label_x += self.font.height() + 8.0
+            let ink = theme.text() if row.on or row.kind == "take" else theme.text_muted()
+            let limit = int(math.max(1.0, (size.width - label_x - 8.0) / self.font.advance()))
+            p.text(row.label if row.label.length <= limit else row.label[0..<limit] + "…", label_x, text_y, ink, self.font)
+        p.close()
+
+    pub func event(self, event: Event) -> unit!:
+        if event.kind == EventKind.scroll:
+            self.scroll = math.clamp(self.scroll - event.scroll_y * 24.0, 0.0, self.most_scroll())
+        elif event.kind == EventKind.pointer_down and event.button == 0 and event.inside:
+            let index = int((event.y + self.scroll) / self.row_height())
+            if index >= 0 and index < self.rows.length:
+                let row = self.rows[index]
+                if row.kind == "take":
+                    take_commands.switch_take(self.workspace, row.id)
+                elif row.kind == "camera":
+                    take_commands.set_camera(self.workspace, row.path)
+                elif row.kind == "light":
+                    take_commands.toggle_light(self.workspace, row.id)
+                elif row.kind == "output":
+                    take_commands.toggle_visible(self.workspace, row.id)
+                self.refresh()
+        elif event.kind == EventKind.pointer_moved:
+            let index = int((event.y + self.scroll) / self.row_height())
+            let row_kind = self.rows[index].kind if index >= 0 and index < self.rows.length else "heading"
+            self.hovered = index if event.inside and row_kind != "heading" else -1
+        elif event.kind == EventKind.pointer_left:
+            self.hovered = -1
+        self.box.invalidate()

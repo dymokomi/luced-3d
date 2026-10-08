@@ -9,6 +9,8 @@ import project_values as values
 from luce_geocore.geocore import Verbs
 from luce_ui import ui
 from edit_kinds import is_edit
+from take import Take
+import takes
 
 pub func write_graph(doc: Document, graph: Network) -> unit!:
     write_scene(doc, graph)
@@ -17,6 +19,47 @@ pub func write_graph(doc: Document, graph: Network) -> unit!:
         let path = f"/scene/nodes/n{node.id}"
         write_header(doc, path, node)
         write_body(doc, path, node, none)
+    write_takes(doc, graph)
+
+## The takes, the active one's state as the nodes hold it.
+func write_takes(doc: Document, graph: Network) -> unit!:
+    doc.set("/scene", "take", Value.integer(graph.take))
+    doc.add("/scene/takes", "takes")
+    let saved = takes.current(graph)
+    for at in 0..<saved.length:
+        let take = saved[at]
+        let path = f"/scene/takes/t{at}"
+        doc.add(path, "take")
+        doc.set(path, "name", Value.text(take.name))
+        values.put_ids(doc, path, "ids", take.ids)
+        let visible: list[float] = []
+        let enabled: list[float] = []
+        for k in 0..<take.ids.length:
+            visible.append(1.0 if take.visible[k] else 0.0)
+            enabled.append(1.0 if take.enabled[k] else 0.0)
+        doc.set(path, "visible", Value.numbers([visible.length], visible))
+        doc.set(path, "enabled", Value.numbers([enabled.length], enabled))
+        doc.set(path, "cameras", Value.strings([take.cameras.length], take.cameras))
+
+func read_takes(doc: Document, graph: Network) -> unit!:
+    let count = doc.child_count("/scene/takes")
+    if doc.type_at("/scene/takes") != "takes" or count < 1 or count > 256: error(ui.invalid, "Invalid project takes")
+    graph.takes = []
+    for at in 0..<count:
+        let path = f"/scene/takes/t{at}"
+        if not doc.contains(path) or doc.type_at(path) != "take": error(ui.invalid, "Invalid project take")
+        let take = Take(values.line(values.text(doc, path, "name")))
+        take.ids = values.ids(doc, path, "ids", 128, 1)
+        let visible = values.numbers(doc, path, "visible", take.ids.length, take.ids.length)
+        let enabled = values.numbers(doc, path, "enabled", take.ids.length, take.ids.length)
+        let cameras = doc.get(path, "cameras")
+        if cameras.rank() != 1 or cameras.count() != take.ids.length: error(ui.invalid, "Invalid take cameras")
+        for k in 0..<take.ids.length:
+            take.visible.append(visible[k] != 0.0)
+            take.enabled.append(enabled[k] != 0.0)
+            take.cameras.append(values.line(cameras.text_at(k)))
+        graph.takes.append(take)
+    graph.take = values.integer(doc, "/scene", "take", 0, count - 1)
 
 pub func write_scene(doc: Document, graph: Network) -> unit!:
     doc.add("/scene", "luced3d")
@@ -146,6 +189,7 @@ pub func read_graph(doc: Document) -> Network!:
             if graph.require(input).parent != node.parent or graph.depends_on(input, node.id):
                 error(ui.invalid, "Invalid or cyclic project connection")
     read_scene(doc, graph)
+    read_takes(doc, graph)
     if graph.scope != -1 and not (graph.require(graph.scope).kind in ["Group", "Material"]): error(ui.invalid, "Invalid network scope")
     for id in [graph.selected, graph.display]:
         if id != -1 and graph.require(id).parent != graph.scope: error(ui.invalid, "Selection outside network scope")

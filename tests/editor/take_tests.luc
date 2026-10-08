@@ -1,0 +1,75 @@
+## Takes: a take records visibility, which lights are on and the Render
+## camera; switching swaps them in and out of the nodes, undoes, and projects
+## keep every take.
+from workspace import Workspace
+from network import Network
+from luce_prism.prism import Document
+from project_graph import write_graph, read_graph
+import take_commands
+import takes
+
+## The Render node's scene: its lights and the camera it renders through.
+func rendered(graph: Network, id: int) -> (int, str)!:
+    let scene = graph.evaluate_data(id).geometry.scene()
+    let wanted = graph.require(id).texts[0].trim()
+    var lights = 0
+    var camera = ""
+    for index in 0..<scene.count():
+        if not scene.is_camera(index):
+            lights += 1
+        elif camera == "" and (wanted == "" or scene.path(index) == wanted):
+            camera = scene.path(index)
+    return (lights, camera)
+
+pub func take_tests() -> unit!:
+    let w = Workspace()
+    let graph = w.network
+    let cube = graph.nodes[0]
+    # Cube → Camera → Camera → Light → Light → Render.
+    var last = cube.id
+    let chain: list[int] = []
+    for kind in ["Camera", "Camera", "Light", "Light", "Render"]:
+        let node = graph.add(kind, 0.0, 0.0)
+        graph.connect(last, node.id, 0)
+        chain.append(node.id)
+        last = node.id
+    let (first_camera, second_camera, key, fill, render) = (chain[0], chain[1], chain[2], chain[3], chain[4])
+    let second_path = takes.camera_path(graph.require(second_camera))
+    assert(graph.takes.length == 1 and graph.takes[0].name == "Main")
+    assert(rendered(graph, render) == (2, takes.camera_path(graph.require(first_camera))))
+
+    # A take of its own: the fill off, the second camera, the render hidden.
+    take_commands.add_take(w)
+    assert(w.network.takes.length == 2 and w.network.take == 1 and w.network.takes[1].name == "Take 1")
+    take_commands.toggle_light(w, fill)
+    take_commands.set_camera(w, second_path)
+    take_commands.toggle_visible(w, render)
+    take_commands.rename_take(w, "Close-up")
+    assert(rendered(w.network, render) == (1, second_path) and not w.network.require(render).visible)
+
+    # Main as it was; the take's state again on the way back.
+    take_commands.switch_take(w, 0)
+    assert(rendered(w.network, render) == (2, takes.camera_path(w.network.require(first_camera))))
+    assert(w.network.require(fill).enabled and w.network.require(render).visible)
+    take_commands.switch_take(w, 1)
+    assert(rendered(w.network, render) == (1, second_path) and not w.network.require(render).visible)
+    w.undo()
+    assert(w.network.take == 0 and w.network.require(fill).enabled)
+    w.redo()
+    assert(w.network.take == 1 and not w.network.require(fill).enabled)
+
+    # Projects keep every take, the active one as its nodes hold it.
+    let doc = Document()
+    write_graph(doc, w.network)
+    let opened = read_graph(doc)
+    assert(opened.take == 1 and takes.names(opened) == ["Main", "Close-up"])
+    assert(not opened.require(fill).enabled and opened.require(render).texts[0] == second_path)
+    takes.switch_to(opened, 0)
+    assert(opened.require(fill).enabled and opened.require(render).texts[0] == "" and opened.require(render).visible)
+
+    # Deleting the active take returns to Main; Main stays.
+    take_commands.remove_take(w)
+    assert(w.network.takes.length == 1 and w.network.take == 0 and w.network.require(fill).enabled)
+    take_commands.remove_take(w)
+    assert(w.network.takes.length == 1)
+    print("PASS takes: visibility, lights and camera per take, switching, undo, projects, deleting")
