@@ -12,6 +12,7 @@ from luce_cad.cad_geometry import CadGeometry
 from luce_3d.graphics import Vector3
 from viewport_tools import projected
 import node_commands
+import modeling_commands
 import sketch_commands
 from luce_std import math
 from luce_gpu.gpu import Frame
@@ -117,8 +118,9 @@ pub func sketch_node_tests() -> unit!:
     editor.panels.projects.save_to("sketch.prisma")
     editor.panels.projects.load_from("sketch.prisma")
     assert(w.network.require(id).texts[0] == kept)
+    profile_picking(editor)
     editor.close()
-    print("PASS Sketch node: a rectangle drawn on the ground, dimensioned and changed, extruded, undone; a line snapping to a corner; an over-constraining constraint refused; saved and opened")
+    print("PASS Sketch node: a rectangle drawn on the ground, dimensioned and changed, extruded, undone; a line snapping to a corner; an over-constraining constraint refused; saved and opened; Pick profiles takes a click's region, again leaves it")
 
 ## Line `line`'s middle in the sketch `text` describes.
 func middle_of(text: str, line: int) -> list[float]!:
@@ -135,3 +137,34 @@ func render(editor: Luce3D) -> unit!:
     editor.app.layout(1600.0, 1000.0)
     editor.app.render(frame.target())
     frame.close()
+
+## Pick profiles: a 40 x 20 rectangle split by a line at x 15, extruded;
+## a click in the left part takes it alone (15 x 20), a second click there
+## leaves it out again (back to the whole), Enter finishes.
+func profile_picking(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    let s = CadSketch.parse(sketch_commands.rectangle_text(20.0, -10.0, 40.0, 20.0))
+    _ = s.add_line(s.add_point(15.0, 0.0), s.add_point(15.0, -20.0))
+    node_commands.add_node(w, "Sketch", 300.0, 0.0)
+    let sketch = w.network.selected
+    node_commands.set_text(w, 0, s.text())
+    node_commands.add_node(w, "Extrude", 300.0, 120.0)
+    let extrude = w.network.selected
+    node_commands.display_selected(w)
+    editor.app.layout(1600.0, 1000.0)
+    modeling_commands.pick_profiles(w, extrude)
+    assert(editor.panels.view.profiles.active())
+    # The ground plane seen from above (XZ: sketch y runs along -Z).
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    let at = projected(w, Vector3(5.0, 0.0, 10.0), bounds.width, bounds.height)
+    for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+        editor.app.dispatch(Event(kind = kind, x = bounds.x + at[0], y = bounds.y + at[1], button = 0))
+    assert(w.network.require(extrude).texts[0].split(";").length == 1 and w.network.require(extrude).texts[0] != "")
+    let left = CadGeometry.model(w.network.evaluate_data(extrude).geometry, 0).tessellate(8).bounds()
+    assert(near(left.maximum.x - left.minimum.x, 15.0))
+    for kind in [EventKind.pointer_down, EventKind.pointer_up]:
+        editor.app.dispatch(Event(kind = kind, x = bounds.x + at[0], y = bounds.y + at[1], button = 0))
+    assert(w.network.require(extrude).texts[0] == "")
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    assert(w.prompt == none and w.network.require(sketch).kind == "Sketch")

@@ -337,6 +337,14 @@ the top left choose what Select picks: Points, Lines or Shapes.
 Each finished action is one undo step: the editor works on a live sketch
 read from the node and writes it back.
 
+**Profiles.** Curves that cross split each other: every smallest closed
+region is a profile, as in Fusion. Extrude and Revolve take the sketch's
+closed shapes by default (holes left empty, overlapping shapes joined), or
+the profiles picked with **Pick profiles**: the feature's result shows while
+a click in a region adds it or leaves it out (its outline lit); Enter
+finishes. Picked profiles are kept by the curves round them, so they hold as
+dimensions change; **Closed shapes** forgets them.
+
 **Units.** Lengths are kept in millimeters; the document shows and reads
 them in its unit, millimeters or inches (File → Units), kept with the
 project. Every length parameter shows its unit and takes typed units

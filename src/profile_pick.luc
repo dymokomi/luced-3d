@@ -1,0 +1,112 @@
+## Pick profiles: choosing which of a sketch's regions an Extrude or
+## Revolve takes, by clicking in them as in Fusion 360. While the prompt is
+## open the feature's result shows (live as profiles change), with its
+## input sketch's curves over it, the chosen profiles outlined and the one
+## under the pointer lit. A click in a region adds it or takes it away; the
+## node keeps the profiles' keys (luce-cad's: they hold as dimensions
+## change). Enter finishes, Esc undoes the picking.
+from luce_cad.sketch import CadSketch
+from luce_cad.modeling import CadModeling
+from luce_geocore.geocore import GeometrySet
+from luce_gpu.gpu import RenderTarget
+from luce_ui.ui import Event
+from luce_window.input import EventKind
+from workspace import Workspace
+from luce_3d.graphics import CurveLines
+from sketch_node import node_frame, kind_name
+import gizmo_math
+import theme
+
+pub let label = "Pick profiles"
+
+pub class ProfilePick:
+    let w: Workspace
+    ## The input sketch's curves, as of its text and plane.
+    var curves: GeometrySet? = none
+    var made_from: str = ""
+    ## The key under the pointer ("": none).
+    pub var hover: str = ""
+
+    pub func init(self, w: Workspace):
+        self.w = w
+
+    ## Whether profiles are being picked.
+    pub func active(self) -> bool:
+        let prompt = self.w.prompt else return false
+        return prompt.label == label
+
+    ## The input Sketch's curves, made again when its text or plane changed.
+    func sketch(self) -> GeometrySet?!:
+        let prompt = self.w.prompt else return none
+        let input = self.w.network.find(prompt.input) else return none
+        if input.kind != kind_name:
+            return none
+        let key = f"{input.texts[0]}|{input.values[0]}|{input.values[1]}"
+        if key != self.made_from or self.curves == none:
+            let s = CadSketch.parse(input.texts[0])
+            _ = s.solve()
+            let f = node_frame(input.values)
+            self.curves = s.curves(f.origin, f.u, f.v)
+            self.made_from = key
+        return self.curves
+
+    ## The key of the profile under the pointer at (`x`, `y`), or "".
+    func key_at(self, x: float, y: float, width: float, height: float) -> str!:
+        let prompt = self.w.prompt else return ""
+        let input = self.w.network.find(prompt.input) else return ""
+        let curves = self.sketch() else return ""
+        let f = node_frame(input.values)
+        let at = gizmo_math.plane(self.w, x, y, width, height, f.origin, f.normal())
+        return CadModeling.profile_at(curves, at)
+
+    ## Pointer events while picking; whether one was used.
+    pub func event(self, event: Event, width: float, height: float) -> bool!:
+        if not self.active() or event.alt:
+            return false
+        if event.kind == EventKind.pointer_moved:
+            let before = self.hover
+            self.hover = self.key_at(event.x, event.y, width, height)
+            return before != self.hover
+        if event.kind != EventKind.pointer_down or event.button != 0 or not event.inside:
+            return false
+        let key = self.key_at(event.x, event.y, width, height)
+        if key == "":
+            return true
+        let prompt = self.w.prompt else return true
+        let node = self.w.network.find(prompt.node) else return true
+        let keys = toggled(node.texts[0], key)
+        self.w.perform(label, func () -> unit!:
+            node.texts[0] = keys
+            self.w.network.invalidate(node.id)
+            self.w.rebuild())
+        return true
+
+    ## The sketch's curves, the chosen profiles and the hovered one.
+    pub func draw_lines(self, target: RenderTarget) -> unit!:
+        if not self.active():
+            return
+        let curves = self.sketch() else return
+        let prompt = self.w.prompt else return
+        let node = self.w.network.find(prompt.node) else return
+        let camera = self.w.view.camera
+        CurveLines.batch(curves).draw(camera, target, theme.grey(200.0), 1.5)
+        if node.texts[0].trim() != "":
+            CurveLines.batch(CadModeling.profile_outlines(curves, node.texts[0])).draw(camera, target, theme.accent(), 3.0)
+        if self.hover != "":
+            CurveLines.batch(CadModeling.profile_outlines(curves, self.hover)).draw(camera, target, theme.grey(245.0), 2.0)
+
+## `keys` (apart by `;`) with `key` added, or taken away when it was there.
+pub func toggled(keys: str, key: str) -> str:
+    let kept: list[str] = []
+    var found = false
+    for k in keys.split(";"):
+        let t = k.trim()
+        if t == "":
+            continue
+        if t == key:
+            found = true
+        else:
+            kept.append(t)
+    if not found:
+        kept.append(key)
+    return kept.join(";")
