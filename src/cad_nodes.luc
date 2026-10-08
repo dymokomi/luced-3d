@@ -17,7 +17,7 @@ pub func solid_kinds() -> list[str]:
 
 ## Nodes only a CAD node holds.
 pub func cad_only_kinds() -> list[str]:
-    return ["Extrude", "Boolean"] + solid_kinds()
+    return ["Extrude", "Boolean", "Fillet", "Chamfer"] + solid_kinds()
 
 ## Features with a second input (Boolean's tool, Extrude's target bodies).
 pub func two_inputs(kind: str) -> bool:
@@ -46,7 +46,7 @@ pub func cad_categories() -> list[str]:
 pub func cad_category(kind: str) -> str:
     if kind == "Edit Sketch":
         return "Sketch"
-    if kind == "Boolean":
+    if kind in ["Boolean", "Fillet", "Chamfer"]:
         return "Modify"
     if is_cad_only(kind):
         return "Create"
@@ -73,9 +73,24 @@ func operated(made: CadModel, target: GeometryData?, operation: int) -> Geometry
     let body = body_of(other, "target")
     return GeometryData(geometry = CadGeometry.of_model(CadModeling.combined(body, made, operation - 1)))
 
-## A CAD feature's result from its input `data`, its second input and
-## values `v`.
-pub func evaluate_cad(kind: str, v: list[float], data: GeometryData, second: GeometryData? = none) -> GeometryData!:
+## B-rep edge numbers from text: numbers apart by spaces or commas (empty:
+## none, meaning every edge the feature can take).
+pub func edge_numbers(text: str) -> list[int]!:
+    let numbers: list[int] = []
+    for part in text.replace(",", " ").split(" "):
+        let word = part.trim()
+        if word == "":
+            continue
+        var value = 0
+        for at in 0..<word.length:
+            let digit = "0123456789".index_of(word[at..<at + 1]) else error(ui.invalid, "Edges are B-rep edge numbers, apart by spaces")
+            value = value * 10 + digit
+        numbers.append(value)
+    return numbers
+
+## A CAD feature's result from its input `data`, its second input, values
+## `v` and texts `texts`.
+pub func evaluate_cad(kind: str, v: list[float], data: GeometryData, second: GeometryData? = none, texts: list[str]? = none) -> GeometryData!:
     if kind == "Solid Box":
         return GeometryData(geometry = CadGeometry.of_model(CadSolids.box(v[0], v[1], v[2])))
     if kind == "Solid Cylinder":
@@ -91,6 +106,11 @@ pub func evaluate_cad(kind: str, v: list[float], data: GeometryData, second: Geo
         if int(v[1]) != 0 and second == none:
             error(ui.invalid, "Join, Cut and Intersect need target bodies: connect them to the second input")
         return operated(made, second, int(v[1]))
+    if kind == "Fillet" or kind == "Chamfer":
+        let edges = edge_numbers((texts else ["", "", ""])[0])
+        let body = body_of(data, "first")
+        let made = CadModeling.filleted(body, edges, v[0]) if kind == "Fillet" else CadModeling.chamfered(body, edges, v[0])
+        return GeometryData(geometry = CadGeometry.of_model(made))
     if kind == "Boolean":
         let tool = second else error(ui.invalid, "Connect the tool body to the second input")
         return GeometryData(geometry = CadGeometry.of_model(CadModeling.combined(body_of(data, "first"), body_of(tool, "second"), int(v[0]))))
