@@ -11,9 +11,11 @@ from overlay_lines import OverlayLines
 from workspace import Workspace
 from sketch_editor import SketchEditor
 import sketch_modify
+import sketch_create
 from viewport_tools import projected
 import sketch_editor as names
 import sketch_tools
+from sketch_tools import SketchTool
 from luce_ui import ui
 from luce_cad.sketch import CadSketch
 import units
@@ -37,13 +39,22 @@ pub class SketchView:
     ## The open menu (-1: none) and the menu row under the pointer.
     pub var menu: int = -1
     var hover_row: int = -1
+    ## The open menu's row whose variants show beside it (-1: none), and the
+    ## variant under the pointer.
+    var sub_row: int = -1
+    var hover_variant: int = -1
     var hover_button: int = -1
 
     pub func init(self, w: Workspace):
         self.w = w
         self.editor = SketchEditor(w)
         self.editor.on_modify = self.modify
+        self.editor.on_finish = self.finish
         self.batches = []
+
+    ## A drawing tool's clicks are in.
+    func finish(self) -> unit!:
+        sketch_create.finish(self.editor)
 
     ## A MODIFY tool's click on the editor (Shift held: `shift`).
     func modify(self, shift: bool) -> unit!:
@@ -108,33 +119,8 @@ pub class SketchView:
 
     ## What a drawing tool would make with the cursor where it is.
     func rubber_band(self, lines: OverlayLines) -> unit!:
-        let e = self.editor
-        let c = e.clicks
-        if c.length == 0 or not sketch_tools.draws(e.tool):
-            return
-        let f = e.frame
-        let p = e.cursor
-        let first = c[0]
-        if e.tool == "Line":
-            lines.add_segment(f.at(c[-1][0], c[-1][1]), f.at(p[0], p[1]))
-        elif e.tool == "Rectangle":
-            let corners = [[first[0], first[1]], [p[0], first[1]], [p[0], p[1]], [first[0], p[1]]]
-            for at in 0..<4:
-                let a = corners[at]
-                let b = corners[(at + 1) % 4]
-                lines.add_segment(f.at(a[0], a[1]), f.at(b[0], b[1]))
-        elif e.tool == "Circle":
-            lines.add_arc(f.origin, f.u, f.v, first[0], first[1], math.hypot(p[0] - first[0], p[1] - first[1]), 0.0, 2.0 * math.pi)
-        elif e.tool == "Arc":
-            if c.length == 1:
-                lines.add_segment(f.at(first[0], first[1]), f.at(p[0], p[1]))
-            else:
-                let r = math.hypot(c[1][0] - first[0], c[1][1] - first[1])
-                let start = math.atan2(c[1][1] - first[1], c[1][0] - first[0])
-                var sweep = math.atan2(p[1] - first[1], p[0] - first[0]) - start
-                while sweep <= 0.0:
-                    sweep += 2.0 * math.pi
-                lines.add_arc(f.origin, f.u, f.v, first[0], first[1], r, start, sweep)
+        if sketch_tools.draws(self.editor.tool):
+            sketch_create.preview(self.editor, lines)
 
     ## The flat layer: points, glyphs, dimensions, the filter and the toolbar.
     pub func draw(self, p: Painter, width: float, height: float) -> unit!:
@@ -244,10 +230,30 @@ pub class SketchView:
             if at == self.hover_row and tool.ready:
                 p.rectangle(Rect(x + 4.0, y + 1.0, menu_width - 8.0, rows - 2.0), theme.grey(72.0))
             let ink = theme.text() if tool.ready else theme.grey(100.0)
-            icon(p, tool.icon, x + 10.0, y + inset, 18.0, theme.accent() if tool.name == self.editor.tool else ink)
+            let current = tool.name == self.editor.tool or chosen_variant(tool, self.editor.tool)
+            icon(p, tool.icon, x + 10.0, y + inset, 18.0, theme.accent() if current else ink)
             p.text(tool.name, x + 36.0, y + inset, ink)
-            if tool.key != "":
+            if tool.variants.length > 0:
+                p.text("▸", x + menu_width - 20.0, y + inset, ink)
+            elif tool.key != "":
                 p.text(tool.key, x + menu_width - 24.0, y + inset, theme.text_muted())
+        # A row's variants, beside it.
+        if self.sub_row >= 0 and self.sub_row < tools.length:
+            let variants = tools[self.sub_row].variants
+            let sx = x + menu_width + 2.0
+            let sy = menu_top + 4.0 + float(self.sub_row) * rows - 4.0
+            p.rounded_rectangle(Rect(sx, sy, menu_width, float(variants.length) * rows + 8.0), theme.surface(), 4.0)
+            for at in 0..<variants.length:
+                let v = variants[at]
+                let y = sy + 4.0 + float(at) * rows
+                let inset = (rows - 18.0) * 0.5
+                if at == self.hover_variant and v.ready:
+                    p.rectangle(Rect(sx + 4.0, y + 1.0, menu_width - 8.0, rows - 2.0), theme.grey(72.0))
+                let ink = theme.text() if v.ready else theme.grey(100.0)
+                icon(p, v.icon, sx + 10.0, y + inset, 18.0, theme.accent() if v.name == self.editor.tool else ink)
+                p.text(v.name, sx + 36.0, y + inset, ink)
+                if v.key != "":
+                    p.text(v.key, sx + menu_width - 24.0, y + inset, theme.text_muted())
 
     func toolbar_left(self, width: float) -> float:
         return math.max(16.0, (width - 3.0 * button_width - 12.0) * 0.5)
@@ -262,6 +268,7 @@ pub class SketchView:
         let button = int((event.x - left) / (button_width + 6.0)) if event.x >= left and event.y >= top and event.y <= top + button_height else -1
         let on_button = button >= 0 and button < 3 and event.x - left - float(button) * (button_width + 6.0) <= button_width
         var row = -1
+        var variant = -1
         if self.menu >= 0:
             let tools = sketch_tools.tools(self.menu)
             let x = left + float(self.menu) * (button_width + 6.0)
@@ -271,19 +278,39 @@ pub class SketchView:
                 row = int((event.y - menu_top - 4.0) / rows)
                 if row >= tools.length:
                     row = -1
+            # The open variants beside their row.
+            if self.sub_row >= 0 and self.sub_row < tools.length:
+                let sx = x + menu_width + 2.0
+                let sy = menu_top + 4.0 + float(self.sub_row) * rows - 4.0
+                let count = tools[self.sub_row].variants.length
+                if event.x >= sx and event.x <= sx + menu_width and event.y >= sy + 4.0 and event.y < sy + 4.0 + float(count) * rows:
+                    variant = int((event.y - sy - 4.0) / rows)
+            if event.kind == EventKind.pointer_moved and row >= 0:
+                self.sub_row = row if tools[row].variants.length > 0 else -1
         if event.kind == EventKind.pointer_moved:
-            let before = [self.hover_row, self.hover_button]
+            let before = [self.hover_row, self.hover_button, self.hover_variant]
             self.hover_row = row
+            self.hover_variant = variant
             self.hover_button = button if on_button else -1
-            return before != [self.hover_row, self.hover_button] or row >= 0 or on_button
+            return before != [self.hover_row, self.hover_button, self.hover_variant] or row >= 0 or variant >= 0 or on_button
         if event.kind != EventKind.pointer_down or event.button != 0:
             return false
         if on_button:
             self.menu = -1 if self.menu == button else button
+            self.sub_row = -1
+            return true
+        if variant >= 0:
+            let v = sketch_tools.tools(self.menu)[self.sub_row].variants[variant]
+            if v.ready:
+                self.editor.choose(v.name)
+                self.menu = -1
+                self.sub_row = -1
             return true
         if row >= 0:
             let tool = sketch_tools.tools(self.menu)[row]
-            if tool.ready:
+            if tool.variants.length > 0:
+                self.sub_row = row
+            elif tool.ready:
                 self.editor.choose(tool.name)
                 self.menu = -1
             return true
@@ -360,3 +387,10 @@ func icon(p: Painter, asset: str, x: float, y: float, size: float, ink: Color) -
 func row_height_for(count: int, height: float) -> float:
     let room = height - button_height - 12.0 - 6.0 - 8.0 - 12.0
     return math.max(20.0, math.min(row_height, room / float(count)))
+
+## Whether `tool`'s variants include `name`.
+func chosen_variant(tool: SketchTool, name: str) -> bool:
+    for v in tool.variants:
+        if v.name == name:
+            return true
+    return false

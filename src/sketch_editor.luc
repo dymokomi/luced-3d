@@ -73,7 +73,9 @@ pub class SketchEditor:
     ## A drawing tool's placed points: plane coordinates, and the point
     ## entity each is (-1: not made yet).
     pub var clicks: list[list[float]]
-    var click_points: list[int]
+    pub var click_snaps: list[int]
+    ## Each click's point once made (made_point), else -1.
+    var made: list[int]
     ## The cursor on the plane, snapped, and what it snapped to (-1: none).
     pub var cursor: list[float]
     pub var snap: int = -1
@@ -93,6 +95,9 @@ pub class SketchEditor:
     ## A new dimension's value is typed here: called with its constraint and
     ## where the click placing it was (the viewport's points).
     pub var on_value: func(int, float, float) -> unit!? = none
+    ## A drawing tool's clicks are in (sketch_create.luc finishes it), set
+    ## by the view.
+    pub var on_finish: func() -> unit!? = none
     ## A MODIFY tool's click (sketch_modify.luc; Shift held), set by the
     ## view so this module need not know it.
     pub var on_modify: func(bool) -> unit!? = none
@@ -112,7 +117,8 @@ pub class SketchEditor:
         self.frame = node_frame([1.0, 0.0])
         self.frames = FrameCache()
         self.clicks = []
-        self.click_points = []
+        self.click_snaps = []
+        self.made = []
         self.cursor = [0.0, 0.0]
         self.selection = []
         self.picks = []
@@ -228,7 +234,8 @@ pub class SketchEditor:
 
     func reset_tool(self):
         self.clicks = []
-        self.click_points = []
+        self.click_snaps = []
+        self.made = []
         self.picks = []
         self.dragging = -1
 
@@ -292,7 +299,7 @@ pub class SketchEditor:
             self.select_at(event.shift)
         elif sketch_tools.draws(self.tool):
             self.place()
-        elif sketch_tools.modifies(self.tool):
+        elif sketch_tools.modifies(self.tool) or sketch_tools.copies(self.tool):
             if let act = self.on_modify:
                 act(event.shift)
         else:
@@ -345,7 +352,7 @@ pub class SketchEditor:
         self.hover = sketch.pick(self.cursor[0], self.cursor[1], self.reach)
         if free or self.dragging >= 0:
             return
-        let skip = self.click_points[-1] if self.click_points.length > 0 else -1
+        let skip = self.made[-1] if self.made.length > 0 else -1
         if self.hover >= 0 and self.hover != skip and self.hover != self.dragging:
             self.snap = self.hover
             if sketch.kind(self.hover) == point_kind:
@@ -405,70 +412,47 @@ pub class SketchEditor:
             self.commit("Sketch point")
             return
         # Clicking the last point again ends a chain.
-        if self.clicks.length > 0 and self.snap >= 0 and self.snap == self.click_points[-1]:
+        if self.clicks.length > 0 and self.snap >= 0 and self.snap == self.click_snaps[-1]:
             self.reset_tool()
             return
-        let point = self.cursor_point()
         self.clicks.append(self.cursor.copy())
-        self.click_points.append(point)
+        self.click_snaps.append(self.snap)
+        self.made.append(-1)
         self.revision += 1
         if self.tool == "Line" and self.clicks.length == 2:
-            let a = self.click_points[0]
-            let b = self.click_points[1]
+            let a = self.made_point(0)
+            let b = self.made_point(1)
             let line = sketch.add_line(a, b)
             if sketch.y(a) == sketch.y(b):
                 _ = sketch.constrain(horizontal, line)
             elif sketch.x(a) == sketch.x(b):
                 _ = sketch.constrain(vertical, line)
             self.commit("Sketch line")
-            # Chain from the end.
+            # Chain from the end, that point itself.
             self.clicks = [self.clicks[1]]
-            self.click_points = [b]
-        elif self.tool == "Rectangle" and self.clicks.length == 2:
-            self.rectangle()
-            self.reset_tool()
-        elif self.tool == "Circle" and self.clicks.length == 2:
-            let center = self.click_points[0]
-            let r = math.hypot(self.clicks[1][0] - self.clicks[0][0], self.clicks[1][1] - self.clicks[0][1])
-            if r > 0.0:
-                let circle = sketch.add_circle(center, r)
-                # The second click was only a size: a point made for it goes.
-                if self.click_points[1] != self.snap:
-                    sketch.remove(self.click_points[1])
-                elif self.snap >= 0:
-                    _ = sketch.constrain(on_curve, self.snap, circle)
-                self.commit("Sketch circle")
-            self.reset_tool()
-        elif self.tool == "Arc" and self.clicks.length == 3:
-            let center = self.click_points[0]
-            let start = self.click_points[1]
-            let end = self.click_points[2]
-            let r = math.hypot(sketch.x(start) - sketch.x(center), sketch.y(start) - sketch.y(center))
-            # The end lies on the arc's circle, where the cursor points.
-            let aim = math.atan2(sketch.y(end) - sketch.y(center), sketch.x(end) - sketch.x(center))
-            if end != self.snap:
-                sketch.place(end, sketch.x(center) + r * math.cos(aim), sketch.y(center) + r * math.sin(aim))
-            if r > 0.0 and start != end:
-                _ = sketch.add_arc(center, start, end)
-                _ = sketch.solve()
-                self.commit("Sketch arc")
+            self.click_snaps = [b]
+            self.made = [b]
+        elif self.clicks.length == sketch_tools.clicks_for(self.tool):
+            if let finish = self.on_finish:
+                finish()
             self.reset_tool()
 
-    ## Rectangle from the two clicked corners: four lines, level and upright.
-    func rectangle(self) -> unit!:
-        let sketch = self.sketch else return
-        let a = self.click_points[0]
-        let c = self.click_points[1]
-        if sketch.x(a) == sketch.x(c) or sketch.y(a) == sketch.y(c):
-            return
-        let b = sketch.add_point(sketch.x(c), sketch.y(a))
-        let d = sketch.add_point(sketch.x(a), sketch.y(c))
-        let lines = [sketch.add_line(a, b), sketch.add_line(b, c), sketch.add_line(c, d), sketch.add_line(d, a)]
-        _ = sketch.constrain(horizontal, lines[0])
-        _ = sketch.constrain(vertical, lines[1])
-        _ = sketch.constrain(horizontal, lines[2])
-        _ = sketch.constrain(vertical, lines[3])
-        self.commit("Sketch rectangle")
+    ## Click `at`'s point, made once: the point it snapped to, else a new
+    ## one there (on the curve it snapped to).
+    pub func made_point(self, at: int) -> int!:
+        let sketch = self.sketch else return -1
+        if self.made[at] >= 0:
+            return self.made[at]
+        let snapped = self.click_snaps[at]
+        var point = -1
+        if snapped >= 0 and sketch.kind(snapped) == point_kind:
+            point = snapped
+        else:
+            point = sketch.add_point(self.clicks[at][0], self.clicks[at][1])
+            if snapped >= 0:
+                _ = sketch.constrain(on_curve, point, snapped)
+        self.made[at] = point
+        return point
 
     ## Select's click: the entity under the cursor (Shift adds or takes
     ## away), or nothing; a point pressed starts a drag.

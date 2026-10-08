@@ -50,7 +50,7 @@ pub func sketch_node_tests() -> unit!:
     let sketch_editor = editor.panels.view.sketch.editor
     assert(w.sketching() and sketch_editor.active())
     # A rectangle from (0, 0) to (40, 20).
-    sketch_editor.choose("Rectangle")
+    sketch_editor.choose("2-Point Rectangle")
     click(editor, 0.0, 0.0)
     click(editor, 40.0, 20.0)
     var s = CadSketch.parse(w.network.require(id).texts[0])
@@ -121,8 +121,9 @@ pub func sketch_node_tests() -> unit!:
     profile_picking(editor)
     face_sketch(editor)
     modify_tools(editor)
+    create_tools(editor)
     editor.close()
-    print("PASS Sketch node: a rectangle drawn on the ground, dimensioned and changed, extruded, undone; a line snapping to a corner; an over-constraining constraint refused; saved and opened; Pick profiles takes a click's region, again leaves it; a sketch on a box's top face; Trim and a typed fillet")
+    print("PASS Sketch node: a rectangle drawn on the ground, dimensioned and changed, extruded, undone; a line snapping to a corner; an over-constraining constraint refused; saved and opened; Pick profiles takes a click's region, again leaves it; a sketch on a box's top face; Trim and a typed fillet; a 3-point circle, an inscribed hexagon, a slot and a mirrored line")
 
 ## Line `line`'s middle in the sketch `text` describes.
 func middle_of(text: str, line: int) -> list[float]!:
@@ -199,7 +200,7 @@ func face_sketch(editor: Luce3D) -> unit!:
     # Drawn on the face: a rectangle from (-5, -5) to (5, 5) of its plane.
     render(editor)
     let sketch_editor = editor.panels.view.sketch.editor
-    sketch_editor.choose("Rectangle")
+    sketch_editor.choose("2-Point Rectangle")
     click(editor, -5.0, -5.0)
     click(editor, 5.0, 5.0)
     let drawn = w.network.copy().evaluate_data(id)
@@ -248,3 +249,74 @@ func modify_tools(editor: Luce3D) -> unit!:
     w.undo()
     w.undo()
     assert(CadSketch.parse(w.network.require(id).texts[0]).entity_count() == s.entity_count())
+
+## CREATE variants on an empty sketch: a 3-Point Circle through (0, 0),
+## (20, 0) and (10, 10) (center (10, 0), radius 10); an Inscribed Polygon
+## centered at (60, 0) with a corner at (70, 0) (six sides of 10); a slot
+## from (0, -40) to (30, -40), 5 wide; a line mirrored about the slot's
+## a line from (100, 0) to (110, 10) mirrored about x 120.
+func create_tools(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    node_commands.add_node(w, "Sketch", 1200.0, 0.0)
+    let id = w.network.selected
+    node_commands.display_selected(w)
+    w.view.yaw = 0.0
+    w.view.pitch = 1.5
+    w.view.distance = 300.0
+    w.view.target = Vector3(60.0, 0.0, 20.0)
+    w.view.update_camera()
+    render(editor)
+    let e = editor.panels.view.sketch.editor
+    e.choose("3-Point Circle")
+    click(editor, 0.0, 0.0)
+    click(editor, 20.0, 0.0)
+    click(editor, 10.0, 10.0)
+    var now = CadSketch.parse(w.network.require(id).texts[0])
+    var circles = 0
+    for at in 0..<now.entity_count():
+        if now.kind(at) == 2:
+            circles += 1
+            assert(near(now.radius(at), 10.0) and near(now.x(now.part(at, 0)), 10.0) and near(now.y(now.part(at, 0)), 0.0))
+    assert(circles == 1)
+    e.choose("Inscribed Polygon")
+    click(editor, 60.0, 0.0)
+    click(editor, 70.0, 0.0)
+    now = CadSketch.parse(w.network.require(id).texts[0])
+    var sides = 0
+    for at in 0..<now.entity_count():
+        if now.kind(at) == 1 and now.x(now.part(at, 0)) > 45.0:
+            sides += 1
+            let a = now.part(at, 0)
+            let b = now.part(at, 1)
+            assert(near(math.hypot(now.x(b) - now.x(a), now.y(b) - now.y(a)), 10.0))
+    assert(sides == 6)
+    e.choose("Center to Center Slot")
+    click(editor, 0.0, -40.0)
+    click(editor, 30.0, -40.0)
+    click(editor, 15.0, -42.5)
+    now = CadSketch.parse(w.network.require(id).texts[0])
+    var arcs = 0
+    for at in 0..<now.entity_count():
+        if now.kind(at) == 3:
+            arcs += 1
+            assert(near(now.radius(at), 2.5))
+    assert(arcs == 2)
+    # A line, then an upright axis at x 120; Mirror: the line, then the axis.
+    e.choose("Line")
+    click(editor, 100.0, 0.0)
+    click(editor, 110.0, 10.0)
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.escape))
+    click(editor, 120.0, -20.0)
+    click(editor, 120.0, 20.0)
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.escape))
+    let before = CadSketch.parse(w.network.require(id).texts[0]).entity_count()
+    e.choose("Mirror")
+    click(editor, 105.0, 5.0)
+    click(editor, 120.0, 0.0)
+    now = CadSketch.parse(w.network.require(id).texts[0])
+    assert(now.entity_count() == before + 3)
+    var mirrored = false
+    for at in 0..<now.entity_count():
+        if now.kind(at) == 1 and near(now.x(now.part(at, 0)), 140.0) and near(now.x(now.part(at, 1)), 130.0):
+            mirrored = true
+    assert(mirrored)
