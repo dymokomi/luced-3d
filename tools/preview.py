@@ -30,7 +30,7 @@ def build(project, binary, optimization="0"):
                    check=True, env=environment, timeout=480)
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--scene", choices=["default", "edit", "modeling", "spreadsheet", "occlusion", "menu", "shading", "outliner", "cad", "cad_wire", "analytic", "gizmo_move", "gizmo_rotate", "gizmo_scale", "gizmo_pivot", "param_copy", "param_ladder", "param_menu", "render", "shader", "takes", "objects", "cad_node"], default="default")
+parser.add_argument("--scene", choices=["default", "edit", "modeling", "spreadsheet", "occlusion", "menu", "shading", "outliner", "cad", "cad_wire", "analytic", "gizmo_move", "gizmo_rotate", "gizmo_scale", "gizmo_pivot", "param_copy", "param_ladder", "param_menu", "render", "shader", "takes", "objects", "cad_node", "cad_round"], default="default")
 parser.add_argument("--background", action="store_true", help="Run actual background graph computation while capturing")
 parser.add_argument("--file", type=Path, help="External STEP file for the cad scene")
 parser.add_argument("--edge-size", type=float, default=0.0)
