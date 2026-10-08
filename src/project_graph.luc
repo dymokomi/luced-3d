@@ -40,6 +40,9 @@ func write_takes(doc: Document, graph: Network) -> unit!:
         doc.set(path, "visible", Value.numbers([visible.length], visible))
         doc.set(path, "enabled", Value.numbers([enabled.length], enabled))
         doc.set(path, "cameras", Value.strings([take.cameras.length], take.cameras))
+        doc.set(path, "hidden", Value.strings([take.hidden.length], take.hidden))
+        values.put_ids(doc, path, "counts", take.counts)
+        doc.set(path, "transforms", Value.numbers([take.transforms.length], take.transforms))
 
 func read_takes(doc: Document, graph: Network) -> unit!:
     let count = doc.child_count("/scene/takes")
@@ -53,11 +56,19 @@ func read_takes(doc: Document, graph: Network) -> unit!:
         let visible = values.numbers(doc, path, "visible", take.ids.length, take.ids.length)
         let enabled = values.numbers(doc, path, "enabled", take.ids.length, take.ids.length)
         let cameras = doc.get(path, "cameras")
-        if cameras.rank() != 1 or cameras.count() != take.ids.length: error(ui.invalid, "Invalid take cameras")
+        let hidden = doc.get(path, "hidden")
+        if cameras.rank() != 1 or cameras.count() != take.ids.length or hidden.rank() != 1 or hidden.count() != take.ids.length: error(ui.invalid, "Invalid take cameras or hidden objects")
+        take.counts = values.ids(doc, path, "counts", 128, 0)
+        if take.counts.length != take.ids.length: error(ui.invalid, "Invalid take transforms")
+        var total = 0
+        for width in take.counts:
+            total += width
+        take.transforms = values.numbers(doc, path, "transforms", total, total)
         for k in 0..<take.ids.length:
             take.visible.append(visible[k] != 0.0)
             take.enabled.append(enabled[k] != 0.0)
             take.cameras.append(values.line(cameras.text_at(k)))
+            take.hidden.append(hidden.text_at(k))
         graph.takes.append(take)
     graph.take = values.integer(doc, "/scene", "take", 0, count - 1)
 
@@ -89,6 +100,7 @@ pub func write_body(doc: Document, path: str, node: Node, shared: map[int, str]?
     doc.set(path, "parameters", Value.numbers([node.values.length], node.values))
     doc.set(path, "texts", Value.strings([node.texts.length], node.texts))
     doc.set(path, "guard", Value.integer(node.guard))
+    doc.set(path, "hidden", Value.strings([node.hidden.length], node.hidden))
     doc.add(path + "/edits", "recipes")
     doc.set(path, "edit_count", Value.integer(node.edits.length))
     for at in 0..<node.edits.length:
@@ -139,6 +151,12 @@ pub func read_body(doc: Document, path: str, node: Node, shared: map[int, str]?)
         let text = texts.text_at(at)
         node.texts[at] = text if shared != none else values.line(text)
     node.guard = values.stamp(doc, path, "guard") if doc.has_property(path, "guard") else 0
+    let hidden = doc.get(path, "hidden")
+    if hidden.rank() != 1 or hidden.count() > 4096: error(ui.invalid, "Invalid hidden object paths")
+    node.hidden = []
+    for at in 0..<hidden.count():
+        let text = hidden.text_at(at)
+        node.hidden.append(text if shared != none else values.line(text))
     let count = values.integer(doc, path, "edit_count", 0, 100000)
     if count != doc.child_count(path + "/edits") or (not is_edit(node.kind) and count != 0):
         error(ui.invalid, "Invalid Edit recipe collection")

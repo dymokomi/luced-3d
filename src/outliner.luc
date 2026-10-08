@@ -8,6 +8,8 @@ from luce_std import math
 import time
 from tool_icons import draw_icon
 import node_commands
+import take_commands
+from network import Network
 
 pub class OutlineRow:
     pub let id: int
@@ -15,12 +17,61 @@ pub class OutlineRow:
     pub let visible: bool
     pub let path: str
     pub let branch: bool
-    pub func init(self, id: int, depth: int, visible: bool, path: str = "", branch: bool = false):
+    ## A path row hidden itself (not by an ancestor).
+    pub let hidden: bool
+    pub func init(self, id: int, depth: int, visible: bool, path: str = "", branch: bool = false, hidden: bool = false):
         self.id = id
         self.depth = depth
         self.visible = visible
         self.path = path
         self.branch = branch
+        self.hidden = hidden
+
+## The objects: exposed nodes and, inside Groups, theirs; under each node the
+## object paths of its result, hidden ones too (they left the result). A
+## collapsed Group or path (`node id:path`) hides its rows.
+pub func object_rows(graph: Network, collapsed: list[int], collapsed_paths: list[str]) -> list[OutlineRow]!:
+    let rows: list[OutlineRow] = []
+    append_scope(graph, rows, collapsed, collapsed_paths, -1, 0, true)
+    return rows
+
+func append_scope(graph: Network, rows: list[OutlineRow], collapsed: list[int], collapsed_paths: list[str], parent: int, depth: int, visible: bool) -> unit!:
+    for node in graph.outputs(parent):
+        let shown = visible and node.visible
+        rows.append(OutlineRow(node.id, depth, shown))
+        if node.kind == "Group" and not (node.id in collapsed):
+            append_scope(graph, rows, collapsed, collapsed_paths, node.id, depth + 1, shown and node.enabled)
+        elif node.kind != "Group":
+            let paths = node.group_paths.copy()
+            for path in node.hidden:
+                if not (path in paths):
+                    paths.append(path)
+            append_paths(rows, collapsed_paths, node.id, node.hidden, paths, "", depth + 1, shown)
+
+func append_paths(rows: list[OutlineRow], collapsed_paths: list[str], id: int, hidden: list[str], paths: list[str], parent: str, depth: int, visible: bool):
+    let children: list[str] = []
+    for path in paths:
+        if parent != "" and not path.starts_with(parent + "/"): continue
+        let remainder = path[parent.length + 1..<path.length] if parent != "" else path
+        # Absolute paths (USD's "/World/...") start with an empty component:
+        # the first named one is their top level.
+        var component = ""
+        for part in remainder.split("/"):
+            if part != "":
+                component = part
+                break
+        if component == "": continue
+        if parent == "" and remainder.starts_with("/"): component = "/" + component
+        if not (component in children): children.append(component)
+    for component in children:
+        let path = parent + "/" + component if parent != "" else component
+        var branch = false
+        for candidate in paths:
+            if candidate.starts_with(path + "/"): branch = true
+        let shown = visible and not (path in hidden)
+        rows.append(OutlineRow(id, depth, shown, path, branch, hidden = path in hidden))
+        if branch and not (f"{id}:{path}" in collapsed_paths):
+            append_paths(rows, collapsed_paths, id, hidden, paths, path, depth + 1, shown)
 
 pub class Outliner: Widget:
     let box: Layout
@@ -55,43 +106,9 @@ pub class Outliner: Widget:
         return self.font.line_height() + 6.0
 
     pub func refresh(self) -> unit!:
-        self.rows = []
-        self.append_scope(-1, 0, true)
+        self.rows = object_rows(self.workspace.network, self.collapsed, self.collapsed_paths)
         self.scroll = math.clamp(self.scroll, 0.0, math.max(0.0, float(self.rows.length) * self.row_height() - self.box.bounds().height))
         self.box.invalidate()
-
-    func append_scope(self, parent: int, depth: int, visible: bool) -> unit!:
-        for node in self.workspace.network.outputs(parent):
-            let shown = visible and node.visible
-            self.rows.append(OutlineRow(node.id, depth, shown))
-            if node.kind == "Group" and not (node.id in self.collapsed):
-                self.append_scope(node.id, depth + 1, shown and node.enabled)
-            elif node.kind != "Group":
-                self.append_paths(node.id, node.group_paths, "", depth + 1, shown)
-
-    func append_paths(self, id: int, paths: list[str], parent: str, depth: int, visible: bool):
-        let children: list[str] = []
-        for path in paths:
-            if parent != "" and not path.starts_with(parent + "/"): continue
-            let remainder = path[parent.length + 1..<path.length] if parent != "" else path
-            # Absolute paths (USD's "/World/...") start with an empty component:
-            # the first named one is their top level.
-            var component = ""
-            for part in remainder.split("/"):
-                if part != "":
-                    component = part
-                    break
-            if component == "": continue
-            if parent == "" and remainder.starts_with("/"): component = "/" + component
-            if not (component in children): children.append(component)
-        for component in children:
-            let path = parent + "/" + component if parent != "" else component
-            var branch = false
-            for candidate in paths:
-                if candidate.starts_with(path + "/"): branch = true
-            self.rows.append(OutlineRow(id, depth, visible, path, branch))
-            if branch and not (f"{id}:{path}" in self.collapsed_paths):
-                self.append_paths(id, paths, path, depth + 1, visible)
 
     pub func draw(self, target: RenderTarget) -> unit!:
         let size = target.size()
@@ -119,7 +136,7 @@ pub class Outliner: Widget:
             let limit = int(math.max(1.0, (size.width - x - 75.0) / self.font.advance()))
             let label = row.path.split("/")[-1] if row.path != "" else node.name
             p.text(label if label.length <= limit else label[0..<limit] + "…", x + 40.0, text_y, ink, self.font)
-            if row.path == "": p.text("o" if node.visible else "-", size.width - 23.0, text_y, ink, self.font)
+            p.text(("o" if node.visible else "-") if row.path == "" else ("-" if row.hidden else "o"), size.width - 23.0, text_y, ink, self.font)
         if self.rows.length == 0:
             p.text("No exposed outputs", 12.0, 12.0, theme.text_muted(), self.font)
         p.close()
@@ -139,7 +156,9 @@ pub class Outliner: Widget:
                 let node = self.workspace.network.require(row.id)
                 let x = 10.0 + float(row.depth) * 18.0
                 if row.path != "":
-                    if row.branch and event.x >= x and event.x < x + 16.0:
+                    if event.x > self.box.bounds().width - 32.0:
+                        take_commands.toggle_path(self.workspace, row.id, row.path)
+                    elif row.branch and event.x >= x and event.x < x + 16.0:
                         let key = f"{row.id}:{row.path}"
                         if let at = self.collapsed_paths.index_of(key): _ = self.collapsed_paths.remove_at(at)
                         else: self.collapsed_paths.append(key)

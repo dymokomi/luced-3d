@@ -1,15 +1,26 @@
-## Takes: one scene, several named states of its switches, for rendering
-## variations without copying the network. A take records each node's
-## visibility, which lights are on (a Light node's bypass) and the camera the
-## Render nodes look through. The active take's state lives in the nodes, so
+## Takes: one scene, several named states of it, for rendering variations
+## without copying the network. A take records each node's visibility and the
+## objects hidden inside its result, its transform (Translate, Rotate, Scale,
+## Pivot, Position), which lights are on (a Light node's bypass) and the camera
+## the Render nodes look through. The active take's state lives in the nodes, so
 ## ordinary edits change it; switching records the state into the take left
 ## and applies the one chosen. The first take, Main, is where a scene starts.
 from network import Network, Node
 from take import Take
 from shader_nodes import is_shader
+import node_catalog
+
+## The value slots of a kind's transform rows.
+pub func transform_slots(kind: str) -> list[int]!:
+    let slots: list[int] = []
+    for row in node_catalog.fields(kind):
+        if row.kind == "vector" and row.name in ["Translate", "Rotate", "Scale", "Pivot", "Position"]:
+            for k in 0..<row.components:
+                slots.append(row.slot + k)
+    return slots
 
 ## The network's state, recorded as a take named `name`.
-pub func capture(graph: Network, name: str) -> Take:
+pub func capture(graph: Network, name: str) -> Take!:
     let take = Take(name)
     for node in graph.nodes:
         if is_shader(node.kind):
@@ -18,13 +29,31 @@ pub func capture(graph: Network, name: str) -> Take:
         take.visible.append(node.visible)
         take.enabled.append(node.enabled)
         take.cameras.append(node.texts[0] if node.kind == "Render" else "")
+        take.hidden.append(node.hidden.join("\n"))
+        let slots = transform_slots(node.kind)
+        take.counts.append(slots.length)
+        for slot in slots:
+            take.transforms.append(node.values[slot])
     return take
 
 ## Put `take`'s state into the nodes it recorded (others keep theirs),
 ## invalidating what changed.
-pub func apply(graph: Network, take: Take):
+pub func apply(graph: Network, take: Take) -> unit!:
+    var first = 0
     for at in 0..<take.ids.length:
+        let start = first
+        first += take.counts[at]
         let node = graph.find(take.ids[at]) else continue
+        let hidden: list[str] = [] if take.hidden[at] == "" else take.hidden[at].split("\n")
+        if node.hidden != hidden:
+            node.hidden = hidden
+            graph.invalidate(node.id)
+        let slots = transform_slots(node.kind)
+        if slots.length == take.counts[at]:
+            for k in 0..<slots.length:
+                if node.values[slots[k]] != take.transforms[start + k]:
+                    node.values[slots[k]] = take.transforms[start + k]
+                    graph.invalidate(node.id)
         if node.visible != take.visible[at]:
             node.visible = take.visible[at]
             # Groups instance their children by it.
@@ -38,14 +67,14 @@ pub func apply(graph: Network, take: Take):
             graph.invalidate(node.id)
 
 ## The takes with the active one's state as the nodes hold it now.
-pub func current(graph: Network) -> list[Take]:
+pub func current(graph: Network) -> list[Take]!:
     let result: list[Take] = []
     for at in 0..<graph.takes.length:
         result.append(capture(graph, graph.takes[at].name) if at == graph.take else graph.takes[at].copy())
     return result
 
 ## Make take `index` active.
-pub func switch_to(graph: Network, index: int):
+pub func switch_to(graph: Network, index: int) -> unit!:
     if index == graph.take or index < 0 or index >= graph.takes.length:
         return
     graph.takes[graph.take] = capture(graph, graph.takes[graph.take].name)
@@ -53,7 +82,7 @@ pub func switch_to(graph: Network, index: int):
     graph.take = index
 
 ## A new take of the current state, made active.
-pub func add_take(graph: Network):
+pub func add_take(graph: Network) -> unit!:
     graph.takes[graph.take] = capture(graph, graph.takes[graph.take].name)
     var number = graph.takes.length
     var name = f"Take {number}"
@@ -64,7 +93,7 @@ pub func add_take(graph: Network):
     graph.take = graph.takes.length - 1
 
 ## Remove take `index` (not Main); removing the active one returns to Main.
-pub func remove_take(graph: Network, index: int):
+pub func remove_take(graph: Network, index: int) -> unit!:
     if index <= 0 or index >= graph.takes.length:
         return
     if index == graph.take:

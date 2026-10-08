@@ -61,6 +61,9 @@ pub class Node:
     ## renderer's graph text.
     pub var surface_values: list[float]
     pub var shader_graph: str = ""
+    ## Object paths taken out of its result (the outliner's and takes'
+    ## visibility for objects inside it); a path hides what is under it too.
+    pub var hidden: list[str]
 
     pub func init(self, id: int, kind: str, x: float, y: float) -> unit!:
         if not (kind in kinds()):
@@ -95,6 +98,7 @@ pub class Node:
             self.values[0] = 0.5
         self.edits = []
         self.group_paths = []
+        self.hidden = []
 
     pub func copy(self) -> Node!:
         let result = Node(self.id, self.kind, self.x, self.y)
@@ -119,9 +123,21 @@ pub class Node:
         result.source_revision = self.source_revision
         result.summary = self.summary
         result.group_paths = self.group_paths.copy()
+        result.hidden = self.hidden.copy()
         result.stamp = self.stamp
         result.cooked = self.cooked
         return result
+
+    ## `result` without the objects at its hidden paths.
+    pub func shown(self, result: GeometryData) -> GeometryData!:
+        if self.hidden.length == 0:
+            return result
+        let patterns: list[str] = []
+        for path in self.hidden:
+            patterns.append("\"" + path + "\"")
+        let kept = result.blasted(patterns.join(" "), false)
+        kept.warning = result.warning
+        return kept
 
     ## Pure node computation over resolved immutable inputs. Runtime invokes this
     ## only on the compute worker; synchronous callers use the same contract.
@@ -507,7 +523,7 @@ pub class Network:
         visiting.append(id)
         if let report = self.on_progress:
             report(id, 0.0, "Computing")
-        let result = self.cook(node, visiting) catch failure:
+        let result = node.shown(self.cook(node, visiting)) catch failure:
             _ = visiting.pop()
             node.cache = none
             node.group_paths = []

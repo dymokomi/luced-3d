@@ -1,6 +1,7 @@
 ## The Takes pane's list: the takes (click one to switch to it), then what the
 ## active take holds: the camera the Render nodes look through, which lights
-## are on and which outputs are visible. A square marks a choice that is on.
+## are on and which objects are visible (the outliner's rows). A square marks
+## a choice that is on. Transforms are recorded too, edited as usual.
 from luce_ui.ui import Widget, Layout, Constraints, Size, Painter, Event, Font
 from luce_gpu.gpu import RenderTarget, Rect
 from luce_window.input import EventKind
@@ -10,25 +11,30 @@ from luce_std import math
 from tool_icons import draw_icon
 import takes
 import take_commands
+from outliner import object_rows
 
-## A row: a heading, a take, a camera choice, a light or an output.
+## A row: a heading, a take, a camera choice, a light or an object.
 class TakeRow:
     let kind: str
     let label: str
     ## The take's index, the light's or output's node, or -1.
     let id: int
-    ## A camera choice's path.
+    ## A camera choice's path; an object's path in its node's result ("" the
+    ## node itself).
     let path: str
     let depth: int
     let on: bool
+    ## Off under a hidden parent, though on itself.
+    let dimmed: bool
 
-    func init(self, kind: str, label: str, id: int = -1, path: str = "", depth: int = 0, on: bool = false):
+    func init(self, kind: str, label: str, id: int = -1, path: str = "", depth: int = 0, on: bool = false, dimmed: bool = false):
         self.kind = kind
         self.label = label
         self.id = id
         self.path = path
         self.depth = depth
         self.on = on
+        self.dimmed = dimmed
 
 pub class TakesList: Widget:
     let box: Layout
@@ -74,16 +80,13 @@ pub class TakesList: Widget:
             for light in lights:
                 self.rows.append(TakeRow("light", light.name, id = light.id, on = light.enabled))
         self.rows.append(TakeRow("heading", "Visibility"))
-        self.append_outputs(-1, 0)
+        for row in object_rows(graph, [], []):
+            let node = graph.require(row.id)
+            let on = node.visible if row.path == "" else not row.hidden
+            let label = node.name if row.path == "" else row.path.split("/")[-1]
+            self.rows.append(TakeRow("object", label, id = row.id, path = row.path, depth = row.depth, on = on, dimmed = on and not row.visible))
         self.scroll = math.clamp(self.scroll, 0.0, self.most_scroll())
         self.box.invalidate()
-
-    ## Exposed outputs and, inside Groups, theirs.
-    func append_outputs(self, parent: int, depth: int) -> unit!:
-        for node in self.workspace.network.outputs(parent):
-            self.rows.append(TakeRow("output", node.name, id = node.id, depth = depth, on = node.visible))
-            if node.kind == "Group":
-                self.append_outputs(node.id, depth + 1)
 
     func most_scroll(self) -> float:
         return math.max(0.0, float(self.rows.length) * self.row_height() - self.box.bounds().height)
@@ -117,11 +120,11 @@ pub class TakesList: Widget:
                 if not row.on:
                     p.rectangle(Rect(x + 1.0, top + 1.0, side - 2.0, side - 2.0), theme.backdrop())
                 label_x = x + side + 10.0
-            if row.kind == "light" or row.kind == "output":
+            let ink = theme.text() if (row.on and not row.dimmed) or row.kind == "take" else theme.text_muted()
+            if row.kind == "light" or row.kind == "object":
                 let node = self.workspace.network.require(row.id)
-                draw_icon(p, node.kind, label_x, text_y, self.font.height(), theme.text() if row.on else theme.text_muted())
+                draw_icon(p, node.kind if row.path == "" else "Cube", label_x, text_y, self.font.height(), ink)
                 label_x += self.font.height() + 8.0
-            let ink = theme.text() if row.on or row.kind == "take" else theme.text_muted()
             let limit = int(math.max(1.0, (size.width - label_x - 8.0) / self.font.advance()))
             p.text(row.label if row.label.length <= limit else row.label[0..<limit] + "…", label_x, text_y, ink, self.font)
         p.close()
@@ -139,8 +142,10 @@ pub class TakesList: Widget:
                     take_commands.set_camera(self.workspace, row.path)
                 elif row.kind == "light":
                     take_commands.toggle_light(self.workspace, row.id)
-                elif row.kind == "output":
+                elif row.kind == "object" and row.path == "":
                     take_commands.toggle_visible(self.workspace, row.id)
+                elif row.kind == "object":
+                    take_commands.toggle_path(self.workspace, row.id, row.path)
                 self.refresh()
         elif event.kind == EventKind.pointer_moved:
             let index = int((event.y + self.scroll) / self.row_height())
