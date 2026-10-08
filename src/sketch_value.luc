@@ -1,0 +1,68 @@
+## The value box Sketch Dimension opens where its dimension goes, as
+## Fusion's does: the measured value, selected for typing, in the
+## document's unit (any unit may be typed: "25 mm", "1 in"; an angle in
+## degrees). Enter sets the dimension and the sketch follows; Esc or a click
+## elsewhere leaves it as measured.
+from luce_ui.ui import HStack, Text, NumberField, Font, Unit
+from interop import Connection
+from workspace import Workspace
+import sketch_commands
+import units
+
+pub class SketchValue:
+    let w: Workspace
+    pub let field: NumberField
+    pub let body: HStack
+    let label: Text
+    var node: int = -1
+    var constraint: int = -1
+    var angle: bool = false
+    let connections: list[Connection]
+
+    pub func init(self, w: Workspace, font: Font) -> unit!:
+        self.w = w
+        self.label = Text("d1", font = font, muted = true)
+        self.field = NumberField(0.0, -1.0e9, 1.0e9, 1.0, 2, font = font, cells = 9.0)
+        self.body = HStack([self.label, self.field], spacing = 6.0, padding = 6.0)
+        self.body.layout().set_popup(true)
+        self.body.layout().set_visible(false)
+        self.connections = [self.field.on_submit(self.submit), self.field.on_end(self.close)]
+
+    ## Show the box at (`x`, `y`) (the body's coordinates) for dimension
+    ## `constraint` of Sketch node `node`, named `name`, holding `value`
+    ## (mm, or radians for an angle).
+    pub func open(self, node: int, constraint: int, name: str, value: float, angle: bool, x: float, y: float) -> unit!:
+        self.node = node
+        self.constraint = constraint
+        self.angle = angle
+        self.label.set_text(name)
+        if angle:
+            self.field.set_units(Unit(suffix = "°"))
+            self.field.set_value(value * 57.29577951308232)
+        else:
+            self.field.set_units(units.document_unit(self.w))
+            self.field.set_value(value)
+        self.body.layout().set_popup_point(x, y)
+        self.body.layout().set_visible(true)
+        self.field.layout().request_focus()
+
+    pub func is_open(self) -> bool:
+        return self.body.layout().is_visible()
+
+    ## Enter: the typed value is the dimension's.
+    func submit(self) -> unit!:
+        let value = self.field.value()
+        self.body.layout().set_visible(false)
+        sketch_commands.set_dimension(self.w, self.node, self.constraint, value * 0.017453292519943295 if self.angle else value)
+
+    func close(self) -> unit!:
+        self.body.layout().set_visible(false)
+
+    ## A click elsewhere: the dimension stays as measured.
+    pub func dismiss(self) -> unit!:
+        self.body.layout().set_visible(false)
+
+    pub func disconnect(self):
+        for connection in self.connections:
+            connection.disconnect()
+        self.connections.clear()

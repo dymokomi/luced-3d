@@ -88,6 +88,14 @@ pub class SketchEditor:
     var drag_moved: bool = false
     ## Counts changes to the live sketch, so drawings are made again.
     pub var revision: int = 0
+    ## A new dimension's value is typed here: called with its constraint and
+    ## where the click placing it was (the viewport's points).
+    pub var on_value: func(int, float, float) -> unit!? = none
+    ## A click in the viewport (an open value box closes).
+    pub var on_click: func() -> unit!? = none
+    var node_was: int = -1
+    var pointer_x: float = 0.0
+    var pointer_y: float = 0.0
     ## Screen size of the last event, and the reach of a snap in sketch units.
     var width: float = 1.0
     var height: float = 1.0
@@ -127,13 +135,43 @@ pub class SketchEditor:
         let sketch = CadSketch.parse(self.text)
         _ = sketch.solve()
         sketch.analyze()
+        let entering = self.sketch == none or self.node_was != node.id
+        self.node_was = node.id
         self.sketch = sketch
+        if entering:
+            self.look_at()
         let kept: list[int] = []
         for at in self.selection:
             if at < sketch.entity_count():
                 kept.append(at)
         self.selection = kept
         self.revision += 1
+
+    ## Look straight at the sketch plane (x right, y up, as its frame
+    ## says), at the middle of what is drawn, as Fusion's Look At does.
+    pub func look_at(self) -> unit!:
+        let sketch = self.sketch else return
+        let n = self.frame.normal()
+        let view = self.w.view
+        if math.abs(n.y) > 0.5:
+            view.yaw = 0.0
+            view.pitch = 1.5 if n.y > 0.0 else -1.5
+        else:
+            view.yaw = math.atan2(n.x, n.z)
+            view.pitch = 0.0
+        var low = [1.0e30, 1.0e30]
+        var high = [-1.0e30, -1.0e30]
+        for at in 0..<sketch.entity_count():
+            if sketch.kind(at) == point_kind:
+                low = [math.min(low[0], sketch.x(at)), math.min(low[1], sketch.y(at))]
+                high = [math.max(high[0], sketch.x(at)), math.max(high[1], sketch.y(at))]
+        if high[0] >= low[0]:
+            view.target = self.frame.at((low[0] + high[0]) * 0.5, (low[1] + high[1]) * 0.5)
+            view.distance = math.max(20.0, 2.2 * math.max(high[0] - low[0], high[1] - low[1]))
+        else:
+            view.target = self.frame.origin
+        view.update_camera()
+        self.w.revision += 1
 
     ## Write the live sketch to the node as one undo step.
     pub func commit(self, label: str) -> unit!:
@@ -205,6 +243,8 @@ pub class SketchEditor:
             return true
         if event.kind != EventKind.pointer_down or not event.inside:
             return false
+        if let clicked = self.on_click:
+            clicked()
         if event.button == 1:
             # A right click ends what is being drawn.
             self.reset_tool()
@@ -212,6 +252,8 @@ pub class SketchEditor:
         if event.button != 0:
             return false
         self.track(event.x, event.y, event.meta or event.control)
+        self.pointer_x = event.x
+        self.pointer_y = event.y
         if self.tool == "Select":
             self.select_at(event.shift)
         elif sketch_tools.draws(self.tool):
@@ -581,6 +623,10 @@ pub class SketchEditor:
         if sketch.conflicting_count() > 0 or sketch.redundant_count() > 0:
             sketch.set_driven(made, true)
         self.commit("Sketch dimension")
+        # A driving dimension's value is typed where it was placed.
+        if not sketch.driven(made):
+            if let open = self.on_value:
+                open(made, self.pointer_x, self.pointer_y)
 
     func point_line(self, point: int, line: int) -> int!:
         let sketch = self.sketch else return -1
