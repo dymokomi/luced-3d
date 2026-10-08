@@ -1,0 +1,234 @@
+## The Sketch editor's MODIFY tools (luce-cad's sketch/modify.lucb), click
+## by click as Fusion's: Trim, Extend and Break act on the curve clicked
+## (where it was clicked); Fillet and Chamfer take two lines meeting at a
+## corner (or the corner's point), a fifth of the shorter one by default,
+## the fillet's radius then typed in its value box; Offset takes the chain
+## a clicked curve is part of, then a click to its side (that far away);
+## Move/Copy takes the selection (or the entity clicked) from one click to
+## the next (Shift copies); Sketch Scale takes a base point, a point and
+## where that point goes. Change Parameters says where dimensions live.
+from sketch_editor import SketchEditor, point_kind, line_kind
+from luce_cad.sketch import CadSketch
+from luce_std import math
+
+## A MODIFY tool's click (Shift held: `shift`).
+pub func modify_click(e: SketchEditor, shift: bool) -> unit!:
+    let sketch = e.sketch else return
+    let tool = e.tool
+    let x = e.cursor[0]
+    let y = e.cursor[1]
+    let hovered = e.hover
+    let curve = hovered if hovered >= 0 and sketch.kind(hovered) != point_kind else -1
+    if tool == "Change Parameters":
+        e.say("A sketch's dimensions are rows of the Parameters panel (d1, d2, …): change them there")
+        return
+    if tool in ["Trim", "Extend", "Break"]:
+        if curve < 0:
+            return
+        let done = act(e, tool, curve, x, y)
+        if done:
+            e.commit(tool)
+        return
+    if tool == "Fillet" or tool == "Chamfer":
+        corner_click(e, hovered)
+        return
+    if tool == "Offset":
+        offset_click(e, curve, x, y)
+        return
+    if tool == "Move/Copy" or tool == "Sketch Scale":
+        transform_click(e, hovered, shift)
+
+## Trim, Extend or Break curve `curve` at (`x`, `y`); false (and a notice)
+## when it cannot be.
+func act(e: SketchEditor, tool: str, curve: int, x: float, y: float) -> bool!:
+    let sketch = e.sketch else return false
+    var failed = ""
+    if tool == "Trim":
+        sketch.trim(curve, x, y) catch failure:
+            failed = failure.message
+    elif tool == "Extend":
+        sketch.extend(curve, x, y) catch failure:
+            failed = failure.message
+    else:
+        sketch.break_apart(curve, x, y) catch failure:
+            failed = failure.message
+    if failed != "":
+        e.say(failed)
+        return false
+    _ = sketch.solve()
+    return true
+
+## Fillet or Chamfer: two lines (or the point they share).
+func corner_click(e: SketchEditor, hovered: int) -> unit!:
+    let sketch = e.sketch else return
+    if hovered < 0:
+        return
+    var lines: list[int] = []
+    if sketch.kind(hovered) == point_kind:
+        # The two lines on the corner point.
+        for at in 0..<sketch.entity_count():
+            if sketch.kind(at) == line_kind and (sketch.part(at, 0) == hovered or sketch.part(at, 1) == hovered):
+                lines.append(at)
+        if lines.length != 2:
+            e.say(f"{e.tool} rounds a corner of two lines; this point has {lines.length}")
+            return
+    elif sketch.kind(hovered) == line_kind:
+        e.picks.append(hovered)
+        e.revision += 1
+        if e.picks.length < 2:
+            return
+        lines = [e.picks[0], e.picks[1]]
+        e.picks = []
+    else:
+        return
+    let size = 0.2 * math.min(length_of(sketch, lines[0]), length_of(sketch, lines[1]))
+    var failed = ""
+    var made = -1
+    if e.tool == "Fillet":
+        made = sketch.fillet(lines[0], lines[1], size) catch failure:
+            failed = failure.message
+            recover -1
+    else:
+        made = sketch.chamfer(lines[0], lines[1], size) catch failure:
+            failed = failure.message
+            recover -1
+    if failed != "":
+        e.say(failed)
+        return
+    _ = sketch.solve()
+    e.commit(e.tool)
+    # A fillet's radius is its last dimension: typed in its value box.
+    if e.tool == "Fillet" and made >= 0:
+        if let open = e.on_value:
+            open(sketch.constraint_count() - 1, e.pointer_x, e.pointer_y)
+
+## Offset: the first click picks the chain, the second its side and
+## distance.
+func offset_click(e: SketchEditor, curve: int, x: float, y: float) -> unit!:
+    let sketch = e.sketch else return
+    if e.picks.length == 0:
+        if curve < 0:
+            return
+        e.picks = chain_of(e, curve)
+        e.say("Offset: click to the side, as far away as the copy goes")
+        e.revision += 1
+        return
+    let chain = e.picks
+    e.picks = []
+    let distance = distance_to(sketch, chain[0], x, y)
+    if distance <= 0.0:
+        return
+    var failed = ""
+    _ = sketch.offset(chain, distance, x, y) catch failure:
+        failed = failure.message
+        recover 0
+    if failed != "":
+        e.say(failed)
+        return
+    _ = sketch.solve()
+    e.commit("Offset")
+
+## Move/Copy and Sketch Scale: their entities (the selection, else what
+## the first click is on), then their clicks.
+func transform_click(e: SketchEditor, hovered: int, shift: bool) -> unit!:
+    let sketch = e.sketch else return
+    if e.selection.length == 0:
+        if hovered < 0:
+            return
+        e.selection = [hovered]
+        e.revision += 1
+        return
+    e.clicks.append(e.cursor.copy())
+    let wanted = 2 if e.tool == "Move/Copy" else 3
+    if e.clicks.length < wanted:
+        e.revision += 1
+        return
+    let base = e.clicks[0]
+    if e.tool == "Move/Copy":
+        sketch.move(e.selection, e.clicks[1][0] - base[0], e.clicks[1][1] - base[1], shift)
+    else:
+        let reference = math.hypot(e.clicks[1][0] - base[0], e.clicks[1][1] - base[1])
+        let target = math.hypot(e.clicks[2][0] - base[0], e.clicks[2][1] - base[1])
+        if reference > 0.0 and target > 0.0:
+            sketch.scale(e.selection, base[0], base[1], target / reference)
+    e.clicks = []
+    _ = sketch.solve()
+    e.commit(e.tool)
+
+## The curves joined end to end with `curve` (as far as each joint is two
+## curves meeting), in order along the chain.
+func chain_of(e: SketchEditor, curve: int) -> list[int]:
+    let sketch = e.sketch else return [curve]
+    let chain = [curve]
+    # Forward from the curve's end, then back from its start.
+    var tail = end_point(e, curve, false)
+    var going = true
+    while going:
+        going = false
+        let next = only_other(e, tail, chain)
+        if next >= 0:
+            chain.append(next)
+            tail = end_point(e, next, start_point(e, next) != tail)
+            going = true
+    var head = start_point(e, curve)
+    going = true
+    while going:
+        going = false
+        let previous = only_other(e, head, chain)
+        if previous >= 0:
+            chain.insert(0, previous)
+            head = start_point(e, previous) if end_point(e, previous, false) == head else end_point(e, previous, false)
+            going = true
+    _ = sketch
+    return chain
+
+## The one curve besides those in `chain` at point `point`, or -1 (none,
+## or a branch).
+func only_other(e: SketchEditor, point: int, chain: list[int]) -> int:
+    let sketch = e.sketch else return -1
+    if point < 0:
+        return -1
+    var found = -1
+    for at in 0..<sketch.entity_count():
+        if sketch.kind(at) == point_kind or at in chain:
+            continue
+        if start_point(e, at) == point or end_point(e, at, false) == point:
+            if found >= 0:
+                return -1
+            found = at
+    return found
+
+## A curve's start point (-1 for a circle).
+func start_point(e: SketchEditor, curve: int) -> int:
+    let sketch = e.sketch else return -1
+    let k = sketch.kind(curve)
+    if k == line_kind:
+        return sketch.part(curve, 0)
+    return sketch.part(curve, 1) if k == 3 else -1
+
+## A curve's end point, or its start (`start`).
+func end_point(e: SketchEditor, curve: int, start: bool) -> int:
+    let sketch = e.sketch else return -1
+    if start:
+        return start_point(e, curve)
+    let k = sketch.kind(curve)
+    if k == line_kind:
+        return sketch.part(curve, 1)
+    return sketch.part(curve, 2) if k == 3 else -1
+
+func length_of(sketch: CadSketch, line: int) -> float:
+    let a = sketch.part(line, 0)
+    let b = sketch.part(line, 1)
+    return math.hypot(sketch.x(b) - sketch.x(a), sketch.y(b) - sketch.y(a))
+
+## How far (`x`, `y`) is from curve `curve`'s carrier (a line's line, a
+## circle's circle).
+func distance_to(sketch: CadSketch, curve: int, x: float, y: float) -> float:
+    if sketch.kind(curve) == line_kind:
+        let a = sketch.part(curve, 0)
+        let b = sketch.part(curve, 1)
+        let dx = sketch.x(b) - sketch.x(a)
+        let dy = sketch.y(b) - sketch.y(a)
+        return math.abs(dx * (y - sketch.y(a)) - dy * (x - sketch.x(a))) / math.max(math.hypot(dx, dy), 1e-300)
+    let c = sketch.part(curve, 0)
+    return math.abs(math.hypot(x - sketch.x(c), y - sketch.y(c)) - sketch.radius(curve))

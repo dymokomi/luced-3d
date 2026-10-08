@@ -120,8 +120,9 @@ pub func sketch_node_tests() -> unit!:
     assert(w.network.require(id).texts[0] == kept)
     profile_picking(editor)
     face_sketch(editor)
+    modify_tools(editor)
     editor.close()
-    print("PASS Sketch node: a rectangle drawn on the ground, dimensioned and changed, extruded, undone; a line snapping to a corner; an over-constraining constraint refused; saved and opened; Pick profiles takes a click's region, again leaves it; a sketch on a box's top face")
+    print("PASS Sketch node: a rectangle drawn on the ground, dimensioned and changed, extruded, undone; a line snapping to a corner; an over-constraining constraint refused; saved and opened; Pick profiles takes a click's region, again leaves it; a sketch on a box's top face; Trim and a typed fillet")
 
 ## Line `line`'s middle in the sketch `text` describes.
 func middle_of(text: str, line: int) -> list[float]!:
@@ -204,3 +205,46 @@ func face_sketch(editor: Luce3D) -> unit!:
     let drawn = w.network.copy().evaluate_data(id)
     let points = drawn.geometry.bounds()
     assert(near(points.minimum.y, 10.0) and near(points.maximum.y, 10.0) and near(points.maximum.x - points.minimum.x, 10.0))
+
+## MODIFY: a 40 x 20 rectangle crossed by a line at x 20 from y 5 to -25
+## (sketch y down the screen on the ground); Trim on the line above the
+## rectangle takes that piece; Fillet on the top-left corner, then "3 mm"
+## typed: an arc of 3.
+func modify_tools(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    let s = CadSketch.parse(sketch_commands.rectangle_text(20.0, -10.0, 40.0, 20.0))
+    _ = s.add_line(s.add_point(20.0, 5.0), s.add_point(20.0, -25.0))
+    node_commands.add_node(w, "Sketch", 900.0, 0.0)
+    let id = w.network.selected
+    node_commands.set_text(w, 0, s.text())
+    node_commands.display_selected(w)
+    render(editor)
+    let e = editor.panels.view.sketch.editor
+    e.choose("Trim")
+    click(editor, 20.0, 3.0)
+    var now = CadSketch.parse(w.network.require(id).texts[0])
+    var top = -100.0
+    for at in 0..<now.entity_count():
+        if now.kind(at) == 1 and now.x(now.part(at, 0)) == 20.0 and now.x(now.part(at, 1)) == 20.0:
+            top = math.max(now.y(now.part(at, 0)), now.y(now.part(at, 1)))
+    assert(near(top, 0.0))
+    e.choose("Fillet")
+    click(editor, 0.0, 0.0)
+    assert(editor.panels.sketch_value.is_open())
+    render(editor)
+    for c in [51, 32, 109, 109]:
+        editor.app.dispatch(Event(kind = EventKind.text_input, codepoint = c))
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    now = CadSketch.parse(w.network.require(id).texts[0])
+    var arcs = 0
+    var radius = 0.0
+    for at in 0..<now.entity_count():
+        if now.kind(at) == 3:
+            arcs += 1
+            radius = now.radius(at)
+    assert(arcs == 1 and near(radius, 3.0))
+    # Each step one undo: the fillet's typed radius, the fillet, the trim.
+    w.undo()
+    w.undo()
+    w.undo()
+    assert(CadSketch.parse(w.network.require(id).texts[0]).entity_count() == s.entity_count())

@@ -333,6 +333,15 @@ the top left choose what Select picks: Points, Lines or Shapes.
   the sketch as it is; one that repeats or contradicts others is driven
   (shown in parentheses). Each dimension is a row of the parameter panel
   (d1, d2, …) in the document's unit; a new value re-solves the sketch.
+- **Modify**: Trim (T), Extend and Break act on the curve clicked, where it
+  is clicked (Trim takes the piece between its nearest crossings; a
+  circle becomes the arc left). Fillet and Chamfer take two lines meeting
+  at a corner, or the corner's point; the fillet's radius is then typed in
+  its value box. Offset (O) takes the chain a clicked curve is part of,
+  then a click to its side, that far away. Move/Copy (M) takes the
+  selection (or what is clicked) from one click to the next, Shift copying;
+  Sketch Scale takes a base point, a point and where it goes. Blend Curve
+  waits for splines.
 - **Select** picks entities (Shift adds) and drags points, the sketch solving
   as they move (one undo when released); Delete removes the selection and
   what is drawn on it, X toggles construction.
