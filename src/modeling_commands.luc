@@ -218,7 +218,27 @@ pub func reselect(w: Workspace, id: int) -> unit!:
     w.revision += 1
     w.rebuild()
 
-## Enter: the prompted node takes the selection as its group.
+## Pick edges: show the input body of Fillet or Chamfer node `id` with its
+## edges to pick (the Edges level); Enter writes the picked B-rep edges'
+## numbers into the node's Edges.
+pub func pick_edges(w: Workspace, id: int) -> unit!:
+    let node = w.network.require(id)
+    if not (node.kind in ["Fillet", "Chamfer"]) or node.inputs[0] < 0 or w.in_transaction():
+        return
+    w.begin("Pick edges")
+    w.prompt = ToolPrompt(node.id, node.inputs[0], "Pick edges", true)
+    # The input is selected while picking, so its body is what is picked on.
+    w.network.selected = node.inputs[0]
+    show(w, node.inputs[0])
+    w.component_mode = 2
+    w.selection = none
+    w.pending_changed = true
+    w.notice = "Pick the edges to blend (Shift adds), then Enter; Esc cancels"
+    w.revision += 1
+    w.rebuild()
+
+## Enter: the prompted node takes the selection as its group (a blend, the
+## picked B-rep edges' numbers).
 pub func accept_prompt(w: Workspace) -> unit!:
     let prompt = w.prompt else return
     let mesh = w.geometry else return
@@ -227,6 +247,30 @@ pub func accept_prompt(w: Workspace) -> unit!:
     if chosen.count() == 0:
         w.notice = "Select components first, or Esc to cancel"
         w.revision += 1
+        return
+    if node.kind in ["Fillet", "Chamfer"]:
+        let owner = mesh.find_attribute("cad_edge", 4)
+        if owner < 0 or w.domain() != 4:
+            w.notice = "Pick edges of the body (the Edges level)"
+            w.revision += 1
+            return
+        let numbers: list[str] = []
+        var at = chosen.next(-1)
+        while at >= 0:
+            let edge = int(mesh.attribute_value(owner, at))
+            if edge >= 0 and not (f"{edge}" in numbers):
+                numbers.append(f"{edge}")
+            at = chosen.next(at)
+        node.texts[0] = numbers.join(" ")
+        w.network.invalidate(node.id)
+        w.network.selected = node.id
+        show(w, node.id)
+        w.prompt = none
+        w.notice = ""
+        w.selection = none
+        w.pending_changed = true
+        w.commit()
+        w.rebuild()
         return
     node.texts[0] = chosen.expression(mesh)
     node.values[node_catalog.group_type_slot] = float(w.group_type())
