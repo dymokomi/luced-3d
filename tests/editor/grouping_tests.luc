@@ -1,0 +1,42 @@
+## Grouping: Group (Cmd/Ctrl+G) moves the selected node and what feeds it into
+## a new Group where it sat, rewiring its readers; the Group's transform and
+## visibility travel with its result, so renders downstream follow them.
+from workspace import Workspace
+import node_commands
+
+pub func grouping_tests() -> unit!:
+    let w = Workspace()
+    let cube = w.network.nodes[0].id
+    node_commands.select_node(w, cube)
+    node_commands.add_node(w, "Transform", 40.0, 140.0)
+    let moved = w.network.selected
+    node_commands.add_node(w, "Null", 40.0, 240.0)
+    let reader = w.network.selected
+    node_commands.select_node(w, moved)
+    node_commands.group_selected(w)
+    let group = w.network.require(w.network.selected)
+    assert(group.kind == "Group" and group.parent == -1 and w.network.require(reader).inputs[0] == group.id)
+    assert(w.network.require(moved).parent == group.id and w.network.require(cube).parent == group.id)
+    assert(w.network.is_output(moved))
+    var data = w.network.evaluate_data(reader)
+    assert(data.instance_count() == 1 and data.instance_visible(0))
+
+    # Moved and hidden: downstream sees both.
+    node_commands.select_node(w, group.id)
+    node_commands.set_parameter(w, 2, 2.0)
+    node_commands.toggle_visible(w)
+    data = w.network.evaluate_data(reader)
+    assert(data.instance_translation(0).y == 2.0 and not data.instance_visible(0))
+
+    # A node whose input also feeds another node outside cannot go alone.
+    w.undo()
+    w.undo()
+    w.undo()
+    assert(w.network.require(moved).parent == -1 and w.network.require(reader).inputs[0] == moved)
+    node_commands.select_node(w, cube)
+    node_commands.add_node(w, "Null", 240.0, 140.0)
+    node_commands.select_node(w, moved)
+    let count = w.network.nodes.length
+    node_commands.group_selected(w)
+    assert(w.network.nodes.length == count and w.notice.contains("also feeds"))
+    print("PASS grouping: Group the selected node with its inputs, rewired readers, the Group's transform and visibility downstream")
