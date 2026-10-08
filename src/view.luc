@@ -5,8 +5,10 @@ from luce_gpu.gpu import RenderTarget, Rect
 from luce_window.input import EventKind, Key, ScrollUnit
 from workspace import Workspace
 from viewport_tools import ViewportTools, view_buttons_width
+from sketch_view import SketchView
 from actions import Actions
 import theme
+import units
 import time
 from shading_menu import mode_icon
 import modeling_commands
@@ -16,6 +18,8 @@ pub class SceneViewport: Widget:
     let view: SceneView
     let workspace: Workspace
     pub let tools: ViewportTools
+    ## A Sketch node's editor, while one is selected and displayed.
+    pub let sketch: SketchView
     var dragging: bool = false
     var navigation_button: int = 0
     var pending_right: bool = false
@@ -37,6 +41,7 @@ pub class SceneViewport: Widget:
     pub func init(self, workspace: Workspace, actions: Actions) -> unit!:
         self.workspace = workspace
         self.tools = ViewportTools(workspace, actions)
+        self.sketch = SketchView(workspace)
         self.view = SceneView(workspace.scene, workspace.view.camera, Renderer(true))
         self.tools.renderer = self.view.renderer()
         self.view.layout().set_interactive(true)
@@ -83,12 +88,16 @@ pub class SceneViewport: Widget:
         else:
             if let batch = w.batches.patch_batch:
                 batch.draw(w.view.camera, target, theme.grey(55.0))
-        # Curves draw in every mode, over their dimmer control hulls.
-        if w.view.hulls_visible:
+        # Curves draw in every mode, over their dimmer control hulls. A sketch
+        # being edited draws its own curves (live as they move), no hulls.
+        let sketching = self.sketch.editor.active()
+        if w.view.hulls_visible and not sketching:
             for batch in w.batches.hull_batches:
                 batch.draw(w.view.camera, target, theme.grey(110.0))
-        for batch in w.batches.curve_batches:
-            batch.draw(w.view.camera, target, theme.grey(225.0), 1.5)
+        if not sketching:
+            for batch in w.batches.curve_batches:
+                batch.draw(w.view.camera, target, theme.grey(225.0), 1.5)
+        self.sketch.draw_lines(target)
         if w.view.normals_visible:
             if let batch = w.batches.normal_batch:
                 batch.draw(w.view.camera, target, theme.accent())
@@ -108,8 +117,9 @@ pub class SceneViewport: Widget:
         let context = self.workspace.network.context()
         let inside = "CAD / LOCAL" if context == "cad" else ("MATERIAL / LOCAL" if context == "shading" else "GROUP / LOCAL")
         overlay.text("PREVIEW" if self.workspace.network.preview else (inside if self.workspace.network.scope >= 0 else "PERSPECTIVE"), 16.0, 14.0, theme.text_muted())
-        overlay.text("Y up  /  grid: 1 unit", 16.0, size.height - 28.0, theme.text_muted())
+        overlay.text(f"Y up  /  grid: {units.length_text(1.0, units.document_unit(w))}", 16.0, size.height - 28.0, theme.text_muted())
         self.tools.draw(overlay, size.width, size.height)
+        self.sketch.draw(overlay, size.width, size.height)
         # The shading button, left of the view buttons.
         let shading = size.width - view_buttons_width() - 38.0
         overlay.rounded_rectangle(Rect(shading, 8.0, 32.0, 30.0), theme.surface(), 4.0)
@@ -155,6 +165,10 @@ pub class SceneViewport: Widget:
         if event.cancelled:
             self.dragging = false
             self.pending_right = false
+        # The sketch editor's toolbar, then the editor, before other tools.
+        if self.sketch.event(event, bounds.width, bounds.height) or self.sketch.editor.event(event, bounds.width, bounds.height):
+            self.layout().invalidate()
+            return
         if self.tools.event(event, bounds.width, bounds.height):
             self.layout().invalidate()
             return

@@ -11,13 +11,12 @@
 ## the standard Group (text slot 0) and Group Type (value slot
 ## `group_type_slot`) of Houdini.
 from luce_geocore.geocore import Verbs, VerbCatalog
-from luce_std import math
-from edit_kinds import is_edit, edit_kind_names, edit_kind
-from edit_types import first_kind_slot, most_kind_parameters
+from edit_kinds import is_edit, edit_kind_names
 from usd_nodes import is_usd_path, Composition, first_variant_slot
 from fbx_nodes import is_fbx_path
 from shader_nodes import is_shader, shader_kinds, shader_categories, shader_category, math_operations
 import shader_nodes
+import sketch_node
 from cad_nodes import solid_kinds, cad_only_kinds, is_cad_only, cad_categories, cad_category
 import cad_nodes
 
@@ -86,6 +85,8 @@ pub class Parameter:
     pub var soft_maximum: float = 0.0
     pub var join: bool = false
     pub var text: str = ""
+    ## A length (millimeters), shown and typed in the document's unit.
+    pub var length: bool = false
 
     pub func init(self, name: str, slot: int, initial: float, minimum: float = -1000.0, maximum: float = 1000.0, step: float = 0.1, integer: bool = false, decimals: int = 3):
         self.name = name
@@ -112,7 +113,14 @@ func number(label: str, slot: int, initial: float, minimum: float = -1000.0, max
     parameter.slider = slider
     parameter.soft_maximum = soft
     parameter.suffix = suffix
+    parameter.length = is_length(label)
     return parameter
+
+## The rows that are lengths, by label: kept in millimeters and shown in the
+## document's unit. Lens values (focal length, apertures) stay plain.
+func is_length(label: str) -> bool:
+    return label in ["Radius", "Size", "Height", "Width", "Translate", "Tube", "Tube radius", "Top radius", "Target edge", "Spacing", "Soft radius",
+                     "Position", "Pivot", "Offset", "Near clip", "Far clip", "Focus distance", "Longest side", "Distance"]
 
 func whole(label: str, slot: int, initial: float, minimum: float, maximum: float, doc: str = "", slider: bool = false) -> Parameter:
     let parameter = Parameter(label, slot, initial, minimum, maximum, 1.0, true)
@@ -130,6 +138,7 @@ func vector(label: str, slot: int, defaults: list[float], doc: str = "", minimum
         parameter.rest.append(defaults[component])
     parameter.doc = doc
     parameter.suffix = suffix
+    parameter.length = is_length(label)
     return parameter
 
 func toggle(label: str, slot: int, initial: float, doc: str = "") -> Parameter:
@@ -177,7 +186,7 @@ func larger(a: float, b: float) -> float:
     return a if a > b else b
 
 pub func sources() -> list[str]:
-    return ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus", "File", "Group", "CAD"] + generators() + solid_kinds()
+    return ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus", "File", "Group", "CAD", sketch_node.kind_name] + generators() + solid_kinds()
 
 ## Nodes holding nodes: Groups (geometry nodes), CAD nodes (CAD features)
 ## and Materials (shader nodes).
@@ -477,7 +486,7 @@ func value_fields(kind: str) -> list[Parameter]:
                 number("Soft radius", 1, 0.0, 0.0, 100000.0, 0.1, "Points within this distance of the selection follow its moves, less the farther they are. 0 is off.", soft = 5.0),
                 menu("Falloff", 2, "Linear|Quadratic|Cubic|Smooth", 3.0, "How the soft weight falls off with distance."),
                 menu("Symmetry", 3, "None|X|Y|Z", 0.0, "Mirror every tool across the plane through the origin normal to this axis."),
-                toggle("Keep selection", 4, 0.0, "Keep the selected components through topology tools, instead of selecting what the tool made.")] + kind_rows(kind)
+                toggle("Keep selection", 4, 0.0, "Keep the selected components through topology tools, instead of selecting what the tool made.")]
     return []
 
 ## Where a Camera or Light sits: Translate in slots 1-3 and Rotate in 4-6,
@@ -617,19 +626,6 @@ func layer_fields(first: int) -> list[Parameter]:
             heading("Transmission"), transmission, transmission_color, dispersion, abbe,
             heading("Geometry"), number("Opacity", first + 27, 1.0, 0.0, 1.0, 0.05, "Below 1 cuts the surface away, like a leaf's outline; it casts a full shadow for now.", true)]
 
-## An Edit kind's own parameters, in value slots from first_kind_slot.
-func kind_rows(kind: str) -> list[Parameter]:
-    let rows: list[Parameter] = []
-    let edit = edit_kind(kind) else return rows
-    for at in 0..<(edit.parameters.length if edit.parameters.length < most_kind_parameters else most_kind_parameters):
-        let parameter = edit.parameters[at]
-        let slot = first_kind_slot + at
-        if parameter.kind == "toggle":
-            rows.append(toggle(parameter.label, slot, parameter.initial, parameter.doc))
-        else:
-            rows.append(number(parameter.label, slot, parameter.initial, parameter.minimum, parameter.maximum, 0.01, parameter.doc, soft = math.min(parameter.maximum, 10.0)))
-    return rows
-
 ## A verb's parameters as rows, in consecutive value slots from 0.
 func verb_fields(verb: int) -> list[Parameter]:
     let result: list[Parameter] = []
@@ -665,6 +661,8 @@ pub func description(kind: str) -> str:
         return "Nested network / double-click to enter"
     if kind == "CAD":
         return "Solid bodies from sketches and features / double-click to model"
+    if kind == sketch_node.kind_name:
+        return "CAD sketch / curves on a plane, constrained and dimensioned"
     if is_cad_only(kind):
         return "CAD feature / makes a solid body"
     if is_edit(kind):
@@ -697,19 +695,22 @@ pub func description(kind: str) -> str:
 
 ## A CAD feature's parameters.
 func cad_fields(kind: str) -> list[Parameter]:
+    if kind == sketch_node.kind_name:
+        return [menu("Plane", 0, sketch_node.plane_names(), 1.0, "The plane the sketch is drawn on: XY (front), XZ (the ground) or YZ (side)."),
+                number("Offset", 1, 0.0, -100000.0, 100000.0, 1.0, "How far the plane is moved along its normal.", soft = 100.0)]
     if kind == "Solid Box":
-        return [vector("Size", 0, [2.0, 2.0, 2.0], "Width (X), height (Y) and depth (Z), centered on the origin.", 0.001, 100000.0)]
+        return [vector("Size", 0, [20.0, 20.0, 20.0], "Width (X), height (Y) and depth (Z), centered on the origin.", 0.001, 100000.0)]
     if kind in ["Solid Cylinder", "Solid Cone"]:
-        let rows = [number("Radius", 0, 1.0, 0.001, 100000.0, 0.05, "The base's radius.", soft = 5.0), number("Height", 1, 2.0, 0.001, 100000.0, 0.05, "Along +Y, centered on the origin.", soft = 10.0)]
+        let rows = [number("Radius", 0, 10.0, 0.001, 100000.0, 0.5, "The base's radius.", soft = 50.0), number("Height", 1, 20.0, 0.001, 100000.0, 0.5, "Along +Y, centered on the origin.", soft = 100.0)]
         if kind == "Solid Cone":
-            rows.append(number("Top radius", 2, 0.0, 0.0, 100000.0, 0.05, "0 is a pointed cone; otherwise a frustum.", soft = 5.0))
+            rows.append(number("Top radius", 2, 0.0, 0.0, 100000.0, 0.5, "0 is a pointed cone; otherwise a frustum.", soft = 50.0))
         return rows
     if kind == "Solid Sphere":
-        return [number("Radius", 0, 1.0, 0.001, 100000.0, 0.05, "Centered on the origin.", soft = 5.0)]
+        return [number("Radius", 0, 10.0, 0.001, 100000.0, 0.5, "Centered on the origin.", soft = 50.0)]
     if kind == "Solid Torus":
-        return [number("Radius", 0, 1.0, 0.001, 100000.0, 0.05, "The ring's radius, about +Y.", soft = 5.0), number("Tube", 1, 0.25, 0.001, 100000.0, 0.05, "The tube's radius; less than the ring's.", soft = 2.0)]
+        return [number("Radius", 0, 10.0, 0.001, 100000.0, 0.5, "The ring's radius, about +Y.", soft = 50.0), number("Tube", 1, 2.5, 0.001, 100000.0, 0.5, "The tube's radius; less than the ring's.", soft = 20.0)]
     if kind == "Extrude":
-        return [number("Distance", 0, 1.0, -100000.0, 100000.0, 0.05, "How far the sketch's profiles sweep along its plane's normal; negative goes the other way.", soft = 10.0),
+        return [number("Distance", 0, 10.0, -100000.0, 100000.0, 0.5, "How far the sketch's profiles sweep along its plane's normal; negative goes the other way.", soft = 100.0),
                 menu("Operation", 1, "New body|Join|Cut|Intersect", 0.0, "New body: beside the second input's bodies. Join, Cut, Intersect: combined with them."),
                 toggle("Symmetric", 2, 0.0, "Sweep half the distance each way from the sketch's plane.")]
     if kind == "Revolve":
@@ -724,11 +725,11 @@ func cad_fields(kind: str) -> list[Parameter]:
         return [menu("Type", 0, "Linear|Circular", 0.0, "Linear: copies along an axis, Spacing apart. Circular: copies around an axis through the origin, over Angle."),
                 count,
                 menu("Axis", 2, "X|Y|Z", 0.0, "The axis the copies go along or around."),
-                number("Spacing", 3, 2.0, -100000.0, 100000.0, 0.1, "Linear: the distance between copies.", soft = 10.0),
+                number("Spacing", 3, 20.0, -100000.0, 100000.0, 1.0, "Linear: the distance between copies.", soft = 100.0),
                 number("Angle", 4, 360.0, -360.0, 360.0, 5.0, "Circular: the angle the copies spread over (360: evenly around).", suffix = "°"),
                 toggle("Separate bodies", 5, 0.0, "Keep the copies bodies of their own instead of joining them.")]
     if kind in ["Fillet", "Chamfer"]:
-        let size = number("Radius" if kind == "Fillet" else "Distance", 0, 0.1, 0.0001, 100000.0, 0.01, "The rolling ball's radius." if kind == "Fillet" else "How far the chamfer reaches along each face.", soft = 1.0)
+        let size = number("Radius" if kind == "Fillet" else "Distance", 0, 1.0, 0.0001, 100000.0, 0.1, "The rolling ball's radius." if kind == "Fillet" else "How far the chamfer reaches along each face.", soft = 10.0)
         let chain = toggle("Tangent chain", 2, 1.0, "Each picked edge brings the edges continuing it smoothly: a rounded slot's rim, the edges around an earlier fillet.")
         if kind == "Fillet":
             return [size, menu("Continuity", 1, "G1|G2|G3", 0.0, "G1: a circular fillet. G2: curvature flows into the faces (no jump in reflections). G3: its change too, smoother still. Where three meet at a corner they stop short of it, and a patch as smooth as they are rounds it."), chain]

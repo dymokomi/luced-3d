@@ -1,0 +1,64 @@
+## Sketch commands outside the viewport: a Sketch node's dimensions as the
+## parameter panel lists them, and setting one (the sketch solved again,
+## as one undo step with the drag or typing that set it).
+from luce_cad.sketch import CadSketch
+from workspace import Workspace
+import sketch_editor as names
+
+## A dimension of a sketch: its constraint, its name (d1, d2, ... in
+## order), whether it is an angle (radians) or a length (mm), and its value.
+pub class SketchDimension:
+    pub let constraint: int
+    pub let name: str
+    pub let angle: bool
+    pub let value: float
+    pub let driven: bool
+
+    pub func init(self, constraint: int, name: str, angle: bool, value: float, driven: bool):
+        self.constraint = constraint
+        self.name = name
+        self.angle = angle
+        self.value = value
+        self.driven = driven
+
+## The dimensions of the sketch `text` describes.
+pub func dimensions(text: str) -> list[SketchDimension]!:
+    let sketch = CadSketch.parse(text)
+    let found: list[SketchDimension] = []
+    for at in 0..<sketch.constraint_count():
+        let kind = sketch.constraint_kind(at)
+        if not (kind in [names.distance, names.line_distance, 15, 16, names.angle, names.radius, names.diameter]):
+            continue
+        found.append(SketchDimension(at, f"d{found.length + 1}", kind == names.angle, sketch.constraint_value(at), sketch.driven(at)))
+    return found
+
+## Set dimension `constraint` of Sketch node `id` to `value` (mm or
+## radians): kept when the sketch can hold it, else a notice and no change.
+pub func set_dimension(w: Workspace, id: int, constraint: int, value: float) -> unit!:
+    let node = w.network.find(id) else return
+    let sketch = CadSketch.parse(node.texts[0])
+    if constraint < 0 or constraint >= sketch.constraint_count() or sketch.constraint_value(constraint) == value:
+        return
+    sketch.set_value(constraint, value)
+    if not sketch.solve():
+        w.notice = "The sketch cannot hold that dimension"
+        w.revision += 1
+        return
+    let text = sketch.text()
+    w.perform("Change dimension", func () -> unit!:
+        node.texts[0] = text
+        w.network.invalidate(node.id)
+        w.rebuild())
+
+## A sketch of a `width` by `height` rectangle centered on (`cx`, `cy`),
+## its sides level and upright, as text a Sketch node keeps (for scripts,
+## scenes and tests).
+pub func rectangle_text(cx: float, cy: float, width: float, height: float) -> str!:
+    let s = CadSketch.parse("")
+    let x0 = cx - width * 0.5
+    let y0 = cy - height * 0.5
+    let corners = [s.add_point(x0, y0), s.add_point(x0 + width, y0), s.add_point(x0 + width, y0 + height), s.add_point(x0, y0 + height)]
+    for at in 0..<4:
+        let line = s.add_line(corners[at], corners[(at + 1) % 4])
+        _ = s.constrain(names.horizontal if at % 2 == 0 else names.vertical, line)
+    return s.text()

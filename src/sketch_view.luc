@@ -1,0 +1,330 @@
+## What the Sketch editor draws (sketch_editor.luc): its curves as line
+## batches on the plane (made again only when the sketch changes), what is
+## hovered, selected or picked and what is being drawn on top; then, flat
+## on the screen, its points, constraint glyphs and dimension labels, the
+## Points / Lines / Shapes filter at the top left and the CREATE, MODIFY
+## and CONSTRAINTS toolbar along the bottom, whose menus open upward.
+from luce_gpu.gpu import RenderTarget, Rect, Color
+from luce_ui.ui import Event, Painter
+from luce_window.input import EventKind
+from overlay_lines import OverlayLines
+from workspace import Workspace
+from sketch_editor import SketchEditor
+from viewport_tools import projected
+import sketch_editor as names
+import sketch_tools
+from luce_ui import ui
+from luce_cad.sketch import CadSketch
+import units
+import theme
+from luce_std import math
+
+## The toolbar's buttons and its menus' rows.
+let button_width = 132.0
+let button_height = 30.0
+let row_height = 28.0
+let menu_width = 250.0
+
+pub class SketchView:
+    let w: Workspace
+    pub let editor: SketchEditor
+    ## The curve batches as of editor revision `drawn`.
+    var drawn: int = -1
+    var batches: list[OverlayLines]
+    ## The open menu (-1: none) and the menu row under the pointer.
+    pub var menu: int = -1
+    var hover_row: int = -1
+    var hover_button: int = -1
+
+    pub func init(self, w: Workspace):
+        self.w = w
+        self.editor = SketchEditor(w)
+        self.batches = []
+
+    ## The curves, in the 3D pass: free, fully constrained and construction
+    ## ones, then the highlighted and what is being drawn.
+    pub func draw_lines(self, target: RenderTarget) -> unit!:
+        let e = self.editor
+        if not e.active():
+            return
+        e.sync()
+        let sketch = e.sketch else return
+        let f = e.frame
+        if self.drawn != e.revision:
+            self.batches = []
+            for which in 0..<3:
+                let lines = OverlayLines.make()
+                lines.add_sketch(sketch, f.origin, f.u, f.v, which)
+                self.batches.append(lines)
+            self.drawn = e.revision
+        let camera = self.w.view.camera
+        let colors = [theme.sketch_free(), theme.sketch_fixed(), theme.sketch_construction()]
+        for which in 0..<3:
+            if self.batches[which].count() > 0:
+                self.batches[which].batch().draw(camera, target, colors[which], 1.5)
+        let chosen = OverlayLines.make()
+        for at in e.selection + e.picks:
+            chosen.add_sketch(sketch, f.origin, f.u, f.v, 3, at)
+        if chosen.count() > 0:
+            chosen.batch().draw(camera, target, theme.accent(), 2.5)
+        let hovered = OverlayLines.make()
+        if e.hover >= 0:
+            hovered.add_sketch(sketch, f.origin, f.u, f.v, 3, e.hover)
+        self.rubber_band(hovered)
+        if hovered.count() > 0:
+            hovered.batch().draw(camera, target, theme.grey(245.0), 2.0)
+
+    ## What a drawing tool would make with the cursor where it is.
+    func rubber_band(self, lines: OverlayLines) -> unit!:
+        let e = self.editor
+        let c = e.clicks
+        if c.length == 0 or not sketch_tools.draws(e.tool):
+            return
+        let f = e.frame
+        let p = e.cursor
+        let first = c[0]
+        if e.tool == "Line":
+            lines.add_segment(f.at(c[-1][0], c[-1][1]), f.at(p[0], p[1]))
+        elif e.tool == "Rectangle":
+            let corners = [[first[0], first[1]], [p[0], first[1]], [p[0], p[1]], [first[0], p[1]]]
+            for at in 0..<4:
+                let a = corners[at]
+                let b = corners[(at + 1) % 4]
+                lines.add_segment(f.at(a[0], a[1]), f.at(b[0], b[1]))
+        elif e.tool == "Circle":
+            lines.add_arc(f.origin, f.u, f.v, first[0], first[1], math.hypot(p[0] - first[0], p[1] - first[1]), 0.0, 2.0 * math.pi)
+        elif e.tool == "Arc":
+            if c.length == 1:
+                lines.add_segment(f.at(first[0], first[1]), f.at(p[0], p[1]))
+            else:
+                let r = math.hypot(c[1][0] - first[0], c[1][1] - first[1])
+                let start = math.atan2(c[1][1] - first[1], c[1][0] - first[0])
+                var sweep = math.atan2(p[1] - first[1], p[0] - first[0]) - start
+                while sweep <= 0.0:
+                    sweep += 2.0 * math.pi
+                lines.add_arc(f.origin, f.u, f.v, first[0], first[1], r, start, sweep)
+
+    ## The flat layer: points, glyphs, dimensions, the filter and the toolbar.
+    pub func draw(self, p: Painter, width: float, height: float) -> unit!:
+        let e = self.editor
+        if not e.active():
+            self.menu = -1
+            return
+        e.sync()
+        let sketch = e.sketch else return
+        let f = e.frame
+        for at in 0..<sketch.entity_count():
+            if sketch.kind(at) != names.point_kind:
+                continue
+            let s = projected(self.w, f.at(sketch.x(at), sketch.y(at)), width, height)
+            if s[2] < 0.0:
+                continue
+            let chosen = at in e.selection or at in e.picks
+            let color = theme.accent() if chosen else (theme.sketch_fixed() if sketch.fixed(at) else theme.sketch_free())
+            let size = 7.0 if at == e.hover or chosen else 5.0
+            p.rectangle(Rect(s[0] - size * 0.5, s[1] - size * 0.5, size, size), color)
+        if e.snap >= 0 and sketch.kind(e.snap) == names.point_kind:
+            let s = projected(self.w, f.at(e.cursor[0], e.cursor[1]), width, height)
+            outline(p, Rect(s[0] - 7.0, s[1] - 7.0, 14.0, 14.0), theme.accent())
+        self.glyphs(p, width, height)
+        self.filter(p)
+        self.toolbar(p, width, height)
+
+    ## Each constraint's glyph beside what it holds, each dimension's value
+    ## (driven ones in parentheses).
+    func glyphs(self, p: Painter, width: float, height: float) -> unit!:
+        let e = self.editor
+        let sketch = e.sketch else return
+        let f = e.frame
+        let shown_unit = units.document_unit(self.w)
+        for at in 0..<sketch.constraint_count():
+            let kind = sketch.constraint_kind(at)
+            let first = sketch.constraint_entity(at, 0)
+            let second = sketch.constraint_entity(at, 1)
+            var label = ""
+            var where = [0.0, 0.0]
+            if kind in [names.distance, names.line_distance]:
+                where = middle(sketch, first, second)
+                label = units.length_text(sketch.constraint_value(at), shown_unit)
+            elif kind == names.radius or kind == names.diameter:
+                let c = sketch.part(first, 0)
+                let r = sketch.radius(first)
+                where = [sketch.x(c) + r * 0.7071, sketch.y(c) + r * 0.7071]
+                label = ("R " if kind == names.radius else "Ø ") + units.length_text(sketch.constraint_value(at), shown_unit)
+            elif kind == names.angle:
+                where = middle(sketch, first, -1)
+                label = units.angle_text(math.abs(sketch.constraint_value(at)))
+            else:
+                label = glyph(kind)
+                if label == "":
+                    continue
+                where = middle(sketch, first, -1)
+            if sketch.driven(at):
+                label = f"({label})"
+            let s = projected(self.w, f.at(where[0], where[1]), width, height)
+            if s[2] < 0.0:
+                continue
+            let dimension = kind in [names.distance, names.line_distance, names.radius, names.diameter, names.angle]
+            if dimension:
+                p.rounded_rectangle(Rect(s[0] - 4.0, s[1] - 22.0, float(label.length) * 8.0 + 8.0, 20.0), theme.surface(), 3.0)
+                p.text(label, s[0], s[1] - 20.0, theme.text())
+            else:
+                p.rounded_rectangle(Rect(s[0] + 6.0, s[1] + 4.0, float(label.length) * 8.0 + 6.0, 18.0), theme.grey(60.0), 3.0)
+                p.text(label, s[0] + 9.0, s[1] + 5.0, theme.text_muted())
+
+    ## The selection filter at the top left: Points, Lines, Shapes.
+    func filter(self, p: Painter) -> unit!:
+        let icons = ["vertex-select", "edge-select", "face-select"]
+        for at in 0..<3:
+            let x = 16.0 + float(at) * 38.0
+            let on = self.editor.level == at
+            p.rounded_rectangle(Rect(x, 44.0, 32.0, 30.0), theme.accent() if on else theme.surface(), 4.0)
+            icon(p, icons[at], x + 6.0, 49.0, 20.0, theme.backdrop() if on else theme.text())
+        p.text(["Points", "Lines", "Shapes"][self.editor.level], 132.0, 51.0, theme.text_muted())
+
+    ## The toolbar along the bottom, and the open menu above its button.
+    func toolbar(self, p: Painter, width: float, height: float) -> unit!:
+        let menus = sketch_tools.menu_names()
+        let left = self.toolbar_left(width)
+        let top = height - button_height - 12.0
+        for at in 0..<menus.length:
+            let x = left + float(at) * (button_width + 6.0)
+            let open = at == self.menu
+            let tool_here = sketch_tools.in_menu(self.editor.tool, at)
+            p.rounded_rectangle(Rect(x, top, button_width, button_height), theme.grey(72.0) if open or at == self.hover_button else theme.surface(), 4.0)
+            if tool_here:
+                p.rectangle(Rect(x + 6.0, top + button_height - 3.0, button_width - 12.0, 2.0), theme.accent())
+            p.text(menus[at] + " ▾", x + 12.0, top + 7.0, theme.text())
+        if self.menu < 0:
+            return
+        let tools = sketch_tools.tools(self.menu)
+        let x = left + float(self.menu) * (button_width + 6.0)
+        let bottom = top - 6.0
+        let rows = row_height_for(tools.length, height)
+        let menu_top = bottom - float(tools.length) * rows - 8.0
+        p.rounded_rectangle(Rect(x, menu_top, menu_width, bottom - menu_top), theme.surface(), 4.0)
+        for at in 0..<tools.length:
+            let tool = tools[at]
+            let y = menu_top + 4.0 + float(at) * rows
+            let inset = (rows - 18.0) * 0.5
+            if tool.group_start and at > 0:
+                p.rectangle(Rect(x + 8.0, y, menu_width - 16.0, 1.0), theme.border())
+            if at == self.hover_row and tool.ready:
+                p.rectangle(Rect(x + 4.0, y + 1.0, menu_width - 8.0, rows - 2.0), theme.grey(72.0))
+            let ink = theme.text() if tool.ready else theme.grey(100.0)
+            icon(p, tool.icon, x + 10.0, y + inset, 18.0, theme.accent() if tool.name == self.editor.tool else ink)
+            p.text(tool.name, x + 36.0, y + inset, ink)
+            if tool.key != "":
+                p.text(tool.key, x + menu_width - 24.0, y + inset, theme.text_muted())
+
+    func toolbar_left(self, width: float) -> float:
+        return math.max(16.0, (width - 3.0 * button_width - 12.0) * 0.5)
+
+    ## Clicks on the filter, the toolbar and its menus; whether used.
+    pub func event(self, event: Event, width: float, height: float) -> bool!:
+        if not self.editor.active():
+            self.menu = -1
+            return false
+        let left = self.toolbar_left(width)
+        let top = height - button_height - 12.0
+        let button = int((event.x - left) / (button_width + 6.0)) if event.x >= left and event.y >= top and event.y <= top + button_height else -1
+        let on_button = button >= 0 and button < 3 and event.x - left - float(button) * (button_width + 6.0) <= button_width
+        var row = -1
+        if self.menu >= 0:
+            let tools = sketch_tools.tools(self.menu)
+            let x = left + float(self.menu) * (button_width + 6.0)
+            let rows = row_height_for(tools.length, height)
+            let menu_top = top - 6.0 - float(tools.length) * rows - 8.0
+            if event.x >= x and event.x <= x + menu_width and event.y >= menu_top + 4.0 and event.y < top - 10.0:
+                row = int((event.y - menu_top - 4.0) / rows)
+                if row >= tools.length:
+                    row = -1
+        if event.kind == EventKind.pointer_moved:
+            let before = [self.hover_row, self.hover_button]
+            self.hover_row = row
+            self.hover_button = button if on_button else -1
+            return before != [self.hover_row, self.hover_button] or row >= 0 or on_button
+        if event.kind != EventKind.pointer_down or event.button != 0:
+            return false
+        if on_button:
+            self.menu = -1 if self.menu == button else button
+            return true
+        if row >= 0:
+            let tool = sketch_tools.tools(self.menu)[row]
+            if tool.ready:
+                self.editor.choose(tool.name)
+                self.menu = -1
+            return true
+        if self.menu >= 0:
+            self.menu = -1
+            return true
+        if event.y >= 44.0 and event.y <= 74.0 and event.x >= 16.0 and event.x < 16.0 + 3.0 * 38.0:
+            self.editor.level = int((event.x - 16.0) / 38.0)
+            self.editor.selection = []
+            self.editor.revision += 1
+            return true
+        return false
+
+## Where a constraint on entities `first` (and `second`) shows: a line's
+## middle, a curve's center offset, a point, or between two points.
+func middle(sketch: CadSketch, first: int, second: int) -> list[float]:
+    let a = place_of(sketch, first)
+    if second < 0:
+        return a
+    let b = place_of(sketch, second)
+    return [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
+
+func place_of(sketch: CadSketch, at: int) -> list[float]:
+    let kind = sketch.kind(at)
+    if kind == names.point_kind:
+        return [sketch.x(at), sketch.y(at)]
+    if kind == names.line_kind:
+        let a = sketch.part(at, 0)
+        let b = sketch.part(at, 1)
+        return [(sketch.x(a) + sketch.x(b)) * 0.5, (sketch.y(a) + sketch.y(b)) * 0.5]
+    let c = sketch.part(at, 0)
+    let r = sketch.radius(at)
+    return [sketch.x(c), sketch.y(c) + r]
+
+## A constraint's glyph (none for those drawn by the points themselves).
+func glyph(kind: int) -> str:
+    if kind == names.horizontal:
+        return "H"
+    if kind == names.vertical:
+        return "V"
+    if kind == names.parallel:
+        return "//"
+    if kind == names.perpendicular:
+        return "⊥"
+    if kind == names.tangent:
+        return "T"
+    if kind == names.equal:
+        return "="
+    if kind == names.fix:
+        return "Fix"
+    if kind == names.midpoint:
+        return "Mid"
+    if kind == names.concentric:
+        return "◎"
+    if kind == names.collinear:
+        return "Col"
+    if kind == names.symmetric:
+        return "Sym"
+    return ""
+
+## A rectangle's outline.
+func outline(p: Painter, r: Rect, color: Color) -> unit!:
+    p.rectangle(Rect(r.x, r.y, r.width, 1.5), color)
+    p.rectangle(Rect(r.x, r.y + r.height - 1.5, r.width, 1.5), color)
+    p.rectangle(Rect(r.x, r.y, 1.5, r.height), color)
+    p.rectangle(Rect(r.x + r.width - 1.5, r.y, 1.5, r.height), color)
+
+## Asset `asset` (luciaos-assets' name) at (`x`, `y`), `size` square.
+func icon(p: Painter, asset: str, x: float, y: float, size: float, ink: Color) -> unit!:
+    ui.draw_icon(p.target(), asset, Rect(x, y, size, size), ink)
+
+## A menu row's height: 28 points, less when `count` rows would not fit
+## above the toolbar in a viewport `height` high (never under 20).
+func row_height_for(count: int, height: float) -> float:
+    let room = height - button_height - 12.0 - 6.0 - 8.0 - 12.0
+    return math.max(20.0, math.min(row_height, room / float(count)))

@@ -10,7 +10,7 @@ No placeholder nodes are listed: every registered node evaluates geometry.
 | Family | Nodes |
 | --- | --- |
 | Sources | Cube, Grid, Sphere, Cylinder, Cone, Torus, File |
-| Graph | Edit Mesh, Edit CAD, Edit SDF, Edit Sketch, Merge, Null, Switch, Tessellate, Group, Blast, Cache, Export |
+| Graph | Edit Mesh, Edit CAD, Edit SDF, Merge, Null, Switch, Tessellate, Group, Blast, Cache, Export |
 | Transforms/copies | Transform, Mirror, CopyTransform, CopyToPoints, MatchSize |
 | Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Loop Cut, Bridge, Fill, Dissolve, Merge Points; Subdivision (display) and Crease |
 | Deformation (verbs) | Transform Components, Smooth, Mountain, Peak, Flatten, Snap |
@@ -239,9 +239,8 @@ An Edit node is a modeling engine in one node: while it is displayed and
 selected, every tool appends a step to its recipe instead of creating a node,
 and each tool (or each drag) is one undo. There is no operation list to edit.
 There is one Edit node per kind of geometry, so each keeps its own levels and
-tools: **Edit Mesh** (polygons), **Edit CAD** (analytic models), **Edit SDF**
-(signed distance fields) and **Edit Sketch** (planar curves). They share one
-framework (`edit_types.luc`,
+tools: **Edit Mesh** (polygons), **Edit CAD** (analytic models) and **Edit
+SDF** (signed distance fields). They share one framework (`edit_types.luc`,
 `edit_kinds.luc`): a kind supplies its selection levels, its tools and
 primitives, the geometry each level picks on, the geometry its recipe starts
 from, and the step executor that gives its verbs meaning; the recipe, undo,
@@ -249,13 +248,8 @@ checkpoints, the selection and its hand-off, the tool amount, symmetry, soft
 selection and Keep selection, Tool → Select, the inspector rows, the level
 switcher and the tool strip are the framework's. The tool strip and the
 Create entries come from the kinds themselves: the strip shows what the
-active kind offers (Edit Mesh's on other nodes). A kind may also draw guides
-while displayed (Edit Sketch's plane grid, keyed by the set's detail
-attributes so a drag keeps the batch) and show its selection through
-surfaces (Edit SDF). A kind may add node parameters after the shared ones
-(value slots 5 onwards): their values at the time ride on every step it
-records, after the verb's numbers, so a replay needs no node. Edit Sketch's
-Grid snap and End snap use this.
+active kind offers (Edit Mesh's on other nodes). A kind may also show its
+selection through surfaces (Edit SDF).
 
 Edit Mesh's levels are Object, Polygons, Edges, Vertices and Corners. At the
 Object level a pick selects a whole piece, and moves, rotations, scales and
@@ -302,25 +296,51 @@ primitive to the shapes before it, **Blend** rounds that join by the tool
 amount, and **Delete** removes primitives. A drag's frames show a coarse
 surface (40 voxels across); the release shows the full one (128).
 
-Edit Sketch draws planar sketches as curves (luce-geocore's `Sketches`). The
-sketch plane is the set's detail attributes `sketch.plane_origin` and
-`sketch.plane_normal`, set by **Plane XY**, **Plane YZ** and **Plane ZX**
-before or between shapes, or by **Plane from Face**: a click on a face of
-anything displayed gives the plane its point and normal. Later nodes can
-read it; it shows as a light grid. Shapes are
-**Line**, **Polyline**, **Arc**, **Circle** (exact NURBS), **Rectangle** and
-**Spline** (cubic NURBS), each a step on the plane selected as its Object.
-Levels: Object (whole curves) and Segments pick on samples along the curves,
-Points on the control points, both faceless clouds picked by screen
-distance. Moves keep their translation in the plane. **Delete** removes
-points, segments (an open curve splits, a closed one opens) or curves;
-**Close** and **Open** change closure; **Snap** snaps points to a grid of
-the tool amount; **Join Ends** moves open ends onto the nearest other end
-within the tool amount. The node's **Grid snap** (a spacing) and **End
-snap** (a reach, 0.05 by default) snap every move as it happens: moved
-points land on the plane's grid, and a moved open end lands on another open
-end within reach. Constraints are not in yet: every move goes through
-one Base entry (`placed_curves`) where a solver would adjust the targets.
+The **Sketch** node (inside a CAD node) is a 2D sketch on a plane, as in
+Fusion 360: points, lines, circles and arcs held by constraints and
+dimensions, solved by luce-cad (`CadSketch`, luce-cad's docs/MODELING.md,
+Sketches). It keeps the sketch as text and solves it on every evaluation;
+its result is the curves Extrude and Revolve read. **Plane** picks XY (as
+from the front), XZ (the ground, as from above) or YZ (as from the right),
+moved along its normal by **Offset**.
+
+Selected and displayed, it is edited in the viewport (`sketch_editor.luc`,
+`sketch_view.luc`, after docs/research/FUSION-SKETCH-STUDY.md). Its curves
+draw blue while free, light when fully constrained and orange as
+construction. The toolbar along the bottom has Fusion's **CREATE**, **MODIFY**
+and **CONSTRAINTS** menus (tools not built yet show greyed); the squares at
+the top left choose what Select picks: Points, Lines or Shapes.
+
+- **Drawing.** Line (L) chains from its last end until Esc, a right click or
+  a click on its last point; Rectangle (R) takes two corners and makes its
+  sides level and upright; Circle (C) a center and a point on it; Arc (A) a
+  center, a start and an end (counterclockwise); Point (P) one click. The
+  cursor snaps to points (the new point is that point) and curves (a point
+  on the curve), and a line drawn within 3° of level or upright becomes
+  horizontal or vertical: the constraints Fusion infers. Cmd (Ctrl
+  elsewhere) places freely.
+- **Constraints** take their entities in order, the first the reference,
+  and apply when they have enough (or at once to a selection): Horizontal/
+  Vertical, Coincident, Tangent, Equal, Parallel, Perpendicular, Fix/UnFix,
+  MidPoint, Concentric, Collinear and Symmetry. One the sketch cannot hold is
+  refused: "Sketch geometry is over constrained".
+- **Sketch Dimension** (D) takes a line (its length), a circle (diameter), an
+  arc (radius), two points, a point and a line, or two lines (their angle,
+  or their distance when parallel), then a click to place it. It measures
+  the sketch as it is; one that repeats or contradicts others is driven
+  (shown in parentheses). Each dimension is a row of the parameter panel
+  (d1, d2, …) in the document's unit; a new value re-solves the sketch.
+- **Select** picks entities (Shift adds) and drags points, the sketch solving
+  as they move (one undo when released); Delete removes the selection and
+  what is drawn on it, X toggles construction.
+
+Each finished action is one undo step: the editor works on a live sketch
+read from the node and writes it back.
+
+**Units.** Lengths are kept in millimeters; the document shows and reads
+them in its unit, millimeters or inches (File → Units), kept with the
+project. Every length parameter shows its unit and takes typed units
+("25.4 mm", "1 in", "10 + 5 mm").
 
 - A step is one verb run: the verb, the group expression and its type, the
   parameter values, the connectivity hash the group was selected on, and the

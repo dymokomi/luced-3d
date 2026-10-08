@@ -9,7 +9,6 @@ from luce_geocore.geocore import Verbs
 from luce_geocore.geocore import Mesh, Domain, GroupType, Vector3
 from geometry_data import GeometryData
 from edit_operations import EditStep
-from overlay_lines import OverlayLines
 
 ## A selection level: what one pick selects, on which domain of the level's
 ## pick geometry, and the group type its steps receive.
@@ -61,32 +60,6 @@ pub class EditTool:
     pub func offered(self, level: int) -> bool:
         return self.levels.length == 0 or level in self.levels
 
-## A node parameter an Edit kind adds after the shared ones (tool amount,
-## soft radius, falloff, symmetry, Keep selection), in value slots 5
-## onwards. Its value at the time rides on every step the node records,
-## after the verb's own numbers (EditKind.step_numbers), so replays need
-## no node: Edit Sketch's snapping while dragging.
-pub class EditParameter:
-    pub let label: str
-    ## "number" or "toggle".
-    pub let kind: str
-    pub let initial: float
-    pub let minimum: float
-    pub let maximum: float
-    pub let doc: str
-
-    pub func init(self, label: str, kind: str, initial: float, minimum: float, maximum: float, doc: str):
-        self.label = label
-        self.kind = kind
-        self.initial = initial
-        self.minimum = minimum
-        self.maximum = maximum
-        self.doc = doc
-
-## The first value slot of a kind's own parameters, and how many fit.
-pub let first_kind_slot: int = 5
-pub let most_kind_parameters: int = 10
-
 ## An Edit node kind.
 pub class EditKind:
     ## The node kind ("Edit Mesh").
@@ -105,29 +78,18 @@ pub class EditKind:
     pub let run: func(EditStep, GeometryData) -> GeometryData!
     ## The step creating primitive `name`, with its default numbers.
     pub let create: func(str) -> EditStep?!
-    ## Lines drawn while the node is displayed (Edit Sketch's plane grid),
-    ## added to the viewport's hull lines; none draws nothing. They are drawn
-    ## from the set's detail attributes: the worker keys them by those.
-    pub let guides: func(GeometryData, OverlayLines) -> unit!?
     ## Whether the selection also shows through surfaces: for pick geometry
     ## the viewport does not draw (Edit SDF's proxies inside the surface).
     pub let see_through: bool
-    ## Create entries placed by clicking a face in the viewport (Edit
-    ## Sketch's Plane from Face): their step's first six numbers become the
-    ## face's point and normal.
-    pub let face_primitives: list[str]
     ## Tools that, with nothing selected, draw instead: clicks place corners
     ## (on points, surfaces or the ground), Enter or the first corner again
     ## finishes, and `drawn` makes the one step (Edit Mesh's PolyDraw).
     pub let draw_tools: list[str]
     pub let drawn: func(str, list[Vector3]) -> EditStep?!?
-    ## The kind's own node parameters (see EditParameter).
-    pub let parameters: list[EditParameter]
 
     pub func init(self, name: str, levels: list[EditLevel], tools: list[EditTool], primitives: list[str], start: func(GeometryData) -> GeometryData!,
                   pick: func(GeometryData, int) -> Mesh?!, run: func(EditStep, GeometryData) -> GeometryData!, create: func(str) -> EditStep?!,
-                  guides: func(GeometryData, OverlayLines) -> unit!? = none, see_through: bool = false, face_primitives: list[str] = [],
-                  draw_tools: list[str] = [], drawn: func(str, list[Vector3]) -> EditStep?!? = none, parameters: list[EditParameter] = []):
+                  see_through: bool = false, draw_tools: list[str] = [], drawn: func(str, list[Vector3]) -> EditStep?!? = none):
         self.name = name
         self.levels = levels
         self.tools = tools
@@ -136,12 +98,9 @@ pub class EditKind:
         self.pick = pick
         self.run = run
         self.create = create
-        self.guides = guides
         self.see_through = see_through
-        self.face_primitives = face_primitives
         self.draw_tools = draw_tools
         self.drawn = drawn
-        self.parameters = parameters
 
     ## Whether a recipe step of `verb` is one this kind makes: a geometry
     ## verb (luce-geocore's), a primitive's (its create's), a tool's or a
@@ -149,9 +108,9 @@ pub class EditKind:
     pub func knows(self, verb: str) -> bool:
         if Verbs.index_of(verb) >= 0 or verb == "Transform Components" or verb in self.draw_tools:
             return true
-        # A primitive's step is named by its create (Plane XY makes
-        # Create Plane).
-        for name in self.primitives + self.face_primitives:
+        # A primitive's step is named by its create ("Box" makes Create
+        # Box).
+        for name in self.primitives:
             let step = self.create(name) catch failure:
                 continue
             if let made = step:
@@ -161,14 +120,6 @@ pub class EditKind:
             if tool.verb == verb:
                 return true
         return false
-
-    ## A step's numbers with the kind's parameter values (from the node's
-    ## `values`) after them.
-    pub func step_numbers(self, numbers: list[float], values: list[float]) -> list[float]:
-        let result = numbers.copy()
-        for at in 0..<self.parameters.length:
-            result.append(values[first_kind_slot + at])
-        return result
 
     ## Tool `name`, when this kind has it.
     pub func tool(self, name: str) -> EditTool?:

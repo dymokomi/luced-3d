@@ -1,0 +1,67 @@
+## The Sketch node: a 2D sketch on a plane inside a CAD node, Fusion 360's
+## way. Its entities and constraints are luce-cad's (CadSketch), kept as
+## text in the node's first text and solved on every evaluation, so a
+## dimension typed in the parameter panel moves the geometry. Its result is
+## the sketch's curves on its plane, what Extrude and Revolve read. The
+## plane is one of the origin planes (XY, the XZ ground, YZ), moved along
+## its normal by Offset; drawing and constraining happen in the viewport
+## (sketch_editor.luc). Lengths are millimeters.
+from luce_cad.sketch import CadSketch
+from luce_3d.graphics import Vector3
+from geometry_data import GeometryData
+from luce_ui import ui
+
+pub let kind_name = "Sketch"
+
+## A sketch plane: its origin and the directions of the sketch's x and y
+## (the normal is x × y). Seen from the normal's side, x runs right and y
+## up: on XY as from the front (+Z), on the ground XZ as from above (+Y,
+## with -Z up the screen), on YZ as from the right (+X, with -Z right).
+pub class SketchFrame:
+    pub let origin: Vector3
+    pub let u: Vector3
+    pub let v: Vector3
+
+    pub func init(self, origin: Vector3, u: Vector3, v: Vector3):
+        self.origin = origin
+        self.u = u
+        self.v = v
+
+    pub func normal(self) -> Vector3:
+        return self.u.cross(self.v)
+
+    ## Sketch coordinates (`x`, `y`) as a world point.
+    pub func at(self, x: float, y: float) -> Vector3:
+        return self.origin.add(self.u.multiply_scalar(x)).add(self.v.multiply_scalar(y))
+
+    ## World point `p`'s sketch coordinates (it projected onto the plane).
+    pub func coordinates(self, p: Vector3) -> list[float]:
+        let d = p.subtract(self.origin)
+        return [d.dot(self.u), d.dot(self.v)]
+
+pub func plane_names() -> str:
+    return "XY|XZ|YZ"
+
+## The frame of plane `plane` (plane_names' order) moved `offset` along
+## its normal.
+pub func frame(plane: int, offset: float) -> SketchFrame:
+    var u = Vector3(1.0, 0.0, 0.0)
+    var v = Vector3(0.0, 1.0, 0.0)
+    if plane == 1:
+        v = Vector3(0.0, 0.0, -1.0)
+    elif plane == 2:
+        u = Vector3(0.0, 0.0, -1.0)
+        v = Vector3(0.0, 1.0, 0.0)
+    return SketchFrame(u.cross(v).multiply_scalar(offset), u, v)
+
+## The frame of a Sketch node with values `v` (plane, offset).
+pub func node_frame(v: list[float]) -> SketchFrame:
+    return frame(int(v[0]), v[1])
+
+## A Sketch node's result: its text solved, as curves on its plane.
+pub func evaluate_sketch(v: list[float], texts: list[str]) -> GeometryData!:
+    let sketch = CadSketch.parse(texts[0])
+    if sketch.entity_count() > 0 and not sketch.solve():
+        error(ui.invalid, "The sketch's constraints cannot all hold: remove one that conflicts")
+    let f = node_frame(v)
+    return GeometryData(geometry = sketch.curves(f.origin, f.u, f.v))

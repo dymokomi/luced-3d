@@ -6,6 +6,7 @@
 ## display settings, view_state.luc) and the viewport's line batches
 ## (viewport_batches.luc). Commands on it live beside it: node_commands,
 ## selection_commands, modeling_commands and placing_commands.
+import sketch_node
 from luce_geocore.geocore import Mesh, Selection
 from luce_3d.graphics import Scene, Group, Vector3, Matrix4, AmbientLight, DirectionalLight, SurfaceHits, SurfaceHit
 from place_prompt import PlacePrompt
@@ -15,7 +16,6 @@ from tools import tool_run
 from history import History, Snapshot
 from scene_projection import append_bounds
 from local_cook import cook_outputs
-from overlay_lines import OverlayLines
 from compute_session import ComputeSession
 from display_publisher import DisplayPublisher
 from node_evaluation import SourceCache
@@ -181,6 +181,14 @@ pub class Workspace:
         self.view.hulls_visible = not self.view.hulls_visible
         self.revision += 1
 
+    ## Show lengths in `name` ("mm" or "in"): the document's unit, kept with
+    ## it and undone like any change; lengths themselves stay as they are.
+    pub func set_units(self, name: str) -> unit!:
+        if self.network.units == name or not (name in ["mm", "in"]):
+            return
+        self.perform("Units", func () -> unit!:
+            self.network.units = name)
+
     pub func toggle_grid(self) -> unit!:
         self.view.grid_visible = not self.view.grid_visible
         self.revision += 1
@@ -314,6 +322,12 @@ pub class Workspace:
             at = chosen.next(at)
         return result
 
+    ## Whether a Sketch node is being edited in the viewport: selected,
+    ## displayed, enabled, and no tool prompt open (sketch_editor.luc).
+    pub func sketching(self) -> bool:
+        let node = self.selected() else return false
+        return node.kind == sketch_node.kind_name and node.enabled and node.id == self.network.display and self.prompt == none
+
     ## Whether the viewport picks on a CAD body (its B-rep edges show, not
     ## a tessellation's polygons).
     pub func picking_brep(self) -> bool:
@@ -428,15 +442,9 @@ pub class Workspace:
             session.submit(self.network, self.view.mesh_mode(), self.view.normals_visible)
             self.revision += 1
             return
-        # The displayed Edit node's own lines (its kind's guides).
-        var guides: func(GeometryData, OverlayLines) -> unit!? = none
-        if let node = self.network.find(self.network.display):
-            if node.enabled:
-                if let kind = self.kind_of(node.kind):
-                    guides = kind.guides
         self.network.picking_cad = self.prompt != none
         self.network.picking = self.picking()
-        let cooked = cook_outputs(self.network, self.objects, self.batches, self.view.mesh_mode(), guides)
+        let cooked = cook_outputs(self.network, self.objects, self.batches, self.view.mesh_mode())
         self.notice = cooked.notice
         self.local_nodes = cooked.nodes
         self.local_meshes = cooked.meshes

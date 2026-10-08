@@ -3,7 +3,7 @@
 ## catalog, one line each after Houdini's parameter pane. The catalog's rows
 ## name the value or text slot each edits; an Edit node adds its component
 ## edit rows. A drag is live and one undo step on release.
-from luce_ui.ui import VStack, HStack, Text, TextField, Font, Button, ParameterPanel, ParameterSpec, ParameterKind, Rect
+from luce_ui.ui import VStack, HStack, Text, TextField, Font, Button, ParameterPanel, ParameterSpec, ParameterKind, Rect, Unit
 from interop import Connection
 from workspace import Workspace
 from actions import Actions
@@ -17,6 +17,9 @@ from usd_nodes import Composition, compose_usd
 import modeling_commands
 import node_commands
 import cad_nodes
+import sketch_node
+import sketch_commands
+import units
 
 pub class Inspector:
     pub var on_browse: func() -> unit!? = none
@@ -61,7 +64,7 @@ pub class Inspector:
         self.description = Text("", font = font, muted = true)
         self.parameters = ParameterPanel([], font = font)
         self.connections.append(self.parameters.on_begin(func (index: int) -> unit!:
-            if self.roles[index] in ["value", "last"]:
+            if self.roles[index] in ["value", "last", "dimension", "angle_dimension"]:
                 workspace.begin("Change " + self.rows[index].name)))
         self.connections.append(self.parameters.on_change(self.changed))
         self.connections.append(self.parameters.on_commit(func (index: int) -> unit!:
@@ -89,6 +92,10 @@ pub class Inspector:
             node_commands.set_text(self.workspace, row.slot, self.parameters.text(index))
         elif role == "last":
             modeling_commands.set_last_extrusion(self.workspace, self.parameters.value(index))
+        elif role == "dimension" or role == "angle_dimension":
+            let node = self.workspace.selected() else return
+            let value = self.parameters.value(index)
+            sketch_commands.set_dimension(self.workspace, node.id, row.slot, value * 0.017453292519943295 if role == "angle_dimension" else value)
 
     func acted(self, index: int) -> unit!:
         let role = self.roles[index]
@@ -136,8 +143,9 @@ pub class Inspector:
         self.rows = []
         self.roles = []
         var specs: list[ParameterSpec] = []
+        let shown = units.document_unit(self.workspace)
         for row in node_catalog.fields(kind, path, self.stage):
-            specs.append(spec_of(row))
+            specs.append(spec_of(row, shown))
             self.rows.append(row)
             self.roles.append("text" if row.kind in ["text", "path"] else (("render" if row.name == "Render" else "reload") if row.kind == "button" else ("info" if row.kind == "info" else "value")))
         if is_edit(kind):
@@ -159,6 +167,17 @@ pub class Inspector:
                                                         doc = "Show the input body and pick the edges to blend (Enter accepts). Hole rims can be picked too."))
             self.add(specs, "all_edges", ParameterSpec(name = "all_edges", label = "All edges", kind = ParameterKind.button,
                                                        doc = "Forget the picked edges: blend every straight convex edge between flat faces."))
+        # A sketch's dimensions, each a row in the document's unit (an
+        # angle in degrees); its constraint is the row's slot.
+        if kind == sketch_node.kind_name:
+            for d in sketch_commands.dimensions(path):
+                let label = d.name + (" (driven)" if d.driven else "")
+                if d.angle:
+                    self.add(specs, "angle_dimension", ParameterSpec(name = d.name, label = label, value = d.value * 57.29577951308232, minimum = -360.0, maximum = 360.0, step = 1.0, decimals = 2, suffix = "°",
+                                                                    doc = "An angle the sketch holds; change it and the sketch follows."), d.constraint)
+                else:
+                    self.add(specs, "dimension", ParameterSpec(name = d.name, label = label, value = d.value, minimum = 0.0, maximum = 1000000.0, step = 1.0, decimals = 2, units = shown,
+                                                              doc = "A length the sketch holds; change it and the sketch follows. Type any unit: 10 mm, 0.5 in."), d.constraint)
         if node_catalog.is_mesh_verb(kind):
             self.add(specs, "reselect", ParameterSpec(name = "reselect", label = "Reselect", kind = ParameterKind.button, join = true,
                                                       doc = "Show the input and pick the group's components again (Enter accepts)."))
@@ -178,7 +197,7 @@ pub class Inspector:
         let changed = node.id != self.showing
         let file = node.kind == "File"
         let format = node_catalog.file_format(node.texts[0]) if file else ""
-        let key = f"{node.kind}|{format}|{self.compose(node.texts, node.source_revision) if format == "usd" else ""}"
+        let key = f"{node.kind}|{format}|{self.compose(node.texts, node.source_revision) if format == "usd" else ""}|{sketch_key(node.kind, node.texts[0])}|{self.workspace.network.units}"
         if key != self.built:
             self.build(node.kind, node.texts[0])
             self.built = key
@@ -227,6 +246,11 @@ pub class Inspector:
                 self.parameters.set_enabled(index, self.actions.extrude.is_enabled())
             elif role == "keep_ids":
                 self.parameters.set_enabled(index, node.guard != 0)
+            elif role == "dimension" or role == "angle_dimension":
+                for d in sketch_commands.dimensions(node.texts[0]):
+                    if d.constraint == row.slot:
+                        self.parameters.set_value(index, d.value * 57.29577951308232 if d.angle else d.value)
+                        self.parameters.set_enabled(index, not d.driven)
         if node_catalog.places_children(node.kind):
             self.stats.set_text(f"{network.outputs(node.id).length} exposed children")
         elif self.workspace.compute != none:
@@ -255,8 +279,20 @@ pub class Inspector:
             connection.disconnect()
         self.connections.clear()
 
+## What a Sketch node's dimension rows depend on: which constraints are
+## dimensions (their values refresh in place).
+func sketch_key(kind: str, text: str) -> str:
+    if kind != sketch_node.kind_name:
+        return ""
+    let found = sketch_commands.dimensions(text) catch failure:
+        recover []
+    let parts: list[str] = []
+    for d in found:
+        parts.append(f"{d.constraint}{"a" if d.angle else ""}{"d" if d.driven else ""}")
+    return parts.join(",")
+
 ## The panel's description of a catalog row.
-func spec_of(row: Parameter) -> ParameterSpec:
+func spec_of(row: Parameter, shown: Unit) -> ParameterSpec:
     let rest = row.rest + [0.0, 0.0, 0.0]
     let soft = row.soft_maximum > 0.0
     return ParameterSpec(name = row.key if row.key != "" else row.name.lower().replace(" ", "_"), label = row.name, kind = kind_of(row.kind),
@@ -264,7 +300,7 @@ func spec_of(row: Parameter) -> ParameterSpec:
                          minimum = row.minimum, maximum = row.maximum, soft_minimum = (row.minimum if row.minimum >= 0.0 else -row.soft_maximum) if soft else 0.0,
                          soft_maximum = row.soft_maximum, step = row.step, decimals = row.decimals, suffix = row.suffix, slider = row.slider or soft,
                          items = row.items, doc = row.doc, hide_when = row.hide_when, disable_when = row.disable_when, join = row.join,
-                         linear = row.kind == "color", tag = row.slot)
+                         linear = row.kind == "color", tag = row.slot, units = shown if row.length else Unit())
 
 func kind_of(name: str) -> ParameterKind:
     if name == "integer":

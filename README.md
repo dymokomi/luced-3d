@@ -129,7 +129,7 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
 - Disabling Transform, an Edit node or Merge passes its first input through.
   Disabling Cube produces empty geometry. Delete/Backspace in Network deletes
   the selected node and disconnects its consumers.
-- Edit tools appear when the selected Edit node (Edit Mesh, Edit CAD, Edit SDF, Edit Sketch) is enabled and displayed.
+- Edit tools appear when the selected Edit node (Edit Mesh, Edit CAD, Edit SDF) is enabled and displayed; a selected and displayed Sketch node (inside a CAD node) is drawn and constrained in the viewport.
   Display it with D before modeling. Incomplete nodes show an error instead of
   stale geometry; connect their inputs or undo the change.
 
@@ -155,7 +155,7 @@ Filter attributes or rows, click headers to sort, and click rows to select
 components on the displayed Edit node. Numeric scalar/vector attributes survive
 topology operations; `Cd` affects rendering and corner `uv` supports seams.
 
-Each Edit kind (Edit Mesh, Edit CAD, Edit SDF, Edit Sketch) has its own
+Each Edit kind (Edit Mesh, Edit CAD, Edit SDF) has its own
 selection levels, tool strip and primitives, generated from its registry
 entry. Edit Mesh's strip holds the luce-geocore modeling verbs (extrude, inset,
 bevel, loop cut, bridge, fill, dissolve, knife, connect, edge slide, mirror,

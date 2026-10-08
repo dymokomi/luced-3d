@@ -1,0 +1,640 @@
+## Editing a Sketch node in the viewport, Fusion 360's way
+## (docs/research/FUSION-SKETCH-STUDY.md): while a Sketch node is selected
+## and displayed, the viewport draws its entities on its plane (fully
+## constrained ones white, free ones blue, construction orange), and the
+## bottom toolbar's CREATE, MODIFY and CONSTRAINTS menus pick a tool.
+##
+## Drawing tools are click by click and repeat until Esc: Line chains from
+## its last end, Rectangle takes two corners, Circle a center and a point
+## on it, Arc a center, a start and an end, Point one click. The cursor
+## snaps to points (making the new point the same one) and to curves (a
+## point on the curve), and a line drawn near level or upright becomes
+## horizontal or vertical: the constraints Fusion infers. Holding Cmd (Ctrl
+## elsewhere) places freely. Constraint tools take their entities in order
+## (the first is the reference) and apply when they have enough; Sketch
+## Dimension takes one entity or two, and a click in empty space. Select
+## picks entities (Shift adds) and drags points, the sketch solving as they
+## move. Delete removes the selection, X makes it construction.
+##
+## The editor works on a live CadSketch read from the node; each finished
+## action writes it back as one undo step (commit), and an undo or a change
+## from elsewhere reads the node again (sync).
+from luce_cad.sketch import CadSketch
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from workspace import Workspace
+from sketch_node import SketchFrame, node_frame
+import sketch_tools
+import gizmo_math
+from luce_std import math
+
+## ConstraintKind's order (luce-cad sketch/entities.lucb).
+pub let coincident = 0
+pub let on_curve = 1
+pub let horizontal = 2
+pub let vertical = 3
+pub let parallel = 4
+pub let perpendicular = 5
+pub let tangent = 6
+pub let equal = 7
+pub let fix = 8
+pub let midpoint = 9
+pub let concentric = 10
+pub let collinear = 11
+pub let symmetric = 12
+pub let distance = 13
+pub let line_distance = 14
+pub let angle = 17
+pub let radius = 18
+pub let diameter = 19
+
+## Entity kinds.
+pub let point_kind = 0
+pub let line_kind = 1
+pub let circle_kind = 2
+pub let arc_kind = 3
+
+## How near the cursor snaps, in points on screen.
+let snap_reach = 9.0
+## How near level or upright a drawn line is made so (radians, 3°).
+let level_angle = 0.05235987755982988
+
+pub class SketchEditor:
+    let w: Workspace
+    ## The node edited and the text the live sketch was read from.
+    var node: int = -1
+    var text: str = ""
+    var values: list[float]
+    pub var sketch: CadSketch? = none
+    pub var frame: SketchFrame
+    pub var tool: str = "Select"
+    ## A drawing tool's placed points: plane coordinates, and the point
+    ## entity each is (-1: not made yet).
+    pub var clicks: list[list[float]]
+    var click_points: list[int]
+    ## The cursor on the plane, snapped, and what it snapped to (-1: none).
+    pub var cursor: list[float]
+    pub var snap: int = -1
+    pub var free_placing: bool = false
+    pub var hover: int = -1
+    ## What Select picks: 0 points, 1 lines (curves), 2 shapes (curves joined
+    ## end to end).
+    pub var level: int = 1
+    pub var selection: list[int]
+    ## A constraint or dimension tool's picks so far.
+    pub var picks: list[int]
+    ## A point being dragged by Select.
+    var dragging: int = -1
+    var drag_moved: bool = false
+    ## Counts changes to the live sketch, so drawings are made again.
+    pub var revision: int = 0
+    ## Screen size of the last event, and the reach of a snap in sketch units.
+    var width: float = 1.0
+    var height: float = 1.0
+    var reach: float = 1.0
+
+    pub func init(self, w: Workspace):
+        self.w = w
+        self.values = []
+        self.frame = node_frame([1.0, 0.0])
+        self.clicks = []
+        self.click_points = []
+        self.cursor = [0.0, 0.0]
+        self.selection = []
+        self.picks = []
+
+    ## Whether a Sketch node is being edited: selected, displayed, enabled,
+    ## and no tool prompt open.
+    pub func active(self) -> bool:
+        return self.w.sketching()
+
+    ## Read the node again when it is another node, or its text or plane
+    ## changed (an undo, the parameter panel).
+    pub func sync(self) -> unit!:
+        let node = self.w.selected() else return
+        let same = node.id == self.node and node.texts[0] == self.text and node.values[0] == (self.values + [0.0])[0] and node.values[1] == (self.values + [0.0, 0.0])[1]
+        if same and self.sketch != none:
+            return
+        # Another sketch than the one edited: its tool and selection go.
+        if node.id != self.node and self.node >= 0:
+            self.reset_tool()
+            self.selection = []
+            self.tool = "Select"
+        self.node = node.id
+        self.text = node.texts[0]
+        self.values = [node.values[0], node.values[1]]
+        self.frame = node_frame(self.values)
+        let sketch = CadSketch.parse(self.text)
+        _ = sketch.solve()
+        sketch.analyze()
+        self.sketch = sketch
+        let kept: list[int] = []
+        for at in self.selection:
+            if at < sketch.entity_count():
+                kept.append(at)
+        self.selection = kept
+        self.revision += 1
+
+    ## Write the live sketch to the node as one undo step.
+    pub func commit(self, label: str) -> unit!:
+        let sketch = self.sketch else return
+        let node = self.w.network.find(self.node) else return
+        let text = sketch.text()
+        if text == node.texts[0]:
+            return
+        self.w.perform(label, func () -> unit!:
+            node.texts[0] = text
+            self.w.network.invalidate(node.id)
+            self.w.rebuild())
+        self.text = text
+        sketch.analyze()
+        self.revision += 1
+
+    ## Pick tool `name` (Select, a drawing tool, a constraint tool or Sketch
+    ## Dimension). A constraint tool with enough already selected applies
+    ## to the selection at once.
+    pub func choose(self, name: str) -> unit!:
+        self.sync()
+        self.reset_tool()
+        self.tool = name
+        if sketch_tools.constrains(name) and self.selection.length > 0:
+            self.picks = self.selection.copy()
+            if self.try_constraint():
+                self.tool = "Select"
+        self.w.notice = self.hint()
+        self.w.revision += 1
+
+    func reset_tool(self):
+        self.clicks = []
+        self.click_points = []
+        self.picks = []
+        self.dragging = -1
+
+    ## The status line's hint for the current tool.
+    pub func hint(self) -> str:
+        if self.tool == "Select":
+            return "Sketch: pick a tool below, or drag points (Delete removes, X makes construction)"
+        if sketch_tools.draws(self.tool):
+            return f"{self.tool}: click to place (Cmd places freely), Esc ends"
+        if self.tool == "Sketch Dimension":
+            return "Sketch Dimension: click a line, circle or arc, or two entities, then click where the dimension goes"
+        return f"{self.tool}: pick the entities to constrain, the reference first"
+
+    ## The viewport's events while editing; whether one was used.
+    pub func event(self, event: Event, width: float, height: float) -> bool!:
+        if not self.active() or event.alt:
+            return false
+        self.sync()
+        self.width = width
+        self.height = height
+        let sketch = self.sketch else return false
+        if event.kind == EventKind.key_down:
+            return self.key(event)
+        if event.kind == EventKind.pointer_moved:
+            self.track(event.x, event.y, event.meta or event.control)
+            if self.dragging >= 0:
+                if sketch.drag(self.dragging, self.cursor[0], self.cursor[1]):
+                    sketch.analyze()
+                self.drag_moved = true
+                self.revision += 1
+            return true
+        if event.kind == EventKind.pointer_up and event.button == 0 and self.dragging >= 0:
+            self.dragging = -1
+            if self.drag_moved:
+                self.commit("Drag sketch point")
+            return true
+        if event.kind != EventKind.pointer_down or not event.inside:
+            return false
+        if event.button == 1:
+            # A right click ends what is being drawn.
+            self.reset_tool()
+            return true
+        if event.button != 0:
+            return false
+        self.track(event.x, event.y, event.meta or event.control)
+        if self.tool == "Select":
+            self.select_at(event.shift)
+        elif sketch_tools.draws(self.tool):
+            self.place()
+        else:
+            self.pick()
+        return true
+
+    ## Keys: a tool's letter, Esc, Delete, X.
+    func key(self, event: Event) -> bool!:
+        if event.key == Key.escape:
+            if self.clicks.length > 0 or self.picks.length > 0:
+                self.reset_tool()
+            elif self.tool != "Select":
+                self.choose("Select")
+            else:
+                self.selection = []
+            self.revision += 1
+            return true
+        if event.key == Key.enter:
+            self.reset_tool()
+            return true
+        if event.key in [Key.delete, Key.backspace]:
+            self.remove_selection()
+            return true
+        let letter = key_letter(event.key)
+        if letter == "X" and self.selection.length > 0:
+            let sketch = self.sketch else return true
+            let construction = not sketch.construction(self.selection[0])
+            for at in self.selection:
+                if sketch.kind(at) != point_kind:
+                    sketch.set_construction(at, construction)
+            self.commit("Toggle construction")
+            return true
+        let name = sketch_tools.tool_for_key(letter)
+        if name != "":
+            self.choose(name)
+            return true
+        return false
+
+    ## Where the pointer at (`x`, `y`) is on the plane, snapped to a point or
+    ## curve within reach unless `free`.
+    func track(self, x: float, y: float, free: bool) -> unit!:
+        let sketch = self.sketch else return
+        let normal = self.frame.normal()
+        let here = gizmo_math.plane(self.w, x, y, self.width, self.height, self.frame.origin, normal)
+        let beside = gizmo_math.plane(self.w, x + snap_reach, y, self.width, self.height, self.frame.origin, normal)
+        self.reach = math.max(1e-6, here.subtract(beside).length())
+        self.cursor = self.frame.coordinates(here)
+        self.free_placing = free
+        self.snap = -1
+        self.hover = sketch.pick(self.cursor[0], self.cursor[1], self.reach)
+        if free or self.dragging >= 0:
+            return
+        let skip = self.click_points[-1] if self.click_points.length > 0 else -1
+        if self.hover >= 0 and self.hover != skip and self.hover != self.dragging:
+            self.snap = self.hover
+            if sketch.kind(self.hover) == point_kind:
+                self.cursor = [sketch.x(self.hover), sketch.y(self.hover)]
+            else:
+                self.cursor = self.on_curve(self.hover, self.cursor)
+        # A line's second point near level or upright lines up.
+        if self.tool in ["Line"] and self.clicks.length > 0 and self.snap < 0:
+            let start = self.clicks[-1]
+            let dx = self.cursor[0] - start[0]
+            let dy = self.cursor[1] - start[1]
+            if math.abs(dy) <= math.abs(dx) * math.tan(level_angle):
+                self.cursor = [self.cursor[0], start[1]]
+            elif math.abs(dx) <= math.abs(dy) * math.tan(level_angle):
+                self.cursor = [start[0], self.cursor[1]]
+
+    ## The point of curve `curve` nearest `p`.
+    func on_curve(self, curve: int, p: list[float]) -> list[float]:
+        let sketch = self.sketch else return p
+        if sketch.kind(curve) == line_kind:
+            let a = sketch.part(curve, 0)
+            let b = sketch.part(curve, 1)
+            let ax = sketch.x(a)
+            let ay = sketch.y(a)
+            let dx = sketch.x(b) - ax
+            let dy = sketch.y(b) - ay
+            let l2 = dx * dx + dy * dy
+            if l2 <= 0.0:
+                return p
+            let t = math.clamp(((p[0] - ax) * dx + (p[1] - ay) * dy) / l2, 0.0, 1.0)
+            return [ax + t * dx, ay + t * dy]
+        let center = sketch.part(curve, 0)
+        let cx = sketch.x(center)
+        let cy = sketch.y(center)
+        let d = math.hypot(p[0] - cx, p[1] - cy)
+        if d <= 0.0:
+            return p
+        let r = sketch.radius(curve)
+        return [cx + (p[0] - cx) * r / d, cy + (p[1] - cy) * r / d]
+
+    ## A point at the cursor: the snapped point itself, else a new point (on
+    ## the snapped curve, constrained there).
+    func cursor_point(self) -> int!:
+        let sketch = self.sketch else return -1
+        if self.snap >= 0 and sketch.kind(self.snap) == point_kind:
+            return self.snap
+        let made = sketch.add_point(self.cursor[0], self.cursor[1])
+        if self.snap >= 0:
+            _ = sketch.constrain(on_curve, made, self.snap)
+        return made
+
+    ## A drawing tool's click.
+    func place(self) -> unit!:
+        let sketch = self.sketch else return
+        if self.tool == "Point":
+            _ = self.cursor_point()
+            self.commit("Sketch point")
+            return
+        # Clicking the last point again ends a chain.
+        if self.clicks.length > 0 and self.snap >= 0 and self.snap == self.click_points[-1]:
+            self.reset_tool()
+            return
+        let point = self.cursor_point()
+        self.clicks.append(self.cursor.copy())
+        self.click_points.append(point)
+        self.revision += 1
+        if self.tool == "Line" and self.clicks.length == 2:
+            let a = self.click_points[0]
+            let b = self.click_points[1]
+            let line = sketch.add_line(a, b)
+            if sketch.y(a) == sketch.y(b):
+                _ = sketch.constrain(horizontal, line)
+            elif sketch.x(a) == sketch.x(b):
+                _ = sketch.constrain(vertical, line)
+            self.commit("Sketch line")
+            # Chain from the end.
+            self.clicks = [self.clicks[1]]
+            self.click_points = [b]
+        elif self.tool == "Rectangle" and self.clicks.length == 2:
+            self.rectangle()
+            self.reset_tool()
+        elif self.tool == "Circle" and self.clicks.length == 2:
+            let center = self.click_points[0]
+            let r = math.hypot(self.clicks[1][0] - self.clicks[0][0], self.clicks[1][1] - self.clicks[0][1])
+            if r > 0.0:
+                let circle = sketch.add_circle(center, r)
+                # The second click was only a size: a point made for it goes.
+                if self.click_points[1] != self.snap:
+                    sketch.remove(self.click_points[1])
+                elif self.snap >= 0:
+                    _ = sketch.constrain(on_curve, self.snap, circle)
+                self.commit("Sketch circle")
+            self.reset_tool()
+        elif self.tool == "Arc" and self.clicks.length == 3:
+            let center = self.click_points[0]
+            let start = self.click_points[1]
+            let end = self.click_points[2]
+            let r = math.hypot(sketch.x(start) - sketch.x(center), sketch.y(start) - sketch.y(center))
+            # The end lies on the arc's circle, where the cursor points.
+            let aim = math.atan2(sketch.y(end) - sketch.y(center), sketch.x(end) - sketch.x(center))
+            if end != self.snap:
+                sketch.place(end, sketch.x(center) + r * math.cos(aim), sketch.y(center) + r * math.sin(aim))
+            if r > 0.0 and start != end:
+                _ = sketch.add_arc(center, start, end)
+                _ = sketch.solve()
+                self.commit("Sketch arc")
+            self.reset_tool()
+
+    ## Rectangle from the two clicked corners: four lines, level and upright.
+    func rectangle(self) -> unit!:
+        let sketch = self.sketch else return
+        let a = self.click_points[0]
+        let c = self.click_points[1]
+        if sketch.x(a) == sketch.x(c) or sketch.y(a) == sketch.y(c):
+            return
+        let b = sketch.add_point(sketch.x(c), sketch.y(a))
+        let d = sketch.add_point(sketch.x(a), sketch.y(c))
+        let lines = [sketch.add_line(a, b), sketch.add_line(b, c), sketch.add_line(c, d), sketch.add_line(d, a)]
+        _ = sketch.constrain(horizontal, lines[0])
+        _ = sketch.constrain(vertical, lines[1])
+        _ = sketch.constrain(horizontal, lines[2])
+        _ = sketch.constrain(vertical, lines[3])
+        self.commit("Sketch rectangle")
+
+    ## Select's click: the entity under the cursor (Shift adds or takes
+    ## away), or nothing; a point pressed starts a drag.
+    func select_at(self, extend: bool) -> unit!:
+        let sketch = self.sketch else return
+        let at = self.hover
+        if at >= 0 and sketch.kind(at) == point_kind:
+            self.dragging = at
+            self.drag_moved = false
+        if at < 0:
+            if not extend:
+                self.selection = []
+        elif extend:
+            if at in self.selection:
+                self.selection = without(self.selection, at)
+            else:
+                self.selection.append(at)
+        else:
+            self.selection = [at]
+        self.revision += 1
+
+    ## A constraint or dimension tool's click.
+    func pick(self) -> unit!:
+        let sketch = self.sketch else return
+        let at = self.hover
+        if self.tool == "Sketch Dimension":
+            if at >= 0 and self.picks.length < 2 and not (at in self.picks):
+                self.picks.append(at)
+            elif self.picks.length > 0:
+                self.dimension()
+                self.picks = []
+            self.revision += 1
+            return
+        if at < 0:
+            return
+        self.picks.append(at)
+        if self.try_constraint():
+            self.picks = []
+        self.revision += 1
+
+    ## Apply the constraint tool to its picks when they are enough; whether
+    ## they were (applied, or refused as conflicting).
+    func try_constraint(self) -> bool!:
+        let sketch = self.sketch else return false
+        let p = self.picks
+        let kinds: list[int] = []
+        let lines: list[int] = []
+        let rounds: list[int] = []
+        let points: list[int] = []
+        for at in p:
+            let kind = sketch.kind(at)
+            kinds.append(kind)
+            if kind == line_kind:
+                lines.append(at)
+            elif kind == point_kind:
+                points.append(at)
+            else:
+                rounds.append(at)
+        let tool = self.tool
+        if tool == "Horizontal/Vertical":
+            if kinds.length >= 1 and kinds[0] == line_kind:
+                let a = sketch.part(p[0], 0)
+                let b = sketch.part(p[0], 1)
+                let level = math.abs(sketch.x(b) - sketch.x(a)) >= math.abs(sketch.y(b) - sketch.y(a))
+                return self.apply(horizontal if level else vertical, p[0], -1)
+            if points.length == 2:
+                let level = math.abs(sketch.x(p[1]) - sketch.x(p[0])) >= math.abs(sketch.y(p[1]) - sketch.y(p[0]))
+                return self.apply(horizontal if level else vertical, p[0], p[1])
+            return false
+        if tool == "Fix/UnFix":
+            for index in 0..<sketch.constraint_count():
+                if sketch.constraint_kind(index) == fix and sketch.constraint_entity(index, 0) == p[0]:
+                    sketch.unconstrain(index)
+                    self.commit("Unfix")
+                    return true
+            return self.apply(fix, p[0], -1)
+        if p.length < 2:
+            return false
+        if tool == "Coincident":
+            if kinds[0] == point_kind and kinds[1] == point_kind:
+                return self.apply(coincident, p[1], p[0])
+            if kinds[0] != point_kind and kinds[1] == point_kind:
+                return self.apply(on_curve, p[1], p[0])
+            if kinds[0] == point_kind:
+                return self.apply(on_curve, p[0], p[1])
+        elif tool in ["Parallel", "Perpendicular", "Collinear"] and lines.length == 2:
+            return self.apply(parallel if tool == "Parallel" else (perpendicular if tool == "Perpendicular" else collinear), p[0], p[1])
+        elif tool == "Equal" and (lines.length == 2 or rounds.length == 2):
+            return self.apply(equal, p[0], p[1])
+        elif tool == "Concentric" and rounds.length == 2:
+            return self.apply(concentric, p[0], p[1])
+        elif tool == "Tangent" and rounds.length >= 1 and kinds[0] != point_kind and kinds[1] != point_kind:
+            return self.apply(tangent, p[0], p[1], side = self.tangent_side(p[0], p[1]))
+        elif tool == "MidPoint" and points.length == 1 and lines.length == 1:
+            return self.apply(midpoint, points[0], lines[0])
+        elif tool == "Symmetry":
+            if p.length < 3:
+                return false
+            if kinds[0] == point_kind and kinds[1] == point_kind and kinds[2] == line_kind:
+                let constraint = sketch.constrain(symmetric, p[0], p[1], p[2])
+                return self.settle(constraint)
+        # Picks that do not fit: start again from the last.
+        self.picks = [p[-1]]
+        self.w.notice = f"{tool} does not join those: pick again"
+        return false
+
+    ## Add constraint `kind` between `first` and `second` and solve; refused
+    ## (taken back) when the sketch cannot hold it. Whether it was decided.
+    func apply(self, kind: int, first: int, second: int, side: float = 1.0) -> bool!:
+        let sketch = self.sketch else return true
+        let constraint = sketch.constrain(kind, first, second, side = side)
+        return self.settle(constraint)
+
+    ## Solve after constraint `constraint` was added: kept and written back
+    ## when it holds, else taken away with Fusion's over-constrained notice.
+    func settle(self, constraint: int) -> bool!:
+        let sketch = self.sketch else return true
+        let solved = sketch.solve()
+        sketch.analyze()
+        if not solved or sketch.conflicting_count() > 0:
+            sketch.unconstrain(constraint)
+            _ = sketch.solve()
+            sketch.analyze()
+            self.w.notice = "Sketch geometry is over constrained"
+            self.revision += 1
+            return true
+        self.commit(self.tool)
+        return true
+
+    ## Which side `first` keeps of `second` (or the other way), for Tangent:
+    ## a line's side its circle's center is on, or two circles outside (+1)
+    ## or inside (-1) each other.
+    func tangent_side(self, first: int, second: int) -> float!:
+        let sketch = self.sketch else return 1.0
+        var line = first
+        var round = second
+        if sketch.kind(second) == line_kind:
+            line = second
+            round = first
+        if sketch.kind(line) == line_kind:
+            let a = sketch.part(line, 0)
+            let b = sketch.part(line, 1)
+            let c = sketch.part(round, 0)
+            let cross = (sketch.x(b) - sketch.x(a)) * (sketch.y(c) - sketch.y(a)) - (sketch.y(b) - sketch.y(a)) * (sketch.x(c) - sketch.x(a))
+            return 1.0 if cross >= 0.0 else -1.0
+        let c1 = sketch.part(first, 0)
+        let c2 = sketch.part(second, 0)
+        let apart = math.hypot(sketch.x(c2) - sketch.x(c1), sketch.y(c2) - sketch.y(c1))
+        return 1.0 if apart >= math.max(sketch.radius(first), sketch.radius(second)) else -1.0
+
+    ## Sketch Dimension's placing click: a line's length, a circle's
+    ## diameter, an arc's radius; two points' distance, a point's from a
+    ## line, two lines' angle (or distance, when parallel). It measures the
+    ## sketch as it is; its value is then edited in the parameter panel.
+    func dimension(self) -> unit!:
+        let sketch = self.sketch else return
+        let p = self.picks
+        let a = p[0]
+        var made = -1
+        if p.length == 1:
+            let k = sketch.kind(a)
+            if k == line_kind:
+                let s = sketch.part(a, 0)
+                let e = sketch.part(a, 1)
+                made = sketch.constrain(distance, s, e, value = math.hypot(sketch.x(e) - sketch.x(s), sketch.y(e) - sketch.y(s)))
+            elif k == circle_kind:
+                made = sketch.constrain(diameter, a, value = 2.0 * sketch.radius(a))
+            elif k == arc_kind:
+                made = sketch.constrain(radius, a, value = sketch.radius(a))
+        else:
+            let b = p[1]
+            let ka = sketch.kind(a)
+            let kb = sketch.kind(b)
+            if ka == point_kind and kb == point_kind:
+                made = sketch.constrain(distance, a, b, value = math.hypot(sketch.x(b) - sketch.x(a), sketch.y(b) - sketch.y(a)))
+            elif ka == point_kind and kb == line_kind:
+                made = self.point_line(a, b)
+            elif ka == line_kind and kb == point_kind:
+                made = self.point_line(b, a)
+            elif ka == line_kind and kb == line_kind:
+                made = self.two_lines(a, b)
+        if made < 0:
+            self.w.notice = "Sketch Dimension measures a line, a circle, an arc, two points, a point and a line, or two lines"
+            return
+        # A dimension the sketch already has is kept as a driven one.
+        if not sketch.solve():
+            sketch.set_driven(made, true)
+        sketch.analyze()
+        if sketch.conflicting_count() > 0 or sketch.redundant_count() > 0:
+            sketch.set_driven(made, true)
+        self.commit("Sketch dimension")
+
+    func point_line(self, point: int, line: int) -> int!:
+        let sketch = self.sketch else return -1
+        let a = sketch.part(line, 0)
+        let b = sketch.part(line, 1)
+        let dx = sketch.x(b) - sketch.x(a)
+        let dy = sketch.y(b) - sketch.y(a)
+        let length = math.hypot(dx, dy)
+        if length <= 0.0:
+            return -1
+        let signed = (dx * (sketch.y(point) - sketch.y(a)) - dy * (sketch.x(point) - sketch.x(a))) / length
+        return sketch.constrain(line_distance, point, line, value = math.abs(signed), side = 1.0 if signed >= 0.0 else -1.0)
+
+    func two_lines(self, first: int, second: int) -> int!:
+        let sketch = self.sketch else return -1
+        let ax = sketch.x(sketch.part(first, 1)) - sketch.x(sketch.part(first, 0))
+        let ay = sketch.y(sketch.part(first, 1)) - sketch.y(sketch.part(first, 0))
+        let bx = sketch.x(sketch.part(second, 1)) - sketch.x(sketch.part(second, 0))
+        let by = sketch.y(sketch.part(second, 1)) - sketch.y(sketch.part(second, 0))
+        let cross = ax * by - ay * bx
+        let dot = ax * bx + ay * by
+        if math.abs(cross) <= 1e-9 * math.hypot(ax, ay) * math.hypot(bx, by):
+            return self.point_line(sketch.part(second, 0), first)
+        return sketch.constrain(angle, first, second, value = math.atan2(cross, dot))
+
+    ## Delete: the selected entities (and what is drawn on them).
+    func remove_selection(self) -> unit!:
+        let sketch = self.sketch else return
+        if self.selection.length == 0:
+            return
+        # Highest first, as removing renumbers what follows.
+        let chosen = self.selection.copy()
+        chosen.sort()
+        var at = chosen.length
+        while at > 0:
+            at -= 1
+            if chosen[at] < sketch.entity_count():
+                sketch.remove(chosen[at])
+        self.selection = []
+        self.commit("Delete sketch entities")
+
+## The letter key `key` types, upper case, or "".
+func key_letter(key: Key) -> str:
+    let keys = [Key.a, Key.b, Key.c, Key.d, Key.e, Key.f, Key.g, Key.h, Key.i, Key.j, Key.k, Key.l, Key.m, Key.n, Key.o, Key.p, Key.q, Key.r, Key.s, Key.t, Key.u, Key.v, Key.w, Key.x, Key.y, Key.z]
+    let letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    for at in 0..<keys.length:
+        if keys[at] == key:
+            return letters[at..<at + 1]
+    return ""
+
+## `values` without `value`.
+func without(values: list[int], value: int) -> list[int]:
+    let kept: list[int] = []
+    for v in values:
+        if v != value:
+            kept.append(v)
+    return kept

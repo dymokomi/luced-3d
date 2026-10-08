@@ -11,6 +11,7 @@ from luce_geocore.geocore import Vector3, Matrix4, Bounds, Mesh, invalid, mesh_o
 from luce_geocore.core.growing import Growing
 from luce_3d.graphics import WireBatch, wire_batch_type
 from luce_cad.model import CadOverlay, CadPreviewSet
+from luce_cad.sketch import CadSketch
 from luce_geocore.geocore import GeometrySet, SceneKind, LightShape, Projection, Camera, Light
 from luce_geocore.kernel import SceneObjects, scene_flattened
 
@@ -94,6 +95,56 @@ pub struct OverlayLines:
             try self.points.push(origin.add(u.multiply_scalar(t)).add(v.multiply_scalar(half)))
             try self.points.push(origin.add(v.multiply_scalar(t)).subtract(u.multiply_scalar(half)))
             try self.points.push(origin.add(v.multiply_scalar(t)).add(u.multiply_scalar(half)))
+
+    ## Sketch `sketch`'s curves on the plane through `origin` with its x
+    ## and y along `u` and `v`: `which` 0 the free ones, 1 the fully
+    ## constrained (after CadSketch.analyze), 2 construction, 3 entity
+    ## `entity` alone (a hovered or selected one; a point draws nothing).
+    pub func add_sketch(sketch: interop.Reference[CadSketch], origin: Vector3, u: Vector3, v: Vector3, which: i64, entity: i64 = -1) -> !:
+        let s = try sketch.get()
+        for at in 0..<s.entity_count():
+            let kind = s.kind(at)
+            if kind == 0: continue
+            if which == 3:
+                if at != entity: continue
+            elif which == 2:
+                if not s.construction(at): continue
+            elif s.construction(at) or s.fixed(at) != (which == 1):
+                continue
+            if kind == 1:
+                let a = s.part(at, 0)
+                let b = s.part(at, 1)
+                try self.add_segment(planar(origin, u, v, s.x(a), s.y(a)), planar(origin, u, v, s.x(b), s.y(b)))
+                continue
+            let center = s.part(at, 0)
+            let cx = s.x(center)
+            let cy = s.y(center)
+            var start = 0.0
+            var sweep = 2.0 * math.pi
+            if kind == 3:
+                let first = s.part(at, 1)
+                let last = s.part(at, 2)
+                start = math.atan2(s.y(first) - cy, s.x(first) - cx)
+                sweep = math.atan2(s.y(last) - cy, s.x(last) - cx) - start
+                while sweep <= 0.0: sweep += 2.0 * math.pi
+            try self.add_arc(origin, u, v, cx, cy, s.radius(at), start, sweep)
+
+    ## A segment from `a` to `b`.
+    pub func add_segment(a: Vector3, b: Vector3) -> !:
+        try self.points.push(a)
+        try self.points.push(b)
+
+    ## An arc on the plane through `origin` (axes `u`, `v`) about plane
+    ## point (`cx`, `cy`) of `radius`, from angle `start` sweeping `sweep`
+    ## radians counterclockwise, in segments of at most 3 degrees.
+    pub func add_arc(origin: Vector3, u: Vector3, v: Vector3, cx: f64, cy: f64, radius: f64, start: f64, sweep: f64) -> !:
+        let count = (usize)math.max(1.0, math.min(512.0, math.ceil(math.abs(sweep) / (math.pi / 60.0))))
+        var previous = planar(origin, u, v, cx + radius * math.cos(start), cy + radius * math.sin(start))
+        for step in 1..<count + 1:
+            let angle = start + sweep * (f64)step / (f64)count
+            let next = planar(origin, u, v, cx + radius * math.cos(angle), cy + radius * math.sin(angle))
+            try self.add_segment(previous, next)
+            previous = next
 
     ## Every camera and light of `set` (and its instances) as viewport
     ## helpers: a camera's frustum to one unit ahead with an up marker, a
@@ -183,3 +234,8 @@ pub func line_points(lines: const OverlayLines*) -> const Vector3[]:
     return lines.points.view()
 
 pub let overlay_lines_type: interop.Type[OverlayLines] = interop.Type[OverlayLines]("OverlayLines", OverlayLines.close, closeable = true)
+
+## Plane coordinates (`x`, `y`) on the plane through `origin` with axes
+## `u` and `v`, as a world point.
+func planar(origin: Vector3, u: Vector3, v: Vector3, x: f64, y: f64) -> Vector3:
+    return origin.add(u.multiply_scalar(x)).add(v.multiply_scalar(y))

@@ -1,0 +1,115 @@
+## The Sketch node and its viewport editor, driven by pointer events as a
+## user would: a rectangle drawn on the ground plane (its sides level and
+## upright), its bottom dimensioned with Sketch Dimension and the dimension
+## changed as the parameter panel does, the sketch extruded to the body it
+## bounds; undo takes the change back; a line drawn by the bottom's end
+## shares that end; constraint tools refuse what over-constrains.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_cad.sketch import CadSketch
+from luce_cad.cad_geometry import CadGeometry
+from luce_3d.graphics import Vector3
+from viewport_tools import projected
+import node_commands
+import sketch_commands
+from luce_std import math
+
+## Click the viewport at sketch point (`x`, `y`) of the editor's plane.
+func click(editor: Luce3D, x: float, y: float) -> unit!:
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    let f = view.sketch.editor.frame
+    let s = projected(editor.workspace, f.at(x, y), bounds.width, bounds.height)
+    for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+        editor.app.dispatch(Event(kind = kind, x = bounds.x + s[0], y = bounds.y + s[1], button = 0))
+
+func near(a: float, b: float) -> bool:
+    return math.abs(a - b) <= 1e-6 * math.max(1.0, math.abs(b))
+
+pub func sketch_node_tests() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Sketch", 0.0, 0.0)
+    let id = w.network.selected
+    node_commands.display_selected(w)
+    # Look straight down on the ground plane, 40 mm across.
+    w.view.yaw = 0.0
+    w.view.pitch = 1.5
+    w.view.distance = 120.0
+    w.view.target = Vector3(20.0, 0.0, -10.0)
+    w.view.update_camera()
+    editor.app.layout(1600.0, 1000.0)
+    let sketch_editor = editor.panels.view.sketch.editor
+    assert(w.sketching() and sketch_editor.active())
+    # A rectangle from (0, 0) to (40, 20).
+    sketch_editor.choose("Rectangle")
+    click(editor, 0.0, 0.0)
+    click(editor, 40.0, 20.0)
+    var s = CadSketch.parse(w.network.require(id).texts[0])
+    assert(s.entity_count() == 8 and s.constraint_count() == 4)
+    # Its bottom dimensioned: the bottom line, then a click where the
+    # value goes.
+    sketch_editor.choose("Sketch Dimension")
+    click(editor, 20.0, 0.0)
+    click(editor, 20.0, -8.0)
+    let found = sketch_commands.dimensions(w.network.require(id).texts[0])
+    assert(found.length == 1 and near(found[0].value, 40.0) and not found[0].angle)
+    # The dimension set to 50 mm, as the parameter panel does: the
+    # rectangle (fixed nowhere) widens by the least motion, both sides out.
+    sketch_commands.set_dimension(w, id, found[0].constraint, 50.0)
+    s = CadSketch.parse(w.network.require(id).texts[0])
+    var left = 1000.0
+    var right = -1000.0
+    for at in 0..<s.entity_count():
+        if s.kind(at) == 0:
+            left = math.min(left, s.x(at))
+            right = math.max(right, s.x(at))
+    assert(near(right - left, 50.0) and near(left, -5.0))
+    # Extruded 10 mm (the default): a 50 x 20 x 10 block.
+    node_commands.add_node(w, "Extrude", 0.0, 120.0)
+    let body = CadGeometry.model(w.network.evaluate_data(w.network.selected).geometry, 0)
+    let box = body.tessellate(8).bounds()
+    assert(near(box.maximum.x - box.minimum.x, 50.0) and near(box.maximum.y - box.minimum.y, 10.0) and near(box.maximum.z - box.minimum.z, 20.0))
+    # Undo the extrusion and the dimension's change: 40 wide again.
+    w.undo()
+    w.undo()
+    node_commands.select_node(w, id)
+    node_commands.display_selected(w)
+    assert(near(sketch_commands.dimensions(w.network.require(id).texts[0])[0].value, 40.0))
+    # A line from the rectangle's corner snaps to that corner: it shares
+    # the point (no new point made for its start).
+    sketch_editor.sync()
+    let before = CadSketch.parse(w.network.require(id).texts[0]).entity_count()
+    sketch_editor.choose("Line")
+    click(editor, 40.0, 0.0)
+    click(editor, 60.0, -15.0)
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.escape))
+    assert(CadSketch.parse(w.network.require(id).texts[0]).entity_count() == before + 2)
+    # Horizontal/Vertical on the slanted line makes it level (more level
+    # than upright); then Perpendicular between it and the level bottom
+    # cannot hold: refused, with Fusion's notice.
+    let line = CadSketch.parse(w.network.require(id).texts[0]).entity_count() - 1
+    sketch_editor.choose("Horizontal/Vertical")
+    let middle = middle_of(w.network.require(id).texts[0], line)
+    click(editor, middle[0], middle[1])
+    let held = CadSketch.parse(w.network.require(id).texts[0]).constraint_count()
+    sketch_editor.choose("Perpendicular")
+    let moved = middle_of(w.network.require(id).texts[0], line)
+    click(editor, moved[0], moved[1])
+    click(editor, 20.0, 0.0)
+    assert(CadSketch.parse(w.network.require(id).texts[0]).constraint_count() == held)
+    assert(w.notice.contains("over constrained"))
+    editor.close()
+    print("PASS Sketch node: a rectangle drawn on the ground, dimensioned and changed, extruded, undone; a line snapping to a corner; an over-constraining constraint refused")
+
+## Line `line`'s middle in the sketch `text` describes.
+func middle_of(text: str, line: int) -> list[float]!:
+    let s = CadSketch.parse(text)
+    let a = s.part(line, 0)
+    let b = s.part(line, 1)
+    return [(s.x(a) + s.x(b)) * 0.5, (s.y(a) + s.y(b)) * 0.5]
