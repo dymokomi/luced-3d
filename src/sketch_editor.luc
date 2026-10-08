@@ -50,12 +50,16 @@ pub let line_distance = 14
 pub let angle = 17
 pub let radius = 18
 pub let diameter = 19
+pub let curvature = 20
 
 ## Entity kinds.
 pub let point_kind = 0
 pub let line_kind = 1
 pub let circle_kind = 2
 pub let arc_kind = 3
+pub let spline_kind = 4
+pub let ellipse_kind = 5
+pub let conic_kind = 6
 
 ## How near the cursor snaps, in points on screen.
 let snap_reach = 9.0
@@ -317,6 +321,7 @@ pub class SketchEditor:
             self.revision += 1
             return true
         if event.key == Key.enter:
+            self.finish_open()
             self.reset_tool()
             return true
         if event.key in [Key.delete, Key.backspace]:
@@ -399,7 +404,7 @@ pub class SketchEditor:
         if self.snap >= 0 and sketch.kind(self.snap) == point_kind:
             return self.snap
         let made = sketch.add_point(self.cursor[0], self.cursor[1])
-        if self.snap >= 0:
+        if self.snap >= 0 and holds_points(sketch.kind(self.snap)):
             _ = sketch.constrain(on_curve, made, self.snap)
         return made
 
@@ -410,8 +415,12 @@ pub class SketchEditor:
             _ = self.cursor_point()
             self.commit("Sketch point")
             return
-        # Clicking the last point again ends a chain.
-        if self.clicks.length > 0 and self.snap >= 0 and self.snap == self.click_snaps[-1]:
+        # Clicking the last point again ends a chain (a spline: makes it;
+        # its points are made only then, so there, where it was).
+        let again = self.clicks.length > 0 and ((self.snap >= 0 and self.snap == self.click_snaps[-1]) or
+                    (sketch_tools.open_ended(self.tool) and math.hypot(self.cursor[0] - self.clicks[-1][0], self.cursor[1] - self.clicks[-1][1]) <= self.reach))
+        if again:
+            self.finish_open()
             self.reset_tool()
             return
         self.clicks.append(self.cursor.copy())
@@ -431,10 +440,16 @@ pub class SketchEditor:
             self.clicks = [self.clicks[1]]
             self.click_snaps = [b]
             self.made = [b]
-        elif self.clicks.length == sketch_tools.clicks_for(self.tool):
+        elif not sketch_tools.open_ended(self.tool) and self.clicks.length == sketch_tools.clicks_for(self.tool):
             if let finish = self.on_finish:
                 finish()
             self.reset_tool()
+
+    ## An open-ended tool (a spline) with two clicks or more: make it.
+    func finish_open(self) -> unit!:
+        if sketch_tools.open_ended(self.tool) and self.clicks.length >= 2:
+            if let finish = self.on_finish:
+                finish()
 
     ## Click `at`'s point, made once: the point it snapped to, else a new
     ## one there (on the curve it snapped to).
@@ -448,7 +463,7 @@ pub class SketchEditor:
             point = snapped
         else:
             point = sketch.add_point(self.clicks[at][0], self.clicks[at][1])
-            if snapped >= 0:
+            if snapped >= 0 and holds_points(sketch.kind(snapped)):
                 _ = sketch.constrain(on_curve, point, snapped)
         self.made[at] = point
         return point
@@ -557,6 +572,17 @@ pub class SketchEditor:
             return self.apply(equal, p[0], p[1])
         elif tool == "Concentric" and rounds.length == 2:
             return self.apply(concentric, p[0], p[1])
+        elif tool in ["Tangent", "Curvature"] and (kinds[0] in [spline_kind, conic_kind] or kinds[1] in [spline_kind, conic_kind]):
+            # A spline's or conic's end against a line, circle or arc.
+            let curve = p[0] if kinds[0] in [spline_kind, conic_kind] else p[1]
+            let other = p[1] if curve == p[0] else p[0]
+            # (A fit point spline's ends follow its points: not yet held.)
+            let fitted = sketch.kind(curve) == spline_kind and sketch.fit(curve)
+            if sketch.kind(other) in [line_kind, circle_kind, arc_kind] and not fitted and (tool == "Tangent" or sketch.kind(curve) == spline_kind):
+                let side = sketch.end_nearest(curve, other)
+                let turn = sketch.curvature_turn(curve, side, other) if tool == "Curvature" else 0.0
+                let constraint = sketch.constrain(tangent if tool == "Tangent" else curvature, curve, other, value = turn, side = side)
+                return self.settle(constraint)
         elif tool == "Tangent" and rounds.length >= 1 and kinds[0] != point_kind and kinds[1] != point_kind:
             return self.apply(tangent, p[0], p[1], side = self.tangent_side(p[0], p[1]))
         elif tool == "MidPoint" and points.length == 1 and lines.length == 1:
@@ -722,3 +748,8 @@ func without(values: list[int], value: int) -> list[int]:
 ## Whether frames `a` and `b` are the same plane and axes.
 func same_frame(a: SketchFrame, b: SketchFrame) -> bool:
     return a.origin.subtract(b.origin).length() == 0.0 and a.u.subtract(b.u).length() == 0.0 and a.v.subtract(b.v).length() == 0.0
+
+## Whether a point can be held on a curve of kind `kind` (lines, circles,
+## arcs and ellipses; not yet splines or conics).
+func holds_points(kind: int) -> bool:
+    return kind in [line_kind, circle_kind, arc_kind, ellipse_kind]

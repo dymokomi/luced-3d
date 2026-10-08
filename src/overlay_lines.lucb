@@ -11,7 +11,7 @@ from luce_geocore.geocore import Vector3, Matrix4, Bounds, Mesh, invalid, mesh_o
 from luce_geocore.core.growing import Growing
 from luce_3d.graphics import WireBatch, wire_batch_type
 from luce_cad.model import CadOverlay, CadPreviewSet
-from luce_cad.sketch import CadSketch
+from luce_cad.sketch import CadSketch, sketch_samples
 from luce_geocore.geocore import GeometrySet, SceneKind, LightShape, Projection, Camera, Light
 from luce_geocore.kernel import SceneObjects, scene_flattened
 
@@ -98,13 +98,19 @@ pub struct OverlayLines:
 
     ## Sketch `sketch`'s curves on the plane through `origin` with its x
     ## and y along `u` and `v`: `which` 0 the free ones, 1 the fully
-    ## constrained (after CadSketch.analyze), 2 construction, 3 entity
-    ## `entity` alone (a hovered or selected one; a point draws nothing).
+    ## constrained (after CadSketch.analyze), 2 construction (and control
+    ## point splines' nets), 3 entity `entity` alone (a hovered or selected
+    ## one; a point draws nothing).
     pub func add_sketch(sketch: interop.Reference[CadSketch], origin: Vector3, u: Vector3, v: Vector3, which: i64, entity: i64 = -1) -> !:
         let s = try sketch.get()
         for at in 0..<s.entity_count():
             let kind = s.kind(at)
             if kind == 0: continue
+            if which == 2 and kind == 4 and not s.fit(at):
+                for k in 1..<s.part_count(at):
+                    let a = s.part(at, k - 1)
+                    let b = s.part(at, k)
+                    try self.add_segment(planar(origin, u, v, s.x(a), s.y(a)), planar(origin, u, v, s.x(b), s.y(b)))
             if which == 3:
                 if at != entity: continue
             elif which == 2:
@@ -115,6 +121,14 @@ pub struct OverlayLines:
                 let a = s.part(at, 0)
                 let b = s.part(at, 1)
                 try self.add_segment(planar(origin, u, v, s.x(a), s.y(a)), planar(origin, u, v, s.x(b), s.y(b)))
+                continue
+            if kind > 3:
+                # A spline, ellipse or conic: its samples joined.
+                var samples = Growing[f64]()
+                defer samples.close()
+                try sketch_samples(s, at, 128, &samples)
+                for k in 0..<samples.count // 2 - 1:
+                    try self.add_segment(planar(origin, u, v, samples.items[2 * k], samples.items[2 * k + 1]), planar(origin, u, v, samples.items[2 * k + 2], samples.items[2 * k + 3]))
                 continue
             let center = s.part(at, 0)
             let cx = s.x(center)

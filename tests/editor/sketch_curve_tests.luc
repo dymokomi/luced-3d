@@ -1,0 +1,149 @@
+## The Sketch editor's curves past lines and circles, drawn by clicks as a
+## user would on the ground plane: a fit point spline (Enter ends it), a
+## control point spline (its last point again ends it), an ellipse, a
+## conic, the circle touching a triangle's three sides, a tangent arc off a
+## line's end, an overall slot, an arc slot and a blend curve between two lines (as
+## curved as each: Curvature), the whole sketch reading back from its text.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_cad.sketch import CadSketch
+from luce_3d.graphics import Vector3
+from viewport_tools import projected
+import node_commands
+from luce_std import math
+
+func click(editor: Luce3D, x: float, y: float) -> unit!:
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    let f = view.sketch.editor.frame
+    let s = projected(editor.workspace, f.at(x, y), bounds.width, bounds.height)
+    for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+        editor.app.dispatch(Event(kind = kind, x = bounds.x + s[0], y = bounds.y + s[1], button = 0))
+
+func key(editor: Luce3D, pressed: Key) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = pressed))
+
+func near(a: float, b: float) -> bool:
+    return math.abs(a - b) <= 1e-5 * math.max(1.0, math.abs(b))
+
+## The sketch node `id` holds now.
+func sketch_of(editor: Luce3D, id: int) -> CadSketch!:
+    return CadSketch.parse(editor.workspace.network.require(id).texts[0])
+
+## The last entity of kind `kind`, or -1.
+func last_of(s: CadSketch, kind: int) -> int:
+    var found = -1
+    for at in 0..<s.entity_count():
+        if s.kind(at) == kind:
+            found = at
+    return found
+
+pub func sketch_curve_tests() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Sketch", 0.0, 0.0)
+    let id = w.network.selected
+    node_commands.display_selected(w)
+    w.view.yaw = 0.0
+    w.view.pitch = 1.5
+    w.view.distance = 320.0
+    w.view.target = Vector3(70.0, 0.0, 30.0)
+    w.view.update_camera()
+    editor.app.layout(1600.0, 1000.0)
+    let e = editor.panels.view.sketch.editor
+    # A fit point spline through four points, ended by Enter.
+    e.choose("Fit Point Spline")
+    for (x, y) in [(0.0, 0.0), (10.0, 10.0), (20.0, 0.0), (30.0, 10.0)]:
+        click(editor, x, y)
+    key(editor, Key.enter)
+    var s = sketch_of(editor, id)
+    let fit = last_of(s, 4)
+    assert(fit >= 0 and s.part_count(fit) == 4 and s.fit(fit))
+    # A control point spline, ended by its last point again.
+    e.choose("Control Point Spline")
+    for (x, y) in [(0.0, 30.0), (10.0, 40.0), (20.0, 30.0), (30.0, 40.0), (40.0, 30.0), (50.0, 40.0), (50.0, 40.0)]:
+        click(editor, x, y)
+    s = sketch_of(editor, id)
+    let control = last_of(s, 4)
+    assert(control != fit and s.part_count(control) == 6 and not s.fit(control))
+    # An ellipse: center, major axis' end, 8 wide.
+    e.choose("Ellipse")
+    for (x, y) in [(70.0, 0.0), (90.0, 0.0), (70.0, 8.0)]:
+        click(editor, x, y)
+    s = sketch_of(editor, id)
+    let ellipse = last_of(s, 5)
+    assert(ellipse >= 0 and near(s.radius(ellipse), 8.0))
+    # A conic: start, end, apex.
+    e.choose("Conic Curve")
+    for (x, y) in [(100.0, 0.0), (120.0, 0.0), (110.0, 15.0)]:
+        click(editor, x, y)
+    s = sketch_of(editor, id)
+    assert(last_of(s, 6) >= 0 and near(s.radius(last_of(s, 6)), 0.5))
+    # A triangle, then the circle touching its three sides: its inradius,
+    # 600 / (20 + 36.0555…).
+    e.choose("Line")
+    for (x, y) in [(0.0, -60.0), (40.0, -60.0), (20.0, -30.0), (0.0, -60.0)]:
+        click(editor, x, y)
+    key(editor, Key.escape)
+    e.choose("3-Tangent Circle")
+    for (x, y) in [(13.0, -60.0), (33.0, -49.5), (7.0, -49.5)]:
+        click(editor, x, y)
+    s = sketch_of(editor, id)
+    let inner = last_of(s, 2)
+    assert(inner >= 0 and near(s.radius(inner), 600.0 / (20.0 + math.sqrt(1300.0))))
+    # A tangent arc off a line's end: a quarter circle of 10 about (80, -50).
+    e.choose("Line")
+    click(editor, 60.0, -60.0)
+    click(editor, 80.0, -60.0)
+    key(editor, Key.escape)
+    e.choose("Tangent Arc")
+    click(editor, 80.0, -60.0)
+    click(editor, 90.0, -50.0)
+    s = sketch_of(editor, id)
+    let arc = last_of(s, 3)
+    let center = s.part(arc, 0)
+    assert(arc >= 0 and near(s.radius(arc), 10.0) and near(s.x(center), 80.0) and near(s.y(center), -50.0))
+    # An overall slot 40 long and 10 wide: half circles of 5.
+    e.choose("Overall Slot")
+    for (x, y) in [(100.0, -60.0), (140.0, -60.0), (120.0, -55.0)]:
+        click(editor, x, y)
+    s = sketch_of(editor, id)
+    assert(near(s.radius(last_of(s, 3)), 5.0))
+    # A quarter arc slot about (100, -110), its centerline 20 out, 10 wide:
+    # arcs of 25 and 15, its end caps 5.
+    e.choose("Center Point Arc Slot")
+    for (x, y) in [(100.0, -110.0), (120.0, -110.0), (100.0, -90.0), (100.0, -85.0)]:
+        click(editor, x, y)
+    s = sketch_of(editor, id)
+    let cap = last_of(s, 3)
+    assert(near(s.radius(cap), 5.0) and near(s.radius(cap - 2), 15.0) and near(s.radius(cap - 3), 25.0))
+    # A blend curve between two lines' ends: a quintic held as curved as
+    # each (two Curvature constraints).
+    e.choose("Line")
+    click(editor, 0.0, -100.0)
+    click(editor, 20.0, -100.0)
+    key(editor, Key.escape)
+    click(editor, 40.0, -90.0)
+    click(editor, 60.0, -90.0)
+    key(editor, Key.escape)
+    let before = sketch_of(editor, id).constraint_count()
+    e.choose("Blend Curve")
+    click(editor, 12.0, -100.0)
+    click(editor, 48.0, -90.0)
+    s = sketch_of(editor, id)
+    let blend = last_of(s, 4)
+    assert(blend != control and s.part_count(blend) == 6)
+    var curvatures = 0
+    for at in before..<s.constraint_count():
+        if s.constraint_kind(at) == 20:
+            curvatures += 1
+    assert(curvatures == 2)
+    # It all reads back from its text.
+    assert(CadSketch.parse(s.text()).text() == s.text())
+    editor.close()
+    print("PASS Sketch curves: fit and control point splines, ellipse, conic, a triangle's 3-tangent circle, tangent arc, overall and arc slots, blend curve with curvature")

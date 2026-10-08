@@ -1,0 +1,192 @@
+## The Sketch editor's slots (Fusion's Slot tools), from their clicks:
+##
+##   Center to Center Slot   its two end centers, then how wide
+##   Overall Slot            its two outer ends, then how wide
+##   Center Point Slot       its middle, an end center, then how wide
+##   Three Point Arc Slot    its centerline arc's ends and a point on it,
+##                           then how wide
+##   Center Point Arc Slot   its centerline arc's center, start and end,
+##                           then how wide
+##
+## A straight slot is two lines touching two half circles; an arc slot two
+## arcs about one center, closed by half circles round the ends of its
+## construction centerline.
+from luce_cad.sketch import CadSketch
+from overlay_lines import OverlayLines
+from sketch_editor import SketchEditor
+import sketch_editor as k
+from luce_std import math
+
+pub func slot_tools() -> list[str]:
+    return ["Center to Center Slot", "Overall Slot", "Center Point Slot", "Three Point Arc Slot", "Center Point Arc Slot"]
+
+## How many clicks slot tool `tool` takes.
+pub func slot_clicks(tool: str) -> int:
+    return 4 if tool in ["Three Point Arc Slot", "Center Point Arc Slot"] else 3
+
+## Slot tool `e.tool`'s clicks are in: make it.
+pub func finish_slot(e: SketchEditor) -> unit!:
+    let c = e.clicks
+    if e.tool in ["Three Point Arc Slot", "Center Point Arc Slot"]:
+        let arc = centerline(e.tool, c) else return
+        arc_slot(e, arc, c[3])
+        return
+    let ends = straight_ends(e.tool, c)
+    if ends.length == 0:
+        return
+    straight_slot(e, ends[0], ends[1], c[2])
+
+## What it would make with the cursor where it is.
+pub func preview_slot(e: SketchEditor, lines: OverlayLines) -> unit!:
+    let c = e.clicks
+    let f = e.frame
+    let p = e.cursor
+    if e.tool in ["Three Point Arc Slot", "Center Point Arc Slot"]:
+        if c.length < 3:
+            lines.add_segment(f.at(c[-1][0], c[-1][1]), f.at(p[0], p[1]))
+            return
+        let arc = centerline(e.tool, c) else return
+        lines.add_arc(f.origin, f.u, f.v, arc[0], arc[1], arc[2], arc[3], arc[4])
+        return
+    if c.length == 1:
+        lines.add_segment(f.at(c[0][0], c[0][1]), f.at(p[0], p[1]))
+        return
+    let ends = straight_ends(e.tool, c + [p])
+    if ends.length == 2:
+        lines.add_segment(f.at(ends[0][0], ends[0][1]), f.at(ends[1][0], ends[1][1]))
+        lines.add_segment(f.at(ends[1][0], ends[1][1]), f.at(p[0], p[1]))
+
+## A straight slot's two end centers from its first two clicks (and the
+## third, the width, for Overall: its ends are inset by half of it); [] when
+## they are one place.
+func straight_ends(tool: str, c: list[list[float]]) -> list[list[float]]:
+    if tool == "Center Point Slot":
+        return [[2.0 * c[0][0] - c[1][0], 2.0 * c[0][1] - c[1][1]], c[1]]
+    if tool == "Overall Slot" and c.length > 2:
+        let length = math.hypot(c[1][0] - c[0][0], c[1][1] - c[0][1])
+        let half = half_width(c[0], c[1], c[2])
+        if length <= 2.0 * half:
+            return []
+        let ux = (c[1][0] - c[0][0]) / length
+        let uy = (c[1][1] - c[0][1]) / length
+        return [[c[0][0] + ux * half, c[0][1] + uy * half], [c[1][0] - ux * half, c[1][1] - uy * half]]
+    return [c[0], c[1]]
+
+## How far `p` is from the line through `a` and `b`.
+func half_width(a: list[float], b: list[float], p: list[float]) -> float:
+    let length = math.max(math.hypot(b[0] - a[0], b[1] - a[1]), 1e-300)
+    return math.abs((b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])) / length
+
+## A slot between end centers `a` and `b`, as wide as `width_at` is from
+## their line: two half circles joined by two lines touching them. Clicked
+## centers (Center to Center's) are the clicks' points.
+func straight_slot(e: SketchEditor, a: list[float], b: list[float], width_at: list[float]) -> unit!:
+    let sketch = e.sketch else return
+    let length = math.hypot(b[0] - a[0], b[1] - a[1])
+    let w = half_width(a, b, width_at)
+    if length <= 0.0 or w <= 0.0:
+        return
+    let ux = (b[0] - a[0]) / length
+    let uy = (b[1] - a[1]) / length
+    let near_center = e.made_point(0) if e.tool == "Center to Center Slot" else sketch.add_point(a[0], a[1])
+    let far_center = e.made_point(1) if e.tool in ["Center to Center Slot", "Center Point Slot"] else sketch.add_point(b[0], b[1])
+    # Corners: left and right of each center.
+    let al = sketch.add_point(a[0] - uy * w, a[1] + ux * w)
+    let ar = sketch.add_point(a[0] + uy * w, a[1] - ux * w)
+    let bl = sketch.add_point(b[0] - uy * w, b[1] + ux * w)
+    let br = sketch.add_point(b[0] + uy * w, b[1] - ux * w)
+    let right = sketch.add_line(ar, br)
+    let left = sketch.add_line(bl, al)
+    # Round the far end counterclockwise from right to left, the near one
+    # from left to right.
+    let far = sketch.add_arc(far_center, br, bl)
+    let near = sketch.add_arc(near_center, al, ar)
+    _ = sketch.constrain(k.tangent, right, far, side = side_of(sketch, right, b[0], b[1]))
+    _ = sketch.constrain(k.tangent, left, far, side = side_of(sketch, left, b[0], b[1]))
+    _ = sketch.constrain(k.tangent, right, near, side = side_of(sketch, right, a[0], a[1]))
+    _ = sketch.constrain(k.tangent, left, near, side = side_of(sketch, left, a[0], a[1]))
+    _ = sketch.constrain(k.equal, far, near)
+    # Center Point: its clicked middle halfway between the centers.
+    if e.tool == "Center Point Slot":
+        let axis = sketch.add_line(near_center, far_center, true)
+        _ = sketch.constrain(k.midpoint, e.made_point(0), axis)
+
+## An arc slot's centerline: [center x, center y, radius, start angle,
+## counterclockwise sweep], or none (its points in a line).
+func centerline(tool: str, c: list[list[float]]) -> list[float]?:
+    if tool == "Center Point Arc Slot":
+        let r = math.hypot(c[1][0] - c[0][0], c[1][1] - c[0][1])
+        if r <= 0.0:
+            return none
+        let start = math.atan2(c[1][1] - c[0][1], c[1][0] - c[0][0])
+        let end = c[2] if c.length > 2 else c[1]
+        return [c[0][0], c[0][1], r, start, turn(start, math.atan2(end[1] - c[0][1], end[0] - c[0][0]))]
+    if c.length < 3:
+        return none
+    # Three points: the circle through them, from the end whose way round
+    # passes the third.
+    let a = c[0]
+    let b = c[1]
+    let m = c[2]
+    let d = 2.0 * (a[0] * (b[1] - m[1]) + b[0] * (m[1] - a[1]) + m[0] * (a[1] - b[1]))
+    if math.abs(d) <= 1e-12:
+        return none
+    let a2 = a[0] * a[0] + a[1] * a[1]
+    let b2 = b[0] * b[0] + b[1] * b[1]
+    let m2 = m[0] * m[0] + m[1] * m[1]
+    let ox = (a2 * (b[1] - m[1]) + b2 * (m[1] - a[1]) + m2 * (a[1] - b[1])) / d
+    let oy = (a2 * (m[0] - b[0]) + b2 * (a[0] - m[0]) + m2 * (b[0] - a[0])) / d
+    let r = math.hypot(a[0] - ox, a[1] - oy)
+    let at_a = math.atan2(a[1] - oy, a[0] - ox)
+    let at_b = math.atan2(b[1] - oy, b[0] - ox)
+    let at_m = math.atan2(m[1] - oy, m[0] - ox)
+    if turn(at_a, at_m) <= turn(at_a, at_b):
+        return [ox, oy, r, at_a, turn(at_a, at_b)]
+    return [ox, oy, r, at_b, turn(at_b, at_a)]
+
+## The counterclockwise turn from angle `a` to angle `b` (0..2π).
+func turn(a: float, b: float) -> float:
+    var t = b - a
+    while t <= 0.0:
+        t += 2.0 * math.pi
+    while t > 2.0 * math.pi:
+        t -= 2.0 * math.pi
+    return t
+
+## An arc slot about centerline `arc`, as wide as `width_at` is from it:
+## outer and inner arcs about its center, half circles round its ends.
+func arc_slot(e: SketchEditor, arc: list[float], width_at: list[float]) -> unit!:
+    let sketch = e.sketch else return
+    let (ox, oy, r, start, sweep) = (arc[0], arc[1], arc[2], arc[3], arc[4])
+    let h = math.abs(math.hypot(width_at[0] - ox, width_at[1] - oy) - r)
+    if h <= 0.0 or h >= r:
+        e.say("An arc slot is narrower than its centerline's radius")
+        return
+    let end = start + sweep
+    let center = e.made_point(0) if e.tool == "Center Point Arc Slot" else sketch.add_point(ox, oy)
+    let s0 = sketch.add_point(ox + r * math.cos(start), oy + r * math.sin(start))
+    let s1 = sketch.add_point(ox + r * math.cos(end), oy + r * math.sin(end))
+    _ = sketch.add_arc(center, s0, s1, true)
+    let outer0 = sketch.add_point(ox + (r + h) * math.cos(start), oy + (r + h) * math.sin(start))
+    let outer1 = sketch.add_point(ox + (r + h) * math.cos(end), oy + (r + h) * math.sin(end))
+    let inner0 = sketch.add_point(ox + (r - h) * math.cos(start), oy + (r - h) * math.sin(start))
+    let inner1 = sketch.add_point(ox + (r - h) * math.cos(end), oy + (r - h) * math.sin(end))
+    let outer = sketch.add_arc(center, outer0, outer1)
+    let inner = sketch.add_arc(center, inner0, inner1)
+    # The caps bulge away: round the start from inner to outer, round the
+    # end from outer to inner (counterclockwise both).
+    let first_cap = sketch.add_arc(s0, inner0, outer0)
+    let last_cap = sketch.add_arc(s1, outer1, inner1)
+    _ = sketch.constrain(k.equal, first_cap, last_cap)
+    # Inside the outer arc (its radius less the cap's apart), outside the
+    # inner one (theirs added).
+    for cap in [first_cap, last_cap]:
+        _ = sketch.constrain(k.tangent, outer, cap, side = -1.0)
+        _ = sketch.constrain(k.tangent, cap, inner, side = 1.0)
+
+## Which side of line `line` (`x`, `y`) is, as Tangent keeps it.
+pub func side_of(sketch: CadSketch, line: int, x: float, y: float) -> float:
+    let a = sketch.part(line, 0)
+    let b = sketch.part(line, 1)
+    let cross = (sketch.x(b) - sketch.x(a)) * (y - sketch.y(a)) - (sketch.y(b) - sketch.y(a)) * (x - sketch.x(a))
+    return 1.0 if cross >= 0.0 else -1.0

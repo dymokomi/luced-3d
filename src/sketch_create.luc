@@ -16,11 +16,20 @@
 ##                        a corner (six sides, all equal, on a construction
 ##                        circle)
 ##   Edge Polygon         one side's ends (six sides, to its left)
-##   Center to Center Slot  its two centers, then how wide
+##   2-Tangent Circle     two lines, then where its side and size are (its
+##                        radius the nearer line's distance from there)
+##   3-Tangent Circle     three lines (the circle touching all three)
+##   Tangent Arc          a line's or arc's end, then where it ends (it
+##                        leaves the way that curve does)
+##
+## Slots are sketch_slots.luc's, splines, ellipses and conics
+## sketch_freeform.luc's.
 from luce_cad.sketch import CadSketch
 from overlay_lines import OverlayLines
-from sketch_editor import SketchEditor
+from sketch_editor import SketchEditor, line_kind, arc_kind
 import sketch_editor as k
+from sketch_slots import slot_tools, finish_slot, preview_slot, side_of
+from sketch_freeform import freeform_tools, finish_freeform, preview_freeform, curve_end
 from luce_std import math
 
 ## How many sides the polygon tools make.
@@ -74,8 +83,14 @@ pub func finish(e: SketchEditor) -> unit!:
             _ = sketch.add_arc(center, start, end)
     elif tool in ["Circumscribed Polygon", "Inscribed Polygon", "Edge Polygon"]:
         polygon(e)
-    elif tool == "Center to Center Slot":
-        slot(e)
+    elif tool in ["2-Tangent Circle", "3-Tangent Circle"]:
+        tangent_circle(e)
+    elif tool == "Tangent Arc":
+        tangent_arc(e)
+    elif tool in slot_tools():
+        finish_slot(e)
+    elif tool in freeform_tools():
+        finish_freeform(e)
     _ = sketch.solve()
     e.commit(tool)
 
@@ -153,38 +168,6 @@ func polygon(e: SketchEditor) -> unit!:
         if at > 0:
             _ = sketch.constrain(k.equal, sides[0], sides[at])
 
-## A slot from its two centers and its width: two half circles joined by
-## two lines touching them.
-func slot(e: SketchEditor) -> unit!:
-    let sketch = e.sketch else return
-    let c = e.clicks
-    let length = math.hypot(c[1][0] - c[0][0], c[1][1] - c[0][1])
-    if length <= 0.0:
-        return
-    let ux = (c[1][0] - c[0][0]) / length
-    let uy = (c[1][1] - c[0][1]) / length
-    let w = math.abs(-uy * (c[2][0] - c[0][0]) + ux * (c[2][1] - c[0][1]))
-    if w <= 0.0:
-        return
-    let a = e.made_point(0)
-    let b = e.made_point(1)
-    # Corners: left and right of each center.
-    let al = sketch.add_point(c[0][0] - uy * w, c[0][1] + ux * w)
-    let ar = sketch.add_point(c[0][0] + uy * w, c[0][1] - ux * w)
-    let bl = sketch.add_point(c[1][0] - uy * w, c[1][1] + ux * w)
-    let br = sketch.add_point(c[1][0] + uy * w, c[1][1] - ux * w)
-    let right = sketch.add_line(ar, br)
-    let left = sketch.add_line(bl, al)
-    # Round the far end counterclockwise from right to left, the near one
-    # from left to right.
-    let far = sketch.add_arc(b, br, bl)
-    let near = sketch.add_arc(a, al, ar)
-    _ = sketch.constrain(k.tangent, right, far, side = side_of(sketch, right, c[1][0], c[1][1]))
-    _ = sketch.constrain(k.tangent, left, far, side = side_of(sketch, left, c[1][0], c[1][1]))
-    _ = sketch.constrain(k.tangent, right, near, side = side_of(sketch, right, c[0][0], c[0][1]))
-    _ = sketch.constrain(k.tangent, left, near, side = side_of(sketch, left, c[0][0], c[0][1]))
-    _ = sketch.constrain(k.equal, far, near)
-
 ## What the tool would make with the cursor where it is.
 pub func preview(e: SketchEditor, lines: OverlayLines) -> unit!:
     let c = e.clicks
@@ -234,12 +217,13 @@ pub func preview(e: SketchEditor, lines: OverlayLines) -> unit!:
             lines.add_arc(f.origin, f.u, f.v, first[0], first[1], r, start, turn_to(first, c[1], p))
     elif tool in ["Circumscribed Polygon", "Inscribed Polygon", "Edge Polygon"]:
         lines.add_segment(f.at(first[0], first[1]), f.at(p[0], p[1]))
-    elif tool == "Center to Center Slot":
-        if c.length == 1:
-            lines.add_segment(f.at(first[0], first[1]), f.at(p[0], p[1]))
-        else:
-            lines.add_segment(f.at(first[0], first[1]), f.at(c[1][0], c[1][1]))
-            lines.add_segment(f.at(c[1][0], c[1][1]), f.at(p[0], p[1]))
+    elif tool == "Tangent Arc":
+        let arc = tangent_arc_of(e, p) else return
+        lines.add_arc(f.origin, f.u, f.v, arc[0], arc[1], arc[2], arc[3], arc[4])
+    elif tool in slot_tools():
+        preview_slot(e, lines)
+    elif tool in freeform_tools():
+        preview_freeform(e, lines)
 
 ## A closed outline through `corners`.
 func loop(lines: OverlayLines, e: SketchEditor, corners: list[list[float]]) -> unit!:
@@ -273,9 +257,151 @@ func across(a: list[float], b: list[float], p: list[float]) -> (float, float, fl
     let ny = (b[0] - a[0]) / l
     return (nx, ny, nx * (p[0] - a[0]) + ny * (p[1] - a[1]))
 
-## Which side of line `line` (`x`, `y`) is, as Tangent keeps it.
-func side_of(sketch: CadSketch, line: int, x: float, y: float) -> float:
-    let a = sketch.part(line, 0)
-    let b = sketch.part(line, 1)
-    let cross = (sketch.x(b) - sketch.x(a)) * (y - sketch.y(a)) - (sketch.y(b) - sketch.y(a)) * (x - sketch.x(a))
-    return 1.0 if cross >= 0.0 else -1.0
+## A circle touching two clicked lines (on the side of, and as big as the
+## nearer line is far from, the third click) or three: its center X and
+## radius r from s (n · X - c) = r for each line's unit normal n and
+## offset c, the sign s the side the clicks are on.
+func tangent_circle(e: SketchEditor) -> unit!:
+    let sketch = e.sketch else return
+    let count = 2 if e.tool == "2-Tangent Circle" else 3
+    let lines: list[int] = []
+    for at in 0..<count:
+        let picked = e.click_snaps[at]
+        if picked < 0 or sketch.kind(picked) != line_kind:
+            e.say(f"{e.tool}: click on {count} lines")
+            return
+        lines.append(picked)
+    # Where the circle is: the third click, or the middle of the clicks.
+    var gx = 0.0
+    var gy = 0.0
+    for click in e.clicks:
+        gx += click[0] / 3.0
+        gy += click[1] / 3.0
+    if count == 2:
+        gx = e.clicks[2][0]
+        gy = e.clicks[2][1]
+    let rows: list[list[float]] = []
+    for line in lines:
+        let a = sketch.part(line, 0)
+        let b = sketch.part(line, 1)
+        let length = math.max(math.hypot(sketch.x(b) - sketch.x(a), sketch.y(b) - sketch.y(a)), 1e-300)
+        let nx = -(sketch.y(b) - sketch.y(a)) / length
+        let ny = (sketch.x(b) - sketch.x(a)) / length
+        let c = nx * sketch.x(a) + ny * sketch.y(a)
+        let s = 1.0 if nx * gx + ny * gy - c >= 0.0 else -1.0
+        rows.append([s * nx, s * ny, s * c, math.abs(nx * gx + ny * gy - c)])
+    var cx = 0.0
+    var cy = 0.0
+    var r = 0.0
+    if count == 2:
+        r = math.min(rows[0][3], rows[1][3])
+        let d = rows[0][0] * rows[1][1] - rows[0][1] * rows[1][0]
+        if math.abs(d) <= 1e-12:
+            e.say("2-Tangent Circle needs two lines that are not parallel")
+            return
+        let b0 = r + rows[0][2]
+        let b1 = r + rows[1][2]
+        cx = (b0 * rows[1][1] - rows[0][1] * b1) / d
+        cy = (rows[0][0] * b1 - b0 * rows[1][0]) / d
+    else:
+        # s n · X - r = s c for the three lines, by Cramer's rule.
+        let m = [[rows[0][0], rows[0][1], -1.0], [rows[1][0], rows[1][1], -1.0], [rows[2][0], rows[2][1], -1.0]]
+        let rhs = [rows[0][2], rows[1][2], rows[2][2]]
+        let d = det3(m)
+        if math.abs(d) <= 1e-12:
+            e.say("No circle touches those three lines")
+            return
+        cx = det3(replaced(m, 0, rhs)) / d
+        cy = det3(replaced(m, 1, rhs)) / d
+        r = det3(replaced(m, 2, rhs)) / d
+    if r <= 0.0:
+        e.say("No circle touches those lines there")
+        return
+    let circle = sketch.add_circle(sketch.add_point(cx, cy), r)
+    for line in lines:
+        _ = sketch.constrain(k.tangent, line, circle, side = side_of(sketch, line, cx, cy))
+
+## Tangent Arc's arc to `to`: [center x, center y, radius, start angle,
+## counterclockwise sweep], from the end its first click snapped to, leaving
+## the way the line or arc there does; none without such an end.
+func tangent_arc_of(e: SketchEditor, to: list[float]) -> list[float]?!:
+    let sketch = e.sketch else return none
+    let start = e.click_snaps[0] if e.click_snaps.length > 0 else -1
+    let from_curve = ended_curve(sketch, start)
+    if from_curve < 0:
+        return none
+    let out = curve_end(sketch, from_curve, [sketch.x(start), sketch.y(start)])
+    let px = sketch.x(start)
+    let py = sketch.y(start)
+    # Its center is off the way out, to the left (n) or right.
+    let nx = -out.dy
+    let ny = out.dx
+    let h = (to[0] - px) * nx + (to[1] - py) * ny
+    if math.abs(h) <= 1e-9:
+        return none
+    let radius = ((to[0] - px) * (to[0] - px) + (to[1] - py) * (to[1] - py)) / (2.0 * h)
+    let cx = px + nx * radius
+    let cy = py + ny * radius
+    let at_start = math.atan2(py - cy, px - cx)
+    let at_end = math.atan2(to[1] - cy, to[0] - cx)
+    # To the left it turns counterclockwise from the start; to the right
+    # counterclockwise from the end back to it.
+    let first = at_start if radius > 0.0 else at_end
+    let last = at_end if radius > 0.0 else at_start
+    var sweep = last - first
+    while sweep <= 0.0:
+        sweep += 2.0 * math.pi
+    return [cx, cy, math.abs(radius), first, sweep]
+
+## Tangent Arc's clicks are in: the arc, touching the curve it leaves.
+func tangent_arc(e: SketchEditor) -> unit!:
+    let sketch = e.sketch else return
+    let found = tangent_arc_of(e, e.clicks[1])
+    if found == none:
+        e.say("Tangent Arc starts at the end of a line or an arc")
+        return
+    let arc = found else return
+    let start = e.click_snaps[0]
+    let from_curve = ended_curve(sketch, start)
+    let end = e.made_point(1)
+    let center = sketch.add_point(arc[0], arc[1])
+    let left = math.abs(math.atan2(sketch.y(start) - arc[1], sketch.x(start) - arc[0]) - arc[3]) <= 1e-9
+    let made = sketch.add_arc(center, start if left else end, end if left else start)
+    if sketch.kind(from_curve) == line_kind:
+        _ = sketch.constrain(k.tangent, from_curve, made, side = side_of(sketch, from_curve, arc[0], arc[1]))
+    else:
+        # Two arcs: outside each other (radii added) or one inside the
+        # other (the larger first, the smaller's radius taken away).
+        let other = sketch.part(from_curve, 0)
+        let apart = math.hypot(sketch.x(other) - arc[0], sketch.y(other) - arc[1])
+        let r = sketch.radius(from_curve)
+        if math.abs(apart - (r + arc[2])) <= math.abs(apart - math.abs(r - arc[2])):
+            _ = sketch.constrain(k.tangent, from_curve, made, side = 1.0)
+        elif r >= arc[2]:
+            _ = sketch.constrain(k.tangent, from_curve, made, side = -1.0)
+        else:
+            _ = sketch.constrain(k.tangent, made, from_curve, side = -1.0)
+
+## The line or arc point `point` is an end of, or -1.
+func ended_curve(sketch: CadSketch, point: int) -> int:
+    if point < 0 or sketch.kind(point) != k.point_kind:
+        return -1
+    for at in 0..<sketch.entity_count():
+        let kind = sketch.kind(at)
+        if kind == line_kind and (sketch.part(at, 0) == point or sketch.part(at, 1) == point):
+            return at
+        if kind == arc_kind and (sketch.part(at, 1) == point or sketch.part(at, 2) == point):
+            return at
+    return -1
+
+func det3(m: list[list[float]]) -> float:
+    return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+
+## `m` with column `column` replaced by `values`.
+func replaced(m: list[list[float]], column: int, values: list[float]) -> list[list[float]]:
+    let result: list[list[float]] = []
+    for row in 0..<3:
+        let copy = m[row].copy()
+        copy[column] = values[row]
+        result.append(copy)
+    return result
