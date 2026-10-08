@@ -7,7 +7,7 @@ from luce_ui.ui import VStack, HStack, Text, TextField, Font, Button, ParameterP
 from interop import Connection
 from workspace import Workspace
 from actions import Actions
-from node_catalog import Parameter
+from parameter_rows import Parameter
 from shader_nodes import is_shader
 from network import Node
 from shader_nodes import inputs as shader_inputs
@@ -39,7 +39,7 @@ pub class Inspector:
     let generic_rows: VStack
     let connections: list[Connection]
     ## The catalog rows the panel shows, and what each row is to the inspector:
-    ## "value", "text", "info", "reload", "extrude", "clear", "last", "edits",
+    ## "value", "text", "info", "reload", "clear", "edits",
     ## "operation", or a blend's "edges", "pick_edges" and "all_edges".
     var rows: list[Parameter]
     var roles: list[str]
@@ -64,7 +64,7 @@ pub class Inspector:
         self.description = Text("", font = font, muted = true)
         self.parameters = ParameterPanel([], font = font)
         self.connections.append(self.parameters.on_begin(func (index: int) -> unit!:
-            if self.roles[index] in ["value", "last", "dimension", "angle_dimension"]:
+            if self.roles[index] in ["value", "dimension", "angle_dimension"]:
                 workspace.begin("Change " + self.rows[index].name)))
         self.connections.append(self.parameters.on_change(self.changed))
         self.connections.append(self.parameters.on_commit(func (index: int) -> unit!:
@@ -90,8 +90,6 @@ pub class Inspector:
                 node_commands.set_parameter(self.workspace, row.slot + component, self.parameters.component(index, component))
         elif role == "text":
             node_commands.set_text(self.workspace, row.slot, self.parameters.text(index))
-        elif role == "last":
-            modeling_commands.set_last_extrusion(self.workspace, self.parameters.value(index))
         elif role == "dimension" or role == "angle_dimension":
             let node = self.workspace.selected() else return
             let value = self.parameters.value(index)
@@ -107,8 +105,6 @@ pub class Inspector:
         elif role == "render":
             if let callback = self.on_render:
                 callback()
-        elif role == "extrude":
-            self.actions.extrude.trigger()
         elif role == "clear":
             self.actions.clear_edits.trigger()
         elif role == "pick_edges":
@@ -154,12 +150,8 @@ pub class Inspector:
             self.roles.append("text" if row.kind in ["text", "path"] else (("render" if row.name == "Render" else "reload") if row.kind == "button" else ("info" if row.kind == "info" else "value")))
         if is_edit(kind):
             self.add(specs, "edits", ParameterSpec(name = "edits", label = "Edits", kind = ParameterKind.info))
-            self.add(specs, "extrude", ParameterSpec(name = "extrude", label = "Extrude faces", kind = ParameterKind.button, join = true,
-                                                      doc = "Extrude the selected faces by the tool amount (E)."))
             self.add(specs, "clear", ParameterSpec(name = "clear", label = "Clear edits", kind = ParameterKind.button,
                                                     doc = "Remove every component edit of this node."))
-            self.add(specs, "last", ParameterSpec(name = "last", label = "Last extrusion", minimum = -100.0, maximum = 100.0, step = 0.1, decimals = 2,
-                                                   doc = "Change the distance of the most recent extrusion."))
         # A verb node made from a selection: pick its components again, or keep
         # its numbers on a changed topology (Houdini's behaviour).
         # A blend's edges: references to them by their faces (luce-cad's
@@ -255,15 +247,8 @@ pub class Inspector:
                 self.parameters.set_text(index, node.texts[1] if node.texts[1] != "" else "None picked")
             elif role == "profiles":
                 self.parameters.set_text(index, cad_nodes.profiles_summary(node.texts[0]))
-            elif role == "last":
-                let last = node.edits.length > 0 and node.edits[-1].verb == "PolyExtrude"
-                self.parameters.set_hidden(index, not last)
-                if last:
-                    self.parameters.set_value(index, node.edits[-1].numbers[0])
             elif role == "clear":
                 self.parameters.set_enabled(index, node.edits.length > 0)
-            elif role == "extrude":
-                self.parameters.set_enabled(index, self.actions.extrude.is_enabled())
             elif role == "keep_ids":
                 self.parameters.set_enabled(index, node.guard != 0)
             elif role == "dimension" or role == "angle_dimension":
@@ -312,7 +297,7 @@ func sketch_key(kind: str, text: str) -> str:
     return parts.join(",")
 
 ## The panel's description of a catalog row.
-func spec_of(row: Parameter, shown: Unit) -> ParameterSpec:
+pub func spec_of(row: Parameter, shown: Unit) -> ParameterSpec:
     let rest = row.rest + [0.0, 0.0, 0.0]
     let soft = row.soft_maximum > 0.0
     return ParameterSpec(name = row.key if row.key != "" else row.name.lower().replace(" ", "_"), label = row.name, kind = kind_of(row.kind),

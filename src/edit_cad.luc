@@ -1,17 +1,20 @@
 ## Edit CAD: the Edit framework's kind for analytic models. Its levels are
 ## Object (a whole model), CVs (control vertices), Edges (a B-rep edge) and
-## Faces (a B-rep face); Smart picks edges and faces. Object, Faces and Edges pick on the models'
-## display tessellations tagged with their models, faces and edges
-## (luce-cad's CadEdits.pick_mesh); CVs on the control-vertex cloud. Whole
-## models move, rotate, scale and go; faces go (a model losing every face
-## goes); CVs move by the point verbs that keep topology, and moved boundary
-## CVs re-project their trims (luce-cad). Primitives are luce-cad's
-## analytic solids, created as recipe steps.
+## Faces (a B-rep face); Smart picks edges and faces. Object, Faces and
+## Edges pick on the models' display tessellations tagged with their
+## models, faces and edges (luce-cad's CadEdits.pick_mesh); CVs on the
+## control-vertex cloud. Whole models move, rotate, scale and go; faces go
+## (a model losing every face goes); edges are filleted and chamfered by the
+## CAD nodes' own code; CVs move by the point verbs that keep topology, and
+## moved boundary CVs re-project their trims (luce-cad). Primitives are
+## luce-cad's analytic solids, named, created as recipe steps.
 from luce_geocore.geocore import Mesh, Verbs, Groups, Domain, GroupType, Vector3, Matrix4
 from luce_cad.cad_geometry import CadGeometry
 from luce_cad.cad_edits import CadEdits
 from luce_cad.solids import CadSolids
 from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+import cad_nodes
 from geometry_data import GeometryData
 from edit_operations import EditStep
 from edit_types import EditKind, EditLevel, EditTool, object_level, point_level, edge_level, face_level
@@ -39,19 +42,21 @@ func levels() -> list[EditLevel]:
             EditLevel("Edges", "edge-select", Domain.edge, GroupType.edges, edge_piece),
             EditLevel("Faces", "face-select", Domain.face, GroupType.faces, face_piece)]
 
-## Delete models or faces; noise, flatten and snap CVs (the gizmo moves,
-## rotates and scales models and CVs).
+## Delete models or faces; noise, flatten and snap CVs; Fillet and
+## Chamfer picked edges (the CAD nodes, run on the model the edges are on).
+## The gizmo moves, rotates and scales models and CVs.
 func tool_list() -> list[EditTool]:
     let result: list[EditTool] = []
-    for (name, offered) in [("Delete", [object_level, face_level]),
-                            ("Noise", [cv_level]), ("Flatten", [cv_level]), ("Snap", [cv_level])]:
-        let tool = name
-        let made = tool_run(tool, 0.5) else continue
-        result.append(EditTool(tool, made.verb, offered, func (amount: float) -> list[float]:
-            if let current = tool_run(tool, amount):
-                return current.numbers
-            return []))
+    for (name, offered) in [("Delete", [object_level, face_level]), ("Noise", [cv_level]), ("Flatten", [cv_level]), ("Snap", [cv_level])]:
+        let made = tool_run(name) else continue
+        result.append(EditTool(name, made.verb, offered, made.numbers))
+    for feature in edge_features():
+        result.append(EditTool(feature, feature, [edge_level]))
     return result
+
+## The CAD nodes that are Edit CAD tools on picked edges.
+pub func edge_features() -> list[str]:
+    return ["Fillet", "Chamfer"]
 
 ## The whole model under a picked polygon.
 func model_piece(mesh: Mesh, face: int) -> str!:
@@ -101,8 +106,10 @@ func run(step: EditStep, data: GeometryData) -> GeometryData!:
         error(ui.invalid, "Edit CAD has no models to edit yet: create one, or connect CAD")
     if step.group_type == 1:
         return moved_cvs(step, data)
+    if step.verb in edge_features():
+        return featured(step, data)
     if step.group_type == 2:
-        error(ui.invalid, "CAD edges have no tools yet")
+        error(ui.invalid, f"{step.verb} does not apply to CAD edges")
     let shown = pick_mesh(data)
     if step.topology != 0 and step.topology != shown.topology_hash():
         error(ui.invalid, "The CAD input changed. Undo the upstream change or clear this node's edits.")
@@ -111,6 +118,26 @@ func run(step: EditStep, data: GeometryData) -> GeometryData!:
     if step.verb == "Delete":
         return GeometryData(geometry = CadEdits.without_parts(data.geometry, shown, step.group))
     error(ui.invalid, f"{step.verb} does not apply to CAD models or faces")
+
+## A feature on picked edges, as its node makes it: each model with picked
+## edges replaced by the feature on them (its new faces named for the step).
+func featured(step: EditStep, data: GeometryData) -> GeometryData!:
+    let shown = pick_mesh(data)
+    if step.topology != 0 and step.topology != shown.topology_hash():
+        error(ui.invalid, "The CAD input changed. Undo the upstream change or clear this node's edits.")
+    var geometry = data.geometry
+    var any = false
+    for index in 0..<CadGeometry.model_count(data.geometry):
+        let edges = CadEdits.model_edges(shown, step.group, index)
+        if edges == "":
+            continue
+        let body = GeometryData(geometry = CadGeometry.of_model(CadGeometry.model(data.geometry, index)))
+        let made = cad_nodes.evaluate_cad(step.verb, step.numbers, body, f"#e{step.topology}.{index}", texts = [edges, "", ""])
+        geometry = CadEdits.replaced(geometry, index, CadGeometry.model(made.geometry, 0))
+        any = true
+    if not any:
+        error(ui.invalid, f"{step.verb} needs edges of a model: pick them at the Edges level")
+    return GeometryData(geometry = geometry)
 
 ## A point verb on the control vertices: the moved points go back.
 func moved_cvs(step: EditStep, data: GeometryData) -> GeometryData!:
@@ -146,10 +173,11 @@ func created(step: EditStep, data: GeometryData) -> GeometryData!:
     let v = step.numbers
     if v.length < 6:
         error(ui.invalid, f"{step.verb} needs six numbers")
-    let solid = solid_of(name, v)
+    # Named, so features (Fillet) can find its edges again.
+    let index = CadGeometry.model_count(data.geometry)
+    let solid = CadModeling.tagged(solid_of(name, v), f"#c{index}")
     let position = Vector3(v[3], v[4], v[5])
     let placed = solid if position.length() == 0.0 else solid.placed(Matrix4.compose(position, Vector3(), Vector3(1.0, 1.0, 1.0)))
-    let index = CadGeometry.model_count(data.geometry)
     let result = GeometryData(geometry = CadEdits.with_model(data.geometry, placed))
     result.created = f"@cad_model={index}"
     return result

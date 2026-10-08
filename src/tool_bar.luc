@@ -1,0 +1,120 @@
+## The tool bar: the Edit node's last tool step's parameters in a small
+## card at the bottom of the viewport (Fillet: its radius, continuity and tangent
+## chain), the step running again live as they change. What the tool works
+## on was picked before it ran, so its selection rows are not here: these
+## are the node's own rows less those (node_catalog.tool_rows), or the
+## kind's for its own verbs (Edit SDF's Blend). A tool run outside an Edit
+## node makes a node, and its parameters are the inspector's.
+from luce_ui.ui import VStack, Text, Font, ParameterPanel, ParameterSpec, Pane, Size
+from luce_gpu.gpu import Rect
+from interop import Connection
+from workspace import Workspace
+from parameter_rows import Parameter
+from edit_types import EditTool
+from inspector import spec_of
+import node_catalog
+import modeling_commands
+import units
+
+## The bar's width.
+let bar_width = 380.0
+
+pub class ToolBar:
+    let w: Workspace
+    pub let body: Pane
+    let title: Text
+    pub let panel: ParameterPanel
+    var rows: list[Parameter]
+    ## The step shown (node, its place in the recipe, its verb): rows are
+    ## made again only when it changes.
+    var shown: str = ""
+    ## Where it was last put.
+    var placed: list[float]
+    let connections: list[Connection]
+
+    pub func init(self, w: Workspace, font: Font) -> unit!:
+        self.w = w
+        self.rows = []
+        self.placed = []
+        self.title = Text("", font = font, muted = true)
+        self.panel = ParameterPanel([], font = font)
+        self.body = Pane(VStack([self.title, self.panel], spacing = 2.0, padding = 6.0), minimum = Size(bar_width, 52.0))
+        # Floating, not modal: the viewport keeps its clicks around it.
+        self.body.layout().set_popup(true)
+        self.body.layout().set_modal(false)
+        self.body.layout().set_visible(false)
+        self.connections = [self.panel.on_begin(func (index: int) -> unit!: w.begin("Change " + self.title.text())),
+                            self.panel.on_change(self.changed),
+                            self.panel.on_commit(func (index: int) -> unit!: w.commit())]
+
+    pub func is_open(self) -> bool:
+        return self.body.layout().is_visible()
+
+    ## Show the last tool step's rows; hide without one.
+    pub func refresh(self) -> unit!:
+        let found = self.last_tool()
+        if found == none:
+            self.shown = ""
+            self.body.layout().set_visible(false)
+            return
+        let tool = found else return
+        let node = self.w.selected() else return
+        let step = node.edits[-1]
+        let key = f"{node.id}/{node.edits.length}/{step.verb}/{units.document_unit(self.w).suffix}"
+        if key != self.shown:
+            self.shown = key
+            self.rows = tool.rows else node_catalog.tool_rows(tool.verb)
+            let specs: list[ParameterSpec] = []
+            let shown_unit = units.document_unit(self.w)
+            for row in self.rows:
+                specs.append(spec_of(row, shown_unit))
+            self.panel.set_specs(specs)
+            self.title.set_text(tool.name)
+        for index in 0..<self.rows.length:
+            let row = self.rows[index]
+            for component in 0..<row.components:
+                let slot = row.slot + component
+                if slot < step.numbers.length:
+                    self.panel.set_component(index, component, step.numbers[slot])
+        self.body.layout().set_visible(true)
+
+    ## Keep it centered along the bottom of the viewport at `area` (the
+    ## body's coordinates), its bottom 14 points above the viewport's; its
+    ## size as last laid out (its least before then). Called every frame:
+    ## it moves only when the viewport or its size changed.
+    pub func place(self, area: Rect) -> unit!:
+        if not self.is_open():
+            return
+        let size = self.body.layout().bounds()
+        let width = size.width if size.width > 0.0 else bar_width
+        let height = size.height if size.height > 0.0 else 52.0
+        let point = [area.x + (area.width - width) * 0.5, area.y + area.height - height - 14.0]
+        if point != self.placed:
+            self.placed = point
+            self.body.layout().set_popup_point(point[0], point[1])
+
+    ## The tool the displayed Edit node's last step is, when it has rows.
+    func last_tool(self) -> EditTool?!:
+        if not self.w.editing():
+            return none
+        let node = self.w.selected() else return none
+        let kind = self.w.active_kind() else return none
+        if node.edits.length == 0:
+            return none
+        let verb = node.edits[-1].verb
+        for tool in kind.tools:
+            if tool.verb != verb:
+                continue
+            let rows = tool.rows else node_catalog.tool_rows(verb)
+            return tool if rows.length > 0 else none
+        return none
+
+    func changed(self, index: int) -> unit!:
+        let row = self.rows[index]
+        for component in 0..<row.components:
+            modeling_commands.set_last_step(self.w, row.slot + component, self.panel.component(index, component), row.minimum, row.maximum)
+
+    pub func close(self):
+        for connection in self.connections:
+            connection.disconnect()
+        self.connections.clear()

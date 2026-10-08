@@ -6,10 +6,11 @@
 from luce_geocore.geocore import Mesh, Verbs
 from luce_3d.graphics import Vector3, Knife
 from workspace import Workspace
+from luce_std import math
 from network import Node
 from edit_operations import EditStep
 from edit_kinds import is_edit
-from edit_types import edge_level
+from edit_types import edge_level, soft_radius_slot, falloff_slot, symmetry_slot, keep_slot
 from tools import ToolRun, tool_run, verb_defaults
 from tool_prompt import ToolPrompt
 import node_catalog
@@ -44,9 +45,9 @@ pub func model(w: Workspace, operation: str) -> unit!:
             w.notice = f"{operation} does not apply to {w.level().name}"
             w.revision += 1
             return
-        run = ToolRun(tool.verb, tool.numbers(tool_amount(w)))
+        run = ToolRun(tool.verb, tool.numbers else node_catalog.starting_values(tool.verb))
     else:
-        run = tool_run(operation, tool_amount(w)) else return
+        run = tool_run(operation) else return
     let wants_group = not (operation in ["Subdivide", "Clean"])
     let chosen = w.current_selection() else return
     if wants_group and chosen.count() == 0:
@@ -110,7 +111,7 @@ pub func knife(w: Workspace, x0: float, y0: float, x1: float, y1: float, width: 
     if w.editing():
         let node = w.selected() else return
         w.perform("Knife", func () -> unit!:
-            node.edits.append(EditStep("Clip", group, group_type, numbers, mesh.topology_hash(), int(node.values[3]), node.values[4] != 0.0))
+            node.edits.append(EditStep("Clip", group, group_type, numbers, mesh.topology_hash(), int(node.values[symmetry_slot]), node.values[keep_slot] != 0.0))
             w.network.invalidate(node.id)
             w.adopt_output = true
             w.rebuild())
@@ -140,9 +141,9 @@ func append_step(w: Workspace, label: str, verb: str, group: str, numbers: list[
 func edit_step(w: Workspace, node: Node, verb: str, group: str, numbers: list[float], mesh: Mesh) -> EditStep:
     var values = numbers.copy()
     if verb == "Transform Components" and values.length >= 15:
-        values[13] = node.values[1]
-        values[14] = node.values[2]
-    return EditStep(verb, group, w.group_type(), values, mesh.topology_hash(), int(node.values[3]), node.values[4] != 0.0)
+        values[13] = node.values[soft_radius_slot]
+        values[14] = node.values[falloff_slot]
+    return EditStep(verb, group, w.group_type(), values, mesh.topology_hash(), int(node.values[symmetry_slot]), node.values[keep_slot] != 0.0)
 
 ## A verb node after the displayed node, inserted before what it fed;
 ## display, selection and the tool's output selection move to it.
@@ -429,14 +430,18 @@ pub func extrude(w: Workspace) -> unit!:
         return
     model(w, "Extrude")
 
-## Change the distance of the Edit node's most recent extrusion.
-pub func set_last_extrusion(w: Workspace, distance: float) -> unit!:
+## Number `slot` of the Edit node's last step (the tool bar's), kept
+## within `minimum` and `maximum`: the step runs again with it.
+pub func set_last_step(w: Workspace, slot: int, value: float, minimum: float, maximum: float) -> unit!:
     let node = w.selected() else return
-    if not is_edit(node.kind) or node.edits.length == 0 or node.edits[-1].verb != "PolyExtrude" or node.edits[-1].numbers[0] == distance:
+    if not is_edit(node.kind) or node.edits.length == 0 or slot < 0 or slot >= node.edits[-1].numbers.length:
         return
-    w.perform("Change extrusion", func () -> unit!:
+    let accepted = math.max(minimum, math.min(maximum, value))
+    if node.edits[-1].numbers[slot] == accepted:
+        return
+    w.perform("Change " + node.edits[-1].verb, func () -> unit!:
         let numbers = node.edits[-1].numbers.copy()
-        numbers[0] = distance
+        numbers[slot] = accepted
         node.edits[-1] = node.edits[-1].with_numbers(numbers)
         w.network.invalidate(node.id)
         w.rebuild())
@@ -494,7 +499,3 @@ pub func preview_transform(w: Workspace, delta: Vector3, rotate: Vector3, scale:
         w.pending_changed = true
     w.rebuild()
 
-## The amount the Edit node's tools use (its first parameter), 0.5 elsewhere.
-func tool_amount(w: Workspace) -> float:
-    let node = w.selected() else return 0.5
-    return node.values[0] if is_edit(node.kind) else 0.5
