@@ -6,11 +6,20 @@
 ## offers only these.
 from luce_cad.cad_geometry import CadGeometry
 from luce_cad.solids import CadSolids
-from luce_cad.modeling import CadModeling
+from luce_cad.modeling import CadModeling, FilletPlan
 from luce_cad.model import CadModel
 from geometry_data import GeometryData
 from luce_ui import ui
 from luce_3d.graphics import Vector3
+
+## What a feature node keeps between its evaluations on the compute
+## worker: a Fillet's plan (luce-cad's FilletPlan: the body's edges
+## resolved and its corners fitted once), so dragging its radius rebuilds
+## only. Made again when the body, edges, continuity or chaining change.
+pub class BlendMemo:
+    pub var plan: FilletPlan? = none
+    ## Plans made so far (one per change of body, edges or continuity).
+    pub var made: int = 0
 
 ## The solid primitives (analytic B-reps, centered on the origin along +Y).
 pub func solid_kinds() -> list[str]:
@@ -99,7 +108,8 @@ func primitive(kind: str, v: list[float], tag: str) -> CadModel!:
 
 ## A CAD feature's result from its input `data`, its second input, values
 ## `v` and texts `texts`; the faces it makes are named for `tag` (tag_of).
-pub func evaluate_cad(kind: str, v: list[float], data: GeometryData, tag: str, second: GeometryData? = none, texts: list[str]? = none) -> GeometryData!:
+## `memo` keeps a Fillet's plan between evaluations, when given.
+pub func evaluate_cad(kind: str, v: list[float], data: GeometryData, tag: str, second: GeometryData? = none, texts: list[str]? = none, memo: BlendMemo? = none) -> GeometryData!:
     if kind in solid_kinds():
         return GeometryData(geometry = CadGeometry.of_model(primitive(kind, v, tag)))
     if kind == "Extrude" or kind == "Revolve":
@@ -115,8 +125,19 @@ pub func evaluate_cad(kind: str, v: list[float], data: GeometryData, tag: str, s
         # Fillet: radius, continuity (G1, G2, G3), tangent chain. Chamfer:
         # distance, (slot 1 unused), tangent chain.
         let chain = v[2] != 0.0
-        let made = CadModeling.filleted(body, edges, v[0], tag, int(v[1]) + 1, chain) if kind == "Fillet" else CadModeling.chamfered(body, edges, v[0], tag, chain)
-        return GeometryData(geometry = CadGeometry.of_model(made))
+        if kind == "Chamfer":
+            return GeometryData(geometry = CadGeometry.of_model(CadModeling.chamfered(body, edges, v[0], tag, chain)))
+        let continuity = int(v[1]) + 1
+        let kept = memo else return GeometryData(geometry = CadGeometry.of_model(CadModeling.filleted(body, edges, v[0], tag, continuity, chain)))
+        var plan = kept.plan
+        if let held = plan:
+            if not held.made_for(body, edges, continuity, tag, chain):
+                plan = none
+        if plan == none:
+            kept.made += 1
+        let current = plan else CadModeling.fillet_plan(body, edges, continuity, tag, chain)
+        kept.plan = current
+        return GeometryData(geometry = CadGeometry.of_model(current.filleted(v[0])))
     if kind == "Mirror Body":
         # Across the plane facing X, Y or Z through the origin.
         let body = body_of(data, "first")

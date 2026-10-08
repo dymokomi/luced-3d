@@ -11,6 +11,8 @@ import selection_commands
 import node_catalog
 from cad_nodes import solid_kinds, edges_summary
 from luce_cad.modeling import CadModeling
+from compute_request import RequestWriter, read_request
+from network import Network
 
 ## Whether `model`'s tessellated volume is `expected` (to 0.5%).
 func near_volume(model: CadModel, expected: float) -> bool!:
@@ -102,6 +104,25 @@ pub func cad_node_tests() -> unit!:
     node_commands.set_parameter(w, 0, 0.3)
     # Every edge: a rounded box (sphere corners).
     assert(CadGeometry.model(w.network.evaluate_data(fillet).geometry, 0).face_count() == 26)
+    # Dragging the radius rebuilds from the Fillet's plan; G2 makes a new
+    # one (its corners fitted once), which the worker's copy keeps.
+    node_commands.set_parameter(w, 0, 0.25)
+    assert(CadGeometry.model(w.network.evaluate_data(fillet).geometry, 0).face_count() == 26)
+    assert(w.network.require(fillet).memo.made == 1)
+    node_commands.set_parameter(w, 1, 1.0)
+    assert(CadGeometry.model(w.network.evaluate_data(fillet).geometry, 0).face_count() == 66)
+    node_commands.set_parameter(w, 0, 0.3)
+    assert(CadGeometry.model(w.network.evaluate_data(fillet).geometry, 0).face_count() == 66)
+    assert(w.network.require(fillet).memo.made == 2)
+    # The worker's copy keeps the memo as the radius changes (the request
+    # carries the Edit Sketch's own steps too: Create Plane, Create
+    # Rectangle).
+    let writer = RequestWriter()
+    let worker = read_request(writer.encode(w.network, 3), Network(false))
+    node_commands.set_parameter(w, 0, 0.35)
+    let next = read_request(writer.encode(w.network, 3), worker)
+    assert(next.require(fillet).memo is worker.require(fillet).memo)
+    node_commands.set_parameter(w, 1, 0.0)
     let source = CadGeometry.model(w.network.evaluate_data(plain).geometry, 0)
     let uprights: list[int] = []
     for face in 0..<source.face_count():
@@ -161,4 +182,4 @@ pub func cad_node_tests() -> unit!:
     node_commands.leave_group(w)
     let placed = w.network.evaluate_data(cad)
     assert(placed.instance_count() == 1)
-    print("PASS CAD node: CAD nodes inside only, sketch → Extrude body (one way, symmetric), Revolve, solid primitives, Extrude Cut, the Boolean node, Chamfer and Fillet (edges picked in the viewport, kept by reference through an upstream change; G2), Mirror Body, Pattern, the CAD node places its bodies")
+    print("PASS CAD node: CAD nodes inside only, sketch → Extrude body (one way, symmetric), Revolve, solid primitives, Extrude Cut, the Boolean node, Chamfer and Fillet (edges picked in the viewport, kept by reference through an upstream change; G2; its plan kept while the radius changes, on the worker too), Mirror Body, Pattern, the CAD node places its bodies")
