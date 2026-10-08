@@ -52,17 +52,26 @@ pub class CadPreview:
         # A CAD model shows its tessellation at the viewport's quality, kept
         # in the model: a Tessellate node with the same divisions places the
         # same mesh (no copy, no new GPU buffers). A model that cannot be
-        # tessellated falls back to independent per-face previews.
+        # tessellated falls back to independent per-face previews. A failure
+        # of `progress` (the worker's cancellation) is the caller's: it ends
+        # the preview rather than counting as the model's.
+        var stopped: str? = none
         for index in 0..<models.length:
             let model = models[index]
             let report = func (fraction: float) -> unit!:
                 if let callback = progress:
-                    callback((float(index) + fraction) / float(models.length))
+                    callback((float(index) + fraction) / float(models.length)) catch failure:
+                        stopped = failure.message
+                        error(failure.code, failure.message)
             let mesh = model.tessellate(divisions, 0.0, report, model.supports_curvature(), false, quick) catch failure:
+                if let message = stopped:
+                    error(failure.code, message)
                 self.failed_faces += model.face_count()
                 if self.first_error == "":
                     self.first_error = failure.message
                 self.append_previews(model, report)
+                if let message = stopped:
+                    error(failure.code, message)
                 continue
             self.meshes.append(mesh)
             if self.cv_warning == "":
