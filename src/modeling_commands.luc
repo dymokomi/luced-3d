@@ -14,6 +14,7 @@ from tool_prompt import ToolPrompt
 import node_catalog
 import placing_commands
 import profile_pick
+import sketch_node
 
 ## Run `tool` on the selection (see tools.luc): a step of the active Edit
 ## node, or a new node after the displayed one, its Group the selection's
@@ -251,6 +252,26 @@ pub func set_peek(w: Workspace, held: bool) -> unit!:
     w.revision += 1
     w.rebuild()
 
+## Pick face: show Sketch node `id`'s input body to pick the flat face the
+## sketch goes on; the first face picked is it (follow_prompt).
+pub func pick_face(w: Workspace, id: int) -> unit!:
+    let node = w.network.require(id)
+    if node.kind != sketch_node.kind_name or node.inputs[0] < 0 or w.in_transaction():
+        if node.kind == sketch_node.kind_name and node.inputs[0] < 0:
+            w.notice = "Connect the body to sketch on to the Sketch's input"
+            w.revision += 1
+        return
+    w.begin("Pick face")
+    w.prompt = ToolPrompt(node.id, node.inputs[0], "Pick face", true)
+    w.network.selected = node.inputs[0]
+    show(w, node.inputs[0])
+    w.component_mode = w.level_of(2)
+    w.selection = none
+    w.pending_changed = true
+    w.notice = "Click the flat face to sketch on; Esc cancels"
+    w.revision += 1
+    w.rebuild()
+
 ## Pick profiles: click the regions of Extrude's or Revolve's input sketch
 ## to take (profile_pick.luc); the result shows as they change.
 pub func pick_profiles(w: Workspace, id: int) -> unit!:
@@ -275,6 +296,30 @@ pub func follow_prompt(w: Workspace) -> unit!:
     let node = w.network.find(prompt.node) else return
     let mesh = w.geometry else return
     let chosen = w.current_selection() else return
+    if node.kind == sketch_node.kind_name:
+        # Pick face: the first face picked is the sketch's, and that is all.
+        let names = mesh.find_attribute("cad_face_name", 2)
+        let first = chosen.next(-1)
+        if names < 0 or first < 0 or w.domain() != 2:
+            return
+        let name = mesh.attribute_text(names, first)
+        if name == "":
+            w.notice = "This face has no name to keep: pick one of a body made inside a CAD node"
+            w.revision += 1
+            return
+        node.texts[1] = name
+        node.values[0] = float(sketch_node.face_plane)
+        w.network.invalidate(node.id)
+        w.network.selected = node.id
+        show(w, node.id)
+        w.prompt = none
+        w.peeking = false
+        w.selection = none
+        w.notice = ""
+        w.pending_changed = true
+        w.commit()
+        w.rebuild()
+        return
     if chosen.count() == 0:
         node.texts[0] = ""
         w.network.invalidate(node.id)

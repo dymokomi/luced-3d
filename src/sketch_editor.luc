@@ -24,6 +24,7 @@ from luce_ui.ui import Event
 from luce_window.input import EventKind, Key
 from workspace import Workspace
 from sketch_node import SketchFrame, node_frame
+from sketch_frames import FrameCache
 import sketch_tools
 import gizmo_math
 from luce_std import math
@@ -67,6 +68,7 @@ pub class SketchEditor:
     var values: list[float]
     pub var sketch: CadSketch? = none
     pub var frame: SketchFrame
+    let frames: FrameCache
     pub var tool: str = "Select"
     ## A drawing tool's placed points: plane coordinates, and the point
     ## entity each is (-1: not made yet).
@@ -105,6 +107,7 @@ pub class SketchEditor:
         self.w = w
         self.values = []
         self.frame = node_frame([1.0, 0.0])
+        self.frames = FrameCache()
         self.clicks = []
         self.click_points = []
         self.cursor = [0.0, 0.0]
@@ -120,6 +123,15 @@ pub class SketchEditor:
     ## changed (an undo, the parameter panel).
     pub func sync(self) -> unit!:
         let node = self.w.selected() else return
+        # The plane follows its face as the body upstream changes.
+        let frame = self.frames.frame(self.w, node)
+        if not same_frame(frame, self.frame):
+            let moved = self.sketch != none and node.id == self.node
+            self.frame = frame
+            self.revision += 1
+            # A new plane (a face picked): look straight at it.
+            if moved:
+                self.look_at()
         let same = node.id == self.node and node.texts[0] == self.text and node.values[0] == (self.values + [0.0])[0] and node.values[1] == (self.values + [0.0, 0.0])[1]
         if same and self.sketch != none:
             return
@@ -128,10 +140,14 @@ pub class SketchEditor:
             self.reset_tool()
             self.selection = []
             self.tool = "Select"
+        # What the pointer was over, and a tool's clicks and picks, belong to
+        # the sketch read before (an undo, another node).
+        self.hover = -1
+        self.snap = -1
+        self.reset_tool()
         self.node = node.id
         self.text = node.texts[0]
         self.values = [node.values[0], node.values[1]]
-        self.frame = node_frame(self.values)
         let sketch = CadSketch.parse(self.text)
         _ = sketch.solve()
         sketch.analyze()
@@ -684,3 +700,7 @@ func without(values: list[int], value: int) -> list[int]:
         if v != value:
             kept.append(v)
     return kept
+
+## Whether frames `a` and `b` are the same plane and axes.
+func same_frame(a: SketchFrame, b: SketchFrame) -> bool:
+    return a.origin.subtract(b.origin).length() == 0.0 and a.u.subtract(b.u).length() == 0.0 and a.v.subtract(b.v).length() == 0.0

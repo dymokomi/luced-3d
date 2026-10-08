@@ -119,8 +119,9 @@ pub func sketch_node_tests() -> unit!:
     editor.panels.projects.load_from("sketch.prisma")
     assert(w.network.require(id).texts[0] == kept)
     profile_picking(editor)
+    face_sketch(editor)
     editor.close()
-    print("PASS Sketch node: a rectangle drawn on the ground, dimensioned and changed, extruded, undone; a line snapping to a corner; an over-constraining constraint refused; saved and opened; Pick profiles takes a click's region, again leaves it")
+    print("PASS Sketch node: a rectangle drawn on the ground, dimensioned and changed, extruded, undone; a line snapping to a corner; an over-constraining constraint refused; saved and opened; Pick profiles takes a click's region, again leaves it; a sketch on a box's top face")
 
 ## Line `line`'s middle in the sketch `text` describes.
 func middle_of(text: str, line: int) -> list[float]!:
@@ -168,3 +169,38 @@ func profile_picking(editor: Luce3D) -> unit!:
     assert(w.network.require(extrude).texts[0] == "")
     editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
     assert(w.prompt == none and w.network.require(sketch).kind == "Sketch")
+
+## A sketch on a face: a 20 mm box into a Sketch, Pick face clicking the
+## box's top; its plane is that face (y 10), and a rectangle drawn there
+## lies on it.
+func face_sketch(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    node_commands.add_node(w, "Solid Box", 600.0, 0.0)
+    let box = w.network.selected
+    node_commands.add_node(w, "Sketch", 600.0, 120.0)
+    let id = w.network.selected
+    assert(w.network.require(id).inputs[0] == box)
+    node_commands.display_selected(w)
+    w.view.yaw = 0.4
+    w.view.pitch = 0.6
+    w.view.distance = 90.0
+    w.view.target = Vector3(0.0, 0.0, 0.0)
+    w.view.update_camera()
+    render(editor)
+    modeling_commands.pick_face(w, id)
+    render(editor)
+    let bounds = editor.panels.view.layout().bounds()
+    let top = projected(w, Vector3(0.0, 10.0, 0.0), bounds.width, bounds.height)
+    for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+        editor.app.dispatch(Event(kind = kind, x = bounds.x + top[0], y = bounds.y + top[1], button = 0))
+    let node = w.network.require(id)
+    assert(w.prompt == none and int(node.values[0]) == 3 and node.texts[1] != "")
+    # Drawn on the face: a rectangle from (-5, -5) to (5, 5) of its plane.
+    render(editor)
+    let sketch_editor = editor.panels.view.sketch.editor
+    sketch_editor.choose("Rectangle")
+    click(editor, -5.0, -5.0)
+    click(editor, 5.0, 5.0)
+    let drawn = w.network.copy().evaluate_data(id)
+    let points = drawn.geometry.bounds()
+    assert(near(points.minimum.y, 10.0) and near(points.maximum.y, 10.0) and near(points.maximum.x - points.minimum.x, 10.0))

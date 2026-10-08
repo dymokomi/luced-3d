@@ -3,10 +3,14 @@
 ## text in the node's first text and solved on every evaluation, so a
 ## dimension typed in the parameter panel moves the geometry. Its result is
 ## the sketch's curves on its plane, what Extrude and Revolve read. The
-## plane is one of the origin planes (XY, the XZ ground, YZ), moved along
-## its normal by Offset; drawing and constraining happen in the viewport
-## (sketch_editor.luc). Lengths are millimeters.
+## plane is one of the origin planes (XY, the XZ ground, YZ) or a flat face
+## of the body connected to its input (Face: kept by the face's name, so
+## the sketch stays on it as features upstream change the body), moved
+## along its normal by Offset; drawing and constraining happen in the
+## viewport (sketch_editor.luc). Lengths are millimeters.
 from luce_cad.sketch import CadSketch
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.modeling import CadModeling
 from luce_3d.graphics import Vector3
 from geometry_data import GeometryData
 from luce_ui import ui
@@ -40,7 +44,10 @@ pub class SketchFrame:
         return [d.dot(self.u), d.dot(self.v)]
 
 pub func plane_names() -> str:
-    return "XY|XZ|YZ"
+    return "XY|XZ|YZ|Face"
+
+## The Plane menu's Face entry.
+pub let face_plane = 3
 
 ## The frame of plane `plane` (plane_names' order) moved `offset` along
 ## its normal.
@@ -58,10 +65,24 @@ pub func frame(plane: int, offset: float) -> SketchFrame:
 pub func node_frame(v: list[float]) -> SketchFrame:
     return frame(int(v[0]), v[1])
 
-## A Sketch node's result: its text solved, as curves on its plane.
-pub func evaluate_sketch(v: list[float], texts: list[str]) -> GeometryData!:
+## A Sketch node's result: its text solved, as curves on its plane (on a
+## face of `data`'s body for the Face plane).
+pub func evaluate_sketch(v: list[float], texts: list[str], data: GeometryData) -> GeometryData!:
     let sketch = CadSketch.parse(texts[0])
     if sketch.entity_count() > 0 and not sketch.solve():
         error(ui.invalid, "The sketch's constraints cannot all hold: remove one that conflicts")
-    let f = node_frame(v)
+    let f = face_frame(v, texts, data) if int(v[0]) == face_plane else node_frame(v)
     return GeometryData(geometry = sketch.curves(f.origin, f.u, f.v))
+
+## The plane of the face named `texts[1]` of `data`'s body, moved Offset
+## along its normal.
+pub func face_frame(v: list[float], texts: list[str], data: GeometryData) -> SketchFrame!:
+    if texts[1].trim() == "":
+        error(ui.invalid, "Pick the face the sketch is on (Pick face)")
+    if CadGeometry.model_count(data.geometry) == 0:
+        error(ui.invalid, "The sketch's face is on its input body: connect the body")
+    let found = CadModeling.face_frame(CadGeometry.model(data.geometry, 0), texts[1])
+    if not found.found:
+        error(ui.invalid, "The sketch's face is no longer on the body (or not flat): pick a face again")
+    let f = SketchFrame(found.origin, found.u, found.v)
+    return SketchFrame(f.origin.add(f.normal().multiply_scalar(v[1])), f.u, f.v)
