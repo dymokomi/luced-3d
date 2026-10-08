@@ -39,7 +39,8 @@ parser.add_argument("--group", default="", help="Isolate imported object paths t
 parser.add_argument("--patch", type=int, default=-1, help="Isolate an original CAD patch AFTER the complete cook, preserving global stations and display triangles")
 parser.add_argument("--patch-neighbors", action="store_true", help="Include CAD patches sharing a mesh edge with the selected patch, after the complete cook")
 parser.add_argument("--neutral", action="store_true", help="Use neutral material instead of imported Cd for isolated patch inspection")
-parser.add_argument("--mode", type=int, choices=range(5), default=3)
+parser.add_argument("--mode", type=int, choices=[0, 1, 2, 3, 4, 7, 8, 9], default=3, help="Display mode; 7 zebra, 8 isophotes, 9 curvature")
+parser.add_argument("--cad-quality", type=int, choices=[8, 16, 32, 64], default=16, help="Viewport CAD mesh divisions")
 parser.add_argument("--output", type=Path)
 parser.add_argument("--opt", choices=["0", "1", "2", "3"], default="0")
 parser.add_argument("--timeout", type=float, default=180, help="Maximum native capture runtime in seconds")
@@ -73,7 +74,7 @@ with tempfile.TemporaryDirectory(prefix="luced-3d-preview-") as temporary:
     binary = project / "preview"
     build(project, binary, arguments.opt)
     ppm = project / "preview.ppm"
-    subprocess.run([str(binary), str(ppm), arguments.scene, str(arguments.file.resolve()) if arguments.file else "", str(arguments.edge_size), str(arguments.mode), "background" if arguments.background else "sync", arguments.group, "orbit" if arguments.orbit else "still", str(arguments.zoom), str(arguments.yaw), str(arguments.pitch), str(arguments.rotation_x) if arguments.rotation_x is not None else "", *(str(value) for value in arguments.target or ["", "", ""]), str(arguments.width), str(arguments.height), "viewport" if arguments.viewport_only else "editor", str(arguments.patch), "neutral" if arguments.neutral else "color", "neighbors" if arguments.patch_neighbors else "single", str(arguments.tolerance)], check=True, timeout=arguments.timeout)
+    subprocess.run([str(binary), str(ppm), arguments.scene, str(arguments.file.resolve()) if arguments.file else "", str(arguments.edge_size), str(arguments.mode), "background" if arguments.background else "sync", arguments.group, "orbit" if arguments.orbit else "still", str(arguments.zoom), str(arguments.yaw), str(arguments.pitch), str(arguments.rotation_x) if arguments.rotation_x is not None else "", *(str(value) for value in arguments.target or ["", "", ""]), str(arguments.width), str(arguments.height), "viewport" if arguments.viewport_only else "editor", str(arguments.patch), "neutral" if arguments.neutral else "color", "neighbors" if arguments.patch_neighbors else "single", str(arguments.tolerance), str(arguments.cad_quality)], check=True, timeout=arguments.timeout)
     header, dimensions, maximum, pixels = ppm.read_bytes().split(b"\n", 3)
     assert header == b"P6" and maximum == b"255"
     width, height = map(int, dimensions.split())
