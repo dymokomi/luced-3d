@@ -1,5 +1,10 @@
 ## Node-owned, screen-sized interaction handles. Dragging edits parameters only;
-## the worker computes geometry. One gesture is one undo transaction.
+## the worker computes geometry. One gesture is one undo transaction. The
+## workspace's tool picks the gizmo: Move, Rotate and Scale act on a
+## transforming node (Transform, Group, CAD) or on the selected components
+## (a Transform Components step or node); Manipulator shows the selected
+## node's own handles (a Cube's corners). P toggles moving a transforming
+## node's pivot.
 from workspace import Workspace
 from luce_ui.ui import Painter, Point, Event
 from luce_gpu.gpu import Rect
@@ -8,14 +13,14 @@ from luce_3d.graphics import Vector3, Matrix4
 import gizmo_math as gm
 from luce_std import math
 import theme
-from tool_icons import draw_icon
-from edit_kinds import is_edit
+from tools import gizmo_tool
 import modeling_commands
 
 pub class NodeGizmos:
     let w: Workspace
     pub var dragging: bool = false
-    pub var mode: str = "Move"
+    ## Moving a transforming node's pivot instead of the node (P).
+    pub var pivot: bool = false
     pub var size: float = 1.0
     pub var hovered: int = -1
     var handle: int = -1
@@ -36,9 +41,26 @@ pub class NodeGizmos:
         self.plane_normal = Vector3()
         self.original = []
 
+    ## The gizmo in use: Move, Rotate, Scale or Pivot.
+    pub func mode(self) -> str:
+        if self.pivot and not self.components():
+            return "Pivot"
+        return self.w.edit_tool if gizmo_tool(self.w.edit_tool) else "Move"
+
     pub func available(self) -> bool:
         let node = self.w.selected() else return false
-        return node.enabled and (node.kind in ["Cube", "Transform", "Group", "CAD"] or (self.w.selecting() and self.w.edit_tool == "Move" and self.w.selected_count() > 0))
+        if not node.enabled:
+            return false
+        if self.w.edit_tool == "Manipulator":
+            return node.kind == "Cube"
+        if not gizmo_tool(self.w.edit_tool):
+            return false
+        return node.kind in transforming_kinds() or (self.w.selecting() and self.w.selected_count() > 0)
+
+    ## Whether the gizmo moves the selected components (not a node's values).
+    func components(self) -> bool:
+        let node = self.w.selected() else return false
+        return not (node.kind in transforming_kinds()) and node.kind != "Cube"
 
     pub func origin(self) -> Vector3!:
         let node = self.w.selected() else return Vector3()
@@ -56,7 +78,7 @@ pub class NodeGizmos:
 
     func axis(self, id: int) -> Vector3!:
         let node = self.w.selected() else return gm.axis(id)
-        if self.mode != "Scale" or is_edit(node.kind):
+        if self.mode() != "Scale" or self.components():
             return gm.axis(id)
         let v = node.values
         let rotation = Matrix4.compose(Vector3(), Vector3(v[4], v[5], v[6]).multiply_scalar(math.pi / 180.0), Vector3(1.0, 1.0, 1.0))
@@ -96,7 +118,7 @@ pub class NodeGizmos:
         let start = gm.project(self.w, center, width, height)
         if start[2] <= 0.0:
             return -1
-        if self.mode == "Rotate" and not is_edit(node.kind):
+        if self.mode() == "Rotate":
             var best = 8.0
             var found = -1
             for axis in 0..<3:
@@ -137,13 +159,6 @@ pub class NodeGizmos:
                 painter.rectangle(Rect(p[0] - radius - 1.0, p[1] - radius - 1.0, radius * 2.0 + 2.0, radius * 2.0 + 2.0), theme.backdrop())
                 painter.rectangle(Rect(p[0] - radius, p[1] - radius, radius * 2.0, radius * 2.0), theme.accent() if hot else theme.text())
             return
-        if not is_edit(node.kind):
-            for at in 0..<4:
-                let name = ["Move", "Rotate", "Scale", "Pivot"][at]
-                let x = 16.0 + float(at) * 38.0
-                painter.rounded_rectangle(Rect(x, 44.0, 32.0, 30.0), theme.accent() if self.mode == name else theme.surface(), 3.0)
-                draw_icon(painter, name, x + 6.0, 49.0, 20.0, theme.backdrop() if self.mode == name else theme.text())
-            painter.text(self.mode, 174.0, 51.0, theme.text_muted())
         let center = self.origin()
         let length = self.w.view.distance * 0.14 * self.size
         let start = gm.project(self.w, center, width, height)
@@ -152,7 +167,7 @@ pub class NodeGizmos:
         let hot = self.handle if self.dragging else self.hovered
         for axis in 0..<3:
             let color = theme.accent() if hot == axis else theme.axis(axis)
-            if self.mode == "Rotate" and not is_edit(node.kind):
+            if self.mode() == "Rotate":
                 let points = self.ring(axis, center, length, width, height)
                 for at in 0..<64:
                     if points[at][2] > 0.0 and points[at + 1][2] > 0.0:
@@ -162,7 +177,7 @@ pub class NodeGizmos:
             if end[2] <= 0.0:
                 continue
             painter.line(Point(start[0], start[1]), Point(end[0], end[1]), 3.0 if hot == axis else 2.0, color)
-            if self.mode == "Scale" and not is_edit(node.kind):
+            if self.mode() == "Scale":
                 painter.rectangle(Rect(end[0] - 5.0, end[1] - 5.0, 10.0, 10.0), color)
             else:
                 let dx = end[0] - start[0]
@@ -189,7 +204,7 @@ pub class NodeGizmos:
                 painter.mesh([a,b,c,a,c,d], ink)
             for at in 0..<4:
                 painter.line(Point(corners[at][0], corners[at][1]), Point(corners[(at + 1) % 4][0], corners[(at + 1) % 4][1]), 1.5, ink)
-        painter.rectangle(Rect(start[0] - 5.0, start[1] - 5.0, 10.0, 10.0), theme.accent() if hot == 6 or self.mode == "Pivot" else theme.text())
+        painter.rectangle(Rect(start[0] - 5.0, start[1] - 5.0, 10.0, 10.0), theme.accent() if hot == 6 or self.mode() == "Pivot" else theme.text())
 
     pub func event(self, event: Event, width: float, height: float) -> bool!:
         let node = self.w.selected() else return false
@@ -199,10 +214,9 @@ pub class NodeGizmos:
             if event.key in [Key.equal, Key.minus]:
                 self.size = math.clamp(self.size * (1.15 if event.key == Key.equal else 1.0 / 1.15), 0.35, 3.0)
                 return true
-            if not self.dragging and node.kind in ["Transform", "Group", "CAD"]:
-                if event.key in [Key.w, Key.e, Key.r, Key.p]:
-                    self.mode = "Move" if event.key == Key.w else ("Rotate" if event.key == Key.e else ("Scale" if event.key == Key.r else "Pivot"))
-                    return true
+            if not self.dragging and event.key == Key.p and node.kind in transforming_kinds():
+                self.pivot = not self.pivot
+                return true
         if event.cancelled or event.kind in [EventKind.focus_lost, EventKind.overflow] or (event.kind == EventKind.key_down and event.key == Key.escape):
             self.hovered = -1
             if self.dragging:
@@ -223,9 +237,6 @@ pub class NodeGizmos:
             self.hovered = self.hit(event.x, event.y, width, height)
         if event.kind != EventKind.pointer_down or event.button != 0 or event.alt or not event.inside:
             return false
-        if node.kind in ["Transform", "Group", "CAD"] and event.y >= 44.0 and event.y <= 74.0 and event.x >= 16.0 and event.x < 168.0:
-            self.mode = ["Move", "Rotate", "Scale", "Pivot"][int((event.x - 16.0) / 38.0)]
-            return true
         let handle = self.hit(event.x, event.y, width, height)
         if handle < 0:
             return false
@@ -240,7 +251,7 @@ pub class NodeGizmos:
         let p = gm.project(self.w, self.center, width, height)
         self.start_angle = math.atan2(event.y - p[1], event.x - p[0])
         self.rotation = 0.0
-        self.w.begin("Resize Cube" if node.kind == "Cube" else self.mode + " gizmo")
+        self.w.begin("Resize Cube" if node.kind == "Cube" else self.mode() + " gizmo")
         self.dragging = true
         return true
 
@@ -255,7 +266,7 @@ pub class NodeGizmos:
             let dy = b[1] - a[1]
             let amount = ((event.x - self.start_x) * dx + (event.y - self.start_y) * dy) / math.max(0.000001, dx * dx + dy * dy) * self.length
             delta = self.axis(self.handle).multiply_scalar(amount)
-        if self.mode != "Scale":
+        if self.mode() != "Scale":
             delta = Vector3(gm.snapped(delta.x, 0.1, event.shift), gm.snapped(delta.y, 0.1, event.shift), gm.snapped(delta.z, 0.1, event.shift))
         if node.kind == "Cube":
             let id = self.handle - 10
@@ -268,28 +279,23 @@ pub class NodeGizmos:
                 b[axis] = math.max(a[axis] + 0.001, b[axis]) if positive else math.min(a[axis] - 0.001, b[axis])
                 values[7 + axis] = math.abs(b[axis] - a[axis]) / values[0]
                 values[1 + axis] = math.min(a[axis], b[axis]) if axis == 1 else (a[axis] + b[axis]) * 0.5
-        elif is_edit(node.kind):
-            modeling_commands.preview_move(self.w, delta)
+        elif self.components():
+            # The selection's Transform Components: translate, rotate in
+            # degrees, scale (about its centroid).
+            let turn = self.turned(event, width, height) if self.mode() == "Rotate" else [0.0, 0.0, 0.0]
+            let factors = self.scaled(event, delta) if self.mode() == "Scale" else [1.0, 1.0, 1.0]
+            let moved = delta if self.mode() == "Move" else Vector3()
+            modeling_commands.preview_transform(self.w, moved, Vector3(turn[0], turn[1], turn[2]), Vector3(factors[0], factors[1], factors[2]))
             return
-        elif self.mode == "Rotate":
-            let p = gm.project(self.w, self.center, width, height)
-            let angle = math.atan2(event.y - p[1], event.x - p[0])
-            var change = angle - self.start_angle
-            while change > math.pi:
-                change -= math.pi * 2.0
-            while change < -math.pi:
-                change += math.pi * 2.0
-            self.rotation += change
-            self.start_angle = angle
-            let direction = self.w.view.camera.projection(width / height).backward.dot(gm.axis(self.handle))
-            values[4 + self.handle] += gm.snapped(self.rotation * 180.0 / math.pi * (-1.0 if direction >= 0.0 else 1.0), 15.0, event.shift)
-        elif self.mode == "Scale":
-            let components = [delta.dot(self.axis(0)), delta.dot(self.axis(1)), delta.dot(self.axis(2))]
+        elif self.mode() == "Rotate":
+            let turn = self.turned(event, width, height)
             for axis in 0..<3:
-                if self.handle == axis or self.handle == 6 or (self.handle >= 3 and self.handle < 6 and axis != self.handle - 3):
-                    let amount = (event.x - self.start_x - event.y + self.start_y) / 100.0 if self.handle == 6 else components[axis] / self.length
-                    values[7 + axis] *= math.max(0.001, gm.snapped(1.0 + amount, 0.1, event.shift))
-        elif self.mode == "Pivot":
+                values[4 + axis] += turn[axis]
+        elif self.mode() == "Scale":
+            let factors = self.scaled(event, delta)
+            for axis in 0..<3:
+                values[7 + axis] *= factors[axis]
+        elif self.mode() == "Pivot":
             let transform = Matrix4.compose(Vector3(), Vector3(values[4], values[5], values[6]).multiply_scalar(math.pi / 180.0), Vector3(values[7], values[8], values[9]))
             let determinant = transform.determinant()
             let parameter_delta = Vector3(delta.dot(transform.y.cross(transform.z)), delta.dot(transform.z.cross(transform.x)), delta.dot(transform.x.cross(transform.y))).multiply_scalar(1.0 / determinant)
@@ -301,3 +307,36 @@ pub class NodeGizmos:
             for axis in 0..<3:
                 values[1 + axis] += [delta.x, delta.y, delta.z][axis]
         self.w.preview_parameters(values)
+
+    ## The rotation dragged so far about the handle's axis, in degrees (15°
+    ## steps with Shift), as X, Y and Z.
+    func turned(self, event: Event, width: float, height: float) -> list[float]!:
+        let p = gm.project(self.w, self.center, width, height)
+        let angle = math.atan2(event.y - p[1], event.x - p[0])
+        var change = angle - self.start_angle
+        while change > math.pi:
+            change -= math.pi * 2.0
+        while change < -math.pi:
+            change += math.pi * 2.0
+        self.rotation += change
+        self.start_angle = angle
+        let result = [0.0, 0.0, 0.0]
+        if self.handle < 3:
+            let direction = self.w.view.camera.projection(width / height).backward.dot(gm.axis(self.handle))
+            result[self.handle] = gm.snapped(self.rotation * 180.0 / math.pi * (-1.0 if direction >= 0.0 else 1.0), 15.0, event.shift)
+        return result
+
+    ## The scale dragged so far along each axis (the handle's axis, a
+    ## plane's two, or all from the center), in 0.1 steps with Shift.
+    func scaled(self, event: Event, delta: Vector3) -> list[float]!:
+        let components = [delta.dot(self.axis(0)), delta.dot(self.axis(1)), delta.dot(self.axis(2))]
+        let result = [1.0, 1.0, 1.0]
+        for axis in 0..<3:
+            if self.handle == axis or self.handle == 6 or (self.handle >= 3 and self.handle < 6 and axis != self.handle - 3):
+                let amount = (event.x - self.start_x - event.y + self.start_y) / 100.0 if self.handle == 6 else components[axis] / self.length
+                result[axis] = math.max(0.001, gm.snapped(1.0 + amount, 0.1, event.shift))
+        return result
+
+## Nodes the gizmo transforms by their own values.
+pub func transforming_kinds() -> list[str]:
+    return ["Transform", "Group", "CAD"]

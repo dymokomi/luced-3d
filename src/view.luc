@@ -8,6 +8,9 @@ from viewport_tools import ViewportTools, view_buttons_width
 from sketch_view import SketchView
 from profile_pick import ProfilePick
 from actions import Actions
+from marking_menu import MarkingMenu, MarkItem
+import marking_items
+import sketch_tools
 import theme
 import units
 import time
@@ -23,6 +26,11 @@ pub class SceneViewport: Widget:
     pub let sketch: SketchView
     ## Pick profiles, while an Extrude or Revolve takes them.
     pub let profiles: ProfilePick
+    ## Hold A (create), S (modify) or D (a sketch's constraints).
+    pub let marking: MarkingMenu
+    let actions: Actions
+    ## A marking menu's node entry: add that node after the selected one.
+    pub var on_add: func(str) -> unit!? = none
     var dragging: bool = false
     var navigation_button: int = 0
     var pending_right: bool = false
@@ -46,6 +54,8 @@ pub class SceneViewport: Widget:
         self.tools = ViewportTools(workspace, actions)
         self.sketch = SketchView(workspace)
         self.profiles = ProfilePick(workspace)
+        self.marking = MarkingMenu()
+        self.actions = actions
         self.view = SceneView(workspace.scene, workspace.view.camera, Renderer(true))
         self.tools.renderer = self.view.renderer()
         self.view.layout().set_interactive(true)
@@ -126,12 +136,45 @@ pub class SceneViewport: Widget:
         overlay.text(f"Y up  /  grid: {units.length_text(spacing, units.document_unit(w))}", 16.0, size.height - 28.0, theme.text_muted())
         self.tools.draw(overlay, size.width, size.height)
         self.sketch.draw(overlay, size.width, size.height)
+        self.marking.draw(overlay, size.width, size.height)
         # The shading button, left of the view buttons.
         let shading = size.width - view_buttons_width() - 38.0
         overlay.rounded_rectangle(Rect(shading, 8.0, 32.0, 30.0), theme.surface(), 4.0)
         mode_icon(overlay, w.view.display_mode, shading + 4.0, 11.0)
         overlay.rectangle(Rect(shading + 28.0, 34.0, 3.0, 3.0), theme.accent())
         overlay.close()
+
+    ## A held A, S or (in a sketch) D opens its marking menu at the pointer;
+    ## in a sketch a tap of A or D picks the tool that letter names.
+    func open_marking(self, event: Event) -> bool!:
+        if event.kind != EventKind.key_down or event.repeated or event.meta or event.control or event.alt:
+            return false
+        if not (event.key in [Key.a, Key.s, Key.d]):
+            return false
+        let w = self.workspace
+        if event.key == Key.d and not w.sketching():
+            return false
+        let add = self.on_add else return false
+        let editor = self.sketch.editor
+        var items: list[MarkItem] = []
+        var title = "Create"
+        var letter = "A"
+        if event.key == Key.a:
+            items = marking_items.create_items(w, self.actions, add, editor)
+        elif event.key == Key.s:
+            title = "Modify"
+            letter = "S"
+            items = marking_items.modify_items(w, self.actions, add, editor)
+        else:
+            title = "Constraints"
+            letter = "D"
+            items = marking_items.constraint_items(editor)
+        let tapped = sketch_tools.tool_for_key(letter) if w.sketching() else ""
+        if tapped != "":
+            self.marking.show(title, items, event.key, self.pointer_x, self.pointer_y, func () -> unit!: editor.choose(tapped))
+        else:
+            self.marking.show(title, items, event.key, self.pointer_x, self.pointer_y)
+        return true
 
     ## The world axis zebra and isophote stripes run around: X, Y, Z or the view's up.
     func zebra_axis(self) -> Vector3!:
@@ -148,6 +191,12 @@ pub class SceneViewport: Widget:
         if event.kind == EventKind.key_down and event.key == Key.tab:
             if let search = self.on_search:
                 search()
+            return
+        if self.marking.event(event, bounds.width, bounds.height):
+            self.layout().invalidate()
+            return
+        if self.open_marking(event):
+            self.layout().invalidate()
             return
         if event.cancelled or event.kind == EventKind.focus_lost:
             self.mode_press = -1
@@ -171,8 +220,8 @@ pub class SceneViewport: Widget:
         if event.cancelled:
             self.dragging = false
             self.pending_right = false
-        # The sketch editor's toolbar, then the editor, before other tools.
-        if self.sketch.event(event, bounds.width, bounds.height) or self.sketch.editor.event(event, bounds.width, bounds.height) or self.profiles.event(event, bounds.width, bounds.height):
+        # The sketch editor, then Pick profiles, before other tools.
+        if self.sketch.editor.event(event, bounds.width, bounds.height) or self.profiles.event(event, bounds.width, bounds.height):
             self.layout().invalidate()
             return
         if self.tools.event(event, bounds.width, bounds.height):

@@ -1,0 +1,179 @@
+## Marking menus: holding A shows what can be created here, S what can
+## modify, D (in a sketch) its constraints, as a grid of icons around the
+## pointer, taller than wide and split left and right of it so the pointer
+## starts on none. Release over an icon to use it. A quick tap leaves the
+## menu open to click instead, or, for a key with a tap of its own (a
+## sketch's A and D), does that. Esc, a click outside or the key again
+## closes it. What the items are is marking_items.luc's.
+from luce_ui.ui import Painter, Event
+from luce_gpu.gpu import Rect
+from luce_window.input import EventKind, Key
+from luce_std import math
+from luce_ui import ui
+import theme
+import time
+
+## One icon of a marking menu: its name, icon (a luciaos-assets name), whether it
+## can be used now, and what using it does.
+pub class MarkItem:
+    pub let name: str
+    pub let icon: str
+    pub let enabled: bool
+    pub let run: func() -> unit!
+
+    pub func init(self, name: str, icon: str, enabled: bool, run: func() -> unit!):
+        self.name = name
+        self.icon = icon
+        self.enabled = enabled
+        self.run = run
+
+## A quick tap: released this soon (nanoseconds) without reaching an icon.
+let tap_time = 250000000
+
+## A cell's size and the gap left around the pointer.
+let cell = 44.0
+let gap = 28.0
+
+pub class MarkingMenu:
+    pub var title: str = ""
+    pub var items: list[MarkItem]
+    ## The key holding it open (Key.a, Key.s, Key.d).
+    pub var key: Key = Key.a
+    var opened: bool = false
+    ## Left open after a tap, for a click.
+    var sticky: bool = false
+    var opened_at: int = 0
+    var x: float = 0.0
+    var y: float = 0.0
+    pub var hover: int = -1
+    ## What a tap of the key does instead of leaving the menu open.
+    var tap: func() -> unit!? = none
+
+    pub func init(self):
+        self.items = []
+
+    pub func is_open(self) -> bool:
+        return self.opened
+
+    ## Open `items` titled `title` around (`x`, `y`) while `key` is held.
+    pub func show(self, title: str, items: list[MarkItem], key: Key, x: float, y: float, tap: func() -> unit!? = none):
+        self.title = title
+        self.items = items
+        self.key = key
+        self.x = x
+        self.y = y
+        self.tap = tap
+        self.opened = true
+        self.sticky = false
+        self.hover = -1
+        self.opened_at = time.now()
+
+    pub func close(self):
+        self.opened = false
+        self.sticky = false
+        self.hover = -1
+        self.tap = none
+
+    ## Columns each side of the pointer: one for up to 8 icons, two for up
+    ## to 24, then three.
+    func side_columns(self) -> int:
+        let n = self.items.length
+        return 1 if n <= 8 else (2 if n <= 24 else 3)
+
+    func rows(self) -> int:
+        let per_row = 2 * self.side_columns()
+        return (self.items.length + per_row - 1) // per_row
+
+    ## Item `at`'s cell, around a center kept far enough inside the
+    ## viewport (`width` by `height`) that the whole grid shows.
+    func cell_of(self, at: int, width: float, height: float) -> Rect:
+        let columns = self.side_columns()
+        let rows = self.rows()
+        let half_width = float(columns) * cell + gap * 0.5
+        let half_height = float(rows) * cell * 0.5
+        let cx = math.max(half_width + 8.0, math.min(width - half_width - 8.0, self.x))
+        let cy = math.max(half_height + 32.0, math.min(height - half_height - 8.0, self.y))
+        # Filled row by row, the left side's columns then the right's.
+        let row = at // (2 * columns)
+        let column = at % (2 * columns)
+        let left = column < columns
+        let x = cx - gap * 0.5 - float(columns - column) * cell if left else cx + gap * 0.5 + float(column - columns) * cell
+        return Rect(x, cy - half_height + float(row) * cell, cell, cell)
+
+    ## Item `at`'s center in the viewport (tests point at it).
+    pub func center_of(self, at: int, width: float, height: float) -> list[float]:
+        let r = self.cell_of(at, width, height)
+        return [r.x + r.width * 0.5, r.y + r.height * 0.5]
+
+    func item_at(self, px: float, py: float, width: float, height: float) -> int:
+        for at in 0..<self.items.length:
+            let r = self.cell_of(at, width, height)
+            if px >= r.x and px < r.x + r.width and py >= r.y and py < r.y + r.height:
+                return at
+        return -1
+
+    pub func draw(self, painter: Painter, width: float, height: float) -> unit!:
+        if not self.opened:
+            return
+        if self.items.length == 0:
+            painter.rounded_rectangle(Rect(self.x - 80.0, self.y - 16.0, 160.0, 32.0), theme.surface(), 4.0)
+            painter.text(f"Nothing to {self.title.lower()} here", self.x - 72.0, self.y - 8.0, theme.text_muted())
+            return
+        let first = self.cell_of(0, width, height)
+        let last = self.cell_of(self.items.length - 1, width, height)
+        let right = self.cell_of(2 * self.side_columns() - 1, width, height)
+        let top = first.y - 30.0
+        painter.rounded_rectangle(Rect(first.x - 6.0, top, right.x + cell - first.x + 12.0, last.y + cell - top + 6.0), theme.surface(), 6.0)
+        let label = self.items[self.hover].name if self.hover >= 0 else self.title
+        painter.text(label, first.x + 4.0, top + 6.0, theme.text() if self.hover >= 0 else theme.text_muted())
+        for at in 0..<self.items.length:
+            let item = self.items[at]
+            let r = self.cell_of(at, width, height)
+            if at == self.hover and item.enabled:
+                painter.rounded_rectangle(Rect(r.x + 2.0, r.y + 2.0, cell - 4.0, cell - 4.0), theme.accent(), 4.0)
+            let ink = theme.grey(0.0) if at == self.hover and item.enabled else (theme.text() if item.enabled else theme.grey(100.0))
+            ui.draw_icon(painter.target(), item.icon, Rect(r.x + 10.0, r.y + 10.0, 24.0, 24.0), ink)
+
+    ## Its events while open (true: taken). Opening is the viewport's: it
+    ## knows what the items are.
+    pub func event(self, event: Event, width: float, height: float) -> bool!:
+        if not self.opened:
+            return false
+        if event.cancelled or event.kind == EventKind.focus_lost or (event.kind == EventKind.key_down and event.key == Key.escape):
+            self.close()
+            return true
+        if event.kind == EventKind.key_down and event.key == self.key:
+            if not event.repeated and self.sticky:
+                self.close()
+            return true
+        if event.kind == EventKind.pointer_moved:
+            self.hover = self.item_at(event.x, event.y, width, height)
+            return true
+        if event.kind == EventKind.key_up and event.key == self.key and not self.sticky:
+            if self.hover >= 0:
+                self.use(self.hover)
+            elif time.now() - self.opened_at < tap_time:
+                if let tapped = self.tap:
+                    self.close()
+                    tapped()
+                else:
+                    self.sticky = true
+            else:
+                self.close()
+            return true
+        if event.kind == EventKind.pointer_down:
+            let at = self.item_at(event.x, event.y, width, height)
+            if at >= 0:
+                self.use(at)
+            else:
+                self.close()
+            return true
+        return event.kind in [EventKind.pointer_up, EventKind.key_down, EventKind.key_up, EventKind.scroll]
+
+    func use(self, at: int) -> unit!:
+        let item = self.items[at]
+        if not item.enabled:
+            return
+        self.close()
+        let run = item.run
+        run()

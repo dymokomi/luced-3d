@@ -9,6 +9,7 @@ from workspace import Workspace
 from network import Node
 from edit_operations import EditStep
 from edit_kinds import is_edit
+from edit_types import edge_level
 from tools import ToolRun, tool_run, verb_defaults
 from tool_prompt import ToolPrompt
 import node_catalog
@@ -33,13 +34,13 @@ pub func model(w: Workspace, operation: str) -> unit!:
         if operation in kind.draw_tools and kind.drawn != none and w.editing():
             let chosen = w.current_selection() else return
             let tool = kind.tool(operation) else return
-            if chosen.count() == 0 or not tool.offered(w.component_mode):
+            if chosen.count() == 0 or not tool.offered(w.level_index()):
                 placing_commands.start_placing(w, operation)
                 return
         # The kind's own tool: its verb and numbers, whether or not
         # tools.luc knows the name (Edit SDF's Subtract).
         let tool = kind.tool(operation) else return
-        if not tool.offered(w.component_mode):
+        if not tool.offered(w.level_index()):
             w.notice = f"{operation} does not apply to {w.level().name}"
             w.revision += 1
             return
@@ -167,7 +168,7 @@ func insert_after_display(w: Workspace, run: ToolRun) -> Node!:
     node.values[node_catalog.group_type_slot] = float(w.group_type())
     w.network.selected = node.id
     show(w, node.id)
-    w.edit_tool = "Select"
+    w.end_modal_tool()
     return node
 
 ## Show node `id`'s result: display it, previewing it alone when it is
@@ -227,7 +228,7 @@ pub func pick_edges(w: Workspace, id: int) -> unit!:
     w.prompt = ToolPrompt(node.id, node.inputs[0], "Pick edges", true)
     w.network.selected = node.inputs[0]
     show_prompt(w)
-    w.component_mode = 2
+    w.adopt_level(edge_level)
     w.selection = none
     w.pending_changed = true
     w.notice = "Pick the edges to blend (Shift adds), then Enter; Esc cancels"
@@ -265,7 +266,7 @@ pub func pick_face(w: Workspace, id: int) -> unit!:
     w.prompt = ToolPrompt(node.id, node.inputs[0], "Pick face", true)
     w.network.selected = node.inputs[0]
     show(w, node.inputs[0])
-    w.component_mode = w.level_of(2)
+    w.adopt_level(w.level_of(2))
     w.selection = none
     w.pending_changed = true
     w.notice = "Click the flat face to sketch on; Esc cancels"
@@ -398,18 +399,14 @@ pub func move_selection(w: Workspace, delta: Vector3) -> unit!:
         return
     let mesh = w.geometry else return
     w.perform("Move components", func () -> unit!:
-        append_move(w, mesh, delta)
+        append_transform(w, mesh, transform_numbers(delta, Vector3(), Vector3(1.0, 1.0, 1.0)))
         w.rebuild())
 
 ## A move of the selection: an Edit step on the active Edit node, else a
 ## Transform Components node after the displayed one.
-func append_move(w: Workspace, mesh: Mesh, delta: Vector3) -> unit!:
+func append_transform(w: Workspace, mesh: Mesh, numbers: list[float]) -> unit!:
     let chosen = w.current_selection() else return
     let group = chosen.expression(mesh)
-    let numbers = verb_defaults("Transform Components")
-    numbers[0] = delta.x
-    numbers[1] = delta.y
-    numbers[2] = delta.z
     if w.editing():
         let node = w.selected() else return
         let step = edit_step(w, node, "Transform Components", group, numbers, mesh)
@@ -463,6 +460,19 @@ pub func clear_edits(w: Workspace) -> unit!:
 ## One request per pointer move: the worker applies the preview recipe to
 ## the stored state before the gesture, never replaying the node.
 pub func preview_move(w: Workspace, delta: Vector3) -> unit!:
+    preview_transform(w, delta, Vector3(), Vector3(1.0, 1.0, 1.0))
+
+## Transform Components' numbers: a translation, a rotation in degrees and
+## scale factors, about the selection's centroid.
+func transform_numbers(translate: Vector3, rotate: Vector3, scale: Vector3) -> list[float]:
+    let numbers = verb_defaults("Transform Components")
+    for (slot, value) in [(0, translate.x), (1, translate.y), (2, translate.z), (3, rotate.x), (4, rotate.y), (5, rotate.z), (6, scale.x), (7, scale.y), (8, scale.z)]:
+        numbers[slot] = value
+    return numbers
+
+## A gizmo frame on the selected components (or a transforming node's
+## translation): the whole gesture so far, from the state before it.
+pub func preview_transform(w: Workspace, delta: Vector3, rotate: Vector3, scale: Vector3) -> unit!:
     let before = w.pending else return
     w.dragging = true
     w.network = before.graph.copy()
@@ -476,7 +486,7 @@ pub func preview_move(w: Workspace, delta: Vector3) -> unit!:
         w.pending_changed = true
     elif w.selecting() and w.selected_count() > 0:
         let mesh = w.geometry else return
-        append_move(w, mesh, delta) catch failure:
+        append_transform(w, mesh, transform_numbers(delta, rotate, scale)) catch failure:
             w.cancel()
             w.notice = failure.message
             w.revision += 1

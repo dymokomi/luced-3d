@@ -5,6 +5,8 @@ from interop import Connection
 from workspace import Workspace
 from network import kinds
 from edit_kinds import is_edit, edit_tool_names, edit_primitive_names
+from edit_types import level_names, sketch_level_names
+from tools import transform_tools
 import modeling_commands
 import selection_commands
 import node_commands
@@ -68,7 +70,7 @@ pub class Actions:
         self.group = Command("Group", Shortcut(Key.g, primary = true), id = "group_nodes")
         self.enabled = Command("Enable / bypass", Shortcut(Key.b), id = "toggle_node")
         self.delete = Command("Delete node", id = "delete_node")
-        self.extrude = Command("Extrude faces", Shortcut(Key.e), id = "extrude_faces")
+        self.extrude = Command("Extrude faces", id = "extrude_faces")
         self.clear_edits = Command("Clear edits", id = "clear_edits")
         self.select_all = Command("Select all", Shortcut(Key.a, primary = true), id = "select_all")
         self.connections = [self.undo.on_trigger(workspace.undo), self.redo.on_trigger(workspace.redo),
@@ -98,10 +100,12 @@ pub class Actions:
             let command = Command(walks[index], id = "select_walk_" + str(index))
             self.selection_tools.append(command)
             self.connections.append(command.on_trigger(func () -> unit!: selection_commands.walk_selection(workspace, operation)))
-        # Selection levels 1-5: their labels follow the Edit kind's levels.
-        self.modes = [Command("Object", Shortcut(Key.digit_1), id = "select_level_1"), Command("Polygons", Shortcut(Key.digit_2), id = "select_level_2"),
-            Command("Edges", Shortcut(Key.digit_3), id = "select_level_3"), Command("Vertices", Shortcut(Key.digit_4), id = "select_level_4"),
-            Command("Corners", Shortcut(Key.digit_5), id = "select_level_5")]
+        # Selection levels 1-5 (Object, Point, Edge, Face, Smart): their
+        # labels follow the Edit kind's levels (Vertices, CVs, …).
+        let keys = [Key.digit_1, Key.digit_2, Key.digit_3, Key.digit_4, Key.digit_5]
+        self.modes = []
+        for index in 0..<5:
+            self.modes.append(Command(level_names()[index], Shortcut(keys[index]), id = f"select_level_{index + 1}"))
         for index in 0..<self.modes.length:
             let mode = index
             self.connections.append(self.modes[index].on_trigger(func () -> unit!:
@@ -113,25 +117,36 @@ pub class Actions:
             let command = Command(primitive, id = "create_" + primitive.lower().replace(" ", "_"))
             self.create.append(command)
             self.connections.append(command.on_trigger(func () -> unit!: modeling_commands.create(workspace, name)))
-        self.tools = [Command("Select", Shortcut(Key.q), id = "tool_select"), Command("Move", Shortcut(Key.m), id = "tool_move")]
-        self.connections.append(self.tools[0].on_trigger(func (): modeling_commands.choose_tool(workspace, "Select")))
-        self.connections.append(self.tools[1].on_trigger(func (): modeling_commands.choose_tool(workspace, "Move")))
+        # The transform tools, Maya's keys: Select, Move, Rotate, Scale and
+        # the selected node's own handles (Manipulator).
+        let tool_keys = [Key.q, Key.w, Key.e, Key.r, Key.t]
+        self.tools = []
+        for index in 0..<transform_tools().length:
+            let tool = transform_tools()[index]
+            let command = Command(tool, Shortcut(tool_keys[index]), id = "tool_" + tool.lower())
+            self.tools.append(command)
+            self.connections.append(command.on_trigger(func (): modeling_commands.choose_tool(workspace, tool)))
         for kind in kinds():
             self.add.append(Command(kind, id = "add_" + kind))
         self.all = [self.undo, self.redo, self.frame, self.grid, self.hulls, self.display, self.output, self.auto_output, self.visibility, self.parent, self.group, self.enabled, self.delete, self.extrude, self.clear_edits, self.select_all, self.millimeters, self.inches] + self.add + self.modes + self.tools + self.modeling + self.create + self.selection_tools
         self.all += [self.new_project, self.open_project, self.save, self.save_as, self.reset_layout]
         self.refresh()
 
-    ## The viewport's tool strip: Select, Move, then what the active Edit
-    ## kind offers (Edit Mesh's on other nodes): Extrude, its tools, its
-    ## primitives.
-    pub func strip(self) -> list[Command]:
+    ## The Modify marking menu's tools: what the active Edit kind offers
+    ## (Edit Mesh's on other nodes), Extrude first.
+    pub func modify_commands(self) -> list[Command]:
         let kind = self.workspace.strip_kind()
-        let result = self.tools.copy()
+        let result: list[Command] = []
         if kind.tool("Extrude") != none:
             result.append(self.extrude)
         for command in self.modeling:
             if kind.tool(command.text()) != none: result.append(command)
+        return result
+
+    ## The Create marking menu's primitives inside an Edit node.
+    pub func create_commands(self) -> list[Command]:
+        let kind = self.workspace.strip_kind()
+        let result: list[Command] = []
         for command in self.create:
             if command.text() in kind.primitives: result.append(command)
         return result
@@ -152,7 +167,7 @@ pub class Actions:
         self.parent.set_enabled(w.network.scope >= 0 and not w.sketching())
         # A sketch being edited takes single keys for its tools (D, O, …).
         if w.sketching():
-            for command in [self.display, self.output, self.enabled]:
+            for command in [self.display, self.output, self.enabled] + self.tools:
                 command.set_enabled(false)
         self.group.set_enabled(node != none and not w.network.in_material())
         if let selected = node:
@@ -168,15 +183,19 @@ pub class Actions:
         self.extrude.set_enabled(selecting and w.domain() == 2 and w.tool_available("Extrude"))
         self.select_all.set_enabled(selecting)
         let levels = w.levels()
+        let sketching = w.sketching()
         for index in 0..<self.modes.length:
-            self.modes[index].set_enabled(selecting and index < levels.length)
-            self.modes[index].set_checked(index == w.component_mode)
-            if index < levels.length:
+            self.modes[index].set_enabled((selecting and w.level_available(index)) or (sketching and index > 0))
+            self.modes[index].set_checked(index == (w.sketch_level if sketching else w.component_mode))
+            if sketching:
+                self.modes[index].set_text(sketch_level_names()[index])
+            elif index < levels.length and levels[index].available:
                 self.modes[index].set_text(levels[index].name)
         for command in self.create:
             command.set_enabled(w.editing() and w.tool_available(command.text()))
         for tool in self.tools:
-            tool.set_enabled(selecting)
+            if not w.sketching():
+                tool.set_enabled(true)
             tool.set_checked(tool.text() == w.edit_tool)
         # Tools apply to the selection, or prompt for one (Tool → Select);
         # on the Edit node they need a selection.

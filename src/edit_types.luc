@@ -10,8 +10,29 @@ from luce_geocore.geocore import Mesh, Domain, GroupType, Vector3
 from geometry_data import GeometryData
 from edit_operations import EditStep
 
+## The viewport's selection levels, the same in every context (keys 1-5):
+## Object, Point (vertices, CVs), Edge (edges, isoparms), Face, and Smart,
+## which picks whichever of the kind's `smart` levels is under the pointer.
+pub let object_level = 0
+pub let point_level = 1
+pub let edge_level = 2
+pub let face_level = 3
+pub let smart_level = 4
+
+## The levels' switcher names, icons and keys.
+pub func level_names() -> list[str]:
+    return ["Object", "Point", "Edge", "Face", "Smart"]
+
+## A sketch's names for them (it has no Object level).
+pub func sketch_level_names() -> list[str]:
+    return ["Object", "Points", "Lines", "Shapes", "Smart"]
+
+pub func level_icons() -> list[str]:
+    return ["cube", "vertex-select", "edge-select", "face-select", "magic-wand-tool"]
+
 ## A selection level: what one pick selects, on which domain of the level's
-## pick geometry, and the group type its steps receive.
+## pick geometry, and the group type its steps receive. A kind without a
+## level (Edit SDF has only Object) leaves its slot `missing`.
 pub class EditLevel:
     ## The switcher's label and icon ("Polygons", "face-select").
     pub let name: str
@@ -22,13 +43,15 @@ pub class EditLevel:
     ## picked element: the group expression naming it on `domain` (Object
     ## levels); without one, the element alone.
     pub let piece: func(Mesh, int) -> str!?
+    pub let available: bool
 
-    pub func init(self, name: str, icon: str, domain: Domain, group_type: GroupType, piece: func(Mesh, int) -> str!? = none):
+    pub func init(self, name: str, icon: str, domain: Domain, group_type: GroupType, piece: func(Mesh, int) -> str!? = none, available: bool = true):
         self.name = name
         self.icon = icon
         self.domain = domain
         self.group_type = group_type
         self.piece = piece
+        self.available = available
 
     ## The group expression of what picking `element` of `mesh` selects: its
     ## piece, or "" for the element alone.
@@ -42,6 +65,10 @@ pub class EditLevel:
 
     pub func group_number(self) -> int:
         return group_number(self.group_type)
+
+## A level slot a kind does not have (`name` as level_names has it).
+pub func missing(name: str) -> EditLevel:
+    return EditLevel(name, "", Domain.face, GroupType.faces, available = false)
 
 ## A tool button: its label, the verb its step runs, the levels it is
 ## offered on ([] every level) and its numbers for a tool amount.
@@ -64,6 +91,7 @@ pub class EditTool:
 pub class EditKind:
     ## The node kind ("Edit Mesh").
     pub let name: str
+    ## Object, Point, Edge and Face, in that order (missing ones too).
     pub let levels: list[EditLevel]
     pub let tools: list[EditTool]
     ## Create entries ("Box", "Sphere", …).
@@ -86,10 +114,14 @@ pub class EditKind:
     ## finishes, and `drawn` makes the one step (Edit Mesh's PolyDraw).
     pub let draw_tools: list[str]
     pub let drawn: func(str, list[Vector3]) -> EditStep?!?
+    ## The levels Smart picks among (all on the same pick geometry): the
+    ## nearest point, else edge, else face under the pointer (none: all
+    ## three).
+    pub let smart: list[int]
 
     pub func init(self, name: str, levels: list[EditLevel], tools: list[EditTool], primitives: list[str], start: func(GeometryData) -> GeometryData!,
                   pick: func(GeometryData, int) -> Mesh?!, run: func(EditStep, GeometryData) -> GeometryData!, create: func(str) -> EditStep?!,
-                  see_through: bool = false, draw_tools: list[str] = [], drawn: func(str, list[Vector3]) -> EditStep?!? = none):
+                  see_through: bool = false, draw_tools: list[str] = [], drawn: func(str, list[Vector3]) -> EditStep?!? = none, smart: list[int]? = none):
         self.name = name
         self.levels = levels
         self.tools = tools
@@ -101,6 +133,7 @@ pub class EditKind:
         self.see_through = see_through
         self.draw_tools = draw_tools
         self.drawn = drawn
+        self.smart = smart else [point_level, edge_level, face_level]
 
     ## Whether a recipe step of `verb` is one this kind makes: a geometry
     ## verb (luce-geocore's), a primitive's (its create's), a tool's or a

@@ -1,12 +1,11 @@
 ## What the Sketch editor draws (sketch_editor.luc): its curves as line
 ## batches on the plane (made again only when the sketch changes), what is
 ## hovered, selected or picked and what is being drawn on top; then, flat
-## on the screen, its points, constraint glyphs and dimension labels, the
-## Points / Lines / Shapes filter at the top left and the CREATE, MODIFY
-## and CONSTRAINTS toolbar along the bottom, whose menus open upward.
+## on the screen, its points, constraint glyphs and dimension labels. Its
+## tools are on the marking menus (A, S, D: marking_items.luc), its
+## Points / Lines / Shapes levels on the viewport's level buttons.
 from luce_gpu.gpu import RenderTarget, Rect, Color
-from luce_ui.ui import Event, Painter
-from luce_window.input import EventKind
+from luce_ui.ui import Painter
 from overlay_lines import OverlayLines
 from workspace import Workspace
 from sketch_editor import SketchEditor
@@ -15,18 +14,11 @@ import sketch_create
 from viewport_tools import projected
 import sketch_editor as names
 import sketch_tools
-from sketch_tools import SketchTool
 from luce_ui import ui
 from luce_cad.sketch import CadSketch
 import units
 import theme
 from luce_std import math
-
-## The toolbar's buttons and its menus' rows.
-let button_width = 132.0
-let button_height = 30.0
-let row_height = 28.0
-let menu_width = 250.0
 
 pub class SketchView:
     let w: Workspace
@@ -36,14 +28,6 @@ pub class SketchView:
     var batches: list[OverlayLines]
     ## The sketch grid's spacing (mm), set to the camera's distance.
     pub var spacing: float = 10.0
-    ## The open menu (-1: none) and the menu row under the pointer.
-    pub var menu: int = -1
-    var hover_row: int = -1
-    ## The open menu's row whose variants show beside it (-1: none), and the
-    ## variant under the pointer.
-    var sub_row: int = -1
-    var hover_variant: int = -1
-    var hover_button: int = -1
 
     pub func init(self, w: Workspace):
         self.w = w
@@ -122,11 +106,10 @@ pub class SketchView:
         if sketch_tools.draws(self.editor.tool):
             sketch_create.preview(self.editor, lines)
 
-    ## The flat layer: points, glyphs, dimensions, the filter and the toolbar.
+    ## The flat layer: points, constraint glyphs and dimensions.
     pub func draw(self, p: Painter, width: float, height: float) -> unit!:
         let e = self.editor
         if not e.active():
-            self.menu = -1
             return
         e.sync()
         let sketch = e.sketch else return
@@ -145,8 +128,6 @@ pub class SketchView:
             let s = projected(self.w, f.at(e.cursor[0], e.cursor[1]), width, height)
             outline(p, Rect(s[0] - 7.0, s[1] - 7.0, 14.0, 14.0), theme.accent())
         self.glyphs(p, width, height)
-        self.filter(p)
-        self.toolbar(p, width, height)
 
     ## Each constraint's glyph beside what it holds, each dimension's value
     ## (driven ones in parentheses).
@@ -189,140 +170,6 @@ pub class SketchView:
             else:
                 p.rounded_rectangle(Rect(s[0] + 6.0, s[1] + 4.0, float(label.length) * 8.0 + 6.0, 18.0), theme.grey(60.0), 3.0)
                 p.text(label, s[0] + 9.0, s[1] + 5.0, theme.text_muted())
-
-    ## The selection filter at the top left: Points, Lines, Shapes.
-    func filter(self, p: Painter) -> unit!:
-        let icons = ["vertex-select", "edge-select", "face-select"]
-        for at in 0..<3:
-            let x = 16.0 + float(at) * 38.0
-            let on = self.editor.level == at
-            p.rounded_rectangle(Rect(x, 44.0, 32.0, 30.0), theme.accent() if on else theme.surface(), 4.0)
-            icon(p, icons[at], x + 6.0, 49.0, 20.0, theme.backdrop() if on else theme.text())
-        p.text(["Points", "Lines", "Shapes"][self.editor.level], 132.0, 51.0, theme.text_muted())
-
-    ## The toolbar along the bottom, and the open menu above its button.
-    func toolbar(self, p: Painter, width: float, height: float) -> unit!:
-        let menus = sketch_tools.menu_names()
-        let left = self.toolbar_left(width)
-        let top = height - button_height - 12.0
-        for at in 0..<menus.length:
-            let x = left + float(at) * (button_width + 6.0)
-            let open = at == self.menu
-            let tool_here = sketch_tools.in_menu(self.editor.tool, at)
-            p.rounded_rectangle(Rect(x, top, button_width, button_height), theme.grey(72.0) if open or at == self.hover_button else theme.surface(), 4.0)
-            if tool_here:
-                p.rectangle(Rect(x + 6.0, top + button_height - 3.0, button_width - 12.0, 2.0), theme.accent())
-            p.text(menus[at] + " ▾", x + 12.0, top + 7.0, theme.text())
-        if self.menu < 0:
-            return
-        let tools = sketch_tools.tools(self.menu)
-        let x = left + float(self.menu) * (button_width + 6.0)
-        let bottom = top - 6.0
-        let rows = row_height_for(tools.length, height)
-        let menu_top = bottom - float(tools.length) * rows - 8.0
-        p.rounded_rectangle(Rect(x, menu_top, menu_width, bottom - menu_top), theme.surface(), 4.0)
-        for at in 0..<tools.length:
-            let tool = tools[at]
-            let y = menu_top + 4.0 + float(at) * rows
-            let inset = (rows - 18.0) * 0.5
-            if tool.group_start and at > 0:
-                p.rectangle(Rect(x + 8.0, y, menu_width - 16.0, 1.0), theme.border())
-            if at == self.hover_row and tool.ready:
-                p.rectangle(Rect(x + 4.0, y + 1.0, menu_width - 8.0, rows - 2.0), theme.grey(72.0))
-            let ink = theme.text() if tool.ready else theme.grey(100.0)
-            let current = tool.name == self.editor.tool or chosen_variant(tool, self.editor.tool)
-            icon(p, tool.icon, x + 10.0, y + inset, 18.0, theme.accent() if current else ink)
-            p.text(tool.name, x + 36.0, y + inset, ink)
-            if tool.variants.length > 0:
-                p.text("▸", x + menu_width - 20.0, y + inset, ink)
-            elif tool.key != "":
-                p.text(tool.key, x + menu_width - 24.0, y + inset, theme.text_muted())
-        # A row's variants, beside it.
-        if self.sub_row >= 0 and self.sub_row < tools.length:
-            let variants = tools[self.sub_row].variants
-            let sx = x + menu_width + 2.0
-            let sy = menu_top + 4.0 + float(self.sub_row) * rows - 4.0
-            p.rounded_rectangle(Rect(sx, sy, menu_width, float(variants.length) * rows + 8.0), theme.surface(), 4.0)
-            for at in 0..<variants.length:
-                let v = variants[at]
-                let y = sy + 4.0 + float(at) * rows
-                let inset = (rows - 18.0) * 0.5
-                if at == self.hover_variant and v.ready:
-                    p.rectangle(Rect(sx + 4.0, y + 1.0, menu_width - 8.0, rows - 2.0), theme.grey(72.0))
-                let ink = theme.text() if v.ready else theme.grey(100.0)
-                icon(p, v.icon, sx + 10.0, y + inset, 18.0, theme.accent() if v.name == self.editor.tool else ink)
-                p.text(v.name, sx + 36.0, y + inset, ink)
-                if v.key != "":
-                    p.text(v.key, sx + menu_width - 24.0, y + inset, theme.text_muted())
-
-    func toolbar_left(self, width: float) -> float:
-        return math.max(16.0, (width - 3.0 * button_width - 12.0) * 0.5)
-
-    ## Clicks on the filter, the toolbar and its menus; whether used.
-    pub func event(self, event: Event, width: float, height: float) -> bool!:
-        if not self.editor.active():
-            self.menu = -1
-            return false
-        let left = self.toolbar_left(width)
-        let top = height - button_height - 12.0
-        let button = int((event.x - left) / (button_width + 6.0)) if event.x >= left and event.y >= top and event.y <= top + button_height else -1
-        let on_button = button >= 0 and button < 3 and event.x - left - float(button) * (button_width + 6.0) <= button_width
-        var row = -1
-        var variant = -1
-        if self.menu >= 0:
-            let tools = sketch_tools.tools(self.menu)
-            let x = left + float(self.menu) * (button_width + 6.0)
-            let rows = row_height_for(tools.length, height)
-            let menu_top = top - 6.0 - float(tools.length) * rows - 8.0
-            if event.x >= x and event.x <= x + menu_width and event.y >= menu_top + 4.0 and event.y < top - 10.0:
-                row = int((event.y - menu_top - 4.0) / rows)
-                if row >= tools.length:
-                    row = -1
-            # The open variants beside their row.
-            if self.sub_row >= 0 and self.sub_row < tools.length:
-                let sx = x + menu_width + 2.0
-                let sy = menu_top + 4.0 + float(self.sub_row) * rows - 4.0
-                let count = tools[self.sub_row].variants.length
-                if event.x >= sx and event.x <= sx + menu_width and event.y >= sy + 4.0 and event.y < sy + 4.0 + float(count) * rows:
-                    variant = int((event.y - sy - 4.0) / rows)
-            if event.kind == EventKind.pointer_moved and row >= 0:
-                self.sub_row = row if tools[row].variants.length > 0 else -1
-        if event.kind == EventKind.pointer_moved:
-            let before = [self.hover_row, self.hover_button, self.hover_variant]
-            self.hover_row = row
-            self.hover_variant = variant
-            self.hover_button = button if on_button else -1
-            return before != [self.hover_row, self.hover_button, self.hover_variant] or row >= 0 or variant >= 0 or on_button
-        if event.kind != EventKind.pointer_down or event.button != 0:
-            return false
-        if on_button:
-            self.menu = -1 if self.menu == button else button
-            self.sub_row = -1
-            return true
-        if variant >= 0:
-            let v = sketch_tools.tools(self.menu)[self.sub_row].variants[variant]
-            if v.ready:
-                self.editor.choose(v.name)
-                self.menu = -1
-                self.sub_row = -1
-            return true
-        if row >= 0:
-            let tool = sketch_tools.tools(self.menu)[row]
-            if tool.variants.length > 0:
-                self.sub_row = row
-            elif tool.ready:
-                self.editor.choose(tool.name)
-                self.menu = -1
-            return true
-        if self.menu >= 0:
-            self.menu = -1
-            return true
-        if event.y >= 44.0 and event.y <= 74.0 and event.x >= 16.0 and event.x < 16.0 + 3.0 * 38.0:
-            self.editor.level = int((event.x - 16.0) / 38.0)
-            self.editor.selection = []
-            self.editor.revision += 1
-            return true
-        return false
 
 ## Where a constraint on entities `first` (and `second`) shows: a line's
 ## middle, a curve's center offset, a point, or between two points.
@@ -381,16 +228,3 @@ func outline(p: Painter, r: Rect, color: Color) -> unit!:
 ## Asset `asset` (luciaos-assets' name) at (`x`, `y`), `size` square.
 func icon(p: Painter, asset: str, x: float, y: float, size: float, ink: Color) -> unit!:
     ui.draw_icon(p.target(), asset, Rect(x, y, size, size), ink)
-
-## A menu row's height: 28 points, less when `count` rows would not fit
-## above the toolbar in a viewport `height` high (never under 20).
-func row_height_for(count: int, height: float) -> float:
-    let room = height - button_height - 12.0 - 6.0 - 8.0 - 12.0
-    return math.max(20.0, math.min(row_height, room / float(count)))
-
-## Whether `tool`'s variants include `name`.
-func chosen_variant(tool: SketchTool, name: str) -> bool:
-    for v in tool.variants:
-        if v.name == name:
-            return true
-    return false

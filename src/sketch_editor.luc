@@ -19,6 +19,8 @@
 ## The editor works on a live CadSketch read from the node; each finished
 ## action writes it back as one undo step (commit), and an undo or a change
 ## from elsewhere reads the node again (sync).
+from sketch_chains import chain_of
+from edit_types import point_level, edge_level, face_level
 from luce_cad.sketch import CadSketch
 from luce_ui.ui import Event
 from luce_window.input import EventKind, Key
@@ -81,9 +83,6 @@ pub class SketchEditor:
     pub var snap: int = -1
     pub var free_placing: bool = false
     pub var hover: int = -1
-    ## What Select picks: 0 points, 1 lines (curves), 2 shapes (curves joined
-    ## end to end).
-    pub var level: int = 1
     pub var selection: list[int]
     ## A constraint or dimension tool's picks so far.
     pub var picks: list[int]
@@ -349,7 +348,7 @@ pub class SketchEditor:
         self.cursor = self.frame.coordinates(here)
         self.free_placing = free
         self.snap = -1
-        self.hover = sketch.pick(self.cursor[0], self.cursor[1], self.reach)
+        self.hover = sketch.pick(self.cursor[0], self.cursor[1], self.reach, self.pick_filter())
         if free or self.dragging >= 0:
             return
         let skip = self.made[-1] if self.made.length > 0 else -1
@@ -454,24 +453,38 @@ pub class SketchEditor:
         self.made[at] = point
         return point
 
-    ## Select's click: the entity under the cursor (Shift adds or takes
-    ## away), or nothing; a point pressed starts a drag.
+    ## What Select hovers at the selection level (Points: points, Lines and
+    ## Shapes: curves); other tools pick either (CadSketch.pick's `only`).
+    func pick_filter(self) -> int:
+        if self.tool != "Select":
+            return 0
+        if self.w.sketch_level == point_level:
+            return 1
+        return 2 if self.w.sketch_level in [edge_level, face_level] else 0
+
+    ## Select's click: the entity under the cursor, at the Shapes level its
+    ## whole chain (Shift adds or takes away), or nothing; a point pressed
+    ## starts a drag.
     func select_at(self, extend: bool) -> unit!:
         let sketch = self.sketch else return
         let at = self.hover
         if at >= 0 and sketch.kind(at) == point_kind:
             self.dragging = at
             self.drag_moved = false
+        let picked = chain_of(sketch, at) if at >= 0 and self.w.sketch_level == face_level and sketch.kind(at) != point_kind else [at]
         if at < 0:
             if not extend:
                 self.selection = []
         elif extend:
             if at in self.selection:
-                self.selection = without(self.selection, at)
+                for each in picked:
+                    self.selection = without(self.selection, each)
             else:
-                self.selection.append(at)
+                for each in picked:
+                    if not (each in self.selection):
+                        self.selection.append(each)
         else:
-            self.selection = [at]
+            self.selection = picked
         self.revision += 1
 
     ## A constraint or dimension tool's click.

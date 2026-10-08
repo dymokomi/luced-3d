@@ -12,7 +12,7 @@ from luce_3d.graphics import Scene, Group, Vector3, Matrix4, AmbientLight, Direc
 from place_prompt import PlacePrompt
 from tool_prompt import ToolPrompt
 from network import Network, Node
-from tools import tool_run
+from tools import tool_run, transform_tools
 from history import History, Snapshot
 from scene_projection import append_bounds
 from local_cook import cook_outputs
@@ -23,7 +23,7 @@ from view_state import ViewState
 from viewport_batches import ViewportBatches
 from edit_kinds import is_edit, edit_kind
 from geometry_data import GeometryData
-from edit_types import EditKind, EditLevel
+from edit_types import EditKind, EditLevel, smart_level, face_level
 import edit_mesh
 import node_catalog
 from luce_cad.cad_edits import CadEdits
@@ -39,10 +39,16 @@ pub class Workspace:
     ## Components of `geometry` (a luce-geocore Selection), on any displayed
     ## node; none when nothing is selected.
     pub var selection: Selection? = none
-    ## The selection level: an index into levels() (an Edit node's kind's,
-    ## else Edit Mesh's: Object, Polygons, Edges, Vertices, Corners). Node
-    ## selection and display are independent.
-    pub var component_mode: int = 1
+    ## The selection level (edit_types: Object, Point, Edge, Face, Smart),
+    ## an index into levels() but for Smart. Node selection and display are
+    ## independent.
+    pub var component_mode: int = face_level
+    ## Under Smart, the level its last pick was on (the selection's).
+    pub var smart_pick: int = face_level
+    ## What a sketch's Select picks, on the same buttons: Point (points),
+    ## Edge (lines and curves), Face (shapes: curves joined end to end) or
+    ## Smart (whatever is nearest).
+    pub var sketch_level: int = smart_level
     ## Edit kinds by node kind, made once each (they hold closures).
     let edit_kinds: map[str, EditKind]
     let mesh_levels: list[EditLevel]
@@ -119,7 +125,8 @@ pub class Workspace:
         self.history.cursor = 0
         self.selection = none
         self.prompt = none
-        self.component_mode = 1
+        self.component_mode = face_level
+        self.smart_pick = face_level
         self.notice = ""
         self.rebuild()
 
@@ -251,8 +258,32 @@ pub class Workspace:
         return self.mesh_levels
 
     pub func level(self) -> EditLevel:
+        return self.levels()[self.level_index()]
+
+    ## The level picked on: the chosen one, or under Smart its last pick's.
+    pub func level_index(self) -> int:
+        let at = self.smart_pick if self.component_mode == smart_level else self.component_mode
         let all = self.levels()
-        return all[self.component_mode if self.component_mode < all.length else 0]
+        return at if at < all.length and all[at].available else 0
+
+    ## The levels Smart picks among (none: it is not offered).
+    pub func smart_levels(self) -> list[int]:
+        return self.strip_kind().smart
+
+    ## Whether level `index` (Smart too) can be chosen.
+    pub func level_available(self, index: int) -> bool:
+        if index == smart_level:
+            return self.smart_levels().length > 0
+        let all = self.levels()
+        return index >= 0 and index < all.length and all[index].available
+
+    ## Make level `index` the one picked on, staying in Smart when it is one
+    ## of Smart's levels (a tool's output, a reselection's type).
+    pub func adopt_level(self, index: int):
+        if self.component_mode == smart_level and index in self.smart_levels():
+            self.smart_pick = index
+        else:
+            self.component_mode = index
 
     ## The kind whose tools the viewport offers: the active Edit node's,
     ## else Edit Mesh's (tools on any displayed mesh make verb nodes).
@@ -266,17 +297,17 @@ pub class Workspace:
         if name in kind.primitives or name in kind.draw_tools:
             return true
         let tool = kind.tool(name) else return false
-        return tool.offered(self.component_mode)
+        return tool.offered(self.level_index())
 
     ## The level that selects single elements of `domain` (Polygons rather
     ## than Object), or the first level.
     pub func level_of(self, domain: int) -> int:
         let all = self.levels()
         for index in 0..<all.length:
-            if all[index].domain_number() == domain and all[index].piece == none:
+            if all[index].available and all[index].domain_number() == domain and all[index].piece == none:
                 return index
         for index in 0..<all.length:
-            if all[index].domain_number() == domain:
+            if all[index].available and all[index].domain_number() == domain:
                 return index
         return 0
 
@@ -337,6 +368,12 @@ pub class Workspace:
     pub func selected_count(self) -> int:
         let chosen = self.selection else return 0
         return chosen.count()
+
+    ## A modal tool (the Knife) ends with the selection or node it was for;
+    ## the transform tools (Q, W, E, R, T) stay.
+    pub func end_modal_tool(self):
+        if not (self.edit_tool in transform_tools()):
+            self.edit_tool = "Select"
 
     pub func editing(self) -> bool:
         let node = self.selected() else return false
@@ -465,7 +502,7 @@ pub class Workspace:
     func picked(self, node: Node, data: GeometryData) -> Mesh?!:
         if node.enabled:
             if let kind = self.kind_of(node.kind):
-                return kind.pick(data, self.component_mode) catch failure:
+                return kind.pick(data, self.level_index()) catch failure:
                     recover none
         if data.mesh == none and self.network.picking_cad and data.has_cad():
             # A CAD body picks on its tagged tessellation (B-rep faces and edges).
@@ -543,20 +580,20 @@ pub class Workspace:
     ## group, or drop a selection that no longer fits.
     func sync_selection(self) -> unit!:
         let mesh = self.geometry else return
-        if self.component_mode >= self.levels().length:
+        if not self.level_available(self.component_mode):
             self.component_mode = 0
             self.selection = none
         # A create step's piece: selected at its level (Object).
         if self.adopt_output and self.pending_level >= 0:
             self.adopt_output = false
-            self.component_mode = self.pending_level
+            self.adopt_level(self.pending_level)
             self.pending_level = -1
             if mesh.group_size(".selection", self.domain()) >= 0:
                 self.selection = Selection.of(mesh, ".selection", self.domain())
             return
         if self.pending_group != "":
             let domain = [0, 0, 4, 2, 1][self.pending_type] if self.pending_type > 0 else self.domain()
-            self.component_mode = self.level_of(domain)
+            self.adopt_level(self.level_of(domain))
             self.selection = Selection.of(mesh, self.pending_group, domain)
             self.pending_group = ""
             return
@@ -564,7 +601,7 @@ pub class Workspace:
             self.adopt_output = false
             for domain in [2, 4, 0, 1]:
                 if mesh.group_size(".selection", domain) >= 0:
-                    self.component_mode = self.level_of(domain)
+                    self.adopt_level(self.level_of(domain))
                     self.selection = Selection.of(mesh, ".selection", domain)
                     return
         if let chosen = self.selection:

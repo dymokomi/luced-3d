@@ -6,6 +6,7 @@
 from luce_geocore.geocore import Selection
 from workspace import Workspace
 from modeling_commands import follow_prompt
+from edit_types import smart_level, face_level, object_level
 
 pub func invert_selection(w: Workspace) -> unit!:
     let chosen = w.current_selection() else return
@@ -27,12 +28,24 @@ pub func walk_selection(w: Workspace, operation: int) -> unit!:
 
 ## Switching the component type carries the selection over (a face is
 ## kept when all its points were selected; a point when any face was).
+## Smart keeps the level picked on, when it is one of Smart's.
 pub func set_mode(w: Workspace, mode: int) -> unit!:
-    if mode == w.component_mode or mode < 0 or mode >= w.levels().length:
+    if w.sketching():
+        if mode != object_level:
+            w.sketch_level = mode
+            w.revision += 1
+        return
+    if mode == w.component_mode or not w.level_available(mode):
         return
     let mesh = w.geometry
     let chosen = w.selection
+    let before = w.level_index()
     w.component_mode = mode
+    if mode == smart_level:
+        w.smart_pick = before if before in w.smart_levels() else face_level
+        if w.level_index() == before:
+            w.revision += 1
+            return
     w.selection = none
     if let geometry = mesh:
         if let previous = chosen:
@@ -71,3 +84,12 @@ pub func select_all(w: Workspace) -> unit!:
     w.perform("Select all", func () -> unit!:
         w.selection = chosen.filled(true))
     follow_prompt(w)
+
+## Smart's click: component `id` of level `level` (what was under the
+## pointer). Another level than the selection's starts a new selection on
+## it; Smart's levels share their pick geometry, so nothing is cooked.
+pub func choose_smart(w: Workspace, level: int, id: int, extend: bool) -> unit!:
+    if id >= 0 and level != w.smart_pick:
+        w.smart_pick = level
+        w.selection = none
+    choose_component(w, id, extend and id >= 0)
