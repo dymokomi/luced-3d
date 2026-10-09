@@ -1,0 +1,40 @@
+## The Volume Wrangle: a Volume node makes a level set from nothing, a
+## Code node over its voxels writes a sphere's distance into it (named in
+## its Volume row), and Convert to Mesh finds the sphere's surface. Dense
+## runs the whole box; a fog grid's name comes from the Volume node's row.
+from workspace import Workspace
+import node_commands
+import code_node
+import code_cook
+from luce_std import math
+
+pub func code_voxel_tests() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Volume", 0.0, 0.0)
+    let volume = w.network.selected
+    assert(w.network.require(volume).failure == "")
+    # Level set, 0.1 voxels, starting outside (1).
+    node_commands.set_parameter(w, 0, 1.0)
+    node_commands.set_parameter(w, 7, 0.1)
+    node_commands.set_parameter(w, 9, 1.0)
+    node_commands.set_text(w, 0, "shape")
+    node_commands.add_node(w, "Code", 0.0, 100.0)
+    let id = w.network.selected
+    node_commands.set_parameter(w, code_cook.run_over_slot, 5.0)
+    node_commands.set_text(w, 0, "shape")
+    code_node.set_code(w, id, code_cook.body_slot, "x.value = math32.sqrt(x.P[0] * x.P[0] + x.P[1] * x.P[1] + x.P[2] * x.P[2]) - 0.6\n")
+    assert(w.network.require(id).failure == "")
+    node_commands.add_node(w, "Convert to Mesh", 0.0, 200.0)
+    node_commands.display_selected(w)
+    let surface = (w.geometry else trap("surface")).bounds()
+    assert(math.abs(surface.maximum.x - 0.6) < 0.1 and math.abs(surface.minimum.y + 0.6) < 0.1)
+    # A missing grid name passes the input through, with no failure.
+    w.network.selected = id
+    node_commands.set_text(w, 0, "nothing")
+    assert(w.network.require(id).failure == "")
+    # An error in voxel code fails the node with its line.
+    node_commands.set_text(w, 0, "")
+    code_node.set_code(w, id, code_cook.body_slot, "x.value = undefined_name\n")
+    assert(w.network.require(id).failure.contains("line 1"))
+    print("PASS code voxels: Volume node, Voxels run over a named grid, surface, pass-through, errors")

@@ -138,7 +138,7 @@ pub func material_kinds() -> list[str]:
 ## node creates, a Camera, Light or Material makes just its own, a Sketch
 ## draws on an origin plane (its input is a body to sketch on a face of).
 pub func optional_input(kind: str) -> bool:
-    return is_edit(kind) or kind in ["Camera", "Light", "Material", sketch_node.kind_name, code_cook.kind_name]
+    return is_edit(kind) or kind in ["Camera", "Light", "Material", "Volume", sketch_node.kind_name, code_cook.kind_name]
 
 pub func has_group(kind: str) -> bool:
     let verb = VerbCatalog.index_of(kind)
@@ -225,7 +225,18 @@ pub func fields(kind: str, path: str = "", stage: Composition? = none) -> list[P
         rows.append(entry("Camera", 0, "The path of the camera to render through; empty takes the first camera."))
         rows.append(entry("Output", 1, "Where the image is written (.exr); empty only shows it.", "path"))
     if has_group(kind):
-        rows.append(entry("Group", 0, "Elements to work on, in Houdini's group syntax: empty or * for all, 0 2-5 and 0-99:2 for numbers, names and globs, @P.y>0 or @name tests, ^ to remove, & to intersect, grow(x) and loop(x)."))
+        let group = entry("Group", 0, "Elements to work on, in Houdini's group syntax: empty or * for all, 0 2-5 and 0-99:2 for numbers, names and globs, @P.y>0 or @name tests, ^ to remove, & to intersect, grow(x) and loop(x).")
+        if kind == code_cook.kind_name:
+            group.hide_when = "{ run_over == 5 }"
+        rows.append(group)
+    if kind == code_cook.kind_name:
+        let grid = entry("Volume", 0, "Voxels: the grid the code runs over, by name (density); empty takes the first, #2 the third.")
+        grid.hide_when = "{ run_over != 5 }"
+        rows.append(grid)
+    # A verb's own text row (a Volume's grid name), where a group would be.
+    let verb_index = VerbCatalog.index_of(kind)
+    if verb_index >= 0 and VerbCatalog.text_row(verb_index) != "":
+        rows.append(entry(VerbCatalog.text_row(verb_index), 0, "The grid's name: empty is density for fog, surface for a level set. A grid of that name in the input is replaced."))
     if kind == "Name":
         rows.append(entry("Name", 1, "The name the Group's faces get, in their name attribute (Houdini's Name): pick them later with @name=wheel or a glob, @name=wheel*."))
     if (is_verb(kind) and has_group(kind)) or kind == code_cook.kind_name:
@@ -307,9 +318,11 @@ func value_fields(kind: str) -> list[Parameter]:
     if kind == code_cook.kind_name:
         let count = whole("Count", code_cook.count_slot, 10.0, 0.0, 100000000.0, "Numbers: how many times the code runs (n is 0 to Count - 1).", true)
         count.hide_when = "{ run_over != 4 }"
-        let run_over = menu("Run Over", code_cook.run_over_slot, code_cook.run_over_names(), 1.0, "What the code is written for: each point (p), vertex (v) or primitive (f), the detail once, or Count numbers (n). It runs for all of them in parallel.")
+        let run_over = menu("Run Over", code_cook.run_over_slot, code_cook.run_over_names(), 1.0, "What the code is written for: each point (p), vertex (v), primitive (f) or voxel (x), the detail once, or Count numbers (n). It runs for all of them in parallel.")
         run_over.key = "run_over"
-        return [run_over, count]
+        let dense = toggle("Dense", code_cook.dense_slot, 0.0, "Voxels: run over every voxel of the grid's box, activating them all; off, only its active voxels.")
+        dense.hide_when = "{ run_over != 5 }"
+        return [run_over, count, dense]
     if kind == "Blast":
         return [toggle("Isolate group", 0, 0.0, "On: keep only the group. Off: delete it.")]
     if kind == "Export":
