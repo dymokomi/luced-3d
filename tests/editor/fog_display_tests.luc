@@ -1,0 +1,74 @@
+## Fog volumes in the viewport: a Volume node (fog) filled by a Code node over
+## its voxels shows no surface; the viewport ray-marches it, without the
+## worker and with it, and its atlas goes to the GPU once per cook result,
+## however often the view redraws or orbits.
+from app import Luce3D
+from workspace import Workspace
+from offscreen_pixels import OffscreenPixels
+import node_commands
+import code_node
+import code_cook
+import time
+
+## A fog ball: a 2-unit Fog box of 0.05 voxels, its densities falling from 1
+## at the center to 0 at a radius of 0.9.
+func fog_ball(w: Workspace) -> int!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Volume", 0.0, 0.0)
+    node_commands.add_node(w, "Code", 0.0, 100.0)
+    let code = w.network.selected
+    node_commands.set_parameter(w, code_cook.run_over_slot, 5.0)
+    node_commands.set_text(w, 0, "density")
+    code_node.set_code(w, code, code_cook.body_slot, "x.value = math32.max(0.0, 1.0 - length(x.P) / 0.9)\n")
+    assert(w.network.require(code).failure == "")
+    node_commands.display_selected(w)
+    return code
+
+## Draw the editor's viewport over the whole texture; the luminance of its
+## middle.
+func middle(editor: Luce3D, view: OffscreenPixels) -> int!:
+    let target = view.begin()
+    editor.panels.view.draw(target)
+    view.end()
+    return view.luminance(400, 300)
+
+pub func fog_display_tests() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let code = fog_ball(w)
+    let data = w.network.evaluate_data(code)
+    assert(data.description().starts_with("1 volume grids") and data.field_preview() == none)
+    assert(w.batches.volumes.length == 1)
+    let volume = w.batches.volumes[0]
+    assert(volume.peak() > 0.9 and volume.upload_count() == 0)
+    let view = OffscreenPixels(800, 600)
+    let fogged = middle(editor, view)
+    assert(volume.upload_count() == 1)
+    # Orbiting redraws without uploading.
+    w.view.orbit(40.0, 10.0)
+    _ = middle(editor, view)
+    w.view.orbit(-40.0, -10.0)
+    assert(volume.upload_count() == 1 and middle(editor, view) == fogged)
+    # Without the fog the middle is the backdrop.
+    w.batches.volumes = []
+    let bare = middle(editor, view)
+    assert(fogged > bare + 20)
+    # With the worker: the volume is made there and adopted once; a new
+    # result that keeps the node's stamp keeps the same volume.
+    w.enable_compute()
+    let session = w.compute else trap("compute")
+    var deadline = time.now() + 20000000000
+    while session.busy and time.now() < deadline:
+        _ = w.poll_compute()
+    assert(not session.busy and w.notice == "" and w.batches.volumes.length == 1)
+    let adopted = w.batches.volumes[0]
+    assert(middle(editor, view) > bare + 20 and adopted.upload_count() == 1)
+    w.rebuild()
+    deadline = time.now() + 20000000000
+    while session.busy and time.now() < deadline:
+        _ = w.poll_compute()
+    assert(w.batches.volumes.length == 1 and w.batches.volumes[0] is adopted)
+    _ = middle(editor, view)
+    assert(adopted.upload_count() == 1)
+    editor.close()
+    print("PASS fog display: no surface preview, ray-marched with and without the worker, one upload per result")

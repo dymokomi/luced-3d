@@ -13,7 +13,7 @@ import sync
 import c
 from luce_geocore import geocore
 from luce_geocore.geocore import detached_mesh, mesh_overlay_points
-from luce_3d.graphics import Vector3, Matrix4, invalid, WireBatch, wire_batch_type, append_curve_segments
+from luce_3d.graphics import Vector3, Matrix4, invalid, WireBatch, wire_batch_type, append_curve_segments, FogVolume, fog_volume_type, fog_volume_of
 from luce_geocore.geocore import GeometrySet
 from luce_geocore.core.growing import Growing
 from overlay_lines import OverlayLines, line_points
@@ -41,6 +41,9 @@ struct Product:
     ## Evaluated curves and their control hulls.
     var curves: Vector3[]
     var hulls: Vector3[]
+    ## A fog volume made here for the UI to adopt (its texels; the UI
+    ## uploads them on its first draw).
+    var volume: FogVolume*?
 
 ## Overlays of a key the UI holds, kept so unchanged keys need no extraction.
 struct Held:
@@ -87,6 +90,9 @@ struct State:
             release_points(product.patches)
             release_points(product.curves)
             release_points(product.hulls)
+            if let volume = product.volume:
+                volume.close()
+                free(volume) in memory.heap
         self.count = 0
         if let report = self.report:
             report.release()
@@ -257,6 +263,19 @@ pub struct ComputeChannel:
         product.hulls = try copy_points(points)
         try self.add(product)
 
+    ## Publish fog grid `index` of `geometry`'s own volume placed by
+    ## `matrix`, shadowed for `light`, under a content key: its texels are
+    ## made here, off the UI thread.
+    pub func volume(key: i64, node: i64, geometry: interop.Reference[GeometrySet], index: i64, matrix: Matrix4, light: Vector3) -> !:
+        try self.check()
+        let made = try fog_volume_of(try geometry.get(), index, matrix, light)
+        var product = Product(key, none, node, true, false, true)
+        product.volume = made
+        self.add(product) catch failure:
+            made.close()
+            free(made) in memory.heap
+            error(failure.code, failure.message)
+
     ## A key already in this result gains the inspect role instead of a copy.
     func merge(key: i64, inspect: bool) -> bool:
         for index in 0..<self.state.count:
@@ -386,6 +405,19 @@ pub struct ComputeService:
         state.products[(usize)index].mesh = none
         return try interop.Reference[geocore.Mesh].adopt(mesh, geocore.mesh_type, memory.heap)
 
+    ## Whether the product carries a new fog volume to adopt.
+    pub func volume_fresh(index: i64) -> bool:
+        return (self.state else return false).products[(usize)index].volume != none
+
+    ## Adopt product `index`'s fog volume (once; the UI keeps it by key).
+    pub func take_volume(index: i64) -> interop.Reference[FogVolume]!:
+        let state = self.state else error(invalid, "Compute service closed")
+        if index < 0 or (usize)index >= state.count or state.completed == 0:
+            error(invalid, "No completed fog volume")
+        let volume = state.products[(usize)index].volume else error(invalid, "Fog volume already consumed")
+        state.products[(usize)index].volume = none
+        return try interop.Reference[FogVolume].adopt(volume, fog_volume_type, memory.heap)
+
     ## Combined overlays of the current result: fresh and held keys.
     pub func wires() -> interop.Reference[WireBatch]!:
         return try self.batch(0)
@@ -453,7 +485,7 @@ pub struct ComputeService:
         state.held_count = count
         for index in 0..<state.count:
             let product = &state.products[index]
-            if not product.fresh or product.mesh != none or not listed(kept, product.key) or state.held_count == state.held.length:
+            if not product.fresh or product.mesh != none or product.volume != none or not listed(kept, product.key) or state.held_count == state.held.length:
                 continue
             state.held[state.held_count] = Held(product.key, product.wires, product.normals, product.patches, product.curves, product.hulls)
             state.held_count += 1

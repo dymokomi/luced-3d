@@ -1,0 +1,50 @@
+## A device texture the tests draw a viewport into, as the window would, and
+## read back: `begin` gives the target, `end` presents and reads every pixel.
+from luce_gpu import gpu
+import interop
+import memory
+
+pub struct OffscreenPixels:
+    var device: gpu.Device
+    var texture: gpu.Texture
+    var recording: interop.Reference[gpu.Frame]?
+    var image: u8[]
+    let width: i64
+
+    pub func init(width: i64, height: i64) -> !:
+        var device = try gpu.Device.open()
+        errdefer device.destroy()
+        self.texture = try gpu.Texture.create(device, (u32)width, (u32)height, gpu.Format.rgba8)
+        self.device = device
+        self.recording = none
+        self.image = try new u8[(usize)(width * height * 4)] --- in memory.heap
+        self.width = width
+
+    ## Start a frame; the target stays valid until `end`.
+    pub func begin() -> interop.View[gpu.RenderTarget]!:
+        if self.recording != none: error(gpu.frame_in_use, "the offscreen frame is already recording")
+        let recording = try self.texture.frame()
+        self.recording = recording
+        return try recording.value().target()
+
+    ## Draw what was recorded over a black clear and read it back.
+    pub func end() -> !:
+        let recording = self.recording else error(gpu.frame_finished, "no offscreen frame is recording")
+        self.recording = none
+        defer recording.release()
+        _ = try recording.value().present(gpu.Color(0.0, 0.0, 0.0))
+        try self.texture.read(self.image)
+
+    ## The mean of pixel (x, y)'s red, green and blue, as the last `end` read it.
+    pub func luminance(x: i64, y: i64) -> i64:
+        let at = (usize)((y * self.width + x) * 4)
+        return ((i64)self.image[at] + (i64)self.image[at + 1] + (i64)self.image[at + 2]) // 3
+
+    pub func close():
+        if let recording = self.recording: recording.release()
+        self.recording = none
+        free(self.image) in memory.heap
+        self.texture.destroy()
+        self.device.destroy()
+
+pub let offscreen_pixels_type: interop.Type[OffscreenPixels] = interop.Type[OffscreenPixels]("OffscreenPixels", OffscreenPixels.close, closeable = true, main_thread = true)

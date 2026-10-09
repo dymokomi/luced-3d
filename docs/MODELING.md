@@ -62,8 +62,13 @@ the hull overlay is generic, for any family's control nets. Curve to Mesh
 takes an optional profile curve on its second input.
 
 Volume nodes work on SDFs and sparse level-set or fog volumes, also as set
-verbs. The viewport draws each SDF or volume by its surface preview, built
-once per component. An SDF's preview lies on the exact surface. Convert to
+verbs. The viewport draws each SDF or level set by its surface preview, built
+once per component. An SDF's preview lies on the exact surface. A fog volume
+is drawn as smoke, as in Houdini's viewport: luce-3d's `FogVolume` ray-marches
+its densities on the GPU, lit by the key light (self-shadowed) and the sky,
+hidden behind meshes in front of it and veiling those behind. Its texels are
+made once per cook result (on the worker) and upload on the first frame, so
+orbiting redraws without uploading. The `noise_cloud` wrangle example shows one. Convert to
 Mesh makes real geometry of that surface. Volume Slice shows a colored plane
 through the field: blue inside, orange outside, with contour bands.
 
