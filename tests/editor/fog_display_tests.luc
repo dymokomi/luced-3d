@@ -33,6 +33,14 @@ func fog_ball(w: Workspace) -> (int, int)!:
     node_commands.display_selected(w)
     return (code, look)
 
+## Poll the worker until its result is in.
+func settle(w: Workspace) -> unit!:
+    let session = w.compute else trap("compute")
+    let deadline = time.now() + 20000000000
+    while session.busy and time.now() < deadline:
+        _ = w.poll_compute()
+    assert(not session.busy)
+
 ## Draw the editor's viewport over the whole texture; the luminance of its
 ## middle.
 func middle(editor: Luce3D, view: OffscreenPixels) -> int!:
@@ -123,3 +131,24 @@ pub func fog_display_tests() -> unit!:
     assert(middle(editor, view) != glowing and adopted.upload_count() == 1)
     editor.close()
     print("PASS fog display: no surface preview, ray-marched with and without the worker, one upload per result, looks from Volume Visualization")
+
+## The worker's first result replaces the local cook's scene even when it
+## holds no mesh: the editor starts with the Cube cooked on the UI thread,
+## then a project of fog only is opened before the worker publishes anything
+## (as Luce3D.run does with a project on the command line). The Cube must
+## leave the screen.
+pub func fog_only_first_result_tests() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let view = OffscreenPixels(800, 600)
+    let cube = middle(editor, view)
+    w.enable_compute()
+    _ = fog_ball(w)
+    settle(w)
+    assert(w.notice == "" and w.batches.volumes.length == 1 and w.publisher.meshes.length == 0)
+    # Without the fog the middle is the backdrop, not the Cube.
+    w.batches.volumes = []
+    let bare = middle(editor, view)
+    assert(cube > bare + 40)
+    editor.close()
+    print("PASS fog only first result: the worker's first result clears the local cook's meshes")
