@@ -1,16 +1,14 @@
 ## Marking menus: holding A shows what can be created here, S what can
 ## modify, D (in a sketch) its constraints, as a grid of icons around the
 ## pointer, taller than wide and split left and right of it so the pointer
-## starts on none. Release over an icon to use it; a quick tap leaves the
-## menu open to click instead. Esc, a click outside or the key again
-## closes it. What the items are is marking_items.luc's.
+## starts on none. It shows while the key is held: click an icon to use
+## it; letting the key go, Esc or a click outside closes it. What the items are is marking_items.luc's.
 from luce_ui.ui import Painter, Event
 from luce_gpu.gpu import Rect
 from luce_window.input import EventKind, Key
 from luce_std import math
 from luce_ui import ui
 import theme
-import time
 
 ## One icon of a marking menu: its name, icon (a luciaos-assets name), whether it
 ## can be used now, and what using it does.
@@ -26,9 +24,6 @@ pub class MarkItem:
         self.enabled = enabled
         self.run = run
 
-## A quick tap: released this soon (nanoseconds) without reaching an icon.
-let tap_time = 250000000
-
 ## A cell's size and the gap left around the pointer.
 let cell = 44.0
 let gap = 28.0
@@ -39,9 +34,9 @@ pub class MarkingMenu:
     ## The key holding it open (Key.a, Key.s, Key.d).
     pub var key: Key = Key.a
     var opened: bool = false
-    ## Left open after a tap, for a click.
-    var sticky: bool = false
-    var opened_at: int = 0
+    ## Its key still down after a click closed it: its repeats and its
+    ## release are swallowed.
+    var held: bool = false
     var x: float = 0.0
     var y: float = 0.0
     pub var hover: int = -1
@@ -60,13 +55,10 @@ pub class MarkingMenu:
         self.x = x
         self.y = y
         self.opened = true
-        self.sticky = false
         self.hover = -1
-        self.opened_at = time.now()
 
     pub func close(self):
         self.opened = false
-        self.sticky = false
         self.hover = -1
 
     ## Columns each side of the pointer: one for up to 8 icons, two for up
@@ -129,31 +121,33 @@ pub class MarkingMenu:
             let ink = theme.grey(0.0) if at == self.hover and item.enabled else (theme.text() if item.enabled else theme.grey(100.0))
             ui.draw_icon(painter.target(), item.icon, Rect(r.x + 10.0, r.y + 10.0, 24.0, 24.0), ink)
 
-    ## Its events while open (true: taken). Opening is the viewport's: it
-    ## knows what the items are.
+    ## Its events while open (true: taken), and its key's until it is let
+    ## go (its repeats must not reach a tool's letter). Opening is the
+    ## viewport's: it knows what the items are.
     pub func event(self, event: Event, width: float, height: float) -> bool!:
         if not self.opened:
+            if self.held and event.key == self.key and event.kind in [EventKind.key_down, EventKind.key_up]:
+                if event.kind == EventKind.key_up:
+                    self.held = false
+                return true
             return false
         if event.cancelled or event.kind == EventKind.focus_lost or (event.kind == EventKind.key_down and event.key == Key.escape):
             self.close()
             return true
         if event.kind == EventKind.key_down and event.key == self.key:
-            if not event.repeated and self.sticky:
-                self.close()
             return true
         if event.kind == EventKind.pointer_moved:
             self.hover = self.item_at(event.x, event.y, width, height)
             return true
-        if event.kind == EventKind.key_up and event.key == self.key and not self.sticky:
-            if self.hover >= 0:
-                self.use(self.hover)
-            elif time.now() - self.opened_at < tap_time:
-                self.sticky = true
-            else:
-                self.close()
+        # Let go: it goes away.
+        if event.kind == EventKind.key_up and event.key == self.key:
+            self.close()
+            self.held = false
             return true
+        # A click on a tool uses it; elsewhere, nothing. Either way it goes.
         if event.kind == EventKind.pointer_down:
             let at = self.item_at(event.x, event.y, width, height)
+            self.held = true
             if at >= 0:
                 self.use(at)
             else:

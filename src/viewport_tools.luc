@@ -61,6 +61,8 @@ pub class ViewportTools:
     ## Faces and corners placed by clicking (Plane from Face, PolyDraw).
     pub let placing: ViewportPlacing
     pub var hover_changed: bool = false
+    ## The snapping options shown (the snapping button opened them).
+    pub var snaps_open: bool = false
     ## Pick a tool again from the column (the sketch's tools are the
     ## editor's): the viewport sets it.
     pub var on_reuse: func(str) -> unit!? = none
@@ -209,16 +211,26 @@ pub class ViewportTools:
         if let prompt = w.prompt:
             painter.rounded_rectangle(Rect(16.0, height - 78.0, 420.0, 28.0), theme.surface(), 4.0)
             painter.text(f"{prompt.label}: select components (Shift adds), Enter to finish, Esc to cancel", 24.0, height - 73.0, theme.accent())
-        # Bottom left, what positions snap to (snapping.luc).
-        let names = snap_names()
-        let icons = snap_icons()
-        for index in 0..<names.length:
-            let x = 16.0 + float(index) * 38.0
-            let on = w.snaps.flags[index] and (index == 0 or w.snaps.on())
-            painter.rounded_rectangle(Rect(x, height - 40.0, 32.0, 30.0), theme.accent() if on else theme.surface(), 4.0)
-            ui.draw_icon(painter.target(), icons[index], Rect(x + 6.0, height - 35.0, 20.0, 20.0), theme.grey(0.0) if on else (theme.accent() if self.hover_tool == 400 + index else theme.text_muted()))
-            if self.hover_tool == 400 + index:
-                tip(painter, f"Snap to {names[index].lower()}" if index > 0 else "Snapping (Cmd held: free)", x, height - 76.0)
+        # Bottom left, snapping (snapping.luc): one button (lit while on),
+        # its options above it when open.
+        let snapping_on = w.snaps.on()
+        painter.rounded_rectangle(Rect(16.0, height - 40.0, 32.0, 30.0), theme.accent() if snapping_on else theme.surface(), 4.0)
+        ui.draw_icon(painter.target(), "snap", Rect(22.0, height - 35.0, 20.0, 20.0), theme.grey(0.0) if snapping_on else (theme.accent() if self.hover_tool == 400 else theme.text()))
+        if self.hover_tool == 400 and not self.snaps_open:
+            tip(painter, "Snapping (Cmd held: free)", 54.0, height - 40.0)
+        if self.snaps_open:
+            let names = snap_names()
+            let icons = snap_icons()
+            let top = snap_menu_top(height, names.length)
+            painter.rounded_rectangle(Rect(16.0, top - 4.0, snap_menu_width, float(names.length) * snap_row + 8.0), theme.surface(), 4.0)
+            for index in 0..<names.length:
+                let row = top + float(index) * snap_row
+                let on = w.snaps.flags[index]
+                if self.hover_tool == 410 + index:
+                    painter.rectangle(Rect(20.0, row, snap_menu_width - 8.0, snap_row - 2.0), theme.grey(72.0))
+                painter.rounded_rectangle(Rect(26.0, row + 6.0, 16.0, 16.0), theme.accent() if on else theme.grey(60.0), 3.0)
+                ui.draw_icon(painter.target(), icons[index], Rect(50.0, row + 4.0, 20.0, 20.0), theme.text() if on and (index == 0 or snapping_on) else theme.text_muted())
+                painter.text(names[index] if index > 0 else "Snapping", 78.0, row + 6.0, theme.text() if on and (index == 0 or snapping_on) else theme.text_muted())
 
     ## Where the pointer snapped (the workspace's snap mark): a marker by
     ## its kind, and its name.
@@ -274,7 +286,8 @@ pub class ViewportTools:
             return w.edit_tool
         return ""
 
-    ## The button under (x, y): see hover_tool (400 + a snapping button).
+    ## The button under (x, y): see hover_tool (400 the snapping button,
+    ## 410 + one of its options).
     pub func button_at(self, x: float, y: float, width: float, height: float) -> int:
         if y >= 8.0 and y <= 38.0 and x >= width - view_buttons_width() and x <= width - 18.0:
             return 100 + int((x - width + view_buttons_width()) / 38.0)
@@ -284,8 +297,13 @@ pub class ViewportTools:
         let count = transform_tools().length
         if x >= 16.0 and x <= 48.0 and y >= top and y < top + float(count) * 36.0 - 6.0:
             return 300 + int((y - top) / 36.0)
-        if y >= height - 40.0 and y <= height - 10.0 and x >= 16.0 and x < snap_row_end() - 6.0:
-            return 400 + int((x - 16.0) / 38.0)
+        if y >= height - 40.0 and y <= height - 10.0 and x >= 16.0 and x <= 48.0:
+            return 400
+        if self.snaps_open:
+            let options = snap_names().length
+            let rows = snap_menu_top(height, options)
+            if x >= 16.0 and x <= 16.0 + snap_menu_width and y >= rows and y < rows + float(options) * snap_row:
+                return 410 + int((y - rows) / snap_row)
         let slot = top + float(count) * 36.0 + 6.0
         if x >= 16.0 and x <= 48.0 and y >= slot and y <= slot + 30.0 and self.last_tool() != "":
             return 300 + count
@@ -429,9 +447,11 @@ pub class ViewportTools:
 
     ## A click on button `button` (see hover_tool).
     func press(self, button: int) -> unit!:
-        if button >= 400:
-            self.workspace.snaps.toggle(button - 400)
+        if button >= 410:
+            self.workspace.snaps.toggle(button - 410)
             self.workspace.revision += 1
+        elif button == 400:
+            self.snaps_open = not self.snaps_open
         elif button >= 300:
             let index = button - 300
             let w = self.workspace
@@ -518,6 +538,13 @@ func tool_asset(name: str) -> str:
     let sketched = sketch_tools.icon_of(name)
     return sketched if sketched != "" else asset_name(name)
 
-## Where the snapping buttons end along the bottom.
+## Where the snapping button ends along the bottom.
 pub func snap_row_end() -> float:
-    return 16.0 + float(snap_names().length) * 38.0
+    return 54.0
+
+## The snapping options' rows: their height, the list's width, its top.
+let snap_row = 28.0
+let snap_menu_width = 170.0
+
+func snap_menu_top(height: float, count: int) -> float:
+    return height - 48.0 - float(count) * snap_row

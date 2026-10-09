@@ -138,7 +138,7 @@ pub class SketchEditor:
     ## Screen size of the last event, and the reach of a snap in sketch units.
     var width: float = 1.0
     var height: float = 1.0
-    var reach: float = 1.0
+    pub var reach: float = 1.0
 
     pub func init(self, w: Workspace):
         self.text_at = []
@@ -331,8 +331,20 @@ pub class SketchEditor:
                 self.revision += 1
             return true
         if event.kind == EventKind.pointer_up and event.button == 0 and self.dragging >= 0:
+            let dragged = self.dragging
             self.dragging = -1
             if self.drag_moved:
+                # Let go on a point or a curve it snapped to: held there.
+                if self.snap >= 0 and self.snap != dragged:
+                    # Exactly where it snapped, then held there.
+                    sketch.place(dragged, self.cursor[0], self.cursor[1])
+                    if self.snap_kind == 1:
+                        _ = sketch.constrain(coincident, dragged, self.snap)
+                    elif self.snap_kind == 8 and holds_points(sketch.kind(self.snap)):
+                        _ = sketch.constrain(on_curve, dragged, self.snap)
+                    if not sketch.solve():
+                        sketch.unconstrain(sketch.constraint_count() - 1)
+                        _ = sketch.solve()
                 self.commit("Drag sketch point")
             return true
         if event.kind != EventKind.pointer_down or not event.inside:
@@ -379,6 +391,9 @@ pub class SketchEditor:
         if event.key in [Key.delete, Key.backspace]:
             self.remove_selection()
             return true
+        # A held key's repeats pick nothing.
+        if event.repeated:
+            return false
         let letter = key_letter(event.key)
         # Q is Select here as everywhere.
         if letter == "Q":
@@ -412,15 +427,16 @@ pub class SketchEditor:
         self.snap_kind = 0
         self.snap_other = -1
         self.hover = sketch.pick(self.cursor[0], self.cursor[1], self.reach, self.pick_filter())
-        # Tools that place snap; those that pick (Trim, the constraints) read
-        # the pointer as it is.
-        let places = sketch_tools.draws(self.tool) or self.tool in ["Move/Copy", "Sketch Scale", "Circular Pattern", "Rectangular Pattern"]
-        if free or self.dragging >= 0 or not places:
+        # Tools that place, and a dragged point, snap; tools that pick (Trim,
+        # the constraints) read the pointer as it is.
+        let places = sketch_tools.draws(self.tool) or self.tool in ["Move/Copy", "Sketch Scale", "Circular Pattern", "Rectangular Pattern"] or self.dragging >= 0
+        if free or not places:
             return
         # The snapping layer: what the sketch has near the pointer (not the
-        # point just placed), else the grid.
+        # point just placed or dragged, nor what is drawn on it), else the
+        # grid.
         let snaps = self.w.snaps
-        let skip = self.made[-1] if self.made.length > 0 else -1
+        let skip = self.dragging if self.dragging >= 0 else (self.made[-1] if self.made.length > 0 else -1)
         let found = sketch.snap(self.cursor[0], self.cursor[1], self.reach, snaps.sketch_mask(), skip)
         var mark = ""
         if found != 0:
