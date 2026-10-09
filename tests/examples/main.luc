@@ -72,7 +72,7 @@ pub func main(arguments: list[str]) -> int!:
     let folder = paths.join(paths.directory(paths.directory(process.current_directory())), "examples/wrangles")
     files.ensure_directory(folder)
     var count = 0
-    for build in [sine_wave, ripple, noise_sphere, color_by_height, twist, random_prim_colors, jitter, attractor, checker, terrain, million, spiral, holes, smoothing, distance_color, projection, ramps, matrix_twist]:
+    for build in [sine_wave, ripple, noise_sphere, color_by_height, twist, random_prim_colors, jitter, attractor, checker, terrain, million, spiral, holes, smoothing, distance_color, projection, ramps, matrix_twist, cells, curl_flow, inside_outside, surface_distance]:
         build(folder)
         count += 1
     print(f"PASS {count} wrangle example scenes cooked and saved to examples/wrangles")
@@ -237,4 +237,40 @@ func matrix_twist(folder: str) -> unit!:
     _ = s.add("Grid", [(0, 6.0), (1, 64.0)])
     _ = s.code(1, "let around = (p.P[0] / 6.0 + 0.5) * 2.0 * math32.pi\np.P = [math32.cos(around) * 0.5, p.P[2] + 3.0, math32.sin(around) * 0.5, 0.0]\n")
     _ = s.code(1, "# Square it off, then turn it about Y with a matrix.\nlet square = [clamp(p.P[0] * 1.6, -0.5, 0.5), p.P[1], clamp(p.P[2] * 1.6, -0.5, 0.5), 0.0]\nlet turn = Mat3.rotation(p.P[1] * k.f32(\"twist\", 0.5), [0.0, 1.0, 0.0, 0.0])\np.P = turn.transform(square)\n")
+    s.save(folder)
+
+## Worley cells: each face colored by its cell and darkened toward the
+## cell borders (wnoise's f1 and f2).
+func cells(folder: str) -> unit!:
+    let s = Scene("cells")
+    _ = s.add("Grid", [(0, 8.0), (1, 160.0)])
+    _ = s.code(1, "let w = wnoise(p.P * k.f32(\"scale\", 1.2))\nlet edge = clamp((w.f2 - w.f1) * 4.0, 0.0, 1.0)\np.Cd = rand3((i64)w.seed) * edge\np.P[1] = edge * 0.15\n")
+    s.save(folder)
+
+## Points swirled along curl noise, a divergence-free flow: a grid
+## advected in a few steps, colored by how far each point traveled.
+func curl_flow(folder: str) -> unit!:
+    let s = Scene("curl_flow")
+    _ = s.add("Grid", [(0, 8.0), (1, 128.0)])
+    _ = s.code(1, "let start = p.P\nvar at = p.P\nfor i in 0..<k.i32(\"steps\", 12):\n    at = at + curlnoise(at * k.f32(\"scale\", 0.4)) * k.f32(\"step\", 0.08)\np.P = at\nlet moved = clamp(distance(at, start), 0.0, 1.5) / 1.5\np.Cd = [moved, 0.4, 1.0 - moved, 0.0]\n")
+    s.save(folder)
+
+## A grid colored by whether each point is inside a sphere in the second
+## input (windingnumber): inside is lifted and warm.
+func inside_outside(folder: str) -> unit!:
+    let s = Scene("inside_outside")
+    let grid = s.add("Grid", [(0, 6.0), (1, 96.0)])
+    let ball = s.add("Sphere", [(0, 1.5), (1, 48.0)])
+    s.w.network.selected = grid
+    let id = s.code(1, "let shifted = p.P + [0.0, 1.5, 0.0, 0.0]\nlet inside = k.input(1).windingnumber(shifted) > 0.5\np.Cd = [1.0, 0.5, 0.1, 0.0] if inside else [0.2, 0.3, 0.6, 0.0]\np.P[1] = 0.3 if inside else 0.0\n")
+    s.wire(ball, id, 1)
+    s.save(folder)
+
+## Distance along the surface from a group of points (surfacedist): rings
+## of color around the grid's center points, walking its edges.
+func surface_distance(folder: str) -> unit!:
+    let s = Scene("surface_distance")
+    _ = s.add("Grid", [(0, 8.0), (1, 64.0)])
+    _ = s.code(1, "p.P[1] = snoise(p.P * 0.35) * 1.5\np.set_group(\"seed\", p.ptnum == 2080 or p.ptnum == 600)\n")
+    _ = s.code(1, "let d = k.input(0).surfacedist(\"seed\", p.ptnum)\nlet band = math32.sin(d * k.f32(\"rings\", 6.0)) * 0.5 + 0.5\np.Cd = [band, 0.3 + 0.4 * band, 1.0 - band, 0.0]\n")
     s.save(folder)

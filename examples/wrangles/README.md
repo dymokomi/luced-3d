@@ -29,3 +29,7 @@ an error, and the program writes these files again.
 | `smoothing` | A rough noise blob smoothed by three Code nodes, each averaging every point with its nearest neighbors in the input (`k.input(0).nearpoints`, `point_P`): a point-cloud blur. |
 | `ramps` | Houdini's `chramp`: a float ramp (`k.ramp`) shapes a volcano's profile by distance from the center and a color ramp (`k.ramp_color`) paints it by height. Edit the ramps in the node's parameters. |
 | `matrix_twist` | A tube squared off and twisted by a rotation matrix per point (`Mat3.rotation(...).transform(...)`). |
+| `cells` | Worley cells (`wnoise`): each region a random color, darkened and dipped toward the borders (`f2 - f1`). |
+| `curl_flow` | A grid carried through a divergence-free flow (`curlnoise`) in a loop of small steps; the color shows how far each point traveled. |
+| `inside_outside` | A grid lifted and colored where it lies inside a sphere in the second input (`windingnumber`). |
+| `surface_distance` | Bands of color by distance along the surface from two seed points (`surfacedist` over a group the first node marks). |
