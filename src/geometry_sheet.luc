@@ -18,6 +18,8 @@ pub class Column:
     pub let component: int
     ## A detail attribute of the set itself (not of its mesh), by name.
     pub var detail: str = ""
+    ## How its cells read: "number", "array" ([1, 2, 3]) or "text".
+    pub var form: str = "number"
     pub func init(self, title: str, attribute: int, component: int = 0):
         self.title = title
         self.attribute = attribute
@@ -105,6 +107,12 @@ pub class GeometrySheet: Widget:
                 continue
             let width = mesh.attribute_width(attribute)
             if self.attribute_filter != "" and not mesh.attribute_name(attribute).contains(self.attribute_filter):
+                continue
+            # Arrays and texts take one column, shown as text.
+            if mesh.attribute_is_array(attribute) or mesh.attribute_string_count(attribute) > 0:
+                let whole = Column(mesh.attribute_name(attribute), attribute, 0)
+                whole.form = "array" if mesh.attribute_is_array(attribute) else "text"
+                self.columns.append(whole)
                 continue
             for component in 0..<width:
                 let suffix = ("." + ["x", "y", "z", "w"][component]) if width > 1 else ""
@@ -218,6 +226,17 @@ pub class GeometrySheet: Widget:
         let mesh = self.mesh else return 0.0
         return sheet_value(mesh, self.domain, field.attribute, field.component, row)
 
+    ## Cell (row, column) as shown: a number, an array or a text.
+    pub func label(self, row: int, column: int) -> str!:
+        let field = self.columns[column]
+        if field.form != "number":
+            let mesh = self.mesh else return ""
+            let text = mesh.attribute_array_text(field.attribute, row) if field.form == "array" else mesh.attribute_text(field.attribute, row)
+            # One line: a text may hold anything.
+            return text.replace("\n", " ").replace("\t", " ")
+        let value = self.value(row, column)
+        return f"{math.floor(value * 10000.0 + 0.5) / 10000.0}" if math.abs(value) < 1.0e10 else f"{value}"
+
     pub func draw(self, target: RenderTarget) -> unit!:
         let size = target.size()
         self.ensure_rows()
@@ -247,8 +266,7 @@ pub class GeometrySheet: Widget:
                 let x = 70.0 + float(column) * 110.0 - self.scroll_x
                 if x < 60.0 or x > size.width:
                     continue
-                let value = self.value(row, column)
-                let label = f"{math.floor(value * 10000.0 + 0.5) / 10000.0}" if math.abs(value) < 1.0e10 else f"{value}"
+                let label = self.label(row, column)
                 p.text(label[0..<int(math.min(12.0, float(label.length)))], x + 6.0, y + 4.0, theme.text())
             p.rectangle(Rect(0.0, y, 66.0, 23.0), theme.surface())
             p.text(f"{row}", 8.0, y + 4.0, theme.accent() if self.row_selected(row) else theme.text_muted())

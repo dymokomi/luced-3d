@@ -209,8 +209,14 @@ a face text named `name` drives groups downstream (`@name=quad_2`).
 Arrays hold up to 64 numbers or vectors: `k.floats()`, `k.ints()`, `k.vectors()`,
 then `append`, `insert`, `pop`, `remove`, `resize`, `reverse`, `slice`, `sort`,
 `argsort`, `find`, `len`, `at` and `set`. They are values: a changed array is a new
-one (`a = a.append(x)`). They live for one element's run; array attributes
-(Houdini's `f[]@`) are not stored yet.
+one (`a = a.append(x)`).
+
+Array attributes (Houdini's `f[]@`, `i[]@`, `v[]@`) keep them on the
+geometry: `p.set_i32_array("nbrs", a)`, `p.i32_array("nbrs")`,
+`p.f32_array`, `p.vec3_array`, and `g.point_i32_array(i, "nbrs")` on an input. The
+Geometry Spreadsheet shows them as `[1, 2, 3]`. Verbs that copy elements
+copy their arrays; Merge joins them. USD and FBX export leave them out with
+a warning.
 
 ## Messages
 

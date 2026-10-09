@@ -38,3 +38,4 @@ an error, and the program writes these files again.
 | `console` | A Detail run printing the input's size to the node's console (`k.printf`) and warning when it is large (`k.warning`). Select the Code node to read it. |
 | `names` | Texts: faces named by quadrant (`k.sprintf`, `f.set_text`), colored by the number read back from the name (`slice`, `to_i32`), and one quadrant deleted downstream by a Blast of `@name=quad_2`. |
 | `median` | Arrays: spiky terrain cleaned by the median height of each point's neighborhood across the grid's edges (`k.floats`, `append`, `sort`), which drops spikes a mean would only smear. |
+| `neighbor_lists` | Array attributes, Houdini's `i[]@nbrs` idiom: one node stores each point's neighbors as an i32 array (`p.set_i32_array`), three later nodes read the lists back (`p.i32_array`) to average heights. The lists show in the Geometry Spreadsheet. |
