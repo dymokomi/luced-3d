@@ -14,6 +14,7 @@ import gizmo_math as gm
 from luce_std import math
 import theme
 from tools import gizmo_tool
+from snapping import SnapMark, grid_step, on_grid
 import modeling_commands
 
 pub class NodeGizmos:
@@ -266,8 +267,8 @@ pub class NodeGizmos:
             let dy = b[1] - a[1]
             let amount = ((event.x - self.start_x) * dx + (event.y - self.start_y) * dy) / math.max(0.000001, dx * dx + dy * dy) * self.length
             delta = self.axis(self.handle).multiply_scalar(amount)
-        if self.mode() != "Scale":
-            delta = Vector3(gm.snapped(delta.x, 0.1, event.shift), gm.snapped(delta.y, 0.1, event.shift), gm.snapped(delta.z, 0.1, event.shift))
+        if self.mode() == "Move" or self.mode() == "Pivot":
+            delta = self.grid_moved(delta, event.meta or event.control)
         if node.kind == "Cube":
             let id = self.handle - 10
             let fixed = self.corner(7 - id, self.original)
@@ -335,6 +336,22 @@ pub class NodeGizmos:
             if self.handle == axis or self.handle == 6 or (self.handle >= 3 and self.handle < 6 and axis != self.handle - 3):
                 let amount = (event.x - self.start_x - event.y + self.start_y) / 100.0 if self.handle == 6 else components[axis] / self.length
                 result[axis] = math.max(0.001, gm.snapped(1.0 + amount, 0.1, event.shift))
+        return result
+
+    ## A move's `delta` with its origin landing on the snapping grid along
+    ## the axes it moves (unless snapping is off, or `free`: Cmd held).
+    func grid_moved(self, delta: Vector3, free: bool) -> Vector3:
+        let snaps = self.w.snaps
+        if free or not snaps.grid():
+            return delta
+        let step = grid_step(self.w.view.distance)
+        let moved = [delta.x, delta.y, delta.z]
+        let origin = [self.center.x, self.center.y, self.center.z]
+        for axis in 0..<3:
+            if moved[axis] != 0.0:
+                moved[axis] = on_grid(origin[axis] + moved[axis], step) - origin[axis]
+        let result = Vector3(moved[0], moved[1], moved[2])
+        self.w.snap_mark = SnapMark(self.center.add(result), "Grid")
         return result
 
 ## Nodes the gizmo transforms by their own values.

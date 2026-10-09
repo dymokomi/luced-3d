@@ -10,6 +10,7 @@ from place_prompt import PlacePrompt
 import theme
 import gizmo_math as gm
 import placing_commands
+from snapping import SnapMark, grid_step, on_grid
 
 ## Screen pixels within which a click lands on a mesh point or closes a
 ## drawing on its first corner.
@@ -39,13 +40,15 @@ pub class ViewportPlacing:
         placing.cursor = hit.point if hit.found else none
         self.moved = true
 
-    ## Where a corner lands: an edited-mesh point within reach, else the
-    ## surface under the cursor, else the ground (through the first corner).
+    ## Where a corner lands, as snapping allows (snapping.luc): an
+    ## edited-mesh point within reach, else the surface under the cursor,
+    ## else the ground through the first corner (on the grid).
     func corner_at(self, placing: PlacePrompt, overlay: EditOverlay, renderer: Renderer?, x: float, y: float, width: float, height: float) -> SurfaceHit!:
         let w = self.workspace
+        let snaps = w.snaps
         let direction = view_direction(w, x, y, width, height)
         if let mesh = w.geometry:
-            if mesh.point_count() > 0:
+            if snaps.points() and mesh.point_count() > 0:
                 var face = -2
                 if let drawn = renderer:
                     face = drawn.pick_face(mesh, w.view.camera, x, y, width, height) catch failure:
@@ -53,12 +56,21 @@ pub class ViewportPlacing:
                 overlay.show(mesh, 0, none, -1)
                 let point = overlay.pick(w.view.camera, x, y, width, height, face)
                 if point >= 0:
+                    w.snap_mark = SnapMark(mesh.point(point), "Point")
                     return SurfaceHit(true, mesh.point(point), Vector3(0.0, 1.0, 0.0), 0.0)
-        let hit = w.surface_at(w.view.camera.position(), direction)
-        if hit.found:
-            return hit
+        if snaps.surfaces():
+            let hit = w.surface_at(w.view.camera.position(), direction)
+            if hit.found:
+                w.snap_mark = SnapMark(hit.point, "Surface")
+                return hit
         let base = placing.corners[0] if placing.corners.length > 0 else Vector3()
-        return SurfaceHits.plane(w.view.camera.position(), direction, base, Vector3(0.0, 1.0, 0.0))
+        let ground = SurfaceHits.plane(w.view.camera.position(), direction, base, Vector3(0.0, 1.0, 0.0))
+        if ground.found and snaps.grid():
+            let step = grid_step(w.view.distance)
+            let on = Vector3(on_grid(ground.point.x, step), ground.point.y, on_grid(ground.point.z, step))
+            w.snap_mark = SnapMark(on, "Grid")
+            return SurfaceHit(true, on, ground.normal, ground.distance)
+        return ground
 
     ## The drawing so far, and the rubber band to the cursor.
     pub func draw(self, painter: Painter) -> unit!:

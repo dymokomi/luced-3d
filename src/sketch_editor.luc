@@ -20,6 +20,7 @@
 ## action writes it back as one undo step (commit), and an undo or a change
 ## from elsewhere reads the node again (sync).
 from sketch_chains import chain_of
+from snapping import SnapMark, grid_step, on_grid, sketch_kind_name
 from edit_types import point_level, edge_level, face_level
 from luce_cad.sketch import CadSketch, CadProjection
 from luce_cad.cad_geometry import CadGeometry
@@ -88,11 +89,18 @@ pub class SketchEditor:
     ## entity each is (-1: not made yet).
     pub var clicks: list[list[float]]
     pub var click_snaps: list[int]
+    ## What each click snapped to: its kind (snapping.luc's, CadSketch.snap:
+    ## 1 point, 2 middle, 4 crossing, 8 curve; 0 none or the grid) and a
+    ## crossing's second curve.
+    var click_kinds: list[int]
+    var click_others: list[int]
     ## Each click's point once made (made_point), else -1.
     var made: list[int]
     ## The cursor on the plane, snapped, and what it snapped to (-1: none).
     pub var cursor: list[float]
     pub var snap: int = -1
+    var snap_kind: int = 0
+    var snap_other: int = -1
     pub var free_placing: bool = false
     pub var hover: int = -1
     pub var selection: list[int]
@@ -140,6 +148,8 @@ pub class SketchEditor:
         self.frames = FrameCache()
         self.clicks = []
         self.click_snaps = []
+        self.click_kinds = []
+        self.click_others = []
         self.made = []
         self.cursor = [0.0, 0.0]
         self.selection = []
@@ -274,6 +284,8 @@ pub class SketchEditor:
     func reset_tool(self):
         self.clicks = []
         self.click_snaps = []
+        self.click_kinds = []
+        self.click_others = []
         self.made = []
         self.picks = []
         self.dragging = -1
@@ -397,49 +409,42 @@ pub class SketchEditor:
         self.cursor = self.frame.coordinates(here)
         self.free_placing = free
         self.snap = -1
+        self.snap_kind = 0
+        self.snap_other = -1
         self.hover = sketch.pick(self.cursor[0], self.cursor[1], self.reach, self.pick_filter())
-        if free or self.dragging >= 0:
+        # Tools that place snap; those that pick (Trim, the constraints) read
+        # the pointer as it is.
+        let places = sketch_tools.draws(self.tool) or self.tool in ["Move/Copy", "Sketch Scale", "Circular Pattern", "Rectangular Pattern"]
+        if free or self.dragging >= 0 or not places:
             return
+        # The snapping layer: what the sketch has near the pointer (not the
+        # point just placed), else the grid.
+        let snaps = self.w.snaps
         let skip = self.made[-1] if self.made.length > 0 else -1
-        if self.hover >= 0 and self.hover != skip and self.hover != self.dragging:
-            self.snap = self.hover
-            if sketch.kind(self.hover) == point_kind:
-                self.cursor = [sketch.x(self.hover), sketch.y(self.hover)]
-            else:
-                self.cursor = self.on_curve(self.hover, self.cursor)
+        let found = sketch.snap(self.cursor[0], self.cursor[1], self.reach, snaps.sketch_mask(), skip)
+        var mark = ""
+        if found != 0:
+            self.snap = sketch.snap_entity()
+            self.snap_kind = found
+            self.snap_other = sketch.snap_other()
+            self.cursor = [sketch.snap_x(), sketch.snap_y()]
+            mark = sketch_kind_name(found)
         # A line's second point near level or upright lines up.
         if self.tool in ["Line"] and self.clicks.length > 0 and self.snap < 0:
             let start = self.clicks[-1]
             let dx = self.cursor[0] - start[0]
             let dy = self.cursor[1] - start[1]
             if math.abs(dy) <= math.abs(dx) * math.tan(level_angle):
-                self.cursor = [self.cursor[0], start[1]]
+                self.cursor = [snapped_grid(self.cursor[0], snaps.grid(), self.w), start[1]]
+                mark = "Level"
             elif math.abs(dx) <= math.abs(dy) * math.tan(level_angle):
-                self.cursor = [start[0], self.cursor[1]]
-
-    ## The point of curve `curve` nearest `p`.
-    func on_curve(self, curve: int, p: list[float]) -> list[float]:
-        let sketch = self.sketch else return p
-        if sketch.kind(curve) == line_kind:
-            let a = sketch.part(curve, 0)
-            let b = sketch.part(curve, 1)
-            let ax = sketch.x(a)
-            let ay = sketch.y(a)
-            let dx = sketch.x(b) - ax
-            let dy = sketch.y(b) - ay
-            let l2 = dx * dx + dy * dy
-            if l2 <= 0.0:
-                return p
-            let t = math.clamp(((p[0] - ax) * dx + (p[1] - ay) * dy) / l2, 0.0, 1.0)
-            return [ax + t * dx, ay + t * dy]
-        let center = sketch.part(curve, 0)
-        let cx = sketch.x(center)
-        let cy = sketch.y(center)
-        let d = math.hypot(p[0] - cx, p[1] - cy)
-        if d <= 0.0:
-            return p
-        let r = sketch.radius(curve)
-        return [cx + (p[0] - cx) * r / d, cy + (p[1] - cy) * r / d]
+                self.cursor = [start[0], snapped_grid(self.cursor[1], snaps.grid(), self.w)]
+                mark = "Upright"
+        if mark == "" and snaps.grid():
+            self.cursor = [snapped_grid(self.cursor[0], true, self.w), snapped_grid(self.cursor[1], true, self.w)]
+            mark = "Grid"
+        if mark != "":
+            self.w.snap_mark = SnapMark(self.frame.at(self.cursor[0], self.cursor[1]), mark)
 
     ## A point at the cursor: the snapped point itself, else a new point (on
     ## the snapped curve, constrained there).
@@ -447,10 +452,7 @@ pub class SketchEditor:
         let sketch = self.sketch else return -1
         if self.snap >= 0 and sketch.kind(self.snap) == point_kind:
             return self.snap
-        let made = sketch.add_point(self.cursor[0], self.cursor[1])
-        if self.snap >= 0 and holds_points(sketch.kind(self.snap)):
-            _ = sketch.constrain(on_curve, made, self.snap)
-        return made
+        return self.snapped_point(self.cursor, self.snap, self.snap_kind, self.snap_other)
 
     ## A drawing tool's click.
     func place(self) -> unit!:
@@ -469,6 +471,8 @@ pub class SketchEditor:
             return
         self.clicks.append(self.cursor.copy())
         self.click_snaps.append(self.snap)
+        self.click_kinds.append(self.snap_kind)
+        self.click_others.append(self.snap_other)
         self.made.append(-1)
         self.revision += 1
         if self.tool == "Line" and self.clicks.length == 2:
@@ -483,6 +487,8 @@ pub class SketchEditor:
             # Chain from the end, that point itself.
             self.clicks = [self.clicks[1]]
             self.click_snaps = [b]
+            self.click_kinds = [1]
+            self.click_others = [-1]
             self.made = [b]
         elif not sketch_tools.open_ended(self.tool) and self.clicks.length == sketch_tools.clicks_for(self.tool):
             if let finish = self.on_finish:
@@ -553,15 +559,26 @@ pub class SketchEditor:
         let sketch = self.sketch else return -1
         if self.made[at] >= 0:
             return self.made[at]
-        let snapped = self.click_snaps[at]
-        var point = -1
-        if snapped >= 0 and sketch.kind(snapped) == point_kind:
-            point = snapped
-        else:
-            point = sketch.add_point(self.clicks[at][0], self.clicks[at][1])
-            if snapped >= 0 and holds_points(sketch.kind(snapped)):
-                _ = sketch.constrain(on_curve, point, snapped)
+        let point = self.snapped_point(self.clicks[at], self.click_snaps[at], self.click_kinds[at], self.click_others[at])
         self.made[at] = point
+        return point
+
+    ## A point at `place` as what it snapped to holds it: that point itself;
+    ## a new one at a line's middle, on two crossing curves or on a curve
+    ## (held there by its constraints); else a free new one.
+    func snapped_point(self, place: list[float], snapped: int, kind: int, other: int) -> int!:
+        let sketch = self.sketch else return -1
+        if snapped >= 0 and sketch.kind(snapped) == point_kind:
+            return snapped
+        let point = sketch.add_point(place[0], place[1])
+        if snapped < 0:
+            return point
+        if kind == 2 and sketch.kind(snapped) == line_kind:
+            _ = sketch.constrain(midpoint, point, snapped)
+            return point
+        for curve in [snapped, other if kind == 4 else -1]:
+            if curve >= 0 and holds_points(sketch.kind(curve)):
+                _ = sketch.constrain(on_curve, point, curve)
         return point
 
     ## What Select hovers at the selection level (Points: points, Lines and
@@ -853,3 +870,7 @@ func same_frame(a: SketchFrame, b: SketchFrame) -> bool:
 ## arcs and ellipses; not yet splines or conics).
 func holds_points(kind: int) -> bool:
     return kind in [line_kind, circle_kind, arc_kind, ellipse_kind]
+
+## `value` on the view's grid when `on` (snapping.luc's step).
+func snapped_grid(value: float, on: bool, w: Workspace) -> float:
+    return on_grid(value, grid_step(w.view.distance)) if on else value

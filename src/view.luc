@@ -4,7 +4,9 @@ from luce_3d import graphics as three
 from luce_gpu.gpu import RenderTarget, Rect
 from luce_window.input import EventKind, Key, ScrollUnit
 from workspace import Workspace
-from viewport_tools import ViewportTools, view_buttons_width
+from viewport_tools import ViewportTools, view_buttons_width, snap_row_end
+from snapping import grid_step
+from luce_std import math
 from sketch_view import SketchView
 from profile_pick import ProfilePick
 from actions import Actions
@@ -117,24 +119,37 @@ pub class SceneViewport: Widget:
             if let batch = w.batches.normal_batch:
                 batch.draw(w.view.camera, target, theme.accent())
         if self.workspace.view.grid_visible and not sketching:
+            # The ground grid at the snapping step round where the camera
+            # looks: every fifth line brighter, the axes in the accent.
+            let step = grid_step(w.view.distance)
+            let major = step * 5.0
+            let cx = math.round(w.view.target.x / major) * major
+            let cz = math.round(w.view.target.z / major) * major
+            let half = step * 30.0
             for category in 0..<3:
                 let lines: list[Vector3] = []
-                for index in -10..<11:
-                    if (2 if index == 0 else (1 if index % 5 == 0 else 0)) != category:
-                        continue
-                    let at = float(index)
-                    lines.append(Vector3(-10.0, -0.008, at))
-                    lines.append(Vector3(10.0, -0.008, at))
-                    lines.append(Vector3(at, -0.008, -10.0))
-                    lines.append(Vector3(at, -0.008, 10.0))
-                WireRenderer.lines(lines, self.workspace.view.camera, target, theme.accent() if category == 2 else theme.grey(80.0 if category == 1 else 58.0), 1.0, 0.0)
+                for index in -30..<31:
+                    let x = cx + float(index) * step
+                    let z = cz + float(index) * step
+                    for (at, along_x) in [(x, false), (z, true)]:
+                        let whole = math.round(at / step)
+                        let kind = 2 if math.abs(at) < step * 0.5 else (1 if math.abs(whole - math.round(whole / 5.0) * 5.0) < 0.5 else 0)
+                        if kind != category:
+                            continue
+                        if along_x:
+                            lines.append(Vector3(cx - half, -0.008, at))
+                            lines.append(Vector3(cx + half, -0.008, at))
+                        else:
+                            lines.append(Vector3(at, -0.008, cz - half))
+                            lines.append(Vector3(at, -0.008, cz + half))
+                if lines.length > 0:
+                    WireRenderer.lines(lines, self.workspace.view.camera, target, theme.accent() if category == 2 else theme.grey(80.0 if category == 1 else 58.0), 1.0, 0.0)
         let overlay = Painter(target)
         # Where we are, centered along the top: the network's path (and
         # whether a node is previewed alone).
         let where = self.workspace.network.path() + ("  /  PREVIEW" if self.workspace.network.preview else "")
         overlay.text(where, (size.width - float(where.length) * 7.5) * 0.5, 14.0, theme.text_muted())
-        let spacing = self.sketch.spacing if self.sketch.editor.active() else 1.0
-        overlay.text(f"Y up  /  grid: {units.length_text(spacing, units.document_unit(w))}", 16.0, size.height - 28.0, theme.text_muted())
+        overlay.text(f"Y up  /  grid: {units.length_text(grid_step(w.view.distance), units.document_unit(w))}", snap_row_end() + 10.0, size.height - 32.0, theme.text_muted())
         self.tools.draw(overlay, size.width, size.height)
         self.sketch.draw(overlay, size.width, size.height)
         self.marking.draw(overlay, size.width, size.height)
@@ -191,6 +206,8 @@ pub class SceneViewport: Widget:
         if event.kind == EventKind.pointer_moved or event.kind == EventKind.pointer_down:
             self.pointer_x = event.x
             self.pointer_y = event.y
+            # A tool that snaps marks where this move landed afresh.
+            self.workspace.snap_mark = none
         if event.kind == EventKind.key_down and event.key == Key.tab:
             if let search = self.on_search:
                 search()
@@ -223,6 +240,11 @@ pub class SceneViewport: Widget:
         if event.cancelled:
             self.dragging = false
             self.pending_right = false
+        # The viewport's buttons keep their clicks from every tool.
+        if event.kind in [EventKind.pointer_down, EventKind.pointer_moved] and event.inside and not event.alt and self.tools.button_at(event.x, event.y, bounds.width, bounds.height) >= 0:
+            _ = self.tools.event(event, bounds.width, bounds.height)
+            self.layout().invalidate()
+            return
         # The sketch editor, then Pick profiles, before other tools.
         if self.sketch.editor.event(event, bounds.width, bounds.height) or self.profiles.event(event, bounds.width, bounds.height):
             self.layout().invalidate()
