@@ -21,3 +21,4 @@ an error, and the program writes these files again.
 | `attractor` | Points pulled up toward a target (a vector parameter), the pull fading with distance in the ground plane; the color shows the pull. |
 | `checker` | Running over Primitives: a checkerboard from each face's `f.center()`. |
 | `terrain` | Fractal terrain: the header defines `fbm`, a loop of noise octaves; the body raises the grid by it; a second node colors by height; a Detail node writes the octave count as a detail attribute. |
+| `million_points` | A 1000 × 1000 grid (a million points) moved by animated noise and colored by height. Press Play to watch it run every frame. |
