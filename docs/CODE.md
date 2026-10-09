@@ -167,7 +167,9 @@ Name. Chain several to hold several grids. A sphere's distance:
 x.value = length(x.P) - 1.0
 ```
 
-then **Convert to Mesh** shows the surface. Fog grids draw as smoke.
+then **Convert to Mesh** shows the surface. Fog grids draw as smoke, each
+with its own look (Volume Visualization). A Voxels run that rewrites a grid
+keeps its look; a grid it makes starts with the default one.
 
 ## Making and removing geometry
 

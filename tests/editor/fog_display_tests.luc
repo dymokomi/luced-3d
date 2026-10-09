@@ -2,12 +2,13 @@
 ## its voxels shows no surface; the viewport ray-marches it, without the
 ## worker and with it, and its atlas goes to the GPU once per cook result,
 ## however often the view redraws or orbits. A Volume Visualization node's
-## look (density, emission from a heat grid) changes the pixels and uploads
-## nothing.
+## look (density, emission from a heat grid, its color ramp) changes the
+## pixels and keeps the atlas.
 from app import Luce3D
 from workspace import Workspace
 from offscreen_pixels import OffscreenPixels
 import node_commands
+import node_catalog
 import code_node
 import code_cook
 import time
@@ -27,7 +28,8 @@ func fog_ball(w: Workspace) -> (int, int)!:
     assert(w.network.require(code).failure == "")
     node_commands.add_node(w, "Volume Visualization", 0.0, 200.0)
     let look = w.network.selected
-    node_commands.set_text(w, 0, "heat")
+    # Text 2: the emission field (0 is the Group, 1 the density field).
+    node_commands.set_text(w, 2, "heat")
     node_commands.display_selected(w)
     return (code, look)
 
@@ -75,6 +77,25 @@ pub func fog_display_tests() -> unit!:
     let before_red = view.channel(400, 300, 0) - view.channel(400, 300, 2)
     _ = middle(editor, view)
     assert(view.channel(400, 300, 0) - view.channel(400, 300, 2) > before_red + 30 and volume.upload_count() == 1)
+    # The emission color ramp: a row after the numbers, in text slot 3,
+    # showing the verb's flame ramp until edited. On, it colors the glow
+    # (one new strip, the same atlas); a ramp from blue to blue turns it blue.
+    let rows = node_catalog.fields("Volume Visualization")
+    let last = rows[rows.length - 1]
+    assert(rows[0].name == "Group" and rows[2].name == "Emission field" and rows[2].slot == 2 and last.kind == "color_ramp" and last.slot == 3)
+    assert(node_catalog.verb_ramp("Volume Visualization", 3, "").length == 23)
+    let strips = volume.strip_upload_count()
+    node_commands.set_parameter(w, 9, 1.0)
+    _ = middle(editor, view)
+    assert(w.batches.volumes[0] is volume and volume.ramped() and volume.upload_count() == 1 and volume.strip_upload_count() == strips + 1)
+    w.begin("Ramp")
+    node_commands.set_ramp_text(w, look, 3, [1.0, 3.0, 2.0, 0.0, 0.1, 0.3, 1.0, 1.0, 1.0, 0.1, 0.3, 1.0, 1.0])
+    w.commit()
+    assert(w.network.require(look).texts[3] != "" and node_catalog.verb_ramp("Volume Visualization", 3, w.network.require(look).texts[3]).length == 13)
+    _ = middle(editor, view)
+    # Blue over white smoke: blue leads red by about 30 (GPUs round apart).
+    assert(view.channel(400, 300, 2) > view.channel(400, 300, 0) + 15 and volume.strip_upload_count() == strips + 2 and volume.upload_count() == 1)
+    node_commands.set_parameter(w, 9, 0.0)
     # With the worker: the volume is made there and adopted once; a new
     # result that keeps the node's stamp keeps the same volume.
     w.enable_compute()

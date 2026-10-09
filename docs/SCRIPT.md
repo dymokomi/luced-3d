@@ -155,8 +155,11 @@ for lane in 0..<fog.count():
 A grid is read where it is until the first write copies it. `values()` stays
 valid until `set` adds a leaf; a `VoxelGrid` stays valid until the geometry
 is replaced (a verb, `merge`, `transform`, `set_geometry`). How the viewport
-draws fog is the Volume Visualization node's detail attributes, which a
-script can set too (`set_detail_f64("volvis_densityscale", 8.0)`).
+draws a fog grid is its look, which the Volume Visualization node sets and a
+script can too: `fog.set_look(density = 8.0, shadow = 0.4, smoke = tint,
+emission = 2.0, emission_field = "heat")`, and
+`fog.set_emission_ramp(numbers, low, high)` for an emission color ramp
+(luce-std ramp numbers). `fog.look()` reads it back.
 
 ## Verbs
 

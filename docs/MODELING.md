@@ -69,11 +69,16 @@ its densities on the GPU, lit by the key light (self-shadowed) and the sky,
 hidden behind meshes in front of it and veiling those behind. Its texels are
 made once per cook result (on the worker) and upload on the first frame, so
 orbiting redraws without uploading. A **Volume Visualization** node (Houdini's)
-sets how it looks: density scale, smoke color, shadow scale, the ray-marching
-step, and emission (scale and color) from a grid named in its Emission field
-row, which then glows instead of being drawn as smoke. The look is detail
-attributes on the geometry and the grids stay shared, so changing it uploads
-nothing. The `noise_cloud` and `fire` wrangle examples show both. Convert to
+sets how it looks, on the grids its Group names (each grid keeps its own
+look, as Houdini's volvis attributes are per primitive): density scale,
+smoke color, shadow scale, the ray-marching step; emission from a grid named
+in its Emission field row, which then glows instead of being drawn as smoke,
+in one color or through the **Emission color ramp** row along the emission
+min and max; and a Density field row naming a grid whose values show as the
+density. The grids' voxels stay shared, so a new look keeps the uploaded
+texels; only a changed ramp sends its 256-texel strip. The `noise_cloud`,
+`fire` (a ramp) and `two_smokes` (two tinted grids in one set) wrangle
+examples show them. Convert to
 Mesh makes real geometry of that surface. Volume Slice shows a colored plane
 through the field: blue inside, orange outside, with contour bands.
 

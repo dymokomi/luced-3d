@@ -74,7 +74,7 @@ pub func main(arguments: list[str]) -> int!:
     let folder = paths.join(paths.directory(paths.directory(process.current_directory())), "examples/wrangles")
     files.ensure_directory(folder)
     var count = 0
-    for build in [sine_wave, ripple, noise_sphere, color_by_height, twist, random_prim_colors, jitter, attractor, checker, terrain, million, spiral, holes, smoothing, distance_color, projection, ramps, matrix_twist, cells, curl_flow, inside_outside, surface_distance, pc_smooth, shrink_wrap, console, names, median, neighbor_lists, gyroid, metaballs, noise_cloud, fire, eroded_points]:
+    for build in [sine_wave, ripple, noise_sphere, color_by_height, twist, random_prim_colors, jitter, attractor, checker, terrain, million, spiral, holes, smoothing, distance_color, projection, ramps, matrix_twist, cells, curl_flow, inside_outside, surface_distance, pc_smooth, shrink_wrap, console, names, median, neighbor_lists, gyroid, metaballs, noise_cloud, fire, two_smokes, eroded_points]:
         build(folder)
         count += 1
     print(f"PASS {count} wrangle example scenes cooked and saved to examples/wrangles")
@@ -388,14 +388,38 @@ func noise_cloud(folder: str) -> unit!:
 
 ## Fire: one Voxels run writes a flame's density (smoke) and its heat, hot
 ## at the bottom and cooling as it rises; Volume Visualization makes heat the
-## emission field, glowing orange over thin dark smoke.
+## emission field over thin dark smoke, colored by its emission color ramp
+## (Houdini's): dark red where the heat is low, through orange and yellow to
+## near white where it is highest.
 func fire(folder: str) -> unit!:
     let s = Scene("fire")
     _ = s.add("Volume", [(0, 0.0), (2, 1.2), (4, 2.0), (5, 3.0), (6, 2.0), (7, 0.025)])
     let header = "## Noise octaves: each twice as fine and half as strong.\nfunc fbm(at: f32[4]) -> f32:\n    var sum: f32 = 0.0\n    var scale: f32 = 1.0\n    var weight: f32 = 0.5\n    for i in 0..<5:\n        sum += snoise(at * scale) * weight\n        scale *= 2.0\n        weight *= 0.5\n    return sum\n"
     _ = s.code(5, "# A flame: a column narrowing as it rises, torn by noise drifting up.\nlet height = clamp(x.P[1] / 2.4, 0.0, 1.0)\nlet radius = length(x.P * [1.0, 0.0, 1.0, 0.0])\nlet n = fbm(x.P * 2.2 - [0.0, (f32)k.time * 1.5, 0.0, 0.0])\nlet flame = clamp((0.55 * (1.0 - height) - radius) * 4.0 + n * 1.2, 0.0, 1.0)\nx.value = flame * (0.3 + height * 0.7)\nx.set_f32(\"heat\", flame * (1.0 - height) * (1.0 - height))\n", header)
-    _ = s.add("Volume Visualization", [(0, 3.0), (1, 0.25), (2, 0.25), (3, 0.25), (5, 12.0), (6, 1.0), (7, 0.45), (8, 0.08)])
-    node_commands.set_text(s.w, 0, "heat")
+    # Slots: 0 density scale, 1-3 smoke color, 5 emission scale, 9 the
+    # emission ramp on, 10-11 the heat its ends stand for; text 2 the
+    # emission field, text 3 the ramp (dark red, deep orange, orange, pale
+    # yellow).
+    let look = s.add("Volume Visualization", [(0, 3.0), (1, 0.25), (2, 0.25), (3, 0.25), (5, 4.0), (9, 1.0), (10, 0.0), (11, 1.4)])
+    node_commands.set_text(s.w, 2, "heat")
+    node_commands.set_ramp_text(s.w, look, 3, [1.0, 3.0, 4.0, 0.0, 0.2, 0.01, 0.0, 1.0, 0.35, 1.0, 0.18, 0.01, 1.0, 0.7, 1.0, 0.55, 0.08, 1.0, 1.0, 1.0, 0.85, 0.4, 1.0])
+    s.save(folder)
+
+## Two smokes in one set, a look each (Houdini's per-primitive volvis
+## attributes): two fog grids, "left" and "right", each a noisy ball filled
+## by its own Voxels run; one Volume Visualization tints the left grid
+## warm, another the right one cool, each by its Group.
+func two_smokes(folder: str) -> unit!:
+    let s = Scene("two_smokes")
+    for (name, x) in [("left", -1.3), ("right", 1.3)]:
+        _ = s.add("Volume", [(0, 0.0), (1, x), (4, 2.6), (5, 2.6), (6, 2.6), (7, 0.04)])
+        node_commands.set_text(s.w, 0, name)
+        _ = s.code(5, f"let center: f32[4] = [{x}, 0.0, 0.0, 0.0]\nlet n = snoise(x.P * 1.8) * 0.35 + snoise(x.P * 4.0) * 0.12\nx.value = clamp((1.0 - length(x.P - center) / 1.1 + n) * 1.5, 0.0, 1.0)\n")
+        node_commands.set_text(s.w, 0, name)
+    _ = s.add("Volume Visualization", [(0, 3.0), (1, 1.0), (2, 0.45), (3, 0.2), (4, 0.7)])
+    node_commands.set_text(s.w, 0, "left")
+    _ = s.add("Volume Visualization", [(0, 3.0), (1, 0.25), (2, 0.55), (3, 1.0), (4, 0.7)])
+    node_commands.set_text(s.w, 0, "right")
     s.save(folder)
 
 ## Points to a level set, its surface eaten by noise, meshed: a sphere's
