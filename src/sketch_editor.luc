@@ -21,7 +21,8 @@
 ## from elsewhere reads the node again (sync).
 from sketch_chains import chain_of
 from edit_types import point_level, edge_level, face_level
-from luce_cad.sketch import CadSketch
+from luce_cad.sketch import CadSketch, CadProjection
+from luce_cad.cad_geometry import CadGeometry
 from luce_ui.ui import Event
 from luce_window.input import EventKind, Key
 from workspace import Workspace
@@ -75,7 +76,12 @@ pub class SketchEditor:
     var values: list[float]
     pub var sketch: CadSketch? = none
     pub var frame: SketchFrame
-    let frames: FrameCache
+    pub let frames: FrameCache
+    ## The input body's stamp the sketch was read with.
+    var body_was: str = ""
+    ## Its edges cast for Project, and what they were cast from.
+    var projected: CadProjection? = none
+    var projected_key: str = ""
     pub var tool: str = "Select"
     ## A drawing tool's placed points: plane coordinates, and the point
     ## entity each is (-1: not made yet).
@@ -151,9 +157,12 @@ pub class SketchEditor:
             # A new plane (a face picked): look straight at it.
             if moved:
                 self.look_at()
-        let same = node.id == self.node and node.texts[0] == self.text and node.values[0] == (self.values + [0.0])[0] and node.values[1] == (self.values + [0.0, 0.0])[1]
+        # Projected curves follow the input body: a new body reads again.
+        _ = self.frames.body(self.w, node)
+        let same = node.id == self.node and node.texts[0] == self.text and node.values[0] == (self.values + [0.0])[0] and node.values[1] == (self.values + [0.0, 0.0])[1] and self.frames.body_stamp() == self.body_was
         if same and self.sketch != none:
             return
+        self.body_was = self.frames.body_stamp()
         # Another sketch than the one edited: its tool and selection go.
         if node.id != self.node and self.node >= 0:
             self.reset_tool()
@@ -168,6 +177,10 @@ pub class SketchEditor:
         self.text = node.texts[0]
         self.values = [node.values[0], node.values[1]]
         let sketch = CadSketch.parse(self.text)
+        if sketch.link_count() > 0:
+            if let data = self.frames.body(self.w, node):
+                if CadGeometry.model_count(data.geometry) > 0:
+                    _ = sketch.relink(CadGeometry.model(data.geometry, 0), self.frame.origin, self.frame.u, self.frame.v)
         _ = sketch.solve()
         sketch.analyze()
         let entering = self.sketch == none or self.node_was != node.id
@@ -252,7 +265,9 @@ pub class SketchEditor:
     ## The status line's hint for the current tool.
     pub func hint(self) -> str:
         if self.tool == "Select":
-            return "Sketch: pick a tool below, or drag points (Delete removes, X makes construction)"
+            return "Sketch: hold A, S or D for its tools, or drag points (Delete removes, X makes construction)"
+        if self.tool == "Project":
+            return "Project: click an edge of the input body to bring its shadow into the sketch (it follows the body)"
         if sketch_tools.draws(self.tool):
             return f"{self.tool}: click to place (Cmd places freely), Esc ends"
         if self.tool in ["Trim", "Extend", "Break"]:
@@ -307,6 +322,8 @@ pub class SketchEditor:
         self.pointer_y = event.y
         if self.tool == "Select":
             self.select_at(event.shift)
+        elif self.tool == "Project":
+            self.project_at()
         elif sketch_tools.draws(self.tool):
             self.place()
         elif sketch_tools.modifies(self.tool) or sketch_tools.copies(self.tool):
@@ -457,6 +474,47 @@ pub class SketchEditor:
         if sketch_tools.open_ended(self.tool) and self.clicks.length >= 2:
             if let finish = self.on_finish:
                 finish()
+
+    ## The input body's edges cast onto the plane, while Project is the
+    ## tool (made again when the body or the plane moves); none without a
+    ## body.
+    pub func projection(self) -> CadProjection?!:
+        let node = self.w.network.find(self.node) else return none
+        let data = self.frames.body(self.w, node) else return none
+        if CadGeometry.model_count(data.geometry) == 0:
+            return none
+        let key = f"{self.frames.body_stamp()}|{self.frame.origin.x}|{self.frame.origin.y}|{self.frame.origin.z}|{self.frame.u.x}|{self.frame.u.y}|{self.frame.u.z}|{self.frame.v.x}|{self.frame.v.y}|{self.frame.v.z}"
+        if key != self.projected_key or self.projected == none:
+            self.projected = CadProjection.of(CadGeometry.model(data.geometry, 0), self.frame.origin, self.frame.u, self.frame.v)
+            self.projected_key = key
+        return self.projected
+
+    ## The edge whose shadow is under the cursor, or -1.
+    pub func projected_edge(self) -> int!:
+        let cast = self.projection() else return -1
+        return cast.nearest(self.cursor[0], self.cursor[1], self.reach)
+
+    ## Project's click: the edge under the cursor brought in, fixed and
+    ## linked.
+    func project_at(self) -> unit!:
+        let sketch = self.sketch else return
+        let found = self.projection()
+        if found == none:
+            self.say("Project casts the edges of the Sketch's input body: connect a body to it")
+            return
+        let cast = found else return
+        let edge = cast.nearest(self.cursor[0], self.cursor[1], self.reach)
+        if edge < 0:
+            return
+        var failed = ""
+        _ = sketch.project(cast, edge) catch failure:
+            failed = failure.message
+            recover -1
+        if failed != "":
+            self.say(failed)
+            return
+        _ = sketch.solve()
+        self.commit("Project")
 
     ## The Text tool's words: the text where its clicks put it, as one undo.
     pub func place_text(self, content: str) -> unit!:

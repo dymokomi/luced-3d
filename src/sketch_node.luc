@@ -7,7 +7,9 @@
 ## of the body connected to its input (Face: kept by the face's name, so
 ## the sketch stays on it as features upstream change the body), moved
 ## along its normal by Offset; drawing and constraining happen in the
-## viewport (sketch_editor.luc). Lengths are millimeters.
+## viewport (sketch_editor.luc). Curves projected from the input body's
+## edges are cast again on every evaluation, so they follow it. Lengths are
+## millimeters.
 from luce_cad.sketch import CadSketch
 from luce_cad.cad_geometry import CadGeometry
 from luce_cad.modeling import CadModeling
@@ -69,10 +71,19 @@ pub func node_frame(v: list[float]) -> SketchFrame:
 ## face of `data`'s body for the Face plane).
 pub func evaluate_sketch(v: list[float], texts: list[str], data: GeometryData) -> GeometryData!:
     let sketch = CadSketch.parse(texts[0])
+    let f = face_frame(v, texts, data) if int(v[0]) == face_plane else node_frame(v)
+    # Projected curves cast again from the body as it is now.
+    var lost = 0
+    if sketch.link_count() > 0:
+        if CadGeometry.model_count(data.geometry) == 0:
+            error(ui.invalid, "The sketch's projected curves follow its input body: connect the body")
+        lost = sketch.relink(CadGeometry.model(data.geometry, 0), f.origin, f.u, f.v)
     if sketch.entity_count() > 0 and not sketch.solve():
         error(ui.invalid, "The sketch's constraints cannot all hold: remove one that conflicts")
-    let f = face_frame(v, texts, data) if int(v[0]) == face_plane else node_frame(v)
-    return GeometryData(geometry = sketch.curves(f.origin, f.u, f.v))
+    let result = GeometryData(geometry = sketch.curves(f.origin, f.u, f.v))
+    if lost > 0:
+        result.warning = f"{lost} projected curve(s) lost their edge upstream: they stay where they were"
+    return result
 
 ## The plane of the face named `texts[1]` of `data`'s body, moved Offset
 ## along its normal.
