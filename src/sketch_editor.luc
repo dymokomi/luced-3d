@@ -2,25 +2,25 @@
 ## (docs/research/FUSION-SKETCH-STUDY.md): while a Sketch node is selected
 ## and displayed, the viewport draws its entities on its plane (fully
 ## constrained ones white, free ones blue, construction orange), and the
-## bottom toolbar's CREATE, MODIFY and CONSTRAINTS menus pick a tool.
+## marking menus (hold A, S or D: CREATE, MODIFY, CONSTRAINTS) pick a tool.
 ##
-## Drawing tools are click by click and repeat until Esc: Line chains from
-## its last end, Rectangle takes two corners, Circle a center and a point
-## on it, Arc a center, a start and an end, Point one click. The cursor
-## snaps to points (making the new point the same one) and to curves (a
-## point on the curve), and a line drawn near level or upright becomes
-## horizontal or vertical: the constraints Fusion infers. Holding Cmd (Ctrl
-## elsewhere) places freely. Constraint tools take their entities in order
-## (the first is the reference) and apply when they have enough; Sketch
-## Dimension takes one entity or two, and a click in empty space. Select
-## picks entities (Shift adds) and drags points, the sketch solving as they
-## move. Delete removes the selection, X makes it construction.
+## A tool is used once, then Select again (Line chains from its last end
+## until Esc). Drawing tools are click by click; the cursor snaps through
+## the snapping layer (snapping.luc: points, middles, crossings, curves,
+## the grid; a snapped point is the same point, or held on its curve), and
+## a line drawn near level or upright becomes horizontal or vertical.
+## Holding Cmd (Ctrl elsewhere) places freely. Constraint tools take their
+## entities in order, the first the reference (sketch_constrain.luc);
+## Sketch Dimension takes one entity or two, then a click in empty space.
+## Select picks entities (Shift adds) and drags points, which snap and
+## are held where they are let go. Delete removes the selection, X makes
+## it construction, Q is Select.
 ##
 ## The editor works on a live CadSketch read from the node; each finished
 ## action writes it back as one undo step (commit), and an undo or a change
 ## from elsewhere reads the node again (sync).
 from sketch_chains import chain_of
-from snapping import SnapMark, grid_step, on_grid, sketch_kind_name
+from snapping import SnapMark, grid_step, on_grid, stepped, sketch_kind_name
 from edit_types import point_level, edge_level, face_level
 from luce_cad.sketch import CadSketch, CadProjection
 from luce_cad.cad_geometry import CadGeometry
@@ -32,7 +32,9 @@ from sketch_frames import FrameCache
 import sketch_tools
 import view_projection
 from luce_std import math
-from sketch_kinds import coincident, on_curve, horizontal, vertical, parallel, perpendicular, tangent, equal, fix, midpoint, concentric, collinear, symmetric, distance, line_distance, angle, radius, diameter, curvature, point_kind, line_kind, circle_kind, arc_kind, spline_kind, ellipse_kind, conic_kind
+import sketch_constrain
+import sketch_kinds
+from sketch_kinds import coincident, on_curve, horizontal, vertical, midpoint, point_kind, line_kind
 
 ## How near the cursor snaps, in points on screen.
 let snap_reach = 9.0
@@ -135,7 +137,7 @@ pub class SketchEditor:
         let node = self.w.selected() else return
         # The plane follows its face as the body upstream changes.
         let frame = self.frames.frame(self.w, node)
-        if not same_frame(frame, self.frame):
+        if not frame.equals(self.frame):
             let moved = self.sketch != none and node.id == self.node
             self.frame = frame
             self.revision += 1
@@ -309,7 +311,7 @@ pub class SketchEditor:
                     sketch.place(dragged, self.cursor[0], self.cursor[1])
                     if self.snap_kind == 1:
                         _ = sketch.constrain(coincident, dragged, self.snap)
-                    elif self.snap_kind == 8 and holds_points(sketch.kind(self.snap)):
+                    elif self.snap_kind == 8 and sketch_kinds.holds_points(sketch.kind(self.snap)):
                         _ = sketch.constrain(on_curve, dragged, self.snap)
                     if not sketch.solve():
                         sketch.unconstrain(sketch.constraint_count() - 1)
@@ -398,13 +400,14 @@ pub class SketchEditor:
         self.hover = sketch.pick(self.cursor[0], self.cursor[1], self.reach, self.pick_filter())
         # Tools that place, and a dragged point, snap; tools that pick (Trim,
         # the constraints) read the pointer as it is.
-        let places = sketch_tools.draws(self.tool) or self.tool in ["Move/Copy", "Sketch Scale", "Circular Pattern", "Rectangular Pattern"] or self.dragging >= 0
+        let places = sketch_tools.places(self.tool) or self.dragging >= 0
         if free or not places:
             return
         # The snapping layer: what the sketch has near the pointer (not the
         # point just placed or dragged, nor what is drawn on it), else the
         # grid.
         let snaps = self.w.snaps
+        let step = grid_step(self.w.view.distance)
         let skip = self.dragging if self.dragging >= 0 else (self.made[-1] if self.made.length > 0 else -1)
         let found = sketch.snap(self.cursor[0], self.cursor[1], self.reach, snaps.sketch_mask(), skip)
         var mark = ""
@@ -420,13 +423,13 @@ pub class SketchEditor:
             let dx = self.cursor[0] - start[0]
             let dy = self.cursor[1] - start[1]
             if math.abs(dy) <= math.abs(dx) * math.tan(level_angle):
-                self.cursor = [snapped_grid(self.cursor[0], snaps.grid(), self.w), start[1]]
+                self.cursor = [stepped(self.cursor[0], step, snaps.grid()), start[1]]
                 mark = "Level"
             elif math.abs(dx) <= math.abs(dy) * math.tan(level_angle):
-                self.cursor = [start[0], snapped_grid(self.cursor[1], snaps.grid(), self.w)]
+                self.cursor = [start[0], stepped(self.cursor[1], step, snaps.grid())]
                 mark = "Upright"
         if mark == "" and snaps.grid():
-            self.cursor = [snapped_grid(self.cursor[0], true, self.w), snapped_grid(self.cursor[1], true, self.w)]
+            self.cursor = [on_grid(self.cursor[0], step), on_grid(self.cursor[1], step)]
             mark = "Grid"
         if mark != "":
             self.w.snap_mark = SnapMark(self.frame.at(self.cursor[0], self.cursor[1]), mark)
@@ -494,7 +497,7 @@ pub class SketchEditor:
         let data = self.frames.body(self.w, node) else return none
         if CadGeometry.model_count(data.geometry) == 0:
             return none
-        let key = f"{self.frames.body_stamp()}|{self.frame.origin.x}|{self.frame.origin.y}|{self.frame.origin.z}|{self.frame.u.x}|{self.frame.u.y}|{self.frame.u.z}|{self.frame.v.x}|{self.frame.v.y}|{self.frame.v.z}"
+        let key = f"{self.frames.body_stamp()}|{self.frame.key()}"
         if key != self.projected_key or self.projected == none:
             self.projected = CadProjection.of(CadGeometry.model(data.geometry, 0), self.frame.origin, self.frame.u, self.frame.v)
             self.projected_key = key
@@ -562,7 +565,7 @@ pub class SketchEditor:
             _ = sketch.constrain(midpoint, point, snapped)
             return point
         for curve in [snapped, other if kind == 4 else -1]:
-            if curve >= 0 and holds_points(sketch.kind(curve)):
+            if curve >= 0 and sketch_kinds.holds_points(sketch.kind(curve)):
                 _ = sketch.constrain(on_curve, point, curve)
         return point
 
@@ -571,7 +574,7 @@ pub class SketchEditor:
     func pick_filter(self) -> int:
         # Tools that work on curves pick only curves (not a crossing's or
         # an end's point under the cursor).
-        if self.tool in ["Trim", "Extend", "Break", "Offset"] or self.tool.starts_with("Blend Curve"):
+        if sketch_tools.picks_curves(self.tool):
             return 2
         if self.tool != "Select":
             return 0
@@ -627,90 +630,24 @@ pub class SketchEditor:
     ## they were (applied, or refused as conflicting).
     func try_constraint(self) -> bool!:
         let sketch = self.sketch else return false
-        let p = self.picks
-        let kinds: list[int] = []
-        let lines: list[int] = []
-        let rounds: list[int] = []
-        let points: list[int] = []
-        for at in p:
-            let kind = sketch.kind(at)
-            kinds.append(kind)
-            if kind == line_kind:
-                lines.append(at)
-            elif kind == point_kind:
-                points.append(at)
-            else:
-                rounds.append(at)
-        let tool = self.tool
-        if tool == "Horizontal/Vertical":
-            if kinds.length >= 1 and kinds[0] == line_kind:
-                let a = sketch.part(p[0], 0)
-                let b = sketch.part(p[0], 1)
-                let level = math.abs(sketch.x(b) - sketch.x(a)) >= math.abs(sketch.y(b) - sketch.y(a))
-                return self.apply(horizontal if level else vertical, p[0], -1)
-            if points.length == 2:
-                let level = math.abs(sketch.x(p[1]) - sketch.x(p[0])) >= math.abs(sketch.y(p[1]) - sketch.y(p[0]))
-                return self.apply(horizontal if level else vertical, p[0], p[1])
+        let made = sketch_constrain.constrain_picks(sketch, self.tool, self.picks)
+        if made == sketch_constrain.more_picks:
             return false
-        if tool == "Fix/UnFix":
-            for index in 0..<sketch.constraint_count():
-                if sketch.constraint_kind(index) == fix and sketch.constraint_entity(index, 0) == p[0]:
-                    sketch.unconstrain(index)
-                    self.commit("Unfix")
-                    return true
-            return self.apply(fix, p[0], -1)
-        if p.length < 2:
+        if made == sketch_constrain.unfixed:
+            self.commit("Unfix")
+            return true
+        if made == sketch_constrain.no_fit:
+            # Picks that do not fit: start again from the last.
+            self.picks = [self.picks[-1]]
+            self.w.notice = f"{self.tool} does not join those: pick again"
             return false
-        if tool == "Coincident":
-            if kinds[0] == point_kind and kinds[1] == point_kind:
-                return self.apply(coincident, p[1], p[0])
-            if kinds[0] != point_kind and kinds[1] == point_kind:
-                return self.apply(on_curve, p[1], p[0])
-            if kinds[0] == point_kind:
-                return self.apply(on_curve, p[0], p[1])
-        elif tool in ["Parallel", "Perpendicular", "Collinear"] and lines.length == 2:
-            return self.apply(parallel if tool == "Parallel" else (perpendicular if tool == "Perpendicular" else collinear), p[0], p[1])
-        elif tool == "Equal" and (lines.length == 2 or rounds.length == 2):
-            return self.apply(equal, p[0], p[1])
-        elif tool == "Concentric" and rounds.length == 2:
-            return self.apply(concentric, p[0], p[1])
-        elif tool in ["Tangent", "Curvature"] and (kinds[0] in [spline_kind, conic_kind] or kinds[1] in [spline_kind, conic_kind]):
-            # A spline's or conic's end against a line, circle or arc.
-            let curve = p[0] if kinds[0] in [spline_kind, conic_kind] else p[1]
-            let other = p[1] if curve == p[0] else p[0]
-            # (A fit point spline's ends follow its points: not yet held.)
-            let fitted = sketch.kind(curve) == spline_kind and sketch.fit(curve)
-            if sketch.kind(other) in [line_kind, circle_kind, arc_kind] and not fitted and (tool == "Tangent" or sketch.kind(curve) == spline_kind):
-                let side = sketch.end_nearest(curve, other)
-                let turn = sketch.curvature_turn(curve, side, other) if tool == "Curvature" else 0.0
-                let constraint = sketch.constrain(tangent if tool == "Tangent" else curvature, curve, other, value = turn, side = side)
-                return self.settle(constraint)
-        elif tool == "Tangent" and rounds.length >= 1 and kinds[0] != point_kind and kinds[1] != point_kind:
-            return self.apply(tangent, p[0], p[1], side = self.tangent_side(p[0], p[1]))
-        elif tool == "MidPoint" and points.length == 1 and lines.length == 1:
-            return self.apply(midpoint, points[0], lines[0])
-        elif tool == "Symmetry":
-            if p.length < 3:
-                return false
-            if kinds[0] == point_kind and kinds[1] == point_kind and kinds[2] == line_kind:
-                let constraint = sketch.constrain(symmetric, p[0], p[1], p[2])
-                return self.settle(constraint)
-        # Picks that do not fit: start again from the last.
-        self.picks = [p[-1]]
-        self.w.notice = f"{tool} does not join those: pick again"
-        return false
-
-    ## Add constraint `kind` between `first` and `second` and solve; refused
-    ## (taken back) when the sketch cannot hold it. Whether it was decided.
-    func apply(self, kind: int, first: int, second: int, side: float = 1.0) -> bool!:
-        let sketch = self.sketch else return true
-        let constraint = sketch.constrain(kind, first, second, side = side)
-        return self.settle(constraint)
+        self.settle(made)
+        return true
 
     ## Solve after constraint `constraint` was added: kept and written back
     ## when it holds, else taken away with Fusion's over-constrained notice.
-    func settle(self, constraint: int) -> bool!:
-        let sketch = self.sketch else return true
+    func settle(self, constraint: int) -> unit!:
+        let sketch = self.sketch else return
         let solved = sketch.solve()
         sketch.analyze()
         if not solved or sketch.conflicting_count() > 0:
@@ -719,62 +656,15 @@ pub class SketchEditor:
             sketch.analyze()
             self.w.notice = "Sketch geometry is over constrained"
             self.revision += 1
-            return true
+            return
         self.commit(self.tool)
-        return true
 
-    ## Which side `first` keeps of `second` (or the other way), for Tangent:
-    ## a line's side its circle's center is on, or two circles outside (+1)
-    ## or inside (-1) each other.
-    func tangent_side(self, first: int, second: int) -> float!:
-        let sketch = self.sketch else return 1.0
-        var line = first
-        var round = second
-        if sketch.kind(second) == line_kind:
-            line = second
-            round = first
-        if sketch.kind(line) == line_kind:
-            let a = sketch.part(line, 0)
-            let b = sketch.part(line, 1)
-            let c = sketch.part(round, 0)
-            let cross = (sketch.x(b) - sketch.x(a)) * (sketch.y(c) - sketch.y(a)) - (sketch.y(b) - sketch.y(a)) * (sketch.x(c) - sketch.x(a))
-            return 1.0 if cross >= 0.0 else -1.0
-        let c1 = sketch.part(first, 0)
-        let c2 = sketch.part(second, 0)
-        let apart = math.hypot(sketch.x(c2) - sketch.x(c1), sketch.y(c2) - sketch.y(c1))
-        return 1.0 if apart >= math.max(sketch.radius(first), sketch.radius(second)) else -1.0
-
-    ## Sketch Dimension's placing click: a line's length, a circle's
-    ## diameter, an arc's radius; two points' distance, a point's from a
-    ## line, two lines' angle (or distance, when parallel). It measures the
-    ## sketch as it is; its value is then edited in the parameter panel.
+    ## Sketch Dimension's placing click: its picks measured
+    ## (sketch_constrain.measure); its value is then typed where it was
+    ## placed, or edited in the parameter panel.
     func dimension(self) -> unit!:
         let sketch = self.sketch else return
-        let p = self.picks
-        let a = p[0]
-        var made = -1
-        if p.length == 1:
-            let k = sketch.kind(a)
-            if k == line_kind:
-                let s = sketch.part(a, 0)
-                let e = sketch.part(a, 1)
-                made = sketch.constrain(distance, s, e, value = math.hypot(sketch.x(e) - sketch.x(s), sketch.y(e) - sketch.y(s)))
-            elif k == circle_kind:
-                made = sketch.constrain(diameter, a, value = 2.0 * sketch.radius(a))
-            elif k == arc_kind:
-                made = sketch.constrain(radius, a, value = sketch.radius(a))
-        else:
-            let b = p[1]
-            let ka = sketch.kind(a)
-            let kb = sketch.kind(b)
-            if ka == point_kind and kb == point_kind:
-                made = sketch.constrain(distance, a, b, value = math.hypot(sketch.x(b) - sketch.x(a), sketch.y(b) - sketch.y(a)))
-            elif ka == point_kind and kb == line_kind:
-                made = self.point_line(a, b)
-            elif ka == line_kind and kb == point_kind:
-                made = self.point_line(b, a)
-            elif ka == line_kind and kb == line_kind:
-                made = self.two_lines(a, b)
+        let made = sketch_constrain.measure(sketch, self.picks)
         if made < 0:
             self.w.notice = "Sketch Dimension measures a line, a circle, an arc, two points, a point and a line, or two lines"
             return
@@ -785,34 +675,9 @@ pub class SketchEditor:
         if sketch.conflicting_count() > 0 or sketch.redundant_count() > 0:
             sketch.set_driven(made, true)
         self.commit("Sketch dimension")
-        # A driving dimension's value is typed where it was placed.
         if not sketch.driven(made):
             if let open = self.on_value:
                 open(made, self.pointer_x, self.pointer_y)
-
-    func point_line(self, point: int, line: int) -> int!:
-        let sketch = self.sketch else return -1
-        let a = sketch.part(line, 0)
-        let b = sketch.part(line, 1)
-        let dx = sketch.x(b) - sketch.x(a)
-        let dy = sketch.y(b) - sketch.y(a)
-        let length = math.hypot(dx, dy)
-        if length <= 0.0:
-            return -1
-        let signed = (dx * (sketch.y(point) - sketch.y(a)) - dy * (sketch.x(point) - sketch.x(a))) / length
-        return sketch.constrain(line_distance, point, line, value = math.abs(signed), side = 1.0 if signed >= 0.0 else -1.0)
-
-    func two_lines(self, first: int, second: int) -> int!:
-        let sketch = self.sketch else return -1
-        let ax = sketch.x(sketch.part(first, 1)) - sketch.x(sketch.part(first, 0))
-        let ay = sketch.y(sketch.part(first, 1)) - sketch.y(sketch.part(first, 0))
-        let bx = sketch.x(sketch.part(second, 1)) - sketch.x(sketch.part(second, 0))
-        let by = sketch.y(sketch.part(second, 1)) - sketch.y(sketch.part(second, 0))
-        let cross = ax * by - ay * bx
-        let dot = ax * bx + ay * by
-        if math.abs(cross) <= 1e-9 * math.hypot(ax, ay) * math.hypot(bx, by):
-            return self.point_line(sketch.part(second, 0), first)
-        return sketch.constrain(angle, first, second, value = math.atan2(cross, dot))
 
     ## Delete: the selected entities (and what is drawn on them).
     func remove_selection(self) -> unit!:
@@ -846,16 +711,3 @@ func without(values: list[int], value: int) -> list[int]:
         if v != value:
             kept.append(v)
     return kept
-
-## Whether frames `a` and `b` are the same plane and axes.
-func same_frame(a: SketchFrame, b: SketchFrame) -> bool:
-    return a.origin.subtract(b.origin).length() == 0.0 and a.u.subtract(b.u).length() == 0.0 and a.v.subtract(b.v).length() == 0.0
-
-## Whether a point can be held on a curve of kind `kind` (lines, circles,
-## arcs and ellipses; not yet splines or conics).
-func holds_points(kind: int) -> bool:
-    return kind in [line_kind, circle_kind, arc_kind, ellipse_kind]
-
-## `value` on the view's grid when `on` (snapping.luc's step).
-func snapped_grid(value: float, on: bool, w: Workspace) -> float:
-    return on_grid(value, grid_step(w.view.distance)) if on else value
