@@ -116,6 +116,25 @@ for i in 0..<near.count:
 
 An index out of range fails the node, naming the element.
 
+**Point clouds** (VEX's `pcopen`): `g.pcopen(P, radius, count)` finds up to
+64 points, nearest first. `pc.count()`, `pc.point(i)`, `pc.distance(i)`,
+`pc.f32(i, "name")` and `pc.vec3(i, "name")` read them, and
+`pc.filter_f32("name")` / `pc.filter_vec3("name")` average them weighted by
+distance (VEX's `pcfilter`). Smoothing is one line:
+
+```luce
+p.P = k.input(0).pcopen(p.P, 0.2, 20).filter_vec3("P")
+```
+
+`pcfind` is the same search; `pcfind_radius` keeps points whose own radius
+attribute reaches.
+
+**Volumes**: from an input made by SDF nodes, `volume_sample(name, P)`
+(trilinear; an SDF itself is sampled exactly), `volume_sample_vec3`,
+`volume_gradient(name, P)`, `volume_index(name, i, j, k)`,
+`volume_pos_to_index`, `volume_index_to_pos`, `volume_res`,
+`volume_voxel_size`. `""` names the first grid, or the SDF.
+
 ## Making and removing geometry
 
 As in VEX, the changes queue up and apply after every run has finished, in
@@ -176,6 +195,14 @@ The whole of Base's arithmetic, `if`/`elif`/`else`, `while` and `for` loops,
 `match`, `let`/`var`, and casts like `(f32)k.time`. Left out are pointers,
 memory allocation, threads, files and calling native code: anything that
 could crash the editor. Code that uses them gets an error at its line.
+
+## Messages
+
+`k.printf("point %d at %.2f\n", (f32)p.ptnum, p.P[0])` writes to the node's
+console, shown under the code (the first 200 lines, in element order).
+Up to four numbers are filled into `%d`, `%f`, `%e` and `%g`.
+`k.warning("text")` gives the node a warning and lets it cook.
+`k.error("text")` fails it at that line, naming the element.
 
 ## Errors
 
