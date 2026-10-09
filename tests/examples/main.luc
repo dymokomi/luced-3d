@@ -1,7 +1,8 @@
 # Example scenes for the Code node, after classic Houdini wrangle
 # tutorials: each is built as a user would, every Code node must cook
 # without an error, and the scene is saved to examples/wrangles/ for
-# opening in the editor.
+# opening in the editor. Gaussian splat wrangles, on a synthetic capture
+# the scene makes, go to examples/splats/.
 from luce_std import files, paths, process
 from workspace import Workspace
 import node_commands
@@ -76,6 +77,13 @@ pub func main(arguments: list[str]) -> int!:
         build(folder)
         count += 1
     print(f"PASS {count} wrangle example scenes cooked and saved to examples/wrangles")
+    let splat_folder = paths.join(paths.directory(folder), "splats")
+    files.ensure_directory(splat_folder)
+    var splat_count = 0
+    for build in [fade_by_height, recolor, squash]:
+        build(splat_folder)
+        splat_count += 1
+    print(f"PASS {splat_count} splat example scenes cooked and saved to examples/splats")
     return 0
 
 ## A grid rolling as a sine wave along X, moving with time.
@@ -396,4 +404,42 @@ func eroded_points(folder: str) -> unit!:
     _ = s.add("Volume from Points", [(0, 0.3), (1, 0.03), (2, 6.0)])
     _ = s.code(5, "let n = snoise(x.P * k.f32(\"scale\", 2.5)) + 0.4 * snoise(x.P * 6.0)\nx.value = x.value + n * k.f32(\"amount\", 0.08)\n")
     _ = s.add("Convert to Mesh")
+    s.save(folder)
+
+# -- Gaussian splats: the scenes start from a synthetic capture.
+
+## A synthetic capture: a sphere's points jittered and colored warm to cool,
+## baked into splats (Bake GSplats, Source Points), given SH degree 1 and a
+## view-dependent sheen in its bands, so the wrangles that follow have every
+## splat attribute to work on. No file is read.
+func capture(s: Scene) -> unit!:
+    _ = s.add("Sphere", [(0, 1.0), (1, 64.0)])
+    _ = s.code(1, "# A fuzzy ball, warm at the bottom and cool on top.\nlet n = snoise(p.P * 3.0)\np.P = p.P * (1.0 + n * 0.08)\nlet t = fit(p.P[1], -1.0, 1.0, 0.0, 1.0)\np.Cd = [lerp(0.9, 0.2, t), lerp(0.4, 0.6, t), lerp(0.2, 0.9, t), 0.0]\np.set_f32(\"pscale\", 0.035)\n")
+    _ = s.add("Bake GSplats", [(0, 1.0), (3, 0.85)])
+    _ = s.add("GSplats SH Degree", [(0, 1.0)])
+    _ = s.code(1, "# A sheen in the first band: brighter where the surface faces the viewer.\nlet n = normalized(p.P)\nlet w = -k.f32(\"sheen\", 0.35)\np.set_sh(0, [-n[1] * w, -n[1] * w, -n[1] * w, 0.0])\np.set_sh(1, [n[2] * w, n[2] * w, n[2] * w, 0.0])\np.set_sh(2, [-n[0] * w, -n[0] * w, -n[0] * w, 0.0])\n")
+
+## Splats fading out above a height: opacity scaled down between two
+## heights (a smooth ramp from the Start to the End parameter).
+func fade_by_height(folder: str) -> unit!:
+    let s = Scene("fade_by_height")
+    capture(s)
+    _ = s.code(1, "# Full opacity below Start, none above End.\nlet t = clamp(fit(p.P[1], k.f32(\"start\", -0.2), k.f32(\"end\", 0.8), 0.0, 1.0), 0.0, 1.0)\np.opacity *= 1.0 - t * t * (3.0 - 2.0 * t)\n")
+    s.save(folder)
+
+## Recoloring: the view-independent color (Cd, the DC term) desaturated,
+## while the SH bands, the view-dependent part, stay as they were.
+func recolor(folder: str) -> unit!:
+    let s = Scene("recolor")
+    capture(s)
+    _ = s.code(1, "# Gray by the mean of the channels; Amount blends toward it.\nlet g = (p.Cd[0] + p.Cd[1] + p.Cd[2]) / 3.0\nlet a = k.f32(\"amount\", 1.0)\np.Cd = [lerp(p.Cd[0], g, a), lerp(p.Cd[1], g, a), lerp(p.Cd[2], g, a), 0.0]\n")
+    s.save(folder)
+
+## Every splat squashed along world Y through its covariance (gsplat
+## helpers): Σ' = S Σ S with S = diag(1, squash, 1), decomposed back into
+## orient and scale, so each splat flattens into a disc lying in XZ.
+func squash(folder: str) -> unit!:
+    let s = Scene("squash")
+    capture(s)
+    _ = s.code(1, "# Scale each splat's covariance along world Y.\nlet m = Mat3.scaling([1.0, k.f32(\"squash\", 0.2), 1.0, 0.0])\ngsplat.set_covariance(p, m.multiply(gsplat.covariance(p)).multiply(m))\n")
     s.save(folder)

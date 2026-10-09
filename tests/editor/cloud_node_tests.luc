@@ -1,0 +1,86 @@
+## Point nodes on point clouds and the GSplats filters in the graph: a
+## sphere's points baked into splats, then Blast, Delete, Selection Group,
+## AttributeCreate and AttributePromote, a Code node over the cloud, and
+## Crop, Clean and Reduce GSplats.
+from luce_geocore.geocore import SetAttributes, GeometrySet
+from network import Network
+from stamps import stamp_graph
+import node_catalog
+import code_cook
+
+## The cloud node `id` makes (the test fails without one).
+func cloud_of(graph: Network, id: int) -> GeometrySet!:
+    stamp_graph(graph)
+    let geometry = graph.evaluate_data(id).geometry
+    assert(not geometry.has_mesh(), "a cloud, not a mesh")
+    return geometry
+
+pub func cloud_node_tests() -> unit!:
+    let graph = Network(false)
+    let sphere = graph.add("Sphere", 0.0, 0.0)
+    sphere.values[1] = 16.0
+    let bake = graph.add("Bake GSplats", 0.0, 60.0)
+    bake.values[0] = 1.0
+    graph.connect(sphere.id, bake.id, 0)
+    let splats = cloud_of(graph, bake.id)
+    let total = splats.cloud_count()
+    assert(splats.splat_count() == total and total > 100)
+    # Blast and Delete name cloud points by group expressions.
+    let blast = graph.add("Blast", 0.0, 120.0)
+    blast.texts[0] = "@P.y>0"
+    graph.connect(bake.id, blast.id, 0)
+    let lower = cloud_of(graph, blast.id).cloud_count()
+    assert(lower > 0 and lower < total)
+    blast.values[0] = 1.0
+    graph.invalidate(blast.id)
+    assert(cloud_of(graph, blast.id).cloud_count() == total - lower)
+    let delete = graph.add("Delete", 200.0, 120.0)
+    delete.texts[0] = "0-9"
+    delete.values[0] = 1.0
+    graph.connect(bake.id, delete.id, 0)
+    assert(cloud_of(graph, delete.id).cloud_count() == 10)
+    # Groups and attributes on cloud points.
+    let group = graph.add("Selection Group", 400.0, 120.0)
+    group.texts[0] = "@P.y>0"
+    group.texts[1] = "top"
+    graph.connect(bake.id, group.id, 0)
+    assert(SetAttributes.has(cloud_of(graph, group.id), "top", 0))
+    let create = graph.add("AttributeCreate", 600.0, 120.0)
+    create.texts[1] = "mass"
+    create.values[0] = 0.0
+    create.values[1] = 1.0
+    create.values[3] = 2.0
+    graph.connect(bake.id, create.id, 0)
+    let promote = graph.add("AttributePromote", 600.0, 180.0)
+    promote.texts[1] = "mass"
+    promote.values[0] = 0.0
+    promote.values[1] = 3.0
+    graph.connect(create.id, promote.id, 0)
+    let promoted = cloud_of(graph, promote.id)
+    assert(SetAttributes.has(promoted, "mass", 3) and not SetAttributes.has(promoted, "mass", 0))
+    # A Code node runs over the cloud's points.
+    let code = graph.add(code_cook.kind_name, 0.0, 240.0)
+    code.values[code_cook.run_over_slot] = 1.0
+    code.texts[code_cook.body_slot] = "p.opacity *= 0.5\np.set_f32(\"faded\", p.opacity)\n"
+    graph.connect(bake.id, code.id, 0)
+    let coded = cloud_of(graph, code.id)
+    assert(code.failure == "" and coded.cloud_count() == total and SetAttributes.has(coded, "faded", 0))
+    # The GSplats filters.
+    let crop = graph.add("Crop GSplats", 200.0, 240.0)
+    crop.values[0] = 1.0
+    crop.values[7] = 100.0
+    graph.connect(bake.id, crop.id, 0)
+    assert(cloud_of(graph, crop.id).cloud_count() == total)
+    crop.values[8] = 1.0
+    graph.invalidate(crop.id)
+    assert(cloud_of(graph, crop.id).cloud_count() == 0)
+    let reduce = graph.add("Reduce GSplats", 400.0, 240.0)
+    graph.connect(bake.id, reduce.id, 0)
+    let reduced = cloud_of(graph, reduce.id).cloud_count()
+    assert(reduced * 2 >= total - 1 and reduced * 2 <= total + 1)
+    let clean = graph.add("Clean GSplats", 600.0, 240.0)
+    graph.connect(bake.id, clean.id, 0)
+    assert(cloud_of(graph, clean.id).cloud_count() == total)
+    for name in ["Crop GSplats", "Clean GSplats", "Reduce GSplats"]:
+        assert(node_catalog.category(name) == "GSplats")
+    print("PASS point clouds in the graph: Blast, Delete, groups and attribute nodes, Code, Crop, Clean and Reduce GSplats")
