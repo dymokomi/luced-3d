@@ -432,6 +432,17 @@ Houdini names are used where Houdini has a node, and GSOPs names otherwise.
 | **GSplats from Polygons** | GSOPs from_polygons | `gsplats_from_polygons_verb` | Density (splats per unit area), Thickness (normal σ as a fraction of the tangent σ), Color from `Cd` or a texture, Opacity. Disc splats aligned to faces: sample the surface, tangent frame to `orient`. |
 | **GSplats to Volume** | GSOPs bake (density), Houdini Normals (VDB) | `gsplats_to_volume_verb` into `fields` | Voxel Size, Grid Name, Density Scale. Splats each Gaussian's opacity-weighted density into a SparseGrid (fog). Feeds FogVolume display, `Convert to Mesh` and level-set tools: splats to mesh is GSplats to Volume then Convert to Mesh. |
 | **Normals from GSplats** | Labs Normals from GSplats (H22) | `normals_from_gsplats_verb` | Method: Shortest Axis (fast: the axis of the smallest scale, oriented away from the local k-NN centroid) or Surface (through GSplats to Volume, a level set, gradient). Refine (k-NN smoothing), Search Radius. Writes `N`. |
+
+**As built (stage 7).** The three conversions are luce-geocore set verbs (`set_verbs/splat_conversions.lucb`).
+- **GSplats from Polygons** (`splats/from_surface.lucb`): Density, Size (0: 0.6/√density, so neighbors overlap), Thickness, Opacity, Color (without a `Cd`), Seed, Keep Input. Discs land on the display triangles, density × area each, the fraction and the points drawn from a hash of the seed, so a cook is the same on any thread count. `Cd` comes from the mesh's point, vertex or primitive `Cd`, and `N` is the face normal. No texture lookup yet.
+- **GSplats to Volume** (`fields/splat_density.lucb`, in fields because it builds a grid): Voxel Size (0: the median largest σ), Density Scale, Cutoff (σ, default 3), Keep Input, and the grid's Name in the text row. Each Gaussian is widened by half a voxel, so sub-voxel splats still land, and normalized so its voxels integrate to its mass, opacity · (2π)^{3/2} σ₁σ₂σ₃. Inside the cutoff its peak is therefore about 3% high at 3σ. On the 1.16M-splat bonsai capture at 0.05 voxels, the volume takes 0.44 s and Convert to Mesh (isovalue 0.2) 0.31 s, giving 4.6M faces. On the bonsai alone (cropped to 124k splats, 0.01 voxels), the volume takes 55 ms and the mesh 30 ms, 172k faces.
+- **Normals from GSplats** (`splats/normals.lucb`, `orientation.lucb`): Houdini's fast idea, the shortest axis, with Search Radius, Refine Normals, Smooth Amount, Sharpen Amount and Visualize Normals.
+  - Each splat's side is first voted by its 16 nearest neighbors' centroid.
+  - That vote points inward in concave regions; a bumpy ball showed inward patches. So the sides then propagate over a minimum spanning tree of 1 − |aᵢ·aⱼ| over the symmetric k-NN graph (Hoppe et al. 1992), and each connected part faces the way the sum of its votes says.
+  - Refine is a bilateral k-NN blend.
+  - The Surface method and Houdini's second output, the surface mesh, are GSplats to Volume then Convert to Mesh.
+  - The full bonsai capture takes 1.7 s; the spanning tree is sequential.
+
 | **Edit GSplats** (later) | SuperSplat's brush/lasso | an Edit-node kind (`edit_kinds.luc`) | Viewport selection of splats by brush, lasso or box over projected centers, then delete, separate, or recolor and opacity. The steps are stored as point-id groups. |
 | **Delight / Relight GSplats** (later) | Labs Delight, Labs Relight | `splats/light.lucb` | After luce-render splats (§9); Delight's bilateral filter needs only k-NN and is independent. |
 | **Train GSplats** | ML Train GSplats TOP | not planned | Q5 |
@@ -473,6 +484,8 @@ Add `convert/particle_fields.lucb`:
 
 The opacity and scale conventions must be checked first (§2.4). This is Houdini 22's SOP to
 LOP path.
+
+- **Checked (stage 7):** the schema's text leaves the SH convention open, but OpenUSD's own reference code settles it, and luce-usd matches it. Coefficient 0 is 3DGS's raw DC, the PLY's `f_dc` (color 0.5 + C0 · c₀), and bands 1–3 are `f_rest` with 3DGS's order and signs, one RGB item per coefficient. Opacities are linear, scales linear σ, and orientations GfQuatf (stored imaginary first, printed real first). Sources in the OpenUSD repository: `extras/imaging/examples/hdParticleField/py3dgsPlyToUsd.py` (f_dc written as coefficient 0, f_rest transposed, sigmoid and exp applied), `gsRenderer.cpp` (C0 · c₀ + 0.5; "DC (0.5, 0.5, 0.5)" filled as (0, 0, 0)) and `third_party/renderman/shaders/SphericalHarmonicsToColor.osl`. Autodesk's arnold-usd and LichtFeld Studio agree. Houdini 22 is said to put a degree-0 color in `primvars:displayColor` instead (arnold-usd's notes); reading that is open. Export now also writes `interpolation = "vertex"` and `elementSize = (d + 1)²` on the coefficients, as Pixar's converters do and Omniverse's validator expects, and a cloud stood up from a Y-down file carries the custom `luce:gsplatUpAxis` (named like `luce:gsplatColorSpace`), which import turns back into `gsplat_up_axis`, so a later PLY export turns it back down.
 
 ### File and Export nodes
 
@@ -644,7 +657,7 @@ model. Stages 1–3 are the minimum to load and look at a capture.
 | **4. Core nodes** | Crop, Clean and Reduce GSplats. Blast, Delete, groups and attribute nodes on clouds. | Crop counts on known layouts. Clean thresholds. Reduce hits the target count and keeps total opacity-weighted mass and centroid within a tolerance. A viewport screenshot compares before and after on a capture. |
 | **5. Code** | Run Over Points on clouds. `orient`, `scale`, `opacity`, `sh` bindings. The `gsplat` helpers. Three example scenes. | Wrangle results against the same edits done in geocore. Faults name the point. A 1M-splat opacity edit is timed. |
 | **6. More formats** | zstd in luce-compress. luce-spz (SPZ v1–v4 and `.splat`). luce-usd ParticleField read and write. | RFC 8878 and zstd corpus vectors. Niantic sample files decode within quantization error of their PLY sources. Coordinate-system conversions keep SH evaluations equal. A USD round trip. |
-| **7. Conversions** | GSplats from Polygons, GSplats to Volume (then the existing Convert to Mesh), Normals from GSplats. | A plane makes coplanar discs. Volume density integrates to the splat mass. Normals on a sphere capture point outward. |
+| **7. Conversions** | GSplats from Polygons, GSplats to Volume (then the existing Convert to Mesh), Normals from GSplats. | A plane makes coplanar discs. Volume density integrates to the splat mass. Normals on a sphere capture point outward (and on a torus, concave on its inner ring). |
 | **8. Interaction and scale** | Edit GSplats (brush, lasso, box selection). Combined multi-cloud sort. LOD past about 10M. Optional per-pixel sort quality mode (StopThePop). | Selection matches on synthetic layouts. Two interleaved clouds composite correctly. LOD frame time at 20M. |
 | **9. Rendering and light** | luce-gpu AABB BLAS. luce-render splat k-buffer tracing. Delight GSplats and Relight GSplats. | A render matches the viewport (primary only) within noise. Shadows from splats onto a mesh. |
 

@@ -81,7 +81,7 @@ pub func main(arguments: list[str]) -> int!:
     let splat_folder = paths.join(paths.directory(folder), "splats")
     files.ensure_directory(splat_folder)
     var splat_count = 0
-    for build in [fade_by_height, recolor, squash]:
+    for build in [fade_by_height, recolor, squash, from_polygons, splats_to_mesh, splat_normals]:
         build(splat_folder)
         splat_count += 1
     print(f"PASS {splat_count} splat example scenes cooked and saved to examples/splats")
@@ -445,4 +445,40 @@ func squash(folder: str) -> unit!:
     let s = Scene("squash")
     capture(s)
     _ = s.code(1, "# Scale each splat's covariance along world Y.\nlet m = Mat3.scaling([1.0, k.f32(\"squash\", 0.2), 1.0, 0.0])\ngsplat.set_covariance(p, m.multiply(gsplat.covariance(p)).multiply(m))\n")
+    s.save(folder)
+
+# -- Gaussian splat conversions: a bumpy ball made into splats, and back.
+
+## A sphere bumped by noise along its normals and colored warm to cool by
+## height: the surface the conversion scenes cover with splats.
+func bumpy_ball(s: Scene) -> unit!:
+    _ = s.add("Sphere", [(0, 1.0), (1, 96.0)])
+    _ = s.code(1, "# Bumps along the normal (the sphere stands on the ground, its center at\n# height 1), warm at the bottom and cool on top.\nlet out = normalized(p.P - [0.0, 1.0, 0.0, 0.0])\np.P = p.P + out * (snoise(p.P * 2.5) * 0.12)\nlet t = fit(p.P[1], 0.0, 2.0, 0.0, 1.0)\np.Cd = [lerp(0.9, 0.15, t), lerp(0.45, 0.55, t), lerp(0.15, 0.85, t), 0.0]\n")
+
+## Splats with no training: GSplats from Polygons covers the ball with flat
+## discs, 3000 per unit of area, each taking the mesh's Cd where it lands.
+func from_polygons(folder: str) -> unit!:
+    let s = Scene("from_polygons")
+    bumpy_ball(s)
+    _ = s.add("GSplats from Polygons", [(0, 3000.0)])
+    s.save(folder)
+
+## Splats to a mesh: the ball's splats (discs half as thick as wide) into
+## a fog volume by GSplats to Volume, then surfaced by Convert to Mesh where
+## the density is 0.3.
+func splats_to_mesh(folder: str) -> unit!:
+    let s = Scene("splats_to_mesh")
+    bumpy_ball(s)
+    _ = s.add("GSplats from Polygons", [(0, 3000.0), (2, 0.5)])
+    _ = s.add("GSplats to Volume", [(0, 0.02)])
+    _ = s.add("Convert to Mesh", [(1, 0.3)])
+    s.save(folder)
+
+## Normals from GSplats on the ball's splats, shown as colors (Visualize
+## Normals): each splat's shortest axis turned outward, then refined.
+func splat_normals(folder: str) -> unit!:
+    let s = Scene("splat_normals")
+    bumpy_ball(s)
+    _ = s.add("GSplats from Polygons", [(0, 3000.0)])
+    _ = s.add("Normals from GSplats", [(4, 1.0)])
     s.save(folder)
