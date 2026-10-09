@@ -9,6 +9,9 @@ import node_catalog
 from luce_std import math
 from luce_ui import ui
 from grouping import group_nodes
+from cache_node import freeze_to
+from luce_std import files, paths
+import time
 
 ## Selecting an Edit node also displays it: its tools edit the geometry
 ## the viewport shows, however the node was reached.
@@ -145,6 +148,34 @@ pub func toggle_enabled(w: Workspace) -> unit!:
         w.network.invalidate(node.id)
         w.selection = none
         w.rebuild())
+
+## Freeze the selected node (Houdini's lock): its result as it cooks now is
+## written to a file it reads from then on, drawn red; upstream edits no
+## longer reach it or what follows. Again: it cooks from its inputs.
+pub func toggle_freeze(w: Workspace) -> unit!:
+    let node = w.selected() else return
+    if node.frozen != "":
+        w.perform("Unfreeze " + node.name, func () -> unit!:
+            node.frozen = ""
+            w.network.invalidate(node.id)
+            w.rebuild())
+        return
+    let data = w.network.copy().evaluate_data(node.id) catch failure:
+        w.notice = f"{node.name} cannot freeze: {failure.message}"
+        w.revision += 1
+        return
+    let folder = frozen_folder()
+    files.ensure_directory(folder)
+    let path = paths.join(folder, f"n{node.id}-{time.now()}.prism")
+    freeze_to(data, path, node.stamp)
+    w.perform("Freeze " + node.name, func () -> unit!:
+        node.frozen = path
+        w.network.invalidate(node.id)
+        w.rebuild())
+
+## Where frozen results wait until their project is saved beside them.
+func frozen_folder() -> str!:
+    return paths.join(paths.join(files.home_directory(), ".luced-3d"), "frozen")
 
 pub func add_node(w: Workspace, kind: str, x: float, y: float) -> unit!:
     w.perform("Add " + kind, func () -> unit!:

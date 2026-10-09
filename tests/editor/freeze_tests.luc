@@ -1,0 +1,49 @@
+## Freezing a node (Shift+B, Houdini's lock): its result is kept in a file
+## it reads from then on; an upstream change stops there; the project saves
+## the file beside it (<name>.frozen/) and reads it back frozen; unfreezing
+## cooks from the inputs again. A Null passes its input through.
+from workspace import Workspace
+import node_commands
+import project_file
+from luce_std import files, paths
+
+pub func freeze_tests() -> unit!:
+    let w = Workspace()
+    let cube = w.network.selected
+    node_commands.add_node(w, "Null", 0.0, 100.0)
+    let null = w.network.selected
+    node_commands.display_selected(w)
+    let points = (w.geometry else trap("null")).point_count()
+    assert(points == 8)
+    # Freeze the Cube, then make it bigger: the Null still shows the cube
+    # as it was.
+    w.network.selected = cube
+    node_commands.toggle_freeze(w)
+    let frozen = w.network.require(cube)
+    assert(frozen.frozen != "" and files.exists(frozen.frozen))
+    w.network.selected = cube
+    node_commands.set_parameter(w, 0, 3.0)
+    w.network.selected = null
+    node_commands.display_selected(w)
+    let kept = (w.geometry else trap("frozen")).bounds()
+    assert(kept.maximum.y < 2.5)
+    # Saved and read back: still frozen, its file beside the project.
+    let folder = files.create_temporary_directory(".")
+    let path = paths.join(folder, "frozen.prisma")
+    project_file.save(path, w, [1.0, 0.0, 0.0])
+    let project = project_file.load(path)
+    let back = project.graph.require(cube)
+    assert(back.frozen.starts_with(project_file.filename(path) + ".frozen") and files.exists(back.frozen))
+    # Unfrozen, the bigger cube comes through.
+    w.network.selected = cube
+    node_commands.toggle_freeze(w)
+    assert(w.network.require(cube).frozen == "")
+    # Undo freezes it again; redo thaws it.
+    w.undo()
+    assert(w.network.require(cube).frozen != "")
+    w.redo()
+    w.network.selected = null
+    node_commands.display_selected(w)
+    assert((w.geometry else trap("unfrozen")).bounds().maximum.y > 2.5)
+    files.remove_tree(folder)
+    print("PASS freeze: kept result, upstream stopped, saved beside the project, unfrozen, undone; Null passes through")

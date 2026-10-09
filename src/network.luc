@@ -6,7 +6,7 @@ from edit_operations import EditStep
 import node_catalog
 from node_evaluation import source_geometry, evaluate_verb, load_geometry, SourceCache
 from geometry_nodes import evaluate_set_verb, is_placement, evaluate_placement, evaluate_attributes
-from cache_node import reads_file, cook_cache
+from cache_node import reads_file, cook_cache, load_frozen
 from usd_nodes import is_usd_path, load_usd, cook_export
 from fbx_nodes import is_fbx_path, load_fbx, export_fbx
 from luce_ui import ui
@@ -69,6 +69,9 @@ pub class Node:
     ## Object paths taken out of its result (the outliner's and takes'
     ## visibility for objects inside it); a path hides what is under it too.
     pub var hidden: list[str]
+    ## A frozen node's result file (cache_node.freeze_to), "" when it
+    ## cooks: frozen, it reads the file and never its inputs.
+    pub var frozen: str = ""
 
     pub func init(self, id: int, kind: str, x: float, y: float) -> unit!:
         if not (kind in kinds()):
@@ -131,6 +134,7 @@ pub class Node:
         result.summary = self.summary
         result.group_paths = self.group_paths.copy()
         result.hidden = self.hidden.copy()
+        result.frozen = self.frozen
         result.stamp = self.stamp
         result.cooked = self.cooked
         return result
@@ -149,6 +153,8 @@ pub class Node:
     ## Pure node computation over resolved immutable inputs. Runtime invokes this
     ## only on the compute worker; synchronous callers use the same contract.
     pub func compute(self, data: GeometryData, second: GeometryData? = none, progress: func(float) -> unit!? = none, sources: SourceCache? = none) -> GeometryData!:
+        if self.frozen != "":
+            return load_frozen(self.frozen)
         let v = self.values
         let rotation = Vector3(radians(v[4]), radians(v[5]), radians(v[6]))
         let scale = Vector3(v[7], v[8], v[9])
@@ -617,6 +623,8 @@ pub class Network:
             return GeometryData()
         if node.kind == "Material":
             self.resolve_material(node)
+        if node.frozen != "":
+            return node.compute(GeometryData())
         if node_catalog.places_children(node.kind):
             var children = GeometryData()
             if node.enabled:

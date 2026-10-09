@@ -181,13 +181,13 @@ pub class NetworkView: Widget:
             let selected = node.id in picked
             let radius = 10.0 * self.zoom if node.kind in ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus"] else 3.0 * self.zoom
             p.rounded_rectangle(Rect(at.x - 1.5, at.y - 1.5, w + 3.0, h + 3.0), theme.accent() if selected else (theme.text_muted() if self.hovered == node.id else theme.grey(78.0)), radius + 1.0)
-            p.rounded_rectangle(Rect(at.x, at.y, w, h), theme.grey(64.0) if node.enabled else theme.tab_strip(), radius)
+            p.rounded_rectangle(Rect(at.x, at.y, w, h), theme.frozen() if node.frozen != "" else (theme.grey(64.0) if node.enabled else theme.tab_strip()), radius)
             if node.computing:
                 p.rectangle(Rect(at.x, at.y + h - 3.0, w * math.max(0.02, math.min(1.0, node.progress)), 3.0), theme.accent())
             draw_icon(p, node.kind, at.x + 36.0 * self.zoom, at.y + 8.0 * self.zoom, 24.0 * self.zoom, theme.text() if node.enabled else theme.text_muted())
             let caption = node.name[0..<24] + "…" if node.name.length > 24 else node.name
             p.text(caption, at.x + 109.0 * self.zoom, at.y + (1.0 if self.zoom >= 0.65 else 10.0) * self.zoom, theme.text() if node.enabled else theme.text_muted(), self.font)
-            let detail = (f"{node.phase} {int(node.progress * 100.0)}%" if node.progress > 0.0 else node.phase) if node.computing else ("ERROR" if node.failure != "" else ("WARNING" if node.warning != "" else ("bypassed" if not node.enabled else (f"{node.edits.length} edits" if is_edit(node.kind) else "geometry"))))
+            let detail = (f"{node.phase} {int(node.progress * 100.0)}%" if node.progress > 0.0 else node.phase) if node.computing else ("ERROR" if node.failure != "" else ("WARNING" if node.warning != "" else ("bypassed" if not node.enabled else ("frozen" if node.frozen != "" else (f"{node.edits.length} edits" if is_edit(node.kind) else "geometry")))))
             if self.zoom >= 0.65:
                 let shown = node.computing or node.failure != "" or node.warning != "" or not node.enabled or is_edit(node.kind)
                 let ink = theme.accent() if node.failure != "" or node.computing else (theme.warning() if node.warning != "" else theme.text_muted())
@@ -215,15 +215,13 @@ pub class NetworkView: Widget:
         if self.hovered >= 0 and self.mode == "" and not shading:
             if let node = graph.find(self.hovered):
                 let at = self.to_graph(self.pointer_x, self.pointer_y)
-                let hint = "Bypass (B)" if at.x < node.x + 15.0 else ("Out (O)" if at.x > node.x + 81.0 else node.kind + " / geometry")
+                let hint = "Bypass (B), Freeze (Shift+B)" if at.x < node.x + 15.0 else ("Out (O)" if at.x > node.x + 81.0 else node.kind + " / geometry")
                 p.text(hint, 12.0, size.height - 24.0, theme.text_muted())
-                let screen = self.to_screen(node.x, node.y)
                 # Fixed screen-size hover controls keep flags usable zoomed out.
-                for flag in 0..<3:
-                    let flag_x = screen.x - 26.0 if flag == 0 else (screen.x + node_width * self.zoom + 6.0 if flag == 1 else screen.x + node_width * self.zoom * 0.5 - 10.0)
-                    let flag_y = screen.y + node_height * self.zoom * 0.5 - 10.0 if flag != 2 else screen.y - 27.0
-                    p.rounded_rectangle(Rect(flag_x, flag_y, 20.0, 20.0), theme.surface(), 4.0)
-                    p.text(["B", "O", "i"][flag], flag_x + 5.0, flag_y + 2.0, theme.accent() if (flag == 0 and not node.enabled) or (flag == 1 and node.id in exposed) else theme.text())
+                for flag in 0..<4:
+                    let (flag_x, flag_y) = self.flag_at(node, flag)
+                    p.rounded_rectangle(Rect(flag_x, flag_y, 20.0, 20.0), theme.frozen() if flag == 3 and node.frozen != "" else theme.surface(), 4.0)
+                    p.text(["B", "O", "i", "F"][flag], flag_x + 5.0, flag_y + 2.0, theme.accent() if (flag == 0 and not node.enabled) or (flag == 1 and node.id in exposed) else theme.text())
         if shading:
             let side = math.min(230.0, math.min(size.width, size.height) * 0.4)
             p.rectangle(Rect(size.width - side - 13.0, size.height - side - 13.0, side + 2.0, side + 2.0), theme.border())
@@ -280,6 +278,17 @@ pub class NetworkView: Widget:
             self.draw_socket(p, point, inputs[port].width, node.inputs[port] >= 0)
 
     ## A socket: grey for a value, accent for a color or vector.
+    ## Hover flag `flag`'s top left on screen, a fixed size whatever the
+    ## zoom: Bypass left, Out right, info above, Freeze below.
+    func flag_at(self, node: Node, flag: int) -> (float, float):
+        let screen = self.to_screen(node.x, node.y)
+        if flag == 0:
+            return (screen.x - 26.0, screen.y + node_height * self.zoom * 0.5 - 10.0)
+        if flag == 1:
+            return (screen.x + node_width * self.zoom + 6.0, screen.y + node_height * self.zoom * 0.5 - 10.0)
+        let middle = screen.x + node_width * self.zoom * 0.5 - 10.0
+        return (middle, screen.y - 27.0) if flag == 2 else (middle, screen.y + node_height * self.zoom + 7.0)
+
     func draw_socket(self, p: Painter, at: Point, width: int, filled: bool) -> unit!:
         let r = math.max(3.0, 4.5 * self.zoom)
         p.rounded_rectangle(Rect(at.x - r, at.y - r, 2.0 * r, 2.0 * r), theme.accent() if width == 3 else theme.grey(170.0), r)
@@ -365,16 +374,16 @@ pub class NetworkView: Widget:
                 return
             if event.button == 0 and self.mode == "" and self.hovered >= 0:
                 if let node = self.workspace.network.find(self.hovered):
-                    let screen = self.to_screen(node.x, node.y)
-                    for flag in 0..<3:
-                        let x = screen.x - 26.0 if flag == 0 else (screen.x + node_width * self.zoom + 6.0 if flag == 1 else screen.x + node_width * self.zoom * 0.5 - 10.0)
-                        let y = screen.y + node_height * self.zoom * 0.5 - 10.0 if flag != 2 else screen.y - 27.0
+                    for flag in 0..<4:
+                        let (x, y) = self.flag_at(node, flag)
                         if event.x >= x and event.x <= x + 20.0 and event.y >= y and event.y <= y + 20.0:
                             node_commands.select_node(self.workspace, node.id)
                             if flag == 0:
                                 self.actions.enabled.trigger()
                             elif flag == 1:
                                 self.actions.output.trigger()
+                            elif flag == 3:
+                                self.actions.freeze.trigger()
                             elif let inspect = self.on_inspect:
                                 inspect(node.id)
                             self.box.invalidate()
