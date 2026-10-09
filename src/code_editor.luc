@@ -1,0 +1,100 @@
+## The Code node's editor: luce-ui's TextEditor with line numbers and Luce
+## highlighting from luced's TextMate grammar (code_grammar.luc). What is
+## typed goes to the node as one undo step when typing pauses, when the
+## editor loses focus, or on Cmd/Ctrl+Enter: not every keystroke.
+from luce_ui.ui import TextEditor, Highlight, Font
+from luce_gpu.gpu import Color
+from luce_textmate.textmate import Grammar, Tokenizer
+from interop import Connection
+from code_grammar import luce_grammar
+import theme
+import time
+
+## How long typing pauses before the text goes to the node (ns).
+let pause = 400000000
+
+pub class CodeEditor:
+    pub let editor: TextEditor
+    let tokens: Tokenizer
+    ## The text as the node last took it, and when the editor last changed.
+    var committed: str = ""
+    var changed_at: int = 0
+    var colored: int = -1
+    ## Takes the text when it is committed.
+    pub var on_commit: func(str) -> unit!? = none
+    let connections: list[Connection]
+
+    pub func init(self, font: Font) -> unit!:
+        self.editor = TextEditor("", font = font, line_numbers = true)
+        self.tokens = Tokenizer(Grammar(luce_grammar()))
+        self.connections = [self.editor.on_change(self.edited)]
+
+    ## Show `text` (another node, an undo) unless it is what is being typed.
+    pub func show(self, text: str) -> unit!:
+        if text == self.committed and self.changed_at == 0:
+            return
+        if self.changed_at != 0 and self.editor.layout().is_focused():
+            return
+        self.committed = text
+        self.changed_at = 0
+        if self.editor.text() != text:
+            self.editor.set_text(text)
+        self.color()
+
+    func edited(self) -> unit!:
+        self.changed_at = time.now()
+        self.color()
+
+    ## Polled each frame: a pause in typing, or the focus gone, commits.
+    pub func poll(self) -> unit!:
+        if self.changed_at == 0:
+            return
+        if time.now() - self.changed_at >= pause or not self.editor.layout().is_focused():
+            self.commit()
+
+    ## Hand the text to the node now (Cmd/Ctrl+Enter, or a pause).
+    pub func commit(self) -> unit!:
+        self.changed_at = 0
+        let text = self.editor.text()
+        if text == self.committed:
+            return
+        self.committed = text
+        if let take = self.on_commit:
+            take(text)
+
+    ## Color the text by its tokens' scopes.
+    func color(self) -> unit!:
+        let version = self.editor.version()
+        if version == self.colored:
+            return
+        let length = self.editor.length()
+        let count = self.tokens.tokenize(self.editor.text_range(0, length))
+        var spans: list[Highlight] = []
+        for i in 0..<count:
+            if let ink = scope_color(self.tokens.span_scope(i)):
+                spans.append(Highlight(self.tokens.span_start(i), self.tokens.span_end(i), ink))
+        if self.editor.update_highlights(0, length, spans, version):
+            self.colored = version
+
+    pub func close(self):
+        for connection in self.connections:
+            connection.disconnect()
+        self.connections.clear()
+        self.on_commit = none
+
+## The editor's color for a token scope, in the editor's palette, or none
+## (plain text).
+pub func scope_color(scope: str) -> Color?:
+    if scope.starts_with("comment"):
+        return theme.text_muted()
+    if scope.starts_with("string"):
+        return theme.code_string()
+    if scope.starts_with("constant.numeric") or scope.starts_with("constant.language"):
+        return theme.code_number()
+    if scope.starts_with("keyword"):
+        return theme.accent()
+    if scope.starts_with("storage.type") or scope.starts_with("entity.name.type"):
+        return theme.code_type()
+    if scope.starts_with("entity.name.function"):
+        return theme.code_function()
+    return none
