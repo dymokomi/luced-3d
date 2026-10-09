@@ -153,11 +153,13 @@ for lane in 0..<fog.count():
 | `voxel_size()`, `background()`, `is_level_set()`, `active_count()` | what the grid is |
 
 A grid is read where it is until the first write copies it. `values()` stays
-valid until `set` adds a leaf; a `VoxelGrid` stays valid until the geometry
-is replaced (a verb, `merge`, `transform`, `set_geometry`). How the viewport
-draws a fog grid is its look, which the Volume Visualization node sets and a
-script can too: `fog.set_look(density = 8.0, shadow = 0.4, smoke = tint,
-emission = 2.0, emission_field = "heat")`, and
+valid until `set` adds a leaf or the geometry is replaced (a verb, `merge`,
+`transform`, `set_geometry`). A `VoxelGrid` handle lives as long as its
+geometry: after a replacement it reads the new geometry's grid of its name,
+and when there is none it reads as empty and a write fails, naming the grid.
+How the viewport draws a fog grid is its look, which the Volume
+Visualization node sets and a script can too: `fog.set_look(density = 8.0,
+shadow = 0.4, smoke = tint, emission = 2.0, emission_field = "heat")`, and
 `fog.set_emission_ramp(numbers, low, high)` for an emission color ramp
 (luce-std ramp numbers). `fog.look()` reads it back.
 
@@ -210,13 +212,12 @@ editor, sends it anyway).
 A build error, a trap (`index out of bounds`), `k.error` and an error the
 script raises itself (`error(code, "...")`) name the line and column of the
 script, and the editor underlines it. An error a package raised and `try`
-passed up names where it was raised instead: *returned from cook: the file
-could not be opened (raised at luce_geocore/src/...)*.
+passed up underlines the script's line that called into the package
+(luce-base's `failure.called_at`) and says where it was raised: *line 4,
+column 5: the file could not be opened (raised at luce_geocore/src/...)*.
 
 ## Not yet
 
 - Completion and hover: the editor's help reads the Code node's API; it
   cannot see a script's imports until luce-base's `embed.Library` checks
   package modules.
-- Where a `try` in the script passed up an error a package raised: the
-  message names where it was raised, not the script's line.
