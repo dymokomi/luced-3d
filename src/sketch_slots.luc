@@ -14,7 +14,7 @@
 from overlay_lines import OverlayLines
 from sketch_editor import SketchEditor
 import sketch_kinds as k
-from sketch_geometry import side_of
+from sketch_geometry import side_of, through, turn, off_line
 from luce_std import math
 
 pub func slot_tools() -> list[str]:
@@ -60,7 +60,7 @@ func straight_ends(tool: str, c: list[list[float]]) -> list[list[float]]:
         return [[2.0 * c[0][0] - c[1][0], 2.0 * c[0][1] - c[1][1]], c[1]]
     if tool == "Overall Slot" and c.length > 2:
         let length = math.hypot(c[1][0] - c[0][0], c[1][1] - c[0][1])
-        let half = half_width(c[0], c[1], c[2])
+        let half = off_line(c[0], c[1], c[2])
         if length <= 2.0 * half:
             return []
         let ux = (c[1][0] - c[0][0]) / length
@@ -68,18 +68,13 @@ func straight_ends(tool: str, c: list[list[float]]) -> list[list[float]]:
         return [[c[0][0] + ux * half, c[0][1] + uy * half], [c[1][0] - ux * half, c[1][1] - uy * half]]
     return [c[0], c[1]]
 
-## How far `p` is from the line through `a` and `b`.
-func half_width(a: list[float], b: list[float], p: list[float]) -> float:
-    let length = math.max(math.hypot(b[0] - a[0], b[1] - a[1]), 1e-300)
-    return math.abs((b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])) / length
-
 ## A slot between end centers `a` and `b`, as wide as `width_at` is from
 ## their line: two half circles joined by two lines touching them. Clicked
 ## centers (Center to Center's) are the clicks' points.
 func straight_slot(e: SketchEditor, a: list[float], b: list[float], width_at: list[float]) -> unit!:
     let sketch = e.sketch else return
     let length = math.hypot(b[0] - a[0], b[1] - a[1])
-    let w = half_width(a, b, width_at)
+    let w = off_line(a, b, width_at)
     if length <= 0.0 or w <= 0.0:
         return
     let ux = (b[0] - a[0]) / length
@@ -124,14 +119,8 @@ func centerline(tool: str, c: list[list[float]]) -> list[float]?:
     let a = c[0]
     let b = c[1]
     let m = c[2]
-    let d = 2.0 * (a[0] * (b[1] - m[1]) + b[0] * (m[1] - a[1]) + m[0] * (a[1] - b[1]))
-    if math.abs(d) <= 1e-12:
-        return none
-    let a2 = a[0] * a[0] + a[1] * a[1]
-    let b2 = b[0] * b[0] + b[1] * b[1]
-    let m2 = m[0] * m[0] + m[1] * m[1]
-    let ox = (a2 * (b[1] - m[1]) + b2 * (m[1] - a[1]) + m2 * (a[1] - b[1])) / d
-    let oy = (a2 * (m[0] - b[0]) + b2 * (a[0] - m[0]) + m2 * (b[0] - a[0])) / d
+    let o = through(a, b, m) else return none
+    let (ox, oy) = (o[0], o[1])
     let r = math.hypot(a[0] - ox, a[1] - oy)
     let at_a = math.atan2(a[1] - oy, a[0] - ox)
     let at_b = math.atan2(b[1] - oy, b[0] - ox)
@@ -139,15 +128,6 @@ func centerline(tool: str, c: list[list[float]]) -> list[float]?:
     if turn(at_a, at_m) <= turn(at_a, at_b):
         return [ox, oy, r, at_a, turn(at_a, at_b)]
     return [ox, oy, r, at_b, turn(at_b, at_a)]
-
-## The counterclockwise turn from angle `a` to angle `b` (0..2π).
-func turn(a: float, b: float) -> float:
-    var t = b - a
-    while t <= 0.0:
-        t += 2.0 * math.pi
-    while t > 2.0 * math.pi:
-        t -= 2.0 * math.pi
-    return t
 
 ## An arc slot about centerline `arc`, as wide as `width_at` is from it:
 ## outer and inner arcs about its center, half circles round its ends.
