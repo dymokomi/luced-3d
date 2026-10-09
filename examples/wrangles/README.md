@@ -22,3 +22,7 @@ an error, and the program writes these files again.
 | `checker` | Running over Primitives: a checkerboard from each face's `f.center()`. |
 | `terrain` | Fractal terrain: the header defines `fbm`, a loop of noise octaves; the body raises the grid by it; a second node colors by height; a Detail node writes the octave count as a detail attribute. |
 | `million_points` | A 1000 × 1000 grid (a million points) moved by animated noise and colored by height. Press Play to watch it run every frame. |
+| `spiral` | Geometry from nothing: Numbers mode with no input, each `n` adding two points (`k.add_point`) and the quad to the previous pair (`k.add_prim`). Count, turn and rise are parameters. |
+| `holes` | Faces deleted at random (`k.remove_prim`), Houdini's delete-by-condition. |
+| `distance_color` | A grid colored and dipped by its distance to a sphere in the **second input** (`k.input(1).xyzdist`). |
+| `projection` | A flat sheet dropped onto noise terrain in the second input by a ray down from each point (`k.input(1).intersect`). |

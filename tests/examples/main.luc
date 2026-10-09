@@ -41,6 +41,15 @@ class Scene:
             error(ui.invalid, f"{self.name}: {node.failure}")
         return id
 
+    ## Connect node `source` to input `port` of node `target`.
+    func wire(self, source: int, target: int, port: int) -> unit!:
+        self.w.network.connect(source, target, port)
+        self.w.network.invalidate(target)
+        self.w.rebuild()
+        let node = self.w.network.require(target)
+        if node.failure != "":
+            error(ui.invalid, f"{self.name}: {node.failure}")
+
     ## Display the last node, check every node cooked, and save.
     func save(self, folder: str) -> unit!:
         # The last node is the scene's output, displayed and framed.
@@ -63,7 +72,7 @@ pub func main(arguments: list[str]) -> int!:
     let folder = paths.join(paths.directory(paths.directory(process.current_directory())), "examples/wrangles")
     files.ensure_directory(folder)
     var count = 0
-    for build in [sine_wave, ripple, noise_sphere, color_by_height, twist, random_prim_colors, jitter, attractor, checker, terrain, million]:
+    for build in [sine_wave, ripple, noise_sphere, color_by_height, twist, random_prim_colors, jitter, attractor, checker, terrain, million, spiral, holes, distance_color, projection]:
         build(folder)
         count += 1
     print(f"PASS {count} wrangle example scenes cooked and saved to examples/wrangles")
@@ -152,4 +161,55 @@ func million(folder: str) -> unit!:
     let s = Scene("million_points")
     _ = s.add("Grid", [(0, 20.0), (1, 1000.0)])
     _ = s.code(1, "let n = snoise(p.P * k.f32(\"scale\", 0.3) + [0.0, (f32)k.time * 0.3, 0.0, 0.0])\np.P[1] = n * k.f32(\"height\", 1.5)\nlet t = fit(n, -1.0, 1.0, 0.0, 1.0)\np.Cd = [t, 0.4 + 0.4 * t, 1.0 - t, 0.0]\n")
+    s.save(folder)
+
+## A spiral ribbon made from nothing: Numbers mode, each n adds two points
+## and the quad joining them to the previous pair (k.add_point, k.add_prim;
+## a new point's number is n · 1024 + its order within the run).
+func spiral(folder: str) -> unit!:
+    let s = Scene("spiral")
+    let id = s.code(4, "let t = (f32)n * k.f32(\"turn\", 0.15)\nlet r = 0.5 + (f32)n * 0.012\nlet up = (f32)n * k.f32(\"rise\", 0.01)\nlet across = [math32.cos(t), 0.0, math32.sin(t), 0.0]\nlet inner = k.add_point(across * r + [0.0, up, 0.0, 0.0])\nlet outer = k.add_point(across * (r + 0.4) + [0.0, up, 0.0, 0.0])\nif n > 0:\n    let before = (i32)(n - 1) * 1024\n    var quad: i32[16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    quad[0] = before\n    quad[1] = before + 1\n    quad[2] = outer\n    quad[3] = inner\n    _ = k.add_prim(quad, 4)\n")
+    s.w.network.selected = id
+    node_commands.set_parameter(s.w, code_cook.count_slot, 300.0)
+    s.save(folder)
+
+## Faces deleted at random, a fraction of them (k.remove_prim): Houdini's
+## "delete by condition".
+func holes(folder: str) -> unit!:
+    let s = Scene("holes")
+    _ = s.add("Grid", [(0, 8.0), (1, 48.0)])
+    _ = s.code(3, "if rand((i64)f.primnum) < k.f32(\"fraction\", 0.35):\n    k.remove_prim(f.primnum)\n")
+    s.save(folder)
+
+## Rough noise terrain smoothed by averaging each point with its nearest
+## neighbors in the input (nearpoints, point_P): Houdini's point-cloud blur.
+func smoothing(folder: str) -> unit!:
+    let s = Scene("smoothing")
+    _ = s.add("Grid", [(0, 8.0), (1, 64.0)])
+    _ = s.code(1, "p.P[1] = snoise(p.P * 3.0) * 0.4 + rand((i64)p.ptnum) * 0.15\n")
+    _ = s.code(1, "let g = k.input(0)\nlet near = g.nearpoints(p.P, k.f32(\"radius\", 0.4), k.i32(\"points\", 12))\nvar sum: f32[4] = [0.0, 0.0, 0.0, 0.0]\nfor i in 0..<near.count:\n    sum = sum + g.point_P(near.points[i])\nif near.count > 0:\n    p.P = sum * (1.0 / (f32)near.count)\n")
+    s.save(folder)
+
+## A grid colored by its distance to a sphere in the second input
+## (xyzdist): near is warm, far is cool.
+func distance_color(folder: str) -> unit!:
+    let s = Scene("distance_color")
+    let grid = s.add("Grid", [(0, 8.0), (1, 64.0)])
+    let ball = s.add("Sphere", [(0, 1.5), (1, 32.0)])
+    s.w.network.selected = grid
+    let id = s.code(1, "let d = k.input(1).xyzdist(p.P)\nlet t = clamp(d / k.f32(\"range\", 2.0), 0.0, 1.0)\np.Cd = [1.0 - t, 0.3 + 0.3 * t, t, 0.0]\np.P[1] = -0.2 * t\n")
+    s.wire(ball, id, 1)
+    s.save(folder)
+
+## A flat grid dropped onto noise terrain in the second input by casting a
+## ray down from each point (intersect): Houdini's Ray SOP in a wrangle.
+func projection(folder: str) -> unit!:
+    let s = Scene("projection")
+    _ = s.add("Grid", [(0, 10.0), (1, 64.0)])
+    _ = s.code(1, "p.P[1] = snoise(p.P * 0.4) * 1.2\n")
+    let ground = s.w.network.selected
+    let sheet = s.add("Grid", [(0, 6.0), (1, 40.0)])
+    s.w.network.selected = sheet
+    let id = s.code(1, "let start = p.P + [0.0, 5.0, 0.0, 0.0]\nlet hit = k.input(1).intersect(start, [0.0, -1.0, 0.0, 0.0])\nif hit.prim >= 0:\n    p.P = hit.position + [0.0, k.f32(\"lift\", 0.05), 0.0, 0.0]\n    p.Cd = [1.0, 0.6, 0.2, 0.0]\n")
+    s.wire(ground, id, 1)
     s.save(folder)
