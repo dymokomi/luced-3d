@@ -3,7 +3,7 @@
 ## catalog, one line each after Houdini's parameter pane. The catalog's rows
 ## name the value or text slot each edits; an Edit node adds its component
 ## edit rows. A drag is live and one undo step on release.
-from luce_ui.ui import VStack, HStack, Text, TextField, Font, Button, ParameterPanel, ParameterSpec, ParameterKind, Rect, Size
+from luce_ui.ui import VStack, HStack, Text, TextField, Font, Button, ParameterPanel, ParameterSpec, ParameterKind, Rect, Size, TextEditor
 from code_editor import CodeEditor
 import code_node
 import code_cook
@@ -62,6 +62,8 @@ pub class Inspector:
     let code_box: VStack
     let code_body: CodeEditor
     let code_header: CodeEditor
+    ## What the code's k.printf calls said in the last cook (many lines).
+    let console: TextEditor
 
     pub func init(self, workspace: Workspace, actions: Actions, font: Font) -> unit!:
         self.dimensions = []
@@ -91,11 +93,13 @@ pub class Inspector:
         let footer = VStack([self.stats, self.delete_button], spacing = 4.0, padding = 6.0)
         self.code_body = CodeEditor(font)
         self.code_header = CodeEditor(font)
-        self.code_body.editor.layout().set_limits(Size(240.0, 260.0), Size(16384.0, 900.0))
+        self.code_body.editor.layout().set_limits(Size(240.0, 240.0), Size(16384.0, 420.0))
         self.code_header.editor.layout().set_limits(Size(240.0, 90.0), Size(16384.0, 300.0))
         self.code_body.on_commit = func (text: str) -> unit!: self.code_committed(code_cook.body_slot, text)
         self.code_header.on_commit = func (text: str) -> unit!: self.code_committed(code_cook.header_slot, text)
-        self.code_box = VStack([Text("Code (one element; it runs for all in parallel)", font = font, muted = true), self.code_body.editor,
+        self.console = TextEditor("", read_only = true, line_numbers = false, font = font)
+        self.console.layout().set_limits(Size(240.0, 40.0), Size(16384.0, 200.0))
+        self.code_box = VStack([Text("Code (one element; it runs for all in parallel)", font = font, muted = true), self.code_body.editor, self.console,
                                 Text("Header (helper functions)", font = font, muted = true), self.code_header.editor], spacing = 4.0, padding = 6.0)
         self.generic_rows = VStack([header, self.parameters, self.code_box, footer], spacing = 0.0)
         self.body = VStack([self.generic_rows], spacing = 0.0)
@@ -247,6 +251,9 @@ pub class Inspector:
         if coding and not self.workspace.in_transaction():
             self.show_ramps()
         if coding:
+            if self.console.text() != node.console:
+                self.console.set_text(node.console)
+            self.console.layout().set_visible(node.console != "")
             self.code_body.show(node.texts[code_cook.body_slot])
             self.code_header.show(node.texts[code_cook.header_slot])
             let place = code_node.failure_place(node.failure)
@@ -258,7 +265,8 @@ pub class Inspector:
             self.name.set_text(node.name)
         let network = self.workspace.network
         self.kind.set_text(node.kind + (" · Out" if network.is_output(node.id) else " · internal") + (" · Auto" if node.output == 0 else "") + (" · preview" if network.preview and node.id == network.display else "") + ("" if node.enabled else " · bypassed") + (" · frozen" if node.frozen != "" else ""))
-        self.description.set_text(node.failure if node.failure != "" else ("Warning: " + node.warning if node.warning != "" else node_catalog.description(node.kind)))
+        # One line: a message from code may hold line breaks or tabs.
+        self.description.set_text(one_line(node.failure if node.failure != "" else ("Warning: " + node.warning if node.warning != "" else node_catalog.description(node.kind))))
         self.description.layout().set_visible(not file or node.failure != "" or node.warning != "")
         self.parameters.layout().set_enabled(node.enabled or file)
         for index in 0..<self.rows.length:
@@ -376,3 +384,7 @@ func linked_slot(node: Node, slot: int) -> bool:
         if sockets[port].slot == slot and port < node.inputs.length and node.inputs[port] >= 0:
             return true
     return false
+
+## `text` on one line: line breaks and tabs as spaces (a Text holds one).
+func one_line(text: str) -> str:
+    return text.replace("\r", " ").replace("\n", " ").replace("\t", " ")

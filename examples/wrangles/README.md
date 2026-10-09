@@ -33,3 +33,6 @@ an error, and the program writes these files again.
 | `curl_flow` | A grid carried through a divergence-free flow (`curlnoise`) in a loop of small steps; the color shows how far each point traveled. |
 | `inside_outside` | A grid lifted and colored where it lies inside a sphere in the second input (`windingnumber`). |
 | `surface_distance` | Bands of color by distance along the surface from two seed points (`surfacedist` over a group the first node marks). |
+| `pc_smooth` | Point-cloud smoothing in one call: `k.input(0).pcopen(p.P, radius, 20).filter_vec3("P")`, VEX's pcfilter, two passes. |
+| `shrink_wrap` | A grid wrapped onto a signed distance field in the second input, stepping each point back along the field's gradient by its distance (`volume_gradient`, `volume_sample`). |
+| `console` | A Detail run printing the input's size to the node's console (`k.printf`) and warning when it is large (`k.warning`). Select the Code node to read it. |

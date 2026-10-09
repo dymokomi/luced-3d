@@ -72,7 +72,7 @@ pub func main(arguments: list[str]) -> int!:
     let folder = paths.join(paths.directory(paths.directory(process.current_directory())), "examples/wrangles")
     files.ensure_directory(folder)
     var count = 0
-    for build in [sine_wave, ripple, noise_sphere, color_by_height, twist, random_prim_colors, jitter, attractor, checker, terrain, million, spiral, holes, smoothing, distance_color, projection, ramps, matrix_twist, cells, curl_flow, inside_outside, surface_distance]:
+    for build in [sine_wave, ripple, noise_sphere, color_by_height, twist, random_prim_colors, jitter, attractor, checker, terrain, million, spiral, holes, smoothing, distance_color, projection, ramps, matrix_twist, cells, curl_flow, inside_outside, surface_distance, pc_smooth, shrink_wrap, console]:
         build(folder)
         count += 1
     print(f"PASS {count} wrangle example scenes cooked and saved to examples/wrangles")
@@ -273,4 +273,34 @@ func surface_distance(folder: str) -> unit!:
     _ = s.add("Grid", [(0, 8.0), (1, 64.0)])
     _ = s.code(1, "p.P[1] = snoise(p.P * 0.35) * 1.5\np.set_group(\"seed\", p.ptnum == 2080 or p.ptnum == 600)\n")
     _ = s.code(1, "let d = k.input(0).surfacedist(\"seed\", p.ptnum)\nlet band = math32.sin(d * k.f32(\"rings\", 6.0)) * 0.5 + 0.5\np.Cd = [band, 0.3 + 0.4 * band, 1.0 - band, 0.0]\n")
+    s.save(folder)
+
+## Point-cloud smoothing in one call (pcopen + filter_vec3, VEX's
+## pcfilter): a rough blob relaxed twice.
+func pc_smooth(folder: str) -> unit!:
+    let s = Scene("pc_smooth")
+    _ = s.add("Sphere", [(0, 1.0), (1, 64.0)])
+    _ = s.code(1, "let n = snoise(p.P * 5.0) + rand((i64)p.ptnum) * 0.6\np.P = p.P + normalized(p.P) * (n * 0.12)\n")
+    for _ in 0..<2:
+        _ = s.code(1, "p.P = k.input(0).pcopen(p.P, k.f32(\"radius\", 0.15), k.i32(\"points\", 20)).filter_vec3(\"P\")\n")
+    s.save(folder)
+
+## A grid shrink-wrapped onto a signed distance field in the second input:
+## each point steps back along the field's gradient by its distance
+## (volume_sample, volume_gradient).
+func shrink_wrap(folder: str) -> unit!:
+    let s = Scene("shrink_wrap")
+    let grid = s.add("Grid", [(0, 3.0), (1, 64.0)])
+    let field = s.add("SDF Sphere", [(0, 1.2)])
+    s.w.network.selected = grid
+    let id = s.code(1, "let g = k.input(1)\nvar q = p.P + [0.0, 1.6, 0.0, 0.0]\nfor i in 0..<k.i32(\"steps\", 3):\n    q = q - normalized(g.volume_gradient(\"\", q)) * g.volume_sample(\"\", q)\np.P = q\np.Cd = [0.9, 0.5 + 0.4 * (q[1] / 1.2), 0.3, 0.0]\n")
+    s.wire(field, id, 1)
+    s.save(folder)
+
+## printf and warnings: a Detail run reporting the input's size and
+## bounds to the node's console (select the node to read it).
+func console(folder: str) -> unit!:
+    let s = Scene("console")
+    _ = s.add("Torus", [(0, 1.0), (1, 32.0), (2, 0.3)])
+    _ = s.code(0, "let g = k.input(0)\nk.printf(\"points %d, primitives %d\\n\", (f32)g.point_count(), (f32)g.prim_count())\nlet size = g.bounds().size\nk.printf(\"size %.2f x %.2f x %.2f\\n\", size[0], size[1], size[2])\nif g.point_count() > 500:\n    k.warning(\"more than 500 points\")\n")
     s.save(folder)
