@@ -2,12 +2,13 @@
 ## mesh, scene object and renderer cache, so re-publishing an unchanged stamp
 ## (a rename, a selection, a visibility toggle elsewhere) rebuilds nothing. A
 ## fog volume's key is its grids' content: a new look (Volume Visualization)
-## only sets the held volume's look, uploading nothing.
+## only sets the held volume's look, uploading nothing. A point cloud's key is
+## its columns' (GaussianSplats.key): held, it uploads once.
 ## A few keys that just left the scene stay held, so toggling a node back on
 ## or undoing a display change needs no new copy either.
 from luce_geocore.geocore import Mesh
 from luce_3d import graphics as three
-from luce_3d.graphics import Group, Vector3, FogVolume
+from luce_3d.graphics import Group, Vector3, FogVolume, GaussianSplats
 from compute_bridge import ComputeService
 from network import Network
 from geometry_data import GeometryData
@@ -20,6 +21,10 @@ pub class DisplayPublisher:
     let held_volumes: map[int, FogVolume]
     ## The fog volumes of the displayed result.
     pub var volumes: list[FogVolume]
+    ## Point clouds (Gaussian splats or dots) by key, kept like meshes so each
+    ## uploads once, and those of the displayed result.
+    let held_clouds: map[int, GaussianSplats]
+    pub var clouds: list[GaussianSplats]
     let shown: map[int, three.Mesh]
     var shown_keys: list[int]
     var product_keys: list[int]
@@ -39,6 +44,8 @@ pub class DisplayPublisher:
         self.held = {}
         self.held_volumes = {}
         self.volumes = []
+        self.held_clouds = {}
+        self.clouds = []
         self.shown = {}
         self.shown_keys = []
         self.product_keys = []
@@ -55,6 +62,7 @@ pub class DisplayPublisher:
         self.nodes = []
         self.meshes = []
         self.volumes = []
+        self.clouds = []
         var fresh = false
         self.geometry = none
         for index in 0..<service.mesh_count():
@@ -68,6 +76,13 @@ pub class DisplayPublisher:
                 if let volume = self.held_volumes[key]:
                     volume.set_look(service.volume_look(index))
                     self.volumes.append(volume)
+                continue
+            if service.cloud_fresh(index):
+                self.held_clouds[key] = service.take_cloud(index)
+                fresh = true
+            if service.cloud_product(index):
+                if let cloud = self.held_clouds[key]:
+                    self.clouds.append(cloud)
                 continue
             if service.mesh_fresh(index):
                 self.held[key] = service.take_mesh(index)
@@ -122,15 +137,21 @@ pub class DisplayPublisher:
                 extra += 1
         let meshes: map[int, Mesh] = {}
         let volumes: map[int, FogVolume] = {}
+        let clouds: map[int, GaussianSplats] = {}
         for key in kept:
             if let mesh = self.held[key]:
                 meshes[key] = mesh
             if let volume = self.held_volumes[key]:
                 volumes[key] = volume
+            if let cloud = self.held_clouds[key]:
+                clouds[key] = cloud
         self.held.clear()
         for key in meshes.keys():
             self.held[key] = meshes[key] else continue
         self.held_volumes.clear()
         for key in volumes.keys():
             self.held_volumes[key] = volumes[key] else continue
+        self.held_clouds.clear()
+        for key in clouds.keys():
+            self.held_clouds[key] = clouds[key] else continue
         self.kept = kept

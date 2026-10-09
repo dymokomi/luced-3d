@@ -14,6 +14,7 @@ import c
 from luce_geocore import geocore
 from luce_geocore.geocore import detached_mesh, mesh_overlay_points
 from luce_3d.graphics import Vector3, Matrix4, invalid, WireBatch, wire_batch_type, append_curve_segments, FogVolume, FogLook, fog_volume_type, fog_volume_of, fog_look_of
+from luce_3d.graphics import GaussianSplats, gaussian_splats_type, gaussian_splats_of
 from luce_geocore.geocore import GeometrySet
 from luce_geocore.core.growing import Growing
 from overlay_lines import OverlayLines, line_points
@@ -46,6 +47,10 @@ struct Product:
     ## with (none for other products).
     var volume: FogVolume*?
     var look: FogLook?
+    ## A point cloud packed here for the UI to adopt (the UI uploads it on
+    ## its first draw), and whether the product is a cloud's (new or held).
+    var splats: GaussianSplats*?
+    var cloud: bool
 
 ## Overlays of a key the UI holds, kept so unchanged keys need no extraction.
 struct Held:
@@ -95,6 +100,9 @@ struct State:
             if let volume = product.volume:
                 volume.close()
                 free(volume) in memory.heap
+            if let splats = product.splats:
+                splats.close()
+                free(splats) in memory.heap
         self.count = 0
         if let report = self.report:
             report.release()
@@ -288,6 +296,27 @@ pub struct ComputeChannel:
             free(made) in memory.heap
             error(failure.code, failure.message)
 
+    ## Publish `geometry`'s point cloud placed by `matrix` under its content
+    ## key (GaussianSplats.key): packed here, off the UI thread, unless the UI
+    ## holds the key, when only the key goes.
+    pub func cloud(key: i64, node: i64, geometry: interop.Reference[GeometrySet], matrix: Matrix4) -> !:
+        try self.check()
+        if self.merge(key, false):
+            return
+        if self.holds(key):
+            var reused = Product(key, none, node, true, false, false)
+            reused.cloud = true
+            try self.add(reused)
+            return
+        let made = try gaussian_splats_of(try geometry.get(), matrix)
+        var product = Product(key, none, node, true, false, true)
+        product.splats = made
+        product.cloud = true
+        self.add(product) catch failure:
+            made.close()
+            free(made) in memory.heap
+            error(failure.code, failure.message)
+
     ## A key already in this result gains the inspect role instead of a copy.
     func merge(key: i64, inspect: bool) -> bool:
         for index in 0..<self.state.count:
@@ -438,6 +467,23 @@ pub struct ComputeService:
         state.products[(usize)index].volume = none
         return try interop.Reference[FogVolume].adopt(volume, fog_volume_type, memory.heap)
 
+    ## Whether the product carries a newly packed point cloud to adopt.
+    pub func cloud_fresh(index: i64) -> bool:
+        return (self.state else return false).products[(usize)index].splats != none
+
+    ## Whether product `index` is a point cloud's (new or held).
+    pub func cloud_product(index: i64) -> bool:
+        return (self.state else return false).products[(usize)index].cloud
+
+    ## Adopt product `index`'s point cloud (once; the UI keeps it by key).
+    pub func take_cloud(index: i64) -> interop.Reference[GaussianSplats]!:
+        let state = self.state else error(invalid, "Compute service closed")
+        if index < 0 or (usize)index >= state.count or state.completed == 0:
+            error(invalid, "No completed point cloud")
+        let splats = state.products[(usize)index].splats else error(invalid, "Point cloud already consumed")
+        state.products[(usize)index].splats = none
+        return try interop.Reference[GaussianSplats].adopt(splats, gaussian_splats_type, memory.heap)
+
     ## Combined overlays of the current result: fresh and held keys.
     pub func wires() -> interop.Reference[WireBatch]!:
         return try self.batch(0)
@@ -505,7 +551,7 @@ pub struct ComputeService:
         state.held_count = count
         for index in 0..<state.count:
             let product = &state.products[index]
-            if not product.fresh or product.mesh != none or product.volume != none or not listed(kept, product.key) or state.held_count == state.held.length:
+            if not product.fresh or product.mesh != none or product.volume != none or product.splats != none or not listed(kept, product.key) or state.held_count == state.held.length:
                 continue
             state.held[state.held_count] = Held(product.key, product.wires, product.normals, product.patches, product.curves, product.hulls)
             state.held_count += 1

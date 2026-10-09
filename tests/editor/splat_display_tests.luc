@@ -1,0 +1,100 @@
+## Point clouds in the viewport: a 3DGS PLY's splats (the File node bakes
+## them on reading) draw as Gaussian splats and a plain PLY's points as dots,
+## without the worker and with it. Each cloud uploads once per cook result
+## however often the view redraws or orbits, and the shading menu's splat
+## settings change how they draw without uploading.
+from app import Luce3D
+from workspace import Workspace
+from offscreen_pixels import OffscreenPixels
+from luce_3d.graphics import Vector3, SplatMode
+import node_commands
+import time
+
+## Show `path` through a File node; its id.
+func show_file(w: Workspace, path: str) -> int!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "File", 0.0, 0.0)
+    let node = w.network.selected
+    node_commands.set_text(w, 0, path)
+    node_commands.display_selected(w)
+    return node
+
+## Look at the origin from one unit away.
+func look_at_origin(w: Workspace) -> unit!:
+    w.view.target = Vector3()
+    w.view.distance = 1.0
+    w.view.update_camera()
+
+## Draw the editor's viewport over the whole texture; the luminance of
+## pixel (x, y).
+func pixel(editor: Luce3D, view: OffscreenPixels, x: int, y: int) -> int!:
+    let target = view.begin()
+    editor.panels.view.draw(target)
+    view.end()
+    return view.luminance(x, y)
+
+pub func splat_display_tests() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    _ = show_file(w, "tests/fixtures/splats.ply")
+    assert(w.batches.clouds.length == 1)
+    let cloud = w.batches.clouds[0]
+    assert(cloud.is_splats() and cloud.size() == 2 and cloud.upload_count() == 0)
+    look_at_origin(w)
+    let view = OffscreenPixels(800, 600)
+    # The splat at the origin (orange, 0.05 wide) covers the middle and 20
+    # pixels right of it; without the cloud both are the backdrop.
+    let lit = pixel(editor, view, 400, 300)
+    let beside = view.luminance(420, 300)
+    assert(cloud.upload_count() == 1 and cloud.sort_count() == 1)
+    w.batches.clouds = []
+    let bare = pixel(editor, view, 400, 300)
+    let bare_beside = view.luminance(420, 300)
+    w.batches.clouds = [cloud]
+    assert(lit > bare + 30 and beside > bare_beside + 20)
+    # Orbiting sorts again but uploads nothing; coming back draws the same.
+    w.view.orbit(40.0, 10.0)
+    _ = pixel(editor, view, 400, 300)
+    w.view.orbit(-40.0, -10.0)
+    assert(pixel(editor, view, 400, 300) == lit and cloud.upload_count() == 1 and cloud.sort_count() == 3)
+    # Centers: a dot at the origin, nothing beside it; Wireframe shows them too.
+    w.view.splat_centers = true
+    assert(pixel(editor, view, 400, 300) > bare + 30 and view.luminance(420, 300) == bare_beside)
+    w.view.splat_centers = false
+    w.set_display_mode(0)
+    _ = pixel(editor, view, 400, 300)
+    assert(cloud.look().mode == SplatMode.centers)
+    w.set_display_mode(3)
+    _ = pixel(editor, view, 400, 300)
+    assert(cloud.look().mode == SplatMode.splats)
+    # A smaller scale shrinks the splat; still one upload.
+    w.view.splat_scale = 0.25
+    let smaller = pixel(editor, view, 420, 300)
+    assert(smaller < beside and cloud.upload_count() == 1)
+    w.view.splat_scale = 1.0
+    # A plain point cloud: white, red and green dots.
+    _ = show_file(w, "tests/fixtures/points.ply")
+    assert(w.batches.clouds.length == 1 and not w.batches.clouds[0].is_splats() and w.batches.clouds[0].size() == 3)
+    look_at_origin(w)
+    assert(pixel(editor, view, 400, 300) > bare + 100)
+    # With the worker: the cloud is packed there and adopted once; a new
+    # result that keeps the node's stamp keeps the same cloud.
+    _ = show_file(w, "tests/fixtures/splats.ply")
+    look_at_origin(w)
+    w.enable_compute()
+    let session = w.compute else trap("compute")
+    var deadline = time.now() + 20000000000
+    while session.busy and time.now() < deadline:
+        _ = w.poll_compute()
+    assert(not session.busy and w.notice == "" and w.batches.clouds.length == 1)
+    let adopted = w.batches.clouds[0]
+    assert(pixel(editor, view, 400, 300) == lit and adopted.upload_count() == 1)
+    w.rebuild()
+    deadline = time.now() + 20000000000
+    while session.busy and time.now() < deadline:
+        _ = w.poll_compute()
+    assert(w.batches.clouds.length == 1 and w.batches.clouds[0] is adopted)
+    _ = pixel(editor, view, 400, 300)
+    assert(adopted.upload_count() == 1)
+    editor.close()
+    print("PASS splat display: splats and dots drawn with and without the worker, one upload per result, display settings")

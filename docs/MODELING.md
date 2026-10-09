@@ -77,6 +77,18 @@ nothing. The `noise_cloud` and `fire` wrangle examples show both. Convert to
 Mesh makes real geometry of that surface. Volume Slice shows a colored plane
 through the field: blue inside, orange outside, with contour bands.
 
+Point clouds are drawn too. A cloud with Gaussian splat attributes (`orient`,
+`scale`, `opacity`, `Cd`, `sh`; a 3DGS PLY through the File node, or Bake
+GSplats) draws as Gaussian splats: luce-3d's `GaussianSplats` projects, culls,
+evaluates SH and depth-sorts them on the GPU every time the view changes, and
+draws them back to front over the scene, hidden behind meshes in front and
+veiling those behind. Any other cloud draws as dots of its `Cd`. A cloud is
+packed once per cook result (on the worker) and uploads on its first frame;
+orbiting sorts again but uploads nothing. The shading menu's splat rows,
+shown while splats are on screen, switch to **Centers** (dots; Wireframe
+always shows centers, as Houdini does), cap the **SH degree**, raise the
+**Alpha cull** and scale the splats; none of them recooks or uploads.
+
 The **Cache** node (Houdini's File Cache) writes its input's cooked geometry
 to a `.prism` file and passes it through. It uses luce-geocore's geometry
 codec, which writes every component, attribute and group exactly. With

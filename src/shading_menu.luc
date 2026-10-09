@@ -4,6 +4,7 @@ from luce_gpu.gpu import RenderTarget, Rect
 from luce_window.input import EventKind, Key
 from workspace import Workspace
 import theme
+import math
 from luce_ui import ui
 
 pub func mode_names() -> list[str]:
@@ -32,11 +33,36 @@ func curvature_ranges() -> list[float]:
     return [0.0, 0.1, 1.0, 10.0, 100.0]
 
 ## The options shown under the modes: stripes while Zebra or Isophotes is on,
-## the value and range while Curvature is; then the CAD mesh quality.
+## the value and range while Curvature is; then the CAD mesh quality; then,
+## while Gaussian splats are shown, how they draw.
 func option_rows(workspace: Workspace) -> list[str]:
     let rows = mode_option_rows(workspace)
     rows.append(quality_row(workspace))
+    for text in splat_rows(workspace):
+        rows.append(text)
     return rows
+
+## The alpha culls and size multipliers a click steps through.
+func splat_culls() -> list[float]:
+    return [1.0 / 255.0, 0.02, 0.1, 0.3]
+
+func splat_scales() -> list[float]:
+    return [1.0, 1.5, 2.0, 0.25, 0.5]
+
+func showing_splats(workspace: Workspace) -> bool:
+    for cloud in workspace.batches.clouds:
+        if cloud.is_splats():
+            return true
+    return false
+
+## Gaussian splats' rows: centers or shaded, the SH degree cap, the alpha
+## cull and the size multiplier (none without splats on screen).
+func splat_rows(workspace: Workspace) -> list[str]:
+    if not showing_splats(workspace):
+        return []
+    let v = workspace.view
+    let cull = "1/255" if v.splat_cull < 0.005 else f"{v.splat_cull}"
+    return ["Splats: Centers" if v.splat_centers else "Splats: Shaded", f"SH degree: {v.splat_degree}", f"Alpha cull: {cull}", f"Splat scale: {v.splat_scale}"]
 
 func mode_option_rows(workspace: Workspace) -> list[str]:
     if workspace.view.display_mode == 9:
@@ -95,6 +121,10 @@ pub class ShadingMenu: Widget:
     ## mesh quality, which meshes CAD bodies again).
     func option(self, index: int) -> unit!:
         let w = self.workspace
+        let splat_index = index - mode_option_rows(w).length - 1
+        if splat_index >= 0:
+            self.splat_option(splat_index)
+            return
         if index == mode_option_rows(w).length:
             let qualities = quality_divisions()
             let at = qualities.index_of(w.view.cad_quality) else 1
@@ -127,6 +157,29 @@ pub class ShadingMenu: Widget:
             return
         w.revision += 1
         self.box.invalidate()
+    ## Step splat option `index` (splat_rows' order); nothing recooks.
+    func splat_option(self, index: int) -> unit!:
+        let v = self.workspace.view
+        if index == 0:
+            v.splat_centers = not v.splat_centers
+        elif index == 1:
+            v.splat_degree = (v.splat_degree + 1) % 4
+        elif index == 2:
+            let culls = splat_culls()
+            var at = 0
+            for step in 0..<culls.length:
+                if math.abs(culls[step] - v.splat_cull) < 1.0e-9:
+                    at = step
+            v.splat_cull = culls[(at + 1) % culls.length]
+        elif index == 3:
+            let scales = splat_scales()
+            let at = scales.index_of(v.splat_scale) else 0
+            v.splat_scale = scales[(at + 1) % scales.length]
+        else:
+            return
+        self.workspace.revision += 1
+        self.box.invalidate()
+
     pub func draw(self, target: RenderTarget) -> unit!:
         let p = Painter(target)
         p.rectangle(Rect(0.0, 0.0, target.size().width, target.size().height), theme.surface())
