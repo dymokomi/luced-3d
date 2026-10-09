@@ -343,15 +343,31 @@ nothing uses `MAP_JIT` or `PROT_EXEC`.
 | `MeshPrimitives.grid(2.0, 1000)` (1,002,001 points, 1M quads) | 10 ms |
 | `GeometryFile.save` of it (56 MB `.prism`) / `load` | 5.5 ms / 11 ms |
 
-**Where an edit's 0.65 s goes.** luce-base generates the whole program again on every edit
-and reuses only unchanged assembled pieces (memory note "build speed plan", C). A
-per-function generation cache, or a resident compiler that keeps the checked dependency
-modules, would bring an edit closer to the 0.05–0.1 s a dependency-free program takes.
-That is compiler work, the language session's to schedule (§10, Q5).
+**Where an edit's 0.65 s went.** luce-base generated the whole program again on every
+edit and reused only unchanged assembled pieces. That changed on 2026-10-09 (luce-base
+b6a48fa..a140300, luce 3197cd3):
 
-Windows and Linux were not measured in this pass. Windows builds of luced-3d run about 3×
-slower than macOS (memory: 24 s fresh against 7 s), and x86-64 code generation trails
-arm64. Expect about 1.5–2 s per edit on the Windows laptop until those land.
+- only reachable functions are lowered;
+- each function's generated code is reused when its content, callees and settings are
+  unchanged;
+- macOS and Linux programs are assembled in pieces, and unchanged pieces are linked as
+  they are;
+- a program's modules are parsed ahead in parallel.
+
+Output stays byte-identical to an uncached build. `luce-base build --native --release` of
+a script importing luce-geocore, empty build dir / no change / one-line edit:
+
+| Machine | Before | After |
+|---|---|---|
+| Mac (M4 Max) | 0.84 / 0.19 / 0.82 s | 0.38 / 0.14 / 0.23 s |
+| Linux | 0.76 / 0.20 / 0.74 s | 0.49 / 0.145 / 0.22 s |
+| Windows laptop | 1.39 / 0.52 / 1.40 s | about 1.0 / 0.5 / 0.68 s |
+
+Through `luc build --release` on the Mac, an edit takes 0.32 s (luc adds about 0.09 s).
+The Mac's floor is the check (43 ms) plus assembling and linking (about 64 ms); going
+lower needs a resident compiler or cached checked dependency modules. Windows still
+assembles one 1.7 MB file per edit (COFF weak declarations block splitting); that is the
+next Windows step on the language session's list.
 
 ### 3.6 Prior art: luced-2d scripting
 
