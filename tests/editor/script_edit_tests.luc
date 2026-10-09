@@ -1,0 +1,176 @@
+## The Script node's second round: Time Dependent inferred from the code and
+## overridden by its row; an unchanged input's file kept between cooks; the
+## check while typing; the disk cache kept to its limit; and packages resolved
+## as the editor's own build resolved them (a registry-named package in a
+## workspace of checkouts takes the checkout, so luce-std comes in once).
+from luce_std import files, paths, process, math
+from workspace import Workspace
+import node_commands
+import script_node
+import script_cook
+import script_cache
+import timeline_commands
+import code_cook
+import thread
+from script_check import ScriptChecker
+from script_packages import editor_packages, dependencies
+import time
+
+## Script builds find luce-geocore and the packages beside this checkout.
+func use_checkouts() -> unit!:
+    let here = process.variable("LUC_TEST_DIR") else trap("LUC_TEST_DIR")
+    let root = paths.directory(paths.directory(paths.directory(here)))
+    process.set_variable("LUCED_GEOCORE", paths.join(root, "luce-geocore"))
+
+func top(w: Workspace) -> float!:
+    return (w.geometry else trap("geometry")).bounds().maximum.y
+
+pub func script_edit_tests() -> unit!:
+    use_checkouts()
+    time_tests()
+    input_tests()
+    check_tests()
+    cache_tests()
+    package_tests()
+
+## Auto follows the timeline when the code reads it; On and Off override.
+func time_tests() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Grid", 0.0, 0.0)
+    node_commands.add_node(w, "Script", 0.0, 100.0)
+    let id = w.network.selected
+    node_commands.display_selected(w)
+    let node = w.network.require(id)
+    assert(not node.time_dependent)
+    script_node.set_code(w, id, "from luce_geocore.script import Cook\n\npub func cook(k: Cook*) -> !:\n    let positions = try k.geometry().positions()\n    for i in 0..<positions.length:\n        positions[i].y = (f32)k.frame()\n")
+    assert(node.failure == "", node.failure)
+    assert(node.time_dependent)
+    timeline_commands.set_frame(w, 5.0)
+    assert(math.abs(top(w) - 5.0) < 1e-5)
+    # Off: the frame no longer recooks it.
+    w.network.selected = id
+    node_commands.set_parameter(w, script_cook.time_slot, 2.0)
+    assert(not node.time_dependent)
+    timeline_commands.set_frame(w, 9.0)
+    assert(math.abs(top(w) - 5.0) < 1e-5)
+    # On, for code that reads the time some way the scan cannot see.
+    node_commands.set_parameter(w, script_cook.time_slot, 1.0)
+    assert(node.time_dependent)
+    timeline_commands.set_frame(w, 10.0)
+    assert(math.abs(top(w) - 10.0) < 1e-5)
+    # Auto again, with code that does not read it.
+    node_commands.set_parameter(w, script_cook.time_slot, 0.0)
+    script_node.set_code(w, id, "from luce_geocore.script import Cook\n\npub func cook(k: Cook*) -> !:\n    k.warning(\"still\")\n")
+    assert(not node.time_dependent)
+    (w.network.sources else trap("sources")).scripts.close()
+    print("PASS script Time Dependent: inferred from k.frame(), overridden On and Off")
+
+## A parameter change sends the same input again: its file is kept. A change
+## upstream writes it again.
+func input_tests() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Grid", 0.0, 0.0)
+    let grid = w.network.selected
+    node_commands.set_parameter(w, 1, 400.0)
+    node_commands.add_node(w, "Script", 0.0, 100.0)
+    let id = w.network.selected
+    node_commands.display_selected(w)
+    let scripts = (w.network.sources else trap("sources")).scripts
+    assert(w.network.require(id).failure == "", w.network.require(id).failure)
+    let first = scripts.inputs_kept
+    let lift = code_cook.spares_of(w.network.require(id).texts[code_cook.spares_slot])[0]
+    for row in [1.0, 2.0, 3.0]:
+        w.network.selected = id
+        node_commands.set_parameter(w, lift.slot, row)
+    assert(math.abs(top(w) - 3.0) < 1e-5)
+    assert(scripts.inputs_kept == first + 3, f"{scripts.inputs_kept}")
+    assert(w.network.require(id).console.contains("input kept"), w.network.require(id).console)
+    w.network.selected = grid
+    node_commands.set_parameter(w, 0, 3.0)
+    assert(scripts.inputs_kept == first + 3)
+    scripts.close()
+    print(f"PASS script keeps an unchanged input's file: {w.network.require(id).console.split("\n")[0]}")
+
+## `luc check` at a pause: an error at its line, then a clean text.
+func check_tests() -> unit!:
+    let checker = ScriptChecker()
+    let broken = "from luce_geocore.script import Cook\n\npub func cook(k: Cook*) -> !:\n    let x: i64 = \"text\"\n"
+    checker.start(broken, "", "", "")
+    finish(checker)
+    assert(checker.failure.contains("line 4, column"), checker.failure)
+    let failed_in = checker.seconds
+    # A newer check stops the older one.
+    checker.start(broken, "", "", "")
+    checker.start(broken.replace("let x: i64 = \"text\"", "k.warning(\"fine\")"), "", "", "")
+    finish(checker)
+    assert(checker.failure == "", checker.failure)
+    print(f"PASS script check while typing: an error at its line in {failed_in} s, clean in {checker.seconds} s")
+
+func finish(checker: ScriptChecker) -> unit!:
+    let deadline = time.now() + 60000000000
+    while not checker.poll():
+        assert(time.now() < deadline, "the check did not finish")
+        thread.sleep(5)
+
+## Past the limit, the least recently used entries go; what is kept stays.
+func cache_tests() -> unit!:
+    let saved = process.variable("LUC_HOME") else ""
+    let home = paths.join(files.home_directory(), f"luced-script-cache-{time.now()}")
+    process.set_variable("LUC_HOME", home)
+    let build = paths.join(paths.join(home, "scripts"), "build")
+    let made: list[str] = []
+    for i in 0..<4:
+        let folder = paths.join(build, f"entry{i}")
+        files.ensure_directory(folder)
+        files.write_text(paths.join(folder, "script"), "x".repeat(1000))
+        files.write_text(paths.join(folder, ".used"), f"{1000 + i}")
+        made.append(folder)
+    # The oldest (entry0) is kept by a node; entry1 and entry2 go to fit 2 KB.
+    let removed = script_cache.evict([made[0]], 2100)
+    assert(removed >= 2000, f"{removed}")
+    _ = files.metadata(paths.join(made[0], "script"))
+    var gone = 0
+    for i in 1..<3:
+        _ = files.metadata(paths.join(made[i], "script")) catch failure:
+            gone += 1
+            continue
+    assert(gone == 2, f"{gone}")
+    _ = files.metadata(paths.join(made[3], "script"))
+    # The settings file is written with the default, and read back.
+    assert(script_cache.limit_bytes() == script_cache.default_megabytes * 1048576)
+    assert(files.read_text(script_cache.settings_path()).contains("cache_megabytes"))
+    files.write_text(script_cache.settings_path(), "#prisma 4.0\ndef settings \"scripts\" {\n    int cache_megabytes = 3\n}\n")
+    assert(script_cache.limit_bytes() == 3 * 1048576)
+    files.remove_tree(home)
+    if saved == "":
+        process.unset_variable("LUC_HOME")
+    else:
+        process.set_variable("LUC_HOME", saved)
+    print("PASS script cache: least recently used entries past the limit go; the setting is read")
+
+## A registry-named package takes the workspace's checkout, so it shares the
+## editor's luce-std; and such a script builds and cooks.
+func package_tests() -> unit!:
+    let editor = editor_packages()
+    let std = editor["luce-std"] else trap("the editor set has no luce-std")
+    var image = ""
+    for d in dependencies("dymokomi/luce-image@^0.45.0", "", editor):
+        if d.name == "luce-image":
+            image = d.path
+    assert(image != "", "luce-image came from the registry")
+    let manifest = files.read_text(paths.join(image, "package.prisma"))
+    assert(manifest.contains("luce-std"))
+    assert(files.canonical(paths.join(paths.directory(image), "luce-std")) == std)
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Script", 0.0, 0.0)
+    let id = w.network.selected
+    node_commands.display_selected(w)
+    script_node.set_packages(w, id, "dymokomi/luce-image@^0.45.0")
+    script_node.set_code(w, id, "from luce_geocore.script import Cook\nfrom luce_image.image import Image\n\npub func cook(k: Cook*) -> !:\n    let opened = Image.open(\"missing.png\") catch failure:\n        k.warning(\"no image, as expected\")\n        return\n    opened.release()\n")
+    assert(w.network.require(id).failure == "", w.network.require(id).failure)
+    assert(w.network.require(id).warning.contains("no image"), w.network.require(id).warning)
+    (w.network.sources else trap("sources")).scripts.close()
+    print("PASS script packages resolve as the editor's build did (one luce-std)")

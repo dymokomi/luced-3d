@@ -25,6 +25,11 @@ pub class CodeEditor:
     var colored: int = -1
     ## Takes the text when it is committed.
     pub var on_commit: func(str) -> unit!? = none
+    ## A check a pause runs before the text goes to the node (a Script node's
+    ## `luc check`): it gets the text, and `checked` sends it on when clean.
+    ## Leaving the editor sends what is held anyway.
+    pub var on_pause: func(str) -> unit!? = none
+    var held: bool = false
     ## The node's Run Over code, which text this editor holds (0 the body, 1 the
     ## header) and the editor of the other, for completions and hover.
     pub var run_over: int = 1
@@ -58,16 +63,35 @@ pub class CodeEditor:
         self.changed_at = time.now()
         self.color()
 
-    ## Polled each frame: a pause in typing, or the focus gone, commits.
+    ## Polled each frame: a pause in typing commits (or checks first), and so
+    ## does the focus gone.
     pub func poll(self) -> unit!:
         if self.changed_at == 0:
+            if self.held and not self.editor.layout().is_focused():
+                self.commit()
             return
-        if time.now() - self.changed_at >= pause or not self.editor.layout().is_focused():
+        if not self.editor.layout().is_focused():
+            self.commit()
+            return
+        if time.now() - self.changed_at < pause:
+            return
+        if let check = self.on_pause:
+            self.changed_at = 0
+            self.held = true
+            check(self.editor.text())
+            return
+        self.commit()
+
+    ## The pause's check of `text` came back clean: send it, unless more was
+    ## typed since.
+    pub func checked(self, text: str) -> unit!:
+        if self.held and self.changed_at == 0 and self.editor.text() == text:
             self.commit()
 
     ## Hand the text to the node now (Cmd/Ctrl+Enter, or a pause).
     pub func commit(self) -> unit!:
         self.changed_at = 0
+        self.held = false
         let text = self.editor.text()
         if text == self.committed:
             return
@@ -142,6 +166,7 @@ pub class CodeEditor:
             connection.disconnect()
         self.connections.clear()
         self.on_commit = none
+        self.on_pause = none
 
 ## The popup's kind for one of Code.complete's ("module" items are types whose
 ## detail says so).

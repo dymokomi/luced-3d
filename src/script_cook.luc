@@ -9,8 +9,9 @@
 ##
 ## Texts: 0 the packages (one line, entries apart by spaces), 1 the code,
 ## 2 the packages' lock, 3 the spare parameters, 4 the ramps, then the text
-## and file parameters' values. Values: 0 the time limit in seconds, the
-## spare parameters from code_cook.first_spare_slot on.
+## and file parameters' values. Values: 0 the time limit in seconds, 1 Time
+## Dependent (0 Auto, 1 On, 2 Off), the spare parameters from
+## code_cook.first_spare_slot on.
 from luce_std import files, paths, process
 from luce_geocore.geocore import GeometryFile
 from luce_geocore.script import ScriptProcess
@@ -27,12 +28,19 @@ pub let packages_slot = 0
 pub let code_slot = 1
 pub let lock_slot = 2
 pub let limit_slot = 0
+pub let time_slot = 1
 ## Texts a Script node has: the five above and the text parameters' values.
 pub let text_count = first_text_slot + text_slots
 
 ## What a new Script node says: Houdini's Python SOP starter, in Base.
 pub func starter() -> str:
     return "## Runs once per cook over the whole geometry, as native code.\nfrom luce_geocore.script import Cook\n\n## k: the inputs, the parameters, the frame and the console.\n## k.geometry() is the output: a copy of input 0.\npub func cook(k: Cook*) -> !:\n    let lift = k.f32(\"lift\", 0.5)\n    let positions = try k.geometry().positions()\n    for i in 0..<positions.length:\n        positions[i].y += lift\n"
+
+## Whether a Script node follows the timeline: by its Time Dependent row, or,
+## on Auto, when its code reads k.frame(), k.time() or k.fps() (`reads`).
+pub func follows_time(setting: float, reads: bool) -> bool:
+    let choice = int(setting)
+    return reads if choice == 0 else choice == 1
 
 ## What the node's file parameters' files are now (size and time each, 0
 ## for a missing file): part of its stamp, so editing a file recooks it.
@@ -63,7 +71,7 @@ pub func phase(fraction: float) -> str:
 ## to a child, and take its result. `progress` reports and, on the worker,
 ## stops a superseded cook (the child is killed first); `folder` is the
 ## project's folder.
-pub func cook(id: int, slots: list[float], texts: list[str], data: GeometryData, clock: list[float], second: GeometryData?, wired: list[bool], progress: func(float) -> unit!?, hosts: ScriptHosts, folder: str = "") -> GeometryData!:
+pub func cook(id: int, slots: list[float], texts: list[str], data: GeometryData, clock: list[float], second: GeometryData?, wired: list[bool], progress: func(float) -> unit!?, hosts: ScriptHosts, folder: str = "", keys: list[int] = []) -> GeometryData!:
     let made = hosts.build(id, texts[code_slot], texts[packages_slot], texts[lock_slot], folder)
     let waited = not made.done
     while not made.poll():
@@ -71,9 +79,17 @@ pub func cook(id: int, slots: list[float], texts: list[str], data: GeometryData,
         thread.sleep(10)
     if made.failure != "":
         error(ui.invalid, made.failure)
+    hosts.used(made)
     report(progress, 0.5)
     let run = hosts.run_folder()
-    let request = write_request(run, slots, texts, data if wired[0] else none, clock, second if wired[1] else none, folder)
+    let kept = hosts.inputs_kept
+    let inputs: list[str] = ["", ""]
+    if wired[0]:
+        inputs[0] = hosts.input_file(id, 0, keys[0] if keys.length > 0 else 0, data, run)
+    if wired[1]:
+        if let other = second:
+            inputs[1] = hosts.input_file(id, 1, keys[1] if keys.length > 1 else 0, other, run)
+    let request = write_request(run, slots, texts, inputs, clock, folder)
     let starting = time.now()
     let child = hosts.child(made) catch failure:
         forget(run)
@@ -97,7 +113,7 @@ pub func cook(id: int, slots: list[float], texts: list[str], data: GeometryData,
         parts.append(f"built in {round_to(made.seconds, 2)} s")
     if started >= 1.0:
         parts.append(f"started in {round_to(started, 0)} ms")
-    parts.append(f"cooked in {result.cook_ms} ms (load {result.load_ms} ms, save {result.save_ms} ms)")
+    parts.append(f"cooked in {result.cook_ms} ms (load {result.load_ms} ms, save {result.save_ms} ms{", input kept" if hosts.inputs_kept > kept else ""})")
     loaded.console = "[" + parts.join(" · ") + "]\n" + result.console
     loaded.warning = result.warning
     forget(run)
@@ -231,18 +247,13 @@ func unescape(text: str) -> str:
             pieces.append(ch)
     return pieces.join("")
 
-## The request file for one cook: the inputs saved beside it, the clock,
+## The request file for one cook: the inputs' files ("" unwired), the clock,
 ## the project and every parameter's value by name.
-func write_request(run: str, slots: list[float], texts: list[str], data: GeometryData?, clock: list[float], second: GeometryData?, folder: str) -> str!:
+func write_request(run: str, slots: list[float], texts: list[str], inputs: list[str], clock: list[float], folder: str) -> str!:
     let lines: list[str] = []
-    if let given = data:
-        let path = paths.join(run, "in0.prism")
-        _ = GeometryFile.save(given.geometry, path)
-        lines.append(f"in0\t{path}")
-    if let other = second:
-        let path = paths.join(run, "in1.prism")
-        _ = GeometryFile.save(other.geometry, path)
-        lines.append(f"in1\t{path}")
+    for port in 0..<2:
+        if inputs[port] != "":
+            lines.append(f"in{port}\t{inputs[port]}")
     lines.append(f"out\t{paths.join(run, "out.prism")}")
     let frame = clock[0] if clock.length == 3 else 1.0
     let at = clock[1] if clock.length == 3 else 0.0

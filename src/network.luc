@@ -171,7 +171,9 @@ pub class Node:
 
     ## Pure node computation over resolved immutable inputs. Runtime invokes this
     ## only on the compute worker; synchronous callers use the same contract.
-    pub func compute(self, data: GeometryData, second: GeometryData? = none, progress: func(float) -> unit!? = none, sources: SourceCache? = none, clock: list[float] = []) -> GeometryData!:
+    ## `keys` are the inputs' content keys (their nodes' stamps) when the caller
+    ## knows them: a Script node keeps an unchanged input's file.
+    pub func compute(self, data: GeometryData, second: GeometryData? = none, progress: func(float) -> unit!? = none, sources: SourceCache? = none, clock: list[float] = [], keys: list[int] = []) -> GeometryData!:
         if self.frozen != "":
             return load_frozen(self.frozen)
         let v = self.values
@@ -223,7 +225,7 @@ pub class Node:
         if self.kind == script_cook.kind_name:
             let wired = [self.inputs[0] >= 0, self.inputs[1] >= 0]
             if let cache = sources:
-                return script_cook.cook(self.id, self.values, self.texts, data, clock, second, wired, progress, cache.scripts, cache.folder)
+                return script_cook.cook(self.id, self.values, self.texts, data, clock, second, wired, progress, cache.scripts, cache.folder, keys)
             let hosts = ScriptHosts()
             let result = script_cook.cook(self.id, self.values, self.texts, data, clock, second, wired, progress, hosts) catch failure:
                 hosts.close()
@@ -726,4 +728,19 @@ pub class Network:
                 report(node.id, fraction, "Tessellating" if node.kind == "Tessellate" else "Computing")
         if let cache = self.sources:
             cache.folder = self.folder
-        return node.compute(data, second, progress, self.sources, [self.frame, self.time(), self.fps])
+        return node.compute(data, second, progress, self.sources, [self.frame, self.time(), self.fps], self.input_keys(node))
+
+    ## Content keys of `node`'s inputs in a local cook: an input's result is the
+    ## same until its node cooks again (0 for an unwired input).
+    func input_keys(self, node: Node) -> list[int]:
+        let keys: list[int] = []
+        for id in node.inputs:
+            if let input = self.find(id):
+                keys.append(nonzero_key((input.id, input.evaluations, "local").hash()))
+            else:
+                keys.append(0)
+        return keys
+
+## `key`, or 1 when it is 0 (0 means unknown).
+func nonzero_key(key: int) -> int:
+    return key if key != 0 else 1

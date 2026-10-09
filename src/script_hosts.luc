@@ -4,11 +4,17 @@
 ## waits leaves it running, and the next cook of that key waits for the same
 ## build. Each key keeps one child started and waiting, so a cook pays no
 ## start-up: the child serves one cook and leaves (each cook starts fresh, as
-## Houdini's Python SOP does), and the next is started at once.
+## Houdini's Python SOP does), and the next is started at once. An input whose
+## content key (its node's stamp) is the one the last cook sent keeps its file.
+## The disk cache is kept to its limit (script_cache.luc).
 from luce_std import files, paths
+from luce_geocore.geocore import GeometryFile
+from geometry_data import GeometryData
+import script_cache
 from luce_std.process import Command
 from luce_geocore.script import ScriptProcess
 from script_build import BuildPlan, toolchain, build_failure, scripts_home
+from script_packages import editor_packages
 import script_build
 from luce_ui import ui
 import time
@@ -41,7 +47,7 @@ pub class Build:
         self.done = true
         self.seconds = float(time.now() - self.started) / 1000000000.0
         if code != 0:
-            self.failure = build_failure(output)
+            self.failure = build_failure(output, self.plan.hint)
             return true
         self.plan.keep() catch failure:
             self.failure = "the built script could not be kept: " + failure.message
@@ -65,22 +71,37 @@ pub class ScriptHosts:
     ## the old build and stops its waiting child.
     let current: map[int, str]
     var versions: str = ""
+    ## The packages the editor was built with (found once).
+    var editor: map[str, str]? = none
     var runs: int = 0
     ## Builds started (cache misses) and cooks served, for tests and the status.
     pub var built: int = 0
     pub var cooked: int = 0
+    ## Inputs kept between cooks: by "node-port", the content key its file holds;
+    ## and how many cooks found theirs kept.
+    let kept: map[str, int]
+    var inputs: str = ""
+    pub var inputs_kept: int = 0
+    ## Keys whose entries were marked used this session, and when the cache was
+    ## last kept to its limit.
+    let marked: map[str, bool]
+    var evicted_at: int = 0
 
     pub func init(self):
         self.builds = {}
         self.waiting = {}
         self.current = {}
+        self.kept = {}
+        self.marked = {}
 
     ## The build for a script (started when it is not built yet); `node` is
     ## the node it is for.
     pub func build(self, node: int, code: str, packages: str, lock: str, folder: str) -> Build!:
         if self.versions == "":
             self.versions = toolchain()
-        let wanted = script_build.plan(node, code, packages, lock, folder, self.versions)
+        let editor = self.editor else editor_packages()
+        self.editor = editor
+        let wanted = script_build.plan(node, code, packages, lock, folder, self.versions, editor)
         if let old = self.current[node]:
             if old != wanted.key:
                 self.retire(old)
@@ -124,6 +145,45 @@ pub class ScriptHosts:
     func start(self, made: Build) -> ScriptProcess!:
         return ScriptProcess(made.plan.program, made.plan.folder)
 
+    ## The file input `port` of node `node` goes to the child in: the one the last
+    ## cook wrote when its content key `key` is the same (0: unknown, written
+    ## again), else written now.
+    pub func input_file(self, node: int, port: int, key: int, data: GeometryData, run: str) -> str!:
+        if key == 0:
+            let path = paths.join(run, f"in{port}.prism")
+            _ = GeometryFile.save(data.geometry, path)
+            return path
+        if self.inputs == "":
+            self.inputs = paths.join(paths.join(scripts_home(), "run"), f"inputs-{time.now()}")
+            files.ensure_directory(self.inputs)
+        let name = f"{node}-{port}"
+        let path = paths.join(self.inputs, name + ".prism")
+        if let old = self.kept[name]:
+            if old == key and present(path):
+                self.inputs_kept += 1
+                return path
+        _ = self.kept.remove(name)
+        _ = GeometryFile.save(data.geometry, path)
+        self.kept[name] = key
+        return path
+
+    ## A cook is using `made`: its entries are marked used (once a session), and
+    ## after a build the cache is kept to its limit (at most every 30 s).
+    pub func used(self, made: Build) -> unit!:
+        if not (made.plan.key in self.marked):
+            script_cache.mark_used(made.plan.folder)
+            script_cache.mark_used(made.plan.work)
+            self.marked[made.plan.key] = true
+        if made.seconds == 0.0 or time.now() - self.evicted_at < 30000000000:
+            return
+        self.evicted_at = time.now()
+        let keep: list[str] = []
+        for key in self.current.values():
+            if let held = self.builds[key]:
+                keep.append(held.plan.folder)
+                keep.append(held.plan.work)
+        _ = script_cache.evict(keep, script_cache.limit_bytes())
+
     ## A fresh folder for one cook's files.
     pub func run_folder(self) -> str!:
         self.runs += 1
@@ -142,6 +202,9 @@ pub class ScriptHosts:
             process.close()
 
     pub func close(self):
+        if self.inputs != "":
+            files.remove_tree(self.inputs) catch failure:
+                _ = failure
         for process in self.waiting.values():
             process.kill()
             process.close()
@@ -149,3 +212,9 @@ pub class ScriptHosts:
         for made in self.builds.values():
             if not made.done:
                 made.cancel()
+
+## Whether a file is at `path`.
+func present(path: str) -> bool:
+    let kind = files.metadata(path).kind catch failure:
+        return false
+    return kind == files.FileKind.regular

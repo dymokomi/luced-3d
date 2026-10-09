@@ -5,6 +5,7 @@
 ## edit rows. A drag is live and one undo step on release.
 from luce_ui.ui import VStack, HStack, Text, TextField, Font, Button, ParameterPanel, ParameterSpec, ParameterKind, Rect, Size, TextEditor
 from code_editor import CodeEditor
+from script_check import ScriptChecker
 import code_node
 import code_cook
 import script_cook
@@ -70,6 +71,10 @@ pub class Inspector:
     let header_title: Text
     ## What the code's k.printf calls said in the last cook (many lines).
     let console: TextEditor
+    ## A Script node's check while typing, and the error of the text it held
+    ## back ("" none), which the editor marks in place of the cook's.
+    let checker: ScriptChecker
+    var check_failure: str = ""
 
     pub func init(self, workspace: Workspace, actions: Actions, font: Font) -> unit!:
         self.dimensions = []
@@ -102,6 +107,7 @@ pub class Inspector:
         self.code_body.editor.layout().set_limits(Size(240.0, 240.0), Size(16384.0, 420.0))
         self.code_header.editor.layout().set_limits(Size(240.0, 90.0), Size(16384.0, 300.0))
         self.code_body.on_commit = func (text: str) -> unit!: self.code_committed(code_cook.body_slot, text)
+        self.checker = ScriptChecker()
         self.code_header.on_commit = func (text: str) -> unit!: self.code_committed(code_cook.header_slot, text)
         self.code_header.part = 1
         self.code_body.partner = self.code_header
@@ -257,6 +263,9 @@ pub class Inspector:
         if key != self.built:
             self.build(node.kind, node.texts[0])
             self.built = key
+        if changed:
+            self.checker.stop()
+            self.check_failure = ""
         self.showing = node.id
         self.state_rows.layout().set_visible(not file)
         let scripting = node.kind == script_cook.kind_name
@@ -275,6 +284,8 @@ pub class Inspector:
             # Completion and hover read the Code node's API; a script's
             # imports are not in reach of the checker yet.
             self.code_body.assist = not scripting
+            # A Script's text is checked at a pause before it goes to the node.
+            self.code_body.on_pause = (func (text: str) -> unit!: self.check_script(text)) if scripting else none
             if scripting:
                 self.code_body.show(node.texts[script_cook.code_slot])
             else:
@@ -283,8 +294,8 @@ pub class Inspector:
                 self.code_header.run_over = run_over
                 self.code_body.show(node.texts[code_cook.body_slot])
                 self.code_header.show(node.texts[code_cook.header_slot])
-            let place = code_node.failure_place(node.failure)
-            let message = node.failure
+            let message = self.check_failure if scripting and self.check_failure != "" else node.failure
+            let place = code_node.failure_place(message)
             self.code_body.show_error(place[1] if place.length == 3 and place[0] == 0 else 0, place[2] if place.length == 3 else 0, (place[2] if place.length == 3 else 0) + 1, message)
             self.code_header.show_error(place[1] if place.length == 3 and place[0] == 1 else 0, place[2] if place.length == 3 else 0, (place[2] if place.length == 3 else 0) + 1, message)
         self.delete_button.layout().set_visible(not file)
@@ -387,17 +398,34 @@ pub class Inspector:
     ## A Code editor's text, to the selected Code node.
     func code_committed(self, slot: int, text: str) -> unit!:
         let node = self.workspace.selected() else return
+        self.check_failure = ""
         if node.kind == code_cook.kind_name:
             code_node.set_code(self.workspace, node.id, slot, text)
         elif node.kind == script_cook.kind_name and slot == code_cook.body_slot:
             script_node.set_code(self.workspace, node.id, text)
 
-    ## Each frame: the code editors commit when typing pauses.
+    ## Each frame: the code editors commit when typing pauses, and a Script's
+    ## check reports.
     pub func poll(self) -> unit!:
         self.code_body.poll()
         self.code_header.poll()
+        if self.checker.poll():
+            # Only an error in the code holds the text back; anything else (a
+            # package that cannot be found) is the build's to report.
+            let place = code_node.failure_place(self.checker.failure)
+            self.check_failure = self.checker.failure if place.length == 3 else ""
+            if self.check_failure == "":
+                self.code_body.checked(self.checker.text)
+            else:
+                self.code_body.show_error(place[1], place[2], place[2] + 1, self.check_failure)
+
+    ## Check the selected Script node's `text` with its packages.
+    func check_script(self, text: str) -> unit!:
+        let node = self.workspace.selected() else return
+        self.checker.start(text, node.texts[script_cook.packages_slot], node.texts[script_cook.lock_slot], self.workspace.network.folder)
 
     pub func close(self):
+        self.checker.stop()
         self.code_body.close()
         self.code_header.close()
         self.on_browse = none

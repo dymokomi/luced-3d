@@ -1,0 +1,62 @@
+## Checking a Script node's code while it is typed (Houdini has no such
+## thing; an IDE does): at a pause in typing, `luc check` runs on the text in
+## the background, in a check project of the node's packages (one per package
+## set, apart from the build projects so a running build never sees it). A
+## newer pause stops an older check. An error underlines its line at once and
+## the text waits; a clean check sends the text to the node, which builds and
+## cooks it.
+from luce_std.process import Command
+from script_build import plan, tool, build_failure
+from script_packages import editor_packages
+import time
+
+pub class ScriptChecker:
+    var command: Command? = none
+    ## The packages the editor was built with (found once).
+    var editor: map[str, str]? = none
+    var started: int = 0
+    ## The text the last check read, its failure ("" clean: "line L, column
+    ## C: message" for an error in the code) and how long it took (s).
+    pub var text: str = ""
+    pub var failure: str = ""
+    pub var seconds: float = 0.0
+
+    pub func init(self):
+        self.started = 0
+
+    ## Check `code` with `packages` and `lock` for a project in `folder`,
+    ## stopping a check still running.
+    pub func start(self, code: str, packages: str, lock: str, folder: str) -> unit!:
+        self.stop()
+        let editor = self.editor else editor_packages()
+        self.editor = editor
+        let made = plan(-1, code, packages, lock, folder, "", editor, checking = true)
+        made.write()
+        self.started = time.now()
+        self.command = Command(tool("luc"), ["check"], directory = made.work, output_limit = 1048576)
+        self.text = code
+
+    ## Whether a check has finished since the last call: its result is in
+    ## `failure`.
+    pub func poll(self) -> bool!:
+        let command = self.command else return false
+        if not command.is_finished():
+            return false
+        let code = command.exit_code() else -1
+        let output = command.output() + command.error_message()
+        command.close()
+        self.command = none
+        self.seconds = float(time.now() - self.started) / 1000000000.0
+        self.failure = "" if code == 0 else build_failure(output)
+        return true
+
+    ## Whether a check is running.
+    pub func running(self) -> bool:
+        return self.command != none
+
+    ## Stop a running check (its process, by PID).
+    pub func stop(self):
+        if let command = self.command:
+            command.cancel()
+            command.close()
+        self.command = none

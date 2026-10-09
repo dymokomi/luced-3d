@@ -8,8 +8,9 @@ from luce_std.process import Command
 from network import Node
 from workspace import Workspace
 from code_node import Wanted, place
-from script_cook import code_slot, packages_slot, lock_slot
-from script_build import BuildPlan, plan, tool, scripts_home, dependencies
+from script_cook import code_slot, packages_slot, lock_slot, time_slot, follows_time
+from script_build import BuildPlan, plan, tool, scripts_home
+from script_packages import dependencies, editor_packages
 
 ## Put `text` in as the node's code, one undo step: its parameters become
 ## rows and the node follows the timeline when the code reads it.
@@ -26,7 +27,7 @@ pub func set_code(w: Workspace, id: int, text: str) -> unit!:
 ## Read the code's parameter calls and time use again.
 pub func refresh(node: Node) -> unit!:
     let scanned = ScriptText.scan(node.texts[code_slot])
-    node.time_dependent = scanned.reads_time()
+    node.time_dependent = follows_time(node.values[time_slot], scanned.reads_time())
     let wanted: list[Wanted] = []
     for i in 0..<scanned.parameter_count():
         let kind = scanned.parameter_kind(i)
@@ -43,6 +44,11 @@ pub func refresh(node: Node) -> unit!:
             row.defaults.append(scanned.parameter_default(i, c))
         wanted.append(row)
     place(node, wanted)
+
+## Follow the timeline as the Time Dependent row and the code say (after the
+## row changed).
+pub func refresh_time(node: Node) -> unit!:
+    node.time_dependent = follows_time(node.values[time_slot], ScriptText.scan(node.texts[code_slot]).reads_time())
 
 ## The row kind a parameter call makes ("" a plain number or vector).
 func row_kind(call: str) -> str:
@@ -65,13 +71,14 @@ pub func set_packages(w: Workspace, id: int, text: str) -> unit!:
 ## project, so the build is the same everywhere ("" when every package is a
 ## checkout). Run in a scratch project; offline, the lock waits for a build.
 pub func lock_of(packages: str) -> str!:
+    let editor = editor_packages()
     var registry = false
-    for d in dependencies(packages, ""):
+    for d in dependencies(packages, "", editor):
         if d.path == "":
             registry = true
     if not registry:
         return ""
-    let made = plan(0, "", packages, "", "", "lock")
+    let made = plan(0, "", packages, "", "", "lock", editor)
     let scratch = paths.join(paths.join(scripts_home(), "lock"), made.key)
     let project = BuildPlan(made.key, scratch, scratch, made.manifest, "", "")
     project.write()

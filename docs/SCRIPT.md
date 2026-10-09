@@ -74,7 +74,7 @@ nothing is wired). Replace it whole with `k.set_geometry(g)`.
 | `k.menu("name", "Low\|High", 1)` | a menu: the chosen index |
 | `k.text("name", "hi")`, `k.file("name", "image.jpg")` | text; a file with a picker, relative to the project's folder |
 | `k.ramp("name", t)`, `k.ramp_color("name", t)` | a ramp parameter at `t` |
-| `k.frame()`, `k.time()`, `k.fps()` | the timeline; reading one makes the node follow it |
+| `k.frame()`, `k.time()`, `k.fps()` | the timeline; reading one makes the node follow it (see Time Dependent below) |
 | `k.warning(f"...")` | a warning on the node; the cook goes on |
 | `try k.error(f"...")` | fails the node at this line |
 | `k.progress(0.4)` | how far the cook is, on the node |
@@ -82,6 +82,12 @@ nothing is wired). Replace it whole with `k.set_geometry(g)`.
 
 As in the Code node, a literal call such as `k.f32("height", 0.3)` makes a
 row on the node, starting at 0.3. A tuned value survives edits to the code.
+
+**Time Dependent** (a row on the node): on *Auto*, the node cooks again when
+the frame changes if its code calls `k.frame()`, `k.time()` or `k.fps()`.
+*On* and *Off* override that, for code that reads the clock some other way
+(through a helper that names `k` differently) or reads it without needing to
+follow it.
 
 ## Geometry
 
@@ -102,6 +108,10 @@ module). Making one: `Geometry.empty()`, `grid(size, divisions)`,
 | `f32s(domain, name)`, `vec3s(...)`, `i32s(...)`, `point_vec3s("Cd")` | a whole attribute as a writable span |
 | `set_detail_f64`, `set_detail_vec3`, `set_detail_text` | detail (global) attributes |
 | `add_to_group(Domain3.prim, "top", f)`, `in_group(...)`, `group_flags(...)` | groups, named as group expressions name them |
+| `prim_points(f)` | polygon `f`'s point numbers, to read |
+| `set_prim_points(f, points)`, `set_prim_point(f, n, point)` | give a polygon new points, or one corner a new point |
+| `insert_vertex(f, n, point)`, `remove_vertex(f, n)` | add a corner before corner `n`, or remove one (3 must stay) |
+| `set_f32_array(Domain3.point, i, "w", values)`, `f32_array(...)` | array attributes (Houdini's `f[]@`); also `i32` and `vec3`, and `array_length` |
 | `add_polyline(points, closed)`, `add_curve(points, degree, closed)` | curves (degree 5 by default) |
 | `make_cloud()`, `cloud_count()`, `cloud_position(i)`, `cloud_value(i, name)` | the point cloud |
 | `merge(&other)`, `transform(t, r, s)`, `add_instance(&child, t, r, s)` | whole sets; instances are packed copies |
@@ -110,6 +120,43 @@ module). Making one: `Geometry.empty()`, `grid(size, divisions)`,
 Positions in spans are relative to `origin()`, which is zero unless the
 input set one. A span stays valid until points or polygons are added or
 removed.
+
+A corner keeps its vertex attributes when it stays in its polygon; a new
+corner starts at zero, and a polygon whose points changed is triangulated
+again. An array read stays valid until that attribute is written again.
+
+## Volumes
+
+A volume is named grids of voxels, as the Volume node makes them and a Code
+node's Voxels mode runs over them: *fog* (densities) or a *level set*
+(signed distances, negative inside). Voxels sit in 8×8×8 leaves.
+
+```luce
+# The Volume node: a box of voxels 0.05 apart, every one active (dense).
+let fog = try g.add_volume("density", VolumeClass.fog, [0.0, 0.0, 0.0, 0.0], [2.0, 2.0, 2.0, 0.0], voxel = 0.05)
+let values = try fog.values()          # every voxel, in leaf order: the Voxels mode's lanes
+for lane in 0..<fog.count():
+    if fog.active(lane):
+        let p = fog.position(lane)     # the voxel's center
+        values[(usize)lane] = 1.0 - p[1]
+```
+
+| Call | Is |
+|---|---|
+| `add_volume(name, class, center, size, voxel, background, initial, dense)` | a new grid (replacing one of that name); `dense = false` starts with no voxels |
+| `voxel_grid(name)` | an existing grid ("" the first, "#2" the third); an input's read only |
+| `volume_count()`, `volume_name(i)`, `remove_volume(name)` | the volume's grids |
+| `values()`, `values_view()`, `count()` | every voxel's value by lane (writable, or to read) |
+| `index(lane)`, `position(lane)`, `active(lane)`, `set_active(lane, on)` | a lane's voxel |
+| `get(i, j, k)`, `set(i, j, k, value)`, `active_at(i, j, k)` | by voxel index; `set` makes a leaf where there is none (sparse growth) |
+| `sample(p)`, `to_index(p)`, `index_position(i, j, k)` | world space: trilinear samples and conversions |
+| `voxel_size()`, `background()`, `is_level_set()`, `active_count()` | what the grid is |
+
+A grid is read where it is until the first write copies it. `values()` stays
+valid until `set` adds a leaf; a `VoxelGrid` stays valid until the geometry
+is replaced (a verb, `merge`, `transform`, `set_geometry`). How the viewport
+draws fog is the Volume Visualization node's detail attributes, which a
+script can set too (`set_detail_f64("volvis_densityscale", 8.0)`).
 
 ## Verbs
 
@@ -135,7 +182,27 @@ and luce-std are always there. A registry package is locked when it is added,
 and the lock is kept in the project, so the script builds the same anywhere;
 a build needs the packages downloaded once, then works offline.
 
+A script builds against the packages the editor itself was built with, so
+one package never comes in twice. Run from a workspace of checkouts, a
+package the editor uses, or one checked out beside luce-geocore, is taken from
+that checkout whatever version the entry names; a released editor takes
+everything from the registry.
+
+## The build cache
+
+Built tools and the projects they are built in live under
+`~/.luce/scripts`. Past `cache_megabytes` in `~/.luce/scripts/settings.prisma`
+(2048 by default; the file is written the first time), the least recently
+used go first. Each cook's inputs are sent as files; an input that has not
+changed since the node's last cook is not written again (the status line says
+*input kept*).
+
 ## Errors
+
+While you type, a pause runs a check of the code (`luc check`, about 0.1 s)
+in the background: an error is underlined at its line and the node does not
+build or cook until the code checks clean (Cmd/Ctrl+Enter, or leaving the
+editor, sends it anyway).
 
 A build error, a trap (`index out of bounds`), `k.error` and an error the
 script raises itself (`error(code, "...")`) name the line and column of the
@@ -148,5 +215,5 @@ could not be opened (raised at luce_geocore/src/...)*.
 - Completion and hover: the editor's help reads the Code node's API; it
   cannot see a script's imports until luce-base's `embed.Library` checks
   package modules.
-- Volumes from code (`add_volume`), array attributes, and editing a
-  polygon's own vertex list.
+- Where a `try` in the script passed up an error a package raised: the
+  message names where it was raised, not the script's line.

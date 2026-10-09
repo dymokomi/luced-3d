@@ -1,0 +1,92 @@
+## The Script nodes' disk cache under ~/.luce/scripts: the built tools
+## (build/<key>) and the working projects builds run in (work/<packages>-<node>,
+## which hold the compiler's reusable pieces). Past a limit, the least
+## recently used go first; what a node uses now stays.
+##
+## The limit is `cache_megabytes` in ~/.luce/scripts/settings.prisma, 2048 by
+## default (the file is written with the default the first time). An entry is
+## used when a cook builds or runs it: a `.used` file in it holds the time.
+from luce_std import files, paths
+from script_build import scripts_home
+from script_support import folder_bytes
+import time
+
+pub let default_megabytes = 2048
+
+## The settings file.
+pub func settings_path() -> str!:
+    return paths.join(scripts_home(), "settings.prisma")
+
+## The cache's limit in bytes.
+pub func limit_bytes() -> int!:
+    let path = settings_path()
+    let text = files.read_text(path) catch failure:
+        write_settings(path)
+        return default_megabytes * 1048576
+    let at = text.index_of("cache_megabytes = ") else return default_megabytes * 1048576
+    let rest = text[at + 18..]
+    let end = rest.index_of("\n") else rest.byte_count
+    let megabytes = int(rest[..<end].trim()) catch failure:
+        return default_megabytes * 1048576
+    return (megabytes if megabytes > 0 else default_megabytes) * 1048576
+
+## Write the settings file with the default limit.
+func write_settings(path: str):
+    files.ensure_directory(scripts_home()) catch failure:
+        return
+    files.write_text(path, f"#prisma 4.0\n## luced-3d's Script nodes: built tools and their working projects past this\n## many megabytes go, least recently used first.\ndef settings \"scripts\" {{\n    int cache_megabytes = {default_megabytes}\n}}\n") catch failure:
+        return
+
+## Mark `folder` (a build or work entry) used now.
+pub func mark_used(folder: str):
+    files.write_text(paths.join(folder, ".used"), f"{time.now()}") catch failure:
+        return
+
+## One cache entry: its folder, size and when it was last used (ns).
+class Entry:
+    pub let folder: str
+    pub let size: int
+    pub let used: int
+
+    pub func init(self, folder: str, size: int, used: int):
+        self.folder = folder
+        self.size = size
+        self.used = used
+
+## Remove the least recently used entries until the cache fits `limit` bytes,
+## never one of `keep`; the bytes removed.
+pub func evict(keep: list[str], limit: int) -> int!:
+    let entries: list[Entry] = []
+    var total = 0
+    for group in ["build", "work"]:
+        let root = paths.join(scripts_home(), group)
+        let names = files.list(root) catch failure:
+            continue
+        for name in names:
+            let folder = paths.join(root, name)
+            let size = folder_bytes(folder)
+            entries.append(Entry(folder, size, used_time(folder)))
+            total += size
+    if total <= limit:
+        return 0
+    entries.sort(key = func (e: Entry) -> int:
+        return e.used)
+    var removed = 0
+    for e in entries:
+        if total - removed <= limit:
+            break
+        if e.folder in keep:
+            continue
+        files.remove_tree(e.folder) catch failure:
+            continue
+        removed += e.size
+    return removed
+
+## When `folder` was last used: its `.used` mark, else its own time.
+func used_time(folder: str) -> int:
+    let text = files.read_text(paths.join(folder, ".used")) catch failure:
+        let info = files.metadata(folder) catch missing:
+            return 0
+        return info.modified.seconds * 1000000000 + info.modified.nanoseconds
+    return int(text.trim()) catch failure:
+        recover 0

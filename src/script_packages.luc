@@ -1,0 +1,198 @@
+## Which packages a Script node's tool builds against. A script uses the
+## packages the editor itself was built with, so one package never comes in
+## twice (a registry luce-std beside a checkout one fails the build with
+## "different source files use the same canonical module name").
+##
+## The editor's set: walked from the luced-3d checkout being run (its
+## package.prisma in the working directory) or from LUCED_GEOCORE's checkout,
+## each dependency where the compiler finds it: its declared checkout path,
+## else its registry copy under .luc/deps. A released editor has no set, and
+## everything comes from the registry at this app's luce-geocore version.
+##
+## A Packages entry: a path (/..., ./..., ../..., ~/...) as it is; a name
+## (luce-image, owner/name, name@^1.2) from the editor's set when it is there
+## (whatever version it asked for: the workspace has one), else from a
+## checkout beside the editor's luce-geocore, else from the registry.
+from luce_std import files, paths, process
+from luce_geocore.script import geocore_version
+
+## One dependency of a script tool: its package name, and either a path or a
+## registry owner and version requirement ("" the newest).
+pub class Dependency:
+    pub let name: str
+    pub let owner: str
+    pub let path: str
+    pub let version: str
+
+    pub func init(self, name: str, owner: str, path: str, version: str):
+        self.name = name
+        self.owner = owner
+        self.path = path
+        self.version = version
+
+    ## Its package.prisma block.
+    pub func block(self) -> str:
+        let source = f"        str path = \"{self.path}\"\n" if self.path != "" else (f"        str version = \"{self.version}\"\n" if self.version != "" else "")
+        return f"    def dependency \"{self.name}\" {{\n        str owner = \"{self.owner}\"\n{source}    }}\n"
+
+## The packages the editor was built with: each one's folder by name (empty
+## for a released editor).
+pub func editor_packages() -> map[str, str]!:
+    let found: map[str, str] = {}
+    var root = ""
+    if let given = process.variable("LUCED_GEOCORE"):
+        if given != "":
+            root = absolute(given)
+            found["luce-geocore"] = root
+    if root == "":
+        let here = process.current_directory()
+        let text = files.read_text(paths.join(here, "package.prisma")) catch failure:
+            return found
+        if not text.contains("def package \"luced-3d\""):
+            return found
+        root = absolute(here)
+    walk(root, found, 0)
+    return found
+
+## Add `root`'s dependencies (and theirs) to `found`, each where the compiler
+## takes it from (luce-base's dependency_directory): a package under
+## .luc/deps came from the registry, so its own checkout paths are ignored.
+func walk(root: str, found: map[str, str], depth: int) -> unit!:
+    if depth > 32:
+        return
+    let text = files.read_text(paths.join(root, "package.prisma")) catch failure:
+        return
+    let synced = root.contains("/.luc/deps/") or root.contains("\\.luc\\deps\\")
+    for d in manifest_dependencies(text):
+        if d.name in found:
+            continue
+        var folder = ""
+        if d.path != "" and not synced and is_package(paths.join(root, d.path)):
+            folder = absolute(paths.join(root, d.path))
+        if folder == "":
+            folder = synced_folder(root, d.name)
+        if folder == "":
+            continue
+        found[d.name] = folder
+        walk(folder, found, depth + 1)
+
+## `.luc/deps/<name>` at `root` or the nearest folder above it, or "".
+func synced_folder(root: str, name: str) -> str!:
+    var folder = root
+    while true:
+        let candidate = paths.join(paths.join(paths.join(folder, ".luc"), "deps"), name)
+        if is_package(candidate):
+            return absolute(candidate)
+        let parent = paths.directory(folder)
+        if parent == folder or parent == "":
+            return ""
+        folder = parent
+    return ""
+
+## Whether `folder` holds a package.prisma.
+func is_package(folder: str) -> bool:
+    let kind = files.metadata(paths.join(folder, "package.prisma")).kind catch failure:
+        return false
+    return kind == files.FileKind.regular
+
+## Every `def dependency` block of a manifest's text: name, owner, path and
+## version as written ("" when missing).
+pub func manifest_dependencies(manifest: str) -> list[Dependency]!:
+    let result: list[Dependency] = []
+    var rest = manifest
+    while true:
+        let at = rest.index_of("def dependency \"") else break
+        rest = rest[at + 16..]
+        let close = rest.index_of("\"") else break
+        let name = rest[..<close]
+        let end = rest.index_of("}") else break
+        let body = rest[..<end]
+        result.append(Dependency(name, setting(body, "owner"), setting(body, "path"), setting(body, "version")))
+        rest = rest[end..]
+    return result
+
+## `str key = "value"` in a block's text, or "".
+func setting(body: str, key: str) -> str:
+    let at = body.index_of(f"str {key} = \"") else return ""
+    let value = body[at + key.byte_count + 8..]
+    let close = value.index_of("\"") else return ""
+    return value[..<close]
+
+## The owner a package's manifest names ("dymokomi" when it names none).
+func manifest_owner(folder: str) -> str:
+    let text = files.read_text(paths.join(folder, "package.prisma")) catch failure:
+        return "dymokomi"
+    let at = text.index_of("str owner = \"") else return "dymokomi"
+    let value = text[at + 13..]
+    let close = value.index_of("\"") else return "dymokomi"
+    return value[..<close]
+
+## Every dependency of a script with `packages` (the node's Packages row:
+## entries apart by spaces or commas) in a project in `folder`, against the
+## editor's set `editor`.
+pub func dependencies(packages: str, folder: str, editor: map[str, str]) -> list[Dependency]!:
+    let geocore = named("luce-geocore", editor) else Dependency("luce-geocore", "dymokomi", "", geocore_version)
+    # luce-std as luce-geocore takes it (scripts import luce_std too).
+    let result: list[Dependency] = [geocore, named("luce-std", editor) else Dependency("luce-std", "dymokomi", "", "")]
+    for entry in packages.replace(",", " ").split(" "):
+        let item = entry.trim()
+        if item == "":
+            continue
+        let made = dependency_of(item, folder, geocore.path, editor)
+        var known = false
+        for d in result:
+            if d.name == made.name:
+                known = true
+        if not known:
+            result.append(made)
+    return result
+
+## Package `name` from the editor's set, or none.
+func named(name: str, editor: map[str, str]) -> Dependency?:
+    let folder = editor[name] else return none
+    return Dependency(name, manifest_owner(folder), folder, "")
+
+## One Packages entry: a path (/..., ./..., ../..., ~/...), owner/name[@version],
+## name@version, or a bare name.
+func dependency_of(item: str, folder: str, geocore: str, editor: map[str, str]) -> Dependency!:
+    if item.starts_with("/") or item.starts_with(".") or item.starts_with("~"):
+        var path = item
+        if item.starts_with("~"):
+            path = files.home_directory() + item[1..]
+        elif not item.starts_with("/"):
+            path = paths.join(folder if folder != "" else process.current_directory(), item)
+        let full = absolute(path)
+        return Dependency(paths.base(full), manifest_owner(full), full, "")
+    var owner = "dymokomi"
+    var name = item
+    var version = ""
+    if let at = name.index_of("@"):
+        version = name[at + 1..]
+        name = name[..<at]
+    if let slash = name.index_of("/"):
+        owner = name[..<slash]
+        name = name[slash + 1..]
+    if let known = named(name, editor):
+        return known
+    # A workspace of checkouts: the one beside luce-geocore.
+    if geocore != "":
+        let sibling = paths.join(paths.directory(geocore), name)
+        if is_package(sibling):
+            return Dependency(name, manifest_owner(sibling), absolute(sibling), "")
+    return Dependency(name, owner, "", version)
+
+func absolute(path: str) -> str:
+    let canonical = files.canonical(path) catch failure:
+        return path
+    return canonical
+
+## What to say about a build that found a package twice: which registry
+## package brought its own copy of a checkout one.
+pub func duplicate_hint(needed: list[Dependency]) -> str:
+    let fetched: list[str] = []
+    for d in needed:
+        if d.path == "":
+            fetched.append(d.name)
+    if fetched.length == 0:
+        return ""
+    return f" ({fetched.join(", ")} come from the registry, with their own copies of packages this editor uses as checkouts: put a checkout of each beside luce-geocore, or name it by its folder)"
