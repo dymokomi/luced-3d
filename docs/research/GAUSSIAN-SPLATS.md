@@ -462,6 +462,7 @@ Without a separate Bake step, a `.ply` dropped on a File node displays as splats
 - **SPZ**: read v1–v4 and write v4, or v3 when zstd is unavailable. The flags carry the antialiased setting (stored as detail `gsplat_antialiased`, which the display honors). Positions are 24-bit fixed point with an explicit `fractionalBits` choice on write (default 12). Coordinate systems convert to Y-up right-handed, our viewport's, by the 90° rotations with SH rotation.
 - **`.splat`**: read and write; 32-byte records, no SH, `srgb`.
   - It is too small for its own package. Keeping it here, as "the compact splat formats", is a judgment call (Q4).
+- **As built (stage 6):** luce-spz reads SPZ and `.splat` into a 3DGS PLY's raw names and RDF axes, exactly what luce-ply gives for a PLY (SPZ's RUB, or the system its Adobe coordinate extension names, converted as Niantic's loader does for a PLY), so the File node bakes them the same way (Up Axis Y Down, `gsplat_up_axis`) and a capture loads identically from either format. Saving unbakes a baked cloud; a `y_down` cloud goes back to RDF and is converted to RUB, others are Y-up already. The encoder matches Niantic's packer byte for byte, and decoding then encoding gives a file's streams back.
 - **zstd**: SPZ v4 needs a zstd codec, which goes in **luce-compress**, general technology like brotli. The decoder (RFC 8878) is needed for reading; the encoder can be a simple greedy level 1–3 at first. Test vectors come from the RFC and the zstd repository's decode corpus, ported as tests and never copied.
 
 ### luce-usd
@@ -579,6 +580,7 @@ interactive.
 - `run_code` takes the points component when the set has no mesh, or always under a new Run Over menu choice: "Points (cloud)" versus mesh points, Q6.
 - Positions, attributes, groups, and add or remove points apply to the cloud.
 - `build_layout` already abstracts columns. The edits path needs a cloud variant of `applied`.
+- **Decided (stage 6 follow-up):** a run over a cloud gives a cloud back, and polygons a snippet adds (`k.add_prim`) become a mesh beside it, over copies of the points they use. The cloud keeps every point, so a splat cloud stays drawn as splats when a snippet adds faces to it; a set holding a mesh and a cloud is the representation §5.1 already allows. `p.orient` reads the identity (0, 0, 0, 1) on points without one.
 
 **Stubs** (`src/code/stubs.lucb`), on `Point`:
 

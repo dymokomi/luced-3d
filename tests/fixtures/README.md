@@ -17,3 +17,6 @@ mesher follows it) checks the tessellation's skipped-face warning.
 (two degree-1 Gaussian splats in the 3DGS layout, ASCII) are original
 fixtures for the PLY File and Export nodes; `points.ply` (three colored
 points, no faces) is a plain point cloud, drawn as dots.
+`splats.spz` is `splats.ply`'s two splats as SPZ version 4, written by
+Niantic's reference library (PLY axes converted to SPZ's RUB) for the SPZ
+File and Export nodes.

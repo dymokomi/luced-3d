@@ -1,0 +1,55 @@
+## SPZ and .splat in the graph: the File node reads an SPZ to the same baked
+## splats, in the same place, as the PLY it was made from, and the Export
+## node writes SPZ and .splat files that read back.
+from luce_spz.spz import Spz
+from luce_geocore.geocore import GeometrySet, SetAttributes
+from network import Network
+from stamps import stamp_graph
+import math
+
+pub func spz_node_tests() -> unit!:
+    let graph = Network(false)
+    let ply = graph.add("File", 0.0, 0.0)
+    ply.texts[0] = "tests/fixtures/splats.ply"
+    let spz = graph.add("File", 200.0, 0.0)
+    spz.texts[0] = "tests/fixtures/splats.spz"
+    stamp_graph(graph)
+    let from_ply = graph.evaluate_data(ply.id).geometry
+    let from_spz = graph.evaluate_data(spz.id).geometry
+    assert(not from_spz.has_mesh() and from_spz.splat_count() == 2)
+    assert(SetAttributes.has(from_spz, "orient", 0) and SetAttributes.has(from_spz, "sh", 0) and not SetAttributes.has(from_spz, "f_dc_0", 0))
+    # The same capture either way: stood up from Y down, values within SPZ's steps.
+    assert(from_spz.cloud_point(1).z == -3.0 and from_spz.cloud_point(1).y == -2.0)
+    assert_close(from_ply, from_spz)
+    # Export SPZ and .splat; each reads back as the same splats.
+    let spz_out = graph.add("Export", 200.0, 60.0)
+    spz_out.texts[0] = "exported_splats.spz"
+    graph.connect(spz.id, spz_out.id, 0)
+    let splat_out = graph.add("Export", 400.0, 60.0)
+    splat_out.texts[0] = "exported_splats.splat"
+    graph.connect(spz.id, splat_out.id, 0)
+    stamp_graph(graph)
+    assert(graph.evaluate_data(spz_out.id).geometry.splat_count() == 2)
+    let splat_warning = graph.evaluate_data(splat_out.id).warning
+    assert(splat_warning.contains("SH"))
+    # The exported SPZ is the reference file's splats again, in its axes.
+    let reread = Spz.load("exported_splats.spz")
+    assert(reread.cloud_point(1).z == 3.0)
+    let again = graph.add("File", 200.0, 120.0)
+    again.texts[0] = "exported_splats.spz"
+    let flat = graph.add("File", 400.0, 120.0)
+    flat.texts[0] = "exported_splats.splat"
+    stamp_graph(graph)
+    assert_close(from_spz, graph.evaluate_data(again.id).geometry)
+    let from_splat = graph.evaluate_data(flat.id).geometry
+    assert(from_splat.splat_count() == 2 and from_splat.cloud_point(1).z == -3.0)
+    print("PASS SPZ and .splat File and Export nodes")
+
+## Two baked clouds of the same splats: positions within SPZ's 2^-12 steps
+## (luce-spz's tests check every attribute against the reference library).
+func assert_close(a: GeometrySet, b: GeometrySet) -> unit!:
+    assert(a.cloud_count() == b.cloud_count())
+    for point in 0..<a.cloud_count():
+        let pa = a.cloud_point(point)
+        let pb = b.cloud_point(point)
+        assert(math.abs(pa.x - pb.x) < 0.001 and math.abs(pa.y - pb.y) < 0.001 and math.abs(pa.z - pb.z) < 0.001)
