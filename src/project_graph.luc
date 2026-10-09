@@ -13,6 +13,7 @@ from edit_kinds import is_edit, edit_kind
 from take import Take
 import takes
 import node_catalog
+import code_cook
 
 pub func write_graph(doc: Document, graph: Network) -> unit!:
     write_scene(doc, graph)
@@ -106,6 +107,7 @@ pub func write_body(doc: Document, path: str, node: Node, shared: map[int, str]?
     doc.set(path, "guard", Value.integer(node.guard))
     doc.set(path, "hidden", Value.strings([node.hidden.length], node.hidden))
     doc.set(path, "frozen", Value.text(node.frozen))
+    doc.set(path, "time_dependent", Value.boolean(node.time_dependent))
     doc.add(path + "/edits", "recipes")
     doc.set(path, "edit_count", Value.integer(node.edits.length))
     for at in 0..<node.edits.length:
@@ -148,10 +150,15 @@ pub func has_body(doc: Document, path: str) -> bool:
 
 ## A project's text `text` for slot `slot` of a `kind` node, checked: a
 ## Sketch's sketch must read as one (it is lines of entities and
-## constraints); other texts are single lines, as their fields hold.
+## constraints) and a Code node's code may be many lines; other texts are
+## single lines, as their fields hold.
 func checked_text(kind: str, slot: int, text: str) -> str!:
     if kind == sketch_node.kind_name and slot == 0:
         _ = CadSketch.parse(text)
+        return text
+    # A Code node's body, header and spare list are lines of text.
+    if kind == code_cook.kind_name and slot >= code_cook.body_slot:
+        if text.byte_count > 1048576: error(ui.invalid, "A Code node's text exceeds 1 MiB")
         return text
     return values.line(text)
 
@@ -173,6 +180,7 @@ pub func read_body(doc: Document, path: str, node: Node, shared: map[int, str]?)
         node.hidden.append(text if shared != none else values.line(text))
     let frozen = values.text(doc, path, "frozen") if doc.has_property(path, "frozen") else ""
     node.frozen = frozen if shared != none else values.line(frozen)
+    node.time_dependent = values.flag(doc, path, "time_dependent") if doc.has_property(path, "time_dependent") else false
     let count = values.integer(doc, path, "edit_count", 0, 100000)
     if count != doc.child_count(path + "/edits") or (not is_edit(node.kind) and count != 0):
         error(ui.invalid, "Invalid Edit recipe collection")

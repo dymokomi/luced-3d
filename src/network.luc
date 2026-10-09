@@ -16,6 +16,7 @@ from shader_nodes import is_shader, graph_kind, math_operations
 from take import Take
 import shader_nodes
 import cad_nodes
+import code_cook
 from angles import radians
 
 pub func kinds() -> list[str]:
@@ -92,7 +93,7 @@ pub class Node:
             self.sources.append(0)
         self.surface_values = []
         self.values = []
-        for _ in 0..<node_catalog.value_slots:
+        for _ in 0..<(code_cook.value_count if kind == code_cook.kind_name else node_catalog.value_slots):
             self.values.append(0.0)
         for parameter in node_catalog.parameters(kind):
             self.values[parameter.slot] = parameter.initial
@@ -105,6 +106,8 @@ pub class Node:
             self.texts = ["", "piece", ""]
         if kind == "Material":
             self.texts = [f"materials/material{id}", "", ""]
+        if kind == code_cook.kind_name:
+            self.texts = ["", code_cook.starter(), "", ""]
         if kind == "File":
             # USD's Variants and Load payloads, empty: the stage as authored.
             self.texts = ["", "", ""]
@@ -156,7 +159,7 @@ pub class Node:
 
     ## Pure node computation over resolved immutable inputs. Runtime invokes this
     ## only on the compute worker; synchronous callers use the same contract.
-    pub func compute(self, data: GeometryData, second: GeometryData? = none, progress: func(float) -> unit!? = none, sources: SourceCache? = none) -> GeometryData!:
+    pub func compute(self, data: GeometryData, second: GeometryData? = none, progress: func(float) -> unit!? = none, sources: SourceCache? = none, clock: list[float] = []) -> GeometryData!:
         if self.frozen != "":
             return load_frozen(self.frozen)
         let v = self.values
@@ -203,6 +206,8 @@ pub class Node:
             return add_material(self.id, self.surface_values, self.texts, data, self.shader_graph)
         if self.kind == "Assign Material":
             return assign_material(self.texts, data, second else error(ui.invalid, "Connect the materials input"))
+        if self.kind == code_cook.kind_name:
+            return code_cook.cook(self.values, self.texts, data, clock)
         if self.kind == "Cache":
             return cook_cache(reads_file(self.kind, self.enabled, self.values), self.texts[0], self.stamp, data)
         if self.kind == "Export":
@@ -671,4 +676,4 @@ pub class Network:
         let progress = func (fraction: float) -> unit!:
             if let report = self.on_progress:
                 report(node.id, fraction, "Tessellating" if node.kind == "Tessellate" else "Computing")
-        return node.compute(data, second, progress, self.sources)
+        return node.compute(data, second, progress, self.sources, [self.frame, self.time(), self.fps])

@@ -1,0 +1,116 @@
+## The Code node (Houdini's Attribute Wrangle, in Luce Base): its body runs
+## for one element at a time (a point, primitive or vertex, or the detail
+## once, or n numbers) and luce-kernel runs it for every element in
+## parallel (luce-geocore's Code). Texts: 0 the group, 1 the body, 2 the
+## header (helper functions above the generated entry), 3 the spare
+## parameters' slots. Values: 0 Run Over, 1 Numbers' count, the group type
+## at node_catalog.group_type_slot, the spare parameters from
+## first_spare_slot on.
+##
+## A spare parameter is a literal `k.f32("amount", 0.2)` (or f64, i32,
+## vec3...) in the code: each name gets a value row, its slots kept by name
+## while the code changes, so a tuned value survives edits.
+from luce_geocore.geocore import Code
+from network import Node
+from code_cook import Spare, spares_of, spares_text, value_count, first_spare_slot, run_over_slot, body_slot, header_slot, spares_slot
+from workspace import Workspace
+from parameter_rows import Parameter, number, whole, vector
+
+## Put `text` in slot `slot` (the body or the header) as one undo step;
+## the parameters the code names become rows, and the node follows the
+## timeline when the code reads it.
+pub func set_code(w: Workspace, id: int, slot: int, text: str) -> unit!:
+    let node = w.network.find(id) else return
+    if node.texts[slot] == text:
+        return
+    w.perform("Edit code", func () -> unit!:
+        node.texts[slot] = text
+        refresh(node)
+        w.network.invalidate(node.id)
+        w.rebuild())
+
+## Read the code's parameters and time use again (a code that does not
+## check keeps its rows, so typing does not lose them).
+pub func refresh(node: Node) -> unit!:
+    let check = Code.check(int(node.values[run_over_slot]), node.texts[header_slot], node.texts[body_slot])
+    if not check.ok():
+        return
+    node.time_dependent = check.reads_time()
+    let old = spares_of(node.texts[spares_slot])
+    let placed: list[Spare] = []
+    let fresh: list[int] = []
+    # Names the code still uses keep their slots (and values).
+    for i in 0..<check.parameter_count():
+        let name = check.parameter_name(i)
+        let components = check.parameter_components(i)
+        var slot = -1
+        for s in old:
+            if s.name == name and s.components == components:
+                slot = s.slot
+        if slot >= 0:
+            placed.append(Spare(name, slot, components, check.parameter_integer(i)))
+        else:
+            fresh.append(i)
+    # New names take free slots, at their defaults.
+    for i in fresh:
+        let components = check.parameter_components(i)
+        let slot = free_slot(placed, components)
+        if slot < 0:
+            continue
+        placed.append(Spare(check.parameter_name(i), slot, components, check.parameter_integer(i)))
+        for c in 0..<components:
+            node.values[slot + c] = check.parameter_default(i, c)
+    node.texts[spares_slot] = spares_text(placed)
+
+## The first run of `components` value slots no spare holds, or -1.
+func free_slot(spares: list[Spare], components: int) -> int:
+    var slot = first_spare_slot
+    while slot + components <= value_count:
+        var clear = true
+        for s in spares:
+            if s.slot >= 0 and slot < s.slot + s.components and s.slot < slot + components:
+                clear = false
+        if clear:
+            return slot
+        slot += 1
+    return -1
+
+## The rows the inspector shows for the spares, in the code's order.
+pub func spare_rows(node: Node) -> list[Parameter]:
+    let rows: list[Parameter] = []
+    for s in spares_of(node.texts[spares_slot]):
+        let doc = f"A parameter of the code: k.{"i32" if s.integer else "f32"}(\"{s.name}\", …)."
+        if s.components > 1:
+            let defaults: list[float] = []
+            for c in 0..<3:
+                defaults.append(node.values[s.slot + c] if c < s.components else 0.0)
+            rows.append(vector(s.name, s.slot, defaults, doc))
+        elif s.integer:
+            rows.append(whole(s.name, s.slot, node.values[s.slot], -1000000.0, 1000000.0, doc))
+        else:
+            rows.append(number(s.name, s.slot, node.values[s.slot], -1000000.0, 1000000.0, 0.01, doc, soft = 10.0))
+    return rows
+
+## Where a cook failure points: [part (0 body, 1 header), line, column], or
+## [] when it names no line ("line 7, column 3: …", "header line 2, …").
+pub func failure_place(message: str) -> list[int]:
+    # Cook failures carry the node's name first ("Code 3: line 2, …").
+    var part = 0
+    var text = message
+    if let at = message.index_of("header line "):
+        part = 1
+        text = message[at + 7..]
+    elif let at = message.index_of("line "):
+        text = message[at..]
+    else:
+        return []
+    let comma = text.index_of(", column ") else return []
+    let line = int(text[5..<comma]) catch failure:
+        recover 0
+    let rest = text[comma + 9..]
+    let colon = rest.index_of(":") else return []
+    let column = int(rest[..<colon]) catch failure:
+        recover 0
+    if line <= 0 or column <= 0:
+        return []
+    return [part, line, column]

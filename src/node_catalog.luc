@@ -21,6 +21,7 @@ import sketch_node
 from parameter_rows import Parameter, number, whole, vector, toggle, menu, entry, heading
 from cad_nodes import solid_kinds, cad_only_kinds, is_cad_only, cad_categories, cad_category
 import cad_nodes
+import code_cook
 
 ## Value slots a node has, and the one verb nodes keep their Group Type in.
 pub let value_slots: int = 32
@@ -108,12 +109,12 @@ pub func category(kind: str) -> str:
         return "Transform / Copy"
     if kind.starts_with("Attribute") or kind in ["Selection Group", "Name", "Normal", "Measure", "UVProject", "Color"]:
         return "Attributes"
-    if kind in ["Merge", "Null", "Switch"]:
+    if kind in ["Merge", "Null", "Switch", code_cook.kind_name]:
         return "Utility"
     return "Modeling"
 
 pub func kinds() -> list[str]:
-    return sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Switch"] + scene_kinds() + material_kinds() + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Name", "Normal", "Measure", "UVProject", "Color"] + [sketch_node.kind_name, "Extrude", "Revolve", "Boolean", "Fillet", "Chamfer", "Mirror Body", "Pattern"] + shader_kinds()
+    return sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Switch", code_cook.kind_name] + scene_kinds() + material_kinds() + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Name", "Normal", "Measure", "UVProject", "Color"] + [sketch_node.kind_name, "Extrude", "Revolve", "Boolean", "Fillet", "Chamfer", "Mirror Body", "Pattern"] + shader_kinds()
 
 pub func input_count(kind: str) -> int:
     if cad_nodes.two_inputs(kind):
@@ -143,7 +144,7 @@ pub func has_group(kind: str) -> bool:
     let verb = VerbCatalog.index_of(kind)
     if verb >= 0:
         return VerbCatalog.grouped(verb)
-    return kind in ["Blast", "Selection Group", "Assign Material", "Name"]
+    return kind in ["Blast", "Selection Group", "Assign Material", "Name", code_cook.kind_name]
 
 pub func has_attribute_name(kind: str) -> bool:
     return kind in ["AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group"]
@@ -227,7 +228,7 @@ pub func fields(kind: str, path: str = "", stage: Composition? = none) -> list[P
         rows.append(entry("Group", 0, "Elements to work on, in Houdini's group syntax: empty or * for all, 0 2-5 and 0-99:2 for numbers, names and globs, @P.y>0 or @name tests, ^ to remove, & to intersect, grow(x) and loop(x)."))
     if kind == "Name":
         rows.append(entry("Name", 1, "The name the Group's faces get, in their name attribute (Houdini's Name): pick them later with @name=wheel or a glob, @name=wheel*."))
-    if is_verb(kind) and has_group(kind):
+    if (is_verb(kind) and has_group(kind)) or kind == code_cook.kind_name:
         rows.append(menu("Group Type", group_type_slot, "Guess from group|Points|Edges|Primitives|Vertices", 0.0, "What the group's numbers name; Guess reads the named groups' type, else the operation's own."))
     if kind == "Assign Material":
         rows.append(entry("Material", 1, "The path of the material the group's faces take, from the second input; empty takes its first."))
@@ -303,6 +304,12 @@ func value_fields(kind: str) -> list[Parameter]:
     let verb = VerbCatalog.index_of(kind)
     if verb >= 0:
         return verb_fields(verb)
+    if kind == code_cook.kind_name:
+        let count = whole("Count", code_cook.count_slot, 10.0, 0.0, 100000000.0, "Numbers: how many times the code runs (n is 0 to Count - 1).", true)
+        count.hide_when = "{ run_over != 4 }"
+        let run_over = menu("Run Over", code_cook.run_over_slot, code_cook.run_over_names(), 1.0, "What the code is written for: each point (p), vertex (v) or primitive (f), the detail once, or Count numbers (n). It runs for all of them in parallel.")
+        run_over.key = "run_over"
+        return [run_over, count]
     if kind == "Blast":
         return [toggle("Isolate group", 0, 0.0, "On: keep only the group. Off: delete it.")]
     if kind == "Export":
@@ -577,6 +584,8 @@ pub func description(kind: str) -> str:
         return "Render the input's scene through its camera"
     if kind == "Cache":
         return "Save the cooked input to disk, or load it back and freeze upstream"
+    if kind == code_cook.kind_name:
+        return "Luce Base code run for each point, primitive or vertex, in parallel (Houdini's Wrangle)"
     if kind == "Null":
         return "Passes its input through / a named point to organize the flow"
     if kind == "Export":

@@ -3,7 +3,10 @@
 ## catalog, one line each after Houdini's parameter pane. The catalog's rows
 ## name the value or text slot each edits; an Edit node adds its component
 ## edit rows. A drag is live and one undo step on release.
-from luce_ui.ui import VStack, HStack, Text, TextField, Font, Button, ParameterPanel, ParameterSpec, ParameterKind, Rect
+from luce_ui.ui import VStack, HStack, Text, TextField, Font, Button, ParameterPanel, ParameterSpec, ParameterKind, Rect, Size
+from code_editor import CodeEditor
+import code_node
+import code_cook
 from interop import Connection
 from workspace import Workspace
 from actions import Actions
@@ -55,6 +58,10 @@ pub class Inspector:
     ## A Sketch node's dimensions, read once per text it has.
     var dimensions_text: str = ""
     var dimensions: list[SketchDimension]
+    ## A Code node's body and header editors, shown for Code nodes only.
+    let code_box: VStack
+    let code_body: CodeEditor
+    let code_header: CodeEditor
 
     pub func init(self, workspace: Workspace, actions: Actions, font: Font) -> unit!:
         self.dimensions = []
@@ -82,7 +89,15 @@ pub class Inspector:
         self.delete_button = Button(action = actions.delete, font = font)
         let header = VStack([self.name, self.kind, self.state_rows, self.description], spacing = 4.0, padding = 6.0)
         let footer = VStack([self.stats, self.delete_button], spacing = 4.0, padding = 6.0)
-        self.generic_rows = VStack([header, self.parameters, footer], spacing = 0.0)
+        self.code_body = CodeEditor(font)
+        self.code_header = CodeEditor(font)
+        self.code_body.editor.layout().set_limits(Size(240.0, 260.0), Size(16384.0, 900.0))
+        self.code_header.editor.layout().set_limits(Size(240.0, 90.0), Size(16384.0, 300.0))
+        self.code_body.on_commit = func (text: str) -> unit!: self.code_committed(code_cook.body_slot, text)
+        self.code_header.on_commit = func (text: str) -> unit!: self.code_committed(code_cook.header_slot, text)
+        self.code_box = VStack([Text("Code (one element; it runs for all in parallel)", font = font, muted = true), self.code_body.editor,
+                                Text("Header (helper functions)", font = font, muted = true), self.code_header.editor], spacing = 4.0, padding = 6.0)
+        self.generic_rows = VStack([header, self.parameters, self.code_box, footer], spacing = 0.0)
         self.body = VStack([self.generic_rows], spacing = 0.0)
         self.refresh()
 
@@ -150,7 +165,12 @@ pub class Inspector:
         self.roles = []
         var specs: list[ParameterSpec] = []
         let shown = units.document_unit(self.workspace)
-        for row in node_catalog.fields(kind, path, self.stage):
+        var fields = node_catalog.fields(kind, path, self.stage)
+        # A Code node's spare parameters, from its code.
+        if kind == code_cook.kind_name:
+            if let node = self.workspace.selected():
+                fields = fields + code_node.spare_rows(node)
+        for row in fields:
             specs.append(row.spec(shown))
             self.rows.append(row)
             self.roles.append("text" if row.kind in ["text", "path"] else (("render" if row.name == "Render" else "reload") if row.kind == "button" else ("info" if row.kind == "info" else "value")))
@@ -211,12 +231,21 @@ pub class Inspector:
         let changed = node.id != self.showing
         let file = node.kind == "File"
         let format = node_catalog.file_format(node.texts[0]) if file else ""
-        let key = f"{node.kind}|{format}|{self.compose(node.texts, node.source_revision) if format == "usd" else ""}|{self.sketch_key(node.kind, node.texts[0])}|{self.workspace.network.units}"
+        let key = f"{node.kind}|{format}|{self.compose(node.texts, node.source_revision) if format == "usd" else ""}|{self.sketch_key(node.kind, node.texts[0])}|{node.texts[code_cook.spares_slot] if node.kind == code_cook.kind_name else ""}|{self.workspace.network.units}"
         if key != self.built:
             self.build(node.kind, node.texts[0])
             self.built = key
         self.showing = node.id
         self.state_rows.layout().set_visible(not file)
+        let coding = node.kind == code_cook.kind_name
+        self.code_box.layout().set_visible(coding)
+        if coding:
+            self.code_body.show(node.texts[code_cook.body_slot])
+            self.code_header.show(node.texts[code_cook.header_slot])
+            let place = code_node.failure_place(node.failure)
+            let message = node.failure
+            self.code_body.show_error(place[1] if place.length == 3 and place[0] == 0 else 0, place[2] if place.length == 3 else 0, (place[2] if place.length == 3 else 0) + 1, message)
+            self.code_header.show_error(place[1] if place.length == 3 and place[0] == 1 else 0, place[2] if place.length == 3 else 0, (place[2] if place.length == 3 else 0) + 1, message)
         self.delete_button.layout().set_visible(not file)
         if changed or not self.name.layout().is_focused():
             self.name.set_text(node.name)
@@ -301,7 +330,20 @@ pub class Inspector:
             parts.append(f"{d.constraint}{"a" if d.angle else ""}{"d" if d.driven else ""}")
         return parts.join(",")
 
+    ## A Code editor's text, to the selected Code node.
+    func code_committed(self, slot: int, text: str) -> unit!:
+        let node = self.workspace.selected() else return
+        if node.kind == code_cook.kind_name:
+            code_node.set_code(self.workspace, node.id, slot, text)
+
+    ## Each frame: the code editors commit when typing pauses.
+    pub func poll(self) -> unit!:
+        self.code_body.poll()
+        self.code_header.poll()
+
     pub func close(self):
+        self.code_body.close()
+        self.code_header.close()
         self.on_browse = none
         self.on_render = none
         for connection in self.connections:

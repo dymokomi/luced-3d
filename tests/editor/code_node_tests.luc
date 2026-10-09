@@ -1,0 +1,82 @@
+## The Code node (Houdini's Wrangle in Luce Base): its starter bends a
+## grid; a literal k.f32 parameter becomes a row whose value the cook uses
+## and that keeps its value through code edits; an error fails the node
+## with its line (and the editor's mark parses it); code reading the time
+## follows the timeline; primitives get colors; Detail writes a detail
+## attribute; the code survives a project round trip, many lines; edits
+## are undo steps.
+from workspace import Workspace
+import node_commands
+import code_node
+import code_cook
+import project_file
+import timeline_commands
+from luce_std import files, paths, math
+
+pub func code_node_tests() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Grid", 0.0, 0.0)
+    let flat = (w.geometry else trap("grid")).bounds()
+    assert(flat.maximum.y - flat.minimum.y < 1e-6)
+    node_commands.add_node(w, "Code", 0.0, 100.0)
+    let id = w.network.selected
+    node_commands.display_selected(w)
+    let code = w.network.require(id)
+    assert(code.failure == "")
+    # The starter: P.y follows sin(P.x · 4) · 0.1.
+    let bent = (w.geometry else trap("bent")).bounds()
+    assert(bent.maximum.y > 0.05 and bent.minimum.y < -0.05)
+    # A parameter row, its value used, kept through an edit.
+    code_node.set_code(w, id, code_cook.body_slot, "p.P[1] = k.f32(\"height\", 0.5)\n")
+    let spares = code_cook.spares_of(code.texts[code_cook.spares_slot])
+    assert(spares.length == 1 and spares[0].name == "height" and code.values[spares[0].slot] == 0.5)
+    assert(math.abs((w.geometry else trap("lifted")).bounds().maximum.y - 0.5) < 1e-6)
+    w.network.selected = id
+    node_commands.set_parameter(w, spares[0].slot, 2.0)
+    assert(math.abs((w.geometry else trap("higher")).bounds().maximum.y - 2.0) < 1e-6)
+    code_node.set_code(w, id, code_cook.body_slot, "p.P[1] = k.f32(\"height\", 0.5) * 2.0\n")
+    assert(math.abs((w.geometry else trap("doubled")).bounds().maximum.y - 4.0) < 1e-6)
+    # An error fails the node at its line; the editor's mark reads it.
+    code_node.set_code(w, id, code_cook.body_slot, "let a = 1.0\np.P[1] = b\n")
+    assert(code.failure.contains("line 2, column "))
+    let place = code_node.failure_place(code.failure)
+    assert(place.length == 3 and place[0] == 0 and place[1] == 2)
+    # A fault names the element.
+    code_node.set_code(w, id, code_cook.body_slot, "let i = p.ptnum\nassert(i < 3)\n")
+    assert(code.failure.contains("line 2, column ") and code.failure.ends_with("(point 3)"))
+    # Time: the node follows the timeline.
+    code_node.set_code(w, id, code_cook.body_slot, "p.P[1] = (f32)k.frame\n")
+    assert(code.time_dependent and code.failure == "")
+    timeline_commands.set_frame(w, 5.0)
+    assert(math.abs((w.geometry else trap("frame 5")).bounds().maximum.y - 5.0) < 1e-6)
+    timeline_commands.set_frame(w, 9.0)
+    assert(math.abs((w.geometry else trap("frame 9")).bounds().maximum.y - 9.0) < 1e-6)
+    code_node.set_code(w, id, code_cook.body_slot, "p.P[1] = 1.0\n")
+    assert(not code.time_dependent)
+    # Primitives: a color each.
+    w.network.selected = id
+    node_commands.set_parameter(w, code_cook.run_over_slot, 3.0)
+    code_node.set_code(w, id, code_cook.body_slot, "f.Cd = [0.0, 1.0, 0.0, 0.0] if f.primnum % 2 == 0 else [1.0, 0.0, 0.0, 0.0]\n")
+    assert(code.failure == "")
+    # Detail: once, writing a detail attribute.
+    node_commands.set_parameter(w, code_cook.run_over_slot, 0.0)
+    code_node.set_code(w, id, code_cook.body_slot, "k.set_detail_f32(\"answer\", 42.0)\n")
+    assert(code.failure == "")
+    # A header helper used by the body.
+    node_commands.set_parameter(w, code_cook.run_over_slot, 1.0)
+    code_node.set_code(w, id, code_cook.header_slot, "func lift(y: f32) -> f32:\n    return y + 3.0\n")
+    code_node.set_code(w, id, code_cook.body_slot, "p.P[1] = lift(p.P[1])\n")
+    assert(code.failure == "" and math.abs((w.geometry else trap("lifted 3")).bounds().maximum.y - 3.0) < 1e-6)
+    # Undo takes back the last edit of the code.
+    w.undo()
+    assert(w.network.require(id).texts[code_cook.body_slot].starts_with("k.set_detail_f32"))
+    w.redo()
+    # Saved and read back, many lines and all.
+    let folder = files.create_temporary_directory(".")
+    let path = paths.join(folder, "code.prisma")
+    project_file.save(path, w, [1.0, 0.0, 0.0])
+    let back = project_file.load(path).graph.require(id)
+    assert(back.texts[code_cook.body_slot] == "p.P[1] = lift(p.P[1])\n" and back.texts[code_cook.header_slot].starts_with("func lift"))
+    files.remove_tree(folder)
+    print("PASS code node: starter, parameters, errors and faults at their lines, time, primitives, detail, header, undo, project")

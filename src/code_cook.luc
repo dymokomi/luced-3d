@@ -1,0 +1,81 @@
+## Cooking a Code node (code_node.luc has the node's commands): its
+## body and header run by luce-geocore's Code over the input, with the
+## spare parameters' values and the timeline's clock. Kept apart from the
+## commands so network.luc can cook without importing the workspace.
+from luce_geocore.geocore import Code
+from geometry_data import GeometryData
+
+pub let kind_name = "Code"
+pub let body_slot = 1
+pub let header_slot = 2
+pub let spares_slot = 3
+pub let run_over_slot = 0
+pub let count_slot = 1
+pub let first_spare_slot = 16
+## Value slots a Code node has (spare parameters fill them past 16).
+pub let value_count = 64
+
+## Houdini's Run Over menu, in order (the codes luce-geocore's Code takes).
+pub func run_over_names() -> str:
+    return "Detail (only once)|Points|Vertices|Primitives|Numbers"
+
+## What a new Code node says: a Point Wrangle's first line.
+pub func starter() -> str:
+    return "# p is this point; k the node (parameters, frame, time).\np.P[1] += math32.sin(p.P[0] * 4.0) * 0.1\n"
+
+## One spare parameter: its name, first value slot, components (1–4) and
+## whether it is whole.
+pub class Spare:
+    pub let name: str
+    pub let slot: int
+    pub let components: int
+    pub let integer: bool
+
+    pub func init(self, name: str, slot: int, components: int, integer: bool):
+        self.name = name
+        self.slot = slot
+        self.components = components
+        self.integer = integer
+
+## The spares a node's text 3 lists (a line each: name, slot, components,
+## whole, tab apart).
+pub func spares_of(text: str) -> list[Spare]:
+    let result: list[Spare] = []
+    for line in text.split("\n"):
+        let parts = line.split("\t")
+        if parts.length != 4:
+            continue
+        let slot = int(parts[1]) catch failure:
+            recover -1
+        let components = int(parts[2]) catch failure:
+            recover 0
+        if slot < first_spare_slot or components < 1 or components > 4 or slot + components > value_count:
+            continue
+        result.append(Spare(parts[0], slot, components, parts[3] == "1"))
+    return result
+
+pub func spares_text(spares: list[Spare]) -> str:
+    let lines: list[str] = []
+    for s in spares:
+        lines.append(f"{s.name}\t{s.slot}\t{s.components}\t{"1" if s.integer else "0"}")
+    return lines.join("\n")
+
+## Cook: the code over the input, with the parameters' values now and the
+## timeline's frame, time and rate (`clock`).
+pub func cook(slots: list[float], texts: list[str], data: GeometryData, clock: list[float]) -> GeometryData!:
+    let names: list[str] = []
+    let given: list[float] = []
+    for s in spares_of(texts[spares_slot]):
+        if s.components == 1:
+            names.append(s.name)
+            given.append(slots[s.slot])
+            continue
+        for c in 0..<s.components:
+            names.append(f"{s.name}[{c}]")
+            given.append(slots[s.slot + c])
+    let frame = clock[0] if clock.length == 3 else 1.0
+    let time = clock[1] if clock.length == 3 else 0.0
+    let fps = clock[2] if clock.length == 3 else 24.0
+    let result = Code.run(data.geometry, int(slots[run_over_slot]), texts[header_slot], texts[body_slot], texts[0], int(slots[15]),
+                          names, given, frame, time, fps, int(slots[count_slot]))
+    return GeometryData(geometry = result)
