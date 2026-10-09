@@ -10,6 +10,7 @@ from geometry_tests import near
 import view_projection as gm
 from luce_std import math
 import node_commands
+import selection_commands
 import modeling_commands
 from snapping import grid_step
 
@@ -96,4 +97,38 @@ pub func gizmo_tests() -> unit!:
         gizmo.draw(painter, 2200.0, 1400.0)
         painter.close()
         frame.close()
-    print("PASS Cube corner resizing, plane constraints, snapped move/rotate/scale, compensated pivot, sizing and undo")
+    components()
+    print("PASS Cube corner resizing, plane constraints, snapped move/rotate/scale, compensated pivot, sizing and undo, component rotate and scale")
+
+## The gizmo on a selected face of an Edit Mesh: Rotate turns its points
+## about its center (which stays), Scale spreads them from it; each drag
+## one undo step.
+func components() -> unit!:
+    let w = Workspace()
+    let gizmo = NodeGizmos(w)
+    w.snaps.flags[1] = false
+    node_commands.add_node(w, "Edit Mesh", 0.0, 100.0)
+    assert(w.editing())
+    selection_commands.set_mode(w, 3)
+    selection_commands.choose_component(w, 2, false)
+    let center = w.selection_center()
+    let length = w.view.distance * 0.14
+    let before = w.geometry else trap("cube")
+    let history = w.history.cursor
+    modeling_commands.choose_tool(w, "Rotate")
+    let ring = gm.project(w, center.add(Vector3(length * 0.707106781, length * 0.707106781, 0.0)), 1000.0, 600.0)
+    drag(gizmo, ring, 50.0, -70.0)
+    let turned = w.geometry else trap("turned")
+    var moved = 0
+    for index in 0..<before.point_count():
+        if before.point(index).subtract(turned.point(index)).length() > 1e-4:
+            moved += 1
+    assert(moved == 4 and w.history.cursor == history + 1)
+    near(w.selection_center().subtract(center).length(), 0.0)
+    w.undo()
+    modeling_commands.choose_tool(w, "Scale")
+    let handle = gm.project(w, center.add(Vector3(length, 0.0, 0.0)), 1000.0, 600.0)
+    drag(gizmo, handle, 35.0, 0.0)
+    let grown = w.geometry else trap("grown")
+    let corner = grown.face_point(2, 0)
+    assert(math.abs(grown.point(corner).x - center.x) > math.abs(before.point(corner).x - center.x))
