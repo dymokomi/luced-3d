@@ -30,9 +30,9 @@ def build(project, binary, optimization="0"):
                    check=True, env=environment, timeout=480)
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--scene", choices=["default", "edit", "modeling", "spreadsheet", "occlusion", "menu", "shading", "outliner", "cad", "cad_wire", "analytic", "gizmo_move", "gizmo_rotate", "gizmo_scale", "gizmo_pivot", "param_copy", "param_ladder", "param_menu", "render", "shader", "takes", "objects", "cad_node", "cad_round", "cad_corners", "cad_smooth", "cad_pick", "cad_peek", "cad_sketch", "ux_tools", "sketch_curves", "sketch_trim", "sketch_snap"], default="default")
+parser.add_argument("--scene", choices=["default", "edit", "modeling", "spreadsheet", "occlusion", "menu", "shading", "outliner", "cad", "cad_wire", "analytic", "gizmo_move", "gizmo_rotate", "gizmo_scale", "gizmo_pivot", "param_copy", "param_ladder", "param_menu", "render", "shader", "takes", "objects", "cad_node", "cad_round", "cad_corners", "cad_smooth", "cad_pick", "cad_peek", "cad_sketch", "ux_tools", "sketch_curves", "sketch_trim", "sketch_snap", "project"], default="default")
 parser.add_argument("--background", action="store_true", help="Run actual background graph computation while capturing")
-parser.add_argument("--file", type=Path, help="External STEP file for the cad scene")
+parser.add_argument("--file", type=Path, help="External STEP file for the cad scene, or the .prisma for the project scene")
 parser.add_argument("--edge-size", type=float, default=0.0)
 parser.add_argument("--tolerance", type=float, default=0.0, help="STEP File-node import tolerance in source units; 0 uses the file")
 parser.add_argument("--group", default="", help="Isolate imported object paths through a Blast node")

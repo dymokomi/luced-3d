@@ -1,0 +1,147 @@
+# Example scenes for the Code node, after classic Houdini wrangle
+# tutorials: each is built as a user would, every Code node must cook
+# without an error, and the scene is saved to examples/wrangles/ for
+# opening in the editor.
+from luce_std import files, paths, process
+from workspace import Workspace
+import node_commands
+import code_node
+import code_cook
+import project_file
+from luce_ui import ui
+
+## A scene in progress: its workspace and where its next node goes.
+class Scene:
+    let w: Workspace
+    let name: str
+    var y: float = 0.0
+
+    func init(self, name: str) -> unit!:
+        self.name = name
+        self.w = Workspace()
+        node_commands.delete_selected(self.w)
+
+    ## A `kind` node after the selected one, its values `values` by slot.
+    func add(self, kind: str, values: list[(int, float)] = []) -> int!:
+        node_commands.add_node(self.w, kind, 0.0, self.y)
+        self.y += 90.0
+        for (slot, value) in values:
+            node_commands.set_parameter(self.w, slot, value)
+        return self.w.network.selected
+
+    ## A Code node running over `run_over` (Houdini's menu order: 0 detail,
+    ## 1 points, 2 vertices, 3 primitives, 4 numbers) with `body`.
+    func code(self, run_over: int, body: str, header: str = "") -> int!:
+        let id = self.add("Code", [(code_cook.run_over_slot, float(run_over))])
+        if header != "":
+            code_node.set_code(self.w, id, code_cook.header_slot, header)
+        code_node.set_code(self.w, id, code_cook.body_slot, body)
+        let node = self.w.network.require(id)
+        if node.failure != "":
+            error(ui.invalid, f"{self.name}: {node.failure}")
+        return id
+
+    ## Display the last node, check every node cooked, and save.
+    func save(self, folder: str) -> unit!:
+        # The last node is the scene's output, displayed and framed.
+        let last = self.w.network.selected
+        for node in self.w.network.nodes:
+            node.output = 1 if node.id == last else -1
+        node_commands.display_selected(self.w)
+        self.w.network.preview = false
+        self.w.view.yaw = 0.7
+        self.w.view.pitch = 0.55
+        self.w.frame_cube()
+        for node in self.w.network.nodes:
+            if node.failure != "":
+                error(ui.invalid, f"{self.name}: {node.name}: {node.failure}")
+        project_file.save(paths.join(folder, self.name + ".prisma"), self.w, [1.0, 0.0, 0.0])
+
+pub func main(arguments: list[str]) -> int!:
+    if let here = process.variable("LUC_TEST_DIR"):
+        process.change_directory(here)
+    let folder = paths.join(paths.directory(paths.directory(process.current_directory())), "examples/wrangles")
+    files.ensure_directory(folder)
+    var count = 0
+    for build in [sine_wave, ripple, noise_sphere, color_by_height, twist, random_prim_colors, jitter, attractor, checker, terrain]:
+        build(folder)
+        count += 1
+    print(f"PASS {count} wrangle example scenes cooked and saved to examples/wrangles")
+    return 0
+
+## A grid rolling as a sine wave along X, moving with time.
+func sine_wave(folder: str) -> unit!:
+    let s = Scene("sine_wave")
+    _ = s.add("Grid", [(0, 10.0), (1, 64.0)])
+    _ = s.code(1, "# A wave along X that travels with time.\nlet frequency = k.f32(\"frequency\", 1.5)\nlet speed = k.f32(\"speed\", 2.0)\nlet amplitude = k.f32(\"amplitude\", 0.4)\np.P[1] = math32.sin(p.P[0] * frequency + (f32)k.time * speed) * amplitude\n")
+    s.save(folder)
+
+## Rings spreading out from the center, fading with distance.
+func ripple(folder: str) -> unit!:
+    let s = Scene("ripple")
+    _ = s.add("Grid", [(0, 12.0), (1, 64.0)])
+    _ = s.code(1, "# Distance from the center in the ground plane.\nlet r = math32.sqrt(p.P[0] * p.P[0] + p.P[2] * p.P[2])\nlet wave = math32.sin(r * k.f32(\"frequency\", 4.0) - (f32)k.time * k.f32(\"speed\", 4.0))\np.P[1] = wave * k.f32(\"height\", 0.5) / (1.0 + r)\n")
+    s.save(folder)
+
+## A sphere pushed in and out along its normals by animated noise.
+func noise_sphere(folder: str) -> unit!:
+    let s = Scene("noise_sphere")
+    _ = s.add("Sphere", [(0, 1.0), (1, 64.0)])
+    _ = s.code(1, "# Out from the center by noise that drifts with time.\nlet scale = k.f32(\"scale\", 2.5)\nlet n = snoise(p.P * scale + [0.0, 0.0, (f32)k.time * 0.5, 0.0])\np.P = p.P + normalized(p.P) * (n * k.f32(\"amount\", 0.25))\n")
+    s.save(folder)
+
+## Noise hills colored from blue valleys to white peaks.
+func color_by_height(folder: str) -> unit!:
+    let s = Scene("color_by_height")
+    _ = s.add("Grid", [(0, 10.0), (1, 64.0)])
+    _ = s.code(1, "p.P[1] = noise(p.P * 0.6) * 2.0 - 1.0\n")
+    _ = s.code(1, "# 0 at the lowest valley, 1 at the highest peak.\nlet t = fit(p.P[1], -0.5, 0.5, 0.0, 1.0)\np.Cd = [lerp(0.1, 1.0, t), lerp(0.25, 1.0, t), lerp(0.8, 1.0, t), 0.0]\n")
+    s.save(folder)
+
+## A grid wrapped into a tube by one Code node (columns round a circle,
+## rows up its height), then twisted about Y, more with height, by another.
+func twist(folder: str) -> unit!:
+    let s = Scene("twist")
+    _ = s.add("Grid", [(0, 6.0), (1, 64.0)])
+    _ = s.code(1, "# x goes round, z goes up.\nlet around = (p.P[0] / 6.0 + 0.5) * 2.0 * math32.pi\nlet radius = k.f32(\"radius\", 0.8)\np.P = [math32.cos(around) * radius, p.P[2] + 3.0, math32.sin(around) * radius, 0.0]\n")
+    _ = s.code(1, "# Turn about Y by an angle that grows with height.\nlet angle = p.P[1] * k.f32(\"twist\", 0.6)\nlet c = math32.cos(angle)\nlet sn = math32.sin(angle)\np.P = [p.P[0] * c - p.P[2] * sn, p.P[1], p.P[0] * sn + p.P[2] * c, 0.0]\np.P[0] *= 1.0 + 0.3 * math32.sin(p.P[1] * 2.0)\n")
+    s.save(folder)
+
+## Every primitive its own random color, as @Cd = rand(@primnum).
+func random_prim_colors(folder: str) -> unit!:
+    let s = Scene("random_prim_colors")
+    _ = s.add("Grid", [(0, 6.0), (1, 24.0)])
+    _ = s.code(3, "f.Cd = rand3((i64)f.primnum + (i64)k.i32(\"seed\", 7) * 100000)\n")
+    s.save(folder)
+
+## Points jittered by a random offset each, seeded by their number.
+func jitter(folder: str) -> unit!:
+    let s = Scene("jitter")
+    _ = s.add("Grid", [(0, 6.0), (1, 48.0)])
+    _ = s.code(1, "let offset = rand3((i64)p.ptnum) - [0.5, 0.5, 0.5, 0.0]\np.P = p.P + offset * k.f32(\"amount\", 0.08)\n")
+    s.save(folder)
+
+## Points pulled toward an attractor, the pull fading with distance.
+func attractor(folder: str) -> unit!:
+    let s = Scene("attractor")
+    _ = s.add("Grid", [(0, 8.0), (1, 64.0)])
+    _ = s.code(1, "let target = k.vec3(\"target\", [0.0, 1.5, 0.0, 0.0])\nlet reach = k.f32(\"radius\", 2.0)\n# The falloff by distance in the ground plane: a peak under the target.\nlet d = distance(p.P * [1.0, 0.0, 1.0, 0.0], target * [1.0, 0.0, 1.0, 0.0])\nlet pull = 1.0 - smooth(0.0, reach, d)\np.P = p.P + (target - p.P) * (pull * k.f32(\"strength\", 0.9))\np.Cd = [pull, 0.3, 1.0 - pull, 0.0]\n")
+    s.save(folder)
+
+## A checkerboard from each primitive's center.
+func checker(folder: str) -> unit!:
+    let s = Scene("checker")
+    _ = s.add("Grid", [(0, 8.0), (1, 32.0)])
+    _ = s.code(3, "let c = f.center()\nlet size = k.f32(\"size\", 1.0)\nlet cell = (i64)math32.floor(c[0] / size) + (i64)math32.floor(c[2] / size)\nf.Cd = [0.9, 0.9, 0.9, 0.0] if cell % 2 == 0 else [0.1, 0.1, 0.1, 0.0]\n")
+    s.save(folder)
+
+## Fractal terrain: octaves of noise summed in a loop, the header holding
+## the octave sum, and a detail attribute recording the octaves.
+func terrain(folder: str) -> unit!:
+    let s = Scene("terrain")
+    _ = s.add("Grid", [(0, 20.0), (1, 64.0)])
+    let header = "## Noise octaves: each twice as fine and half as strong.\nfunc fbm(at: f32[4], octaves: i32) -> f32:\n    var sum: f32 = 0.0\n    var scale: f32 = 1.0\n    var weight: f32 = 0.5\n    for i in 0..<octaves:\n        sum += snoise(at * scale) * weight\n        scale *= 2.0\n        weight *= 0.5\n    return sum\n"
+    _ = s.code(1, "p.P[1] = fbm(p.P * k.f32(\"scale\", 0.15), k.i32(\"octaves\", 5)) * k.f32(\"height\", 4.0)\n", header)
+    _ = s.code(1, "let t = clamp(fit(p.P[1], -1.5, 2.0, 0.0, 1.0), 0.0, 1.0)\np.Cd = [lerp(0.2, 0.95, t), lerp(0.45, 0.95, t), lerp(0.2, 0.95, t), 0.0]\n")
+    _ = s.code(0, "k.set_detail_i32(\"octaves\", k.i32(\"octaves\", 5))\n")
+    s.save(folder)
