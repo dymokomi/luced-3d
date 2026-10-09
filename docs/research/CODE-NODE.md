@@ -956,6 +956,54 @@ Autocomplete and hover docs from the stubs; a pixel mode for luced-2d; vectorize
 native-compile tier for frozen or published networks (§5.2 d); the shared `CodeEditor`
 widget in luce-ui; keyframes on parameters over the timeline.
 
+### Beyond stage 5: the rest of VEX, in order
+
+From the VEX function index (https://www.sidefx.com/docs/houdini/vex/functions/index.html,
+read 2026-10-08), in the order geometry work needs it. Shading, lights, BSDFs, crowds,
+CHOP, channel primitives, OCIO, USD and texture families are left out: luced-3d does those
+with nodes, or doesn't do them yet.
+
+1. **Math and transforms.**
+   - Matrices: `ident transpose invert determinant maketransform cracktransform lookat dihedral rotate scale translate prerotate polardecomp`.
+   - Quaternions: `quaternion qmultiply qrotate qinvert slerp eulertoquaternion quaterniontoeuler qconvert`.
+   - Math: `abs sign frac rint trunc min max avg sum product pow exp log log10 cbrt` and the `*pi` trig forms; `solvequadratic solvecubic`; `distance_pointline distance_pointsegment distance_pointray planepointdistance`.
+   - Interpolation: `efit fit10 fit11 invlerp lspline cspline kspline spline`.
+
+   `Mat3`, `Mat4` and `Quat` are Base structs with methods, since Base has no operator
+   overloading; the vector ops stay lane operators.
+2. **Ramps.**
+   - `chramp`/`ramp_lookup` with a ramp parameter row (a luce-ui ramp widget: points, interpolation, color or float), saved on the node.
+   - Wranglers use this constantly for falloffs and color maps.
+3. **Noise and sampling.**
+   - Noise: `curlnoise curlnoise2d` (divergence-free, for flow), `flownoise`, `wnoise`/`mx_worley`/`mx_cellnoise` (cellular), `anoise`/`onoise`/`xnoise`/`pnoise` (periodic), `noised`/`xnoised` (with derivatives).
+   - Random: `nrandom random_sobol random_poisson`.
+   - Sampling: `sample_sphere_uniform sample_hemisphere sample_direction_cone sample_circle_uniform sample_normal`.
+4. **Topology.**
+   - Vertices: `vertexprim vertexpoint vertexnext vertexprev primvertex primvertexcount pointvertices`.
+   - Half-edges: `hedge_*`, `pointhedge primhedge`.
+   - Neighbors: `polyneighbours`.
+   - Groups: `expandpointgroup expandprimgroup`, `npointsgroup`.
+5. **Measure.**
+   - `getbbox_*`, `relbbox`, `relpointbbox`, `minpos`, `surfacedist`, `windingnumber`, `computenormal`, `primarclen`, `curvearclen`.
+   - Sampling a surface: `uvsample`, `primuv` already in S3.
+6. **Point clouds.**
+   - `pcopen pcfilter pcfind pcfind_radius pciterate pcimport pcnumfound`, over the same point grid as `nearpoints`, plus `pcfilter`'s weighted average as one call (the common smoothing idiom).
+7. **Volumes.**
+   - `volumesample volumesamplev volumegradient volumeindex volumepostoindex volumeres` over luce-geocore's fields.
+   - Then SDF-driven wrangles: snapping to a surface, coloring by distance.
+8. **Strings, arrays, dicts.**
+   - Strings: `sprintf split join replace startswith re_match re_replace atoi atof itoa`.
+   - Arrays: `append insert pop push removeindex resize reverse slice sort argsort find len foreach`.
+   - Dicts: `keys json_dumps`, last.
+   - Needs per-element ragged storage; S5 starts it.
+9. **Utility.**
+   - `printf` to the node's console (in element order, capped); `warning` and `error` from code (an error fails the node with its line).
+   - `getcomp`/`setcomp` are Base indexing already.
+
+Each item ships as `lib` functions (or geocore `Host` builtins when they read geometry),
+with stubs, a scalar reference, conformance cases against VEX's documented values, and a
+benchmark at 1M elements.
+
 ## 9. Decisions taken and open questions
 
 Decided by the owner on 2026-10-08:
