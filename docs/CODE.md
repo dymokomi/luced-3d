@@ -109,6 +109,10 @@ for i in 0..<near.count:
 | Nearest points | `nearpoint(P, maxdist)` (-1 when none), `nearpoints(P, maxdist, count)` |
 | Surfaces | `xyzdist(P)`, `closest_prim(P)`, `closest_uv(P)`, `primuv_f32(f, uv, "name")`, `primuv_vec3(f, uv, "name")` (`"P"` gives the position) |
 | Rays | `intersect(origin, direction)`: `prim` (-1 for a miss), `uv`, `position`, `distance` |
+| Vertices | `vertex_prim`, `vertex_point`, `vertex_next`, `vertex_prev`, `prim_vertex_count`, `prim_vertex`, `point_vertex_count`, `point_vertex` |
+| Half-edges | `hedge_next`, `hedge_prev`, `hedge_src_point`, `hedge_dst_point`, `hedge_prim`, `hedge_equiv_count`, `point_hedge(src, dst)`, `prim_hedge` |
+| Neighbors and groups | `poly_neighbor_count`, `poly_neighbor`; `npointsgroup`, `nprimsgroup`, `expandpointgroup_count`/`expandpointgroup`, `expandprimgroup_count`/`expandprimgroup` |
+| Measure | `getbbox_min`/`max`/`center`/`size`, `relbbox(P)`, `minpos(P)`, `computenormal(point)`, `primarclen`, `curvearclen`, `surfacedist(group, point)` (along edges), `windingnumber(P)` (about 1 inside a closed mesh, 0 outside) |
 
 An index out of range fails the node, naming the element.
 
@@ -144,7 +148,8 @@ within the run, so run `n` can name the points run `n - 1` made.
 |---|---|
 | Vectors | `dot`, `cross`, `length`, `length2`, `distance`, `distance2`, `normalized`; `dot2d`, `length2d`, `distance2d`, `normalized2d`; `f64` forms end in `64` |
 | Ranges | `lerp`, `clamp`, `fit`, `fit01`, `smooth`, `degrees`, `radians` |
-| Noise | `noise` (0 to 1, around 0.5) and `snoise` (-1 to 1), Perlin, in 1D (`noise1`), 2D, 3D and 4D, `f32` and `f64` |
+| Noise | `noise` (0 to 1, around 0.5) and `snoise` (-1 to 1), Perlin, in 1D (`noise1`), 2D, 3D and 4D, `f32` and `f64`; `pnoise` (periodic), `flownoise`, `noised`/`xnoised` (with the gradient), `curlnoise`/`curlnoise2d` (divergence-free), `onoise`/`anoise` (fractal), `wnoise` (Worley: `f1`, `f2`, `seed`), `mx_cellnoise` |
+| Sampling | `nrandom`, `random_sobol`, `random_poisson`, `sample_circle_uniform`, `sample_direction_uniform`, `sample_sphere_uniform`, `sample_hemisphere`, `sample_direction_cone`, `sample_normal` |
 | Random | `rand(seed)`, `rand3(seed)` (a vector), `rand_stream(seed, stream)`, all repeatable for the same seed |
 | Math | `abs`, `sign`, `frac`, `rint`, `trunc`, `min`, `max`, `avg`, `sum`, `product`, `pow`, `exp`, `log`, `log10`, `cbrt`, `sinpi`/`cospi`/`tanpi`, `solvequadratic`, `solvecubic`, `distance_pointline`, `distance_pointsegment`, `distance_pointray`, `planepointdistance` |
 | Matrices | `Mat3`, `Mat4`: `identity`, `rotation(angle, axis)`, `scaling`, `translation`, `multiply`, `transposed`, `determinant`, `inverted`, `transform`/`transform_point`/`transform_vector`, `rotate`, `scale`, `translate`; `maketransform`, `cracktransform`, `lookat`, `dihedral`, `polardecomp`. Row vectors as in VEX: `a.multiply(b)` applies `a` first |
