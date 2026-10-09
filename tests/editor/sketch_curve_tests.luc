@@ -8,9 +8,10 @@ from app import Luce3D
 from luce_ui.ui import Event
 from luce_window.input import EventKind, Key
 from luce_cad.sketch import CadSketch
+from sketch_kinds import arc_kind, circle_kind, conic_kind, curvature, ellipse_kind, line_distance, line_kind, point_kind, smooth, spline_kind, text_kind
 from luce_cad.cad_geometry import CadGeometry
 from luce_3d.graphics import Vector3
-from viewport_tools import projected
+from view_projection import project
 import node_commands
 from luce_std import math
 from snapping import grid_step
@@ -19,7 +20,7 @@ func click(editor: Luce3D, x: float, y: float) -> unit!:
     let view = editor.panels.view
     let bounds = view.layout().bounds()
     let f = view.sketch.editor.frame
-    let s = projected(editor.workspace, f.at(x, y), bounds.width, bounds.height)
+    let s = project(editor.workspace, f.at(x, y), bounds.width, bounds.height)
     for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
         editor.app.dispatch(Event(kind = kind, x = bounds.x + s[0], y = bounds.y + s[1], button = 0))
 
@@ -36,7 +37,7 @@ func sketch_of(editor: Luce3D, id: int) -> CadSketch!:
 ## The line starting at (`x`, `y`), or -1.
 func line_from(s: CadSketch, x: float, y: float) -> int:
     for at in 0..<s.entity_count():
-        if s.kind(at) == 1 and near(s.x(s.part(at, 0)), x) and near(s.y(s.part(at, 0)), y):
+        if s.kind(at) == line_kind and near(s.x(s.part(at, 0)), x) and near(s.y(s.part(at, 0)), y):
             return at
     return -1
 
@@ -76,9 +77,9 @@ pub func sketch_curve_tests() -> unit!:
     var s = sketch_of(editor, id)
     var sides = 0
     for at in 0..<s.entity_count():
-        if s.kind(at) == 1:
+        if s.kind(at) == line_kind:
             sides += 1
-    assert(sides == 4 and last_of(s, 3) < 0 and e.tool == "Select" and w.last_sketch_tool == "3-Point Rectangle")
+    assert(sides == 4 and last_of(s, arc_kind) < 0 and e.tool == "Select" and w.last_sketch_tool == "3-Point Rectangle")
     # A dragged corner snaps onto a point near it (the layer drags use too)
     # and, let go there, is held on it.
     e.choose("Point")
@@ -87,14 +88,14 @@ pub func sketch_curve_tests() -> unit!:
     let target = s.entity_count() - 1
     let view = editor.panels.view
     let bounds = view.layout().bounds()
-    let from_at = projected(w, e.frame.at(20.0, 70.0), bounds.width, bounds.height)
-    let to_at = projected(w, e.frame.at(40.4, 79.7), bounds.width, bounds.height)
+    let from_at = project(w, e.frame.at(20.0, 70.0), bounds.width, bounds.height)
+    let to_at = project(w, e.frame.at(40.4, 79.7), bounds.width, bounds.height)
     for (kind, at) in [(EventKind.pointer_moved, from_at), (EventKind.pointer_down, from_at), (EventKind.pointer_moved, to_at), (EventKind.pointer_up, to_at)]:
         editor.app.dispatch(Event(kind = kind, x = bounds.x + at[0], y = bounds.y + at[1], button = 0))
     s = sketch_of(editor, id)
     var landed = false
     for at in 0..<s.entity_count():
-        if at != target and s.kind(at) == 0 and near(s.x(at), s.x(target)) and near(s.y(at), s.y(target)) and math.hypot(s.x(at) - 40.0, s.y(at) - 80.0) < 0.05:
+        if at != target and s.kind(at) == point_kind and near(s.x(at), s.x(target)) and near(s.y(at), s.y(target)) and math.hypot(s.x(at) - 40.0, s.y(at) - 80.0) < 0.05:
             landed = true
     assert(landed)
     # Grid snapping on: a point clicked off the grid lands on it, and the
@@ -113,28 +114,28 @@ pub func sketch_curve_tests() -> unit!:
         click(editor, x, y)
     key(editor, Key.enter)
     s = sketch_of(editor, id)
-    let fit = last_of(s, 4)
+    let fit = last_of(s, spline_kind)
     assert(fit >= 0 and s.part_count(fit) == 4 and s.fit(fit))
     # A control point spline, ended by its last point again.
     e.choose("Control Point Spline")
     for (x, y) in [(0.0, 30.0), (10.0, 40.0), (20.0, 30.0), (30.0, 40.0), (40.0, 30.0), (50.0, 40.0), (50.0, 40.0)]:
         click(editor, x, y)
     s = sketch_of(editor, id)
-    let control = last_of(s, 4)
+    let control = last_of(s, spline_kind)
     assert(control != fit and s.part_count(control) == 6 and not s.fit(control))
     # An ellipse: center, major axis' end, 8 wide.
     e.choose("Ellipse")
     for (x, y) in [(70.0, 0.0), (90.0, 0.0), (70.0, 8.0)]:
         click(editor, x, y)
     s = sketch_of(editor, id)
-    let ellipse = last_of(s, 5)
+    let ellipse = last_of(s, ellipse_kind)
     assert(ellipse >= 0 and near(s.radius(ellipse), 8.0))
     # A conic: start, end, apex.
     e.choose("Conic Curve")
     for (x, y) in [(100.0, 0.0), (120.0, 0.0), (110.0, 15.0)]:
         click(editor, x, y)
     s = sketch_of(editor, id)
-    assert(last_of(s, 6) >= 0 and near(s.radius(last_of(s, 6)), 0.5))
+    assert(last_of(s, conic_kind) >= 0 and near(s.radius(last_of(s, conic_kind)), 0.5))
     # A triangle, then the circle touching its three sides: its inradius,
     # 600 / (20 + 36.0555…).
     e.choose("Line")
@@ -145,7 +146,7 @@ pub func sketch_curve_tests() -> unit!:
     for (x, y) in [(13.0, -60.0), (33.0, -49.5), (7.0, -49.5)]:
         click(editor, x, y)
     s = sketch_of(editor, id)
-    let inner = last_of(s, 2)
+    let inner = last_of(s, circle_kind)
     assert(inner >= 0 and near(s.radius(inner), 600.0 / (20.0 + math.sqrt(1300.0))))
     # A tangent arc off a line's end: a quarter circle of 10 about (80, -50).
     e.choose("Line")
@@ -156,7 +157,7 @@ pub func sketch_curve_tests() -> unit!:
     click(editor, 80.0, -60.0)
     click(editor, 90.0, -50.0)
     s = sketch_of(editor, id)
-    let arc = last_of(s, 3)
+    let arc = last_of(s, arc_kind)
     let center = s.part(arc, 0)
     assert(arc >= 0 and near(s.radius(arc), 10.0) and near(s.x(center), 80.0) and near(s.y(center), -50.0))
     # An overall slot 40 long and 10 wide: half circles of 5.
@@ -164,14 +165,14 @@ pub func sketch_curve_tests() -> unit!:
     for (x, y) in [(100.0, -60.0), (140.0, -60.0), (120.0, -55.0)]:
         click(editor, x, y)
     s = sketch_of(editor, id)
-    assert(near(s.radius(last_of(s, 3)), 5.0))
+    assert(near(s.radius(last_of(s, arc_kind)), 5.0))
     # A quarter arc slot about (100, -110), its centerline 20 out, 10 wide:
     # arcs of 25 and 15, its end caps 5.
     e.choose("Center Point Arc Slot")
     for (x, y) in [(100.0, -110.0), (120.0, -110.0), (100.0, -90.0), (100.0, -85.0)]:
         click(editor, x, y)
     s = sketch_of(editor, id)
-    let cap = last_of(s, 3)
+    let cap = last_of(s, arc_kind)
     assert(near(s.radius(cap), 5.0) and near(s.radius(cap - 2), 15.0) and near(s.radius(cap - 3), 25.0))
     # A blend curve between two lines' ends: a quintic held as curved as
     # each (two Curvature constraints).
@@ -187,11 +188,11 @@ pub func sketch_curve_tests() -> unit!:
     click(editor, 12.0, -100.0)
     click(editor, 48.0, -90.0)
     s = sketch_of(editor, id)
-    let blend = last_of(s, 4)
+    let blend = last_of(s, spline_kind)
     assert(blend != control and s.part_count(blend) == 6)
     var curvatures = 0
     for at in before..<s.constraint_count():
-        if s.constraint_kind(at) == 20:
+        if s.constraint_kind(at) == curvature:
             curvatures += 1
     assert(curvatures == 2)
     # Two lines crossing like an X at (160, -30): Trim on one's arm past
@@ -221,7 +222,7 @@ pub func sketch_curve_tests() -> unit!:
     s = sketch_of(editor, id)
     var offset_dimension = false
     for at in 0..<s.constraint_count():
-        if s.constraint_kind(at) == 14 and near(s.constraint_value(at), 4.0):
+        if s.constraint_kind(at) == line_distance and near(s.constraint_value(at), 4.0):
             offset_dimension = true
     assert(s.entity_count() > lines_before and offset_dimension)
     # A G3 blend from the arc slot's inner arc (its start, at (115, -110))
@@ -235,10 +236,10 @@ pub func sketch_curve_tests() -> unit!:
     click(editor, 112.0, -100.0)
     click(editor, 148.0, -90.0)
     s = sketch_of(editor, id)
-    let g3 = last_of(s, 4)
+    let g3 = last_of(s, spline_kind)
     var smooths = 0
     for at in smooth_before..<s.constraint_count():
-        if s.constraint_kind(at) == 21:
+        if s.constraint_kind(at) == smooth:
             smooths += 1
     assert(CadSketch.parse(s.text()).solve())
     assert(s.part_count(g3) == 8 and smooths == 2)
@@ -252,7 +253,7 @@ pub func sketch_curve_tests() -> unit!:
     key(editor, Key.enter)
     assert(not editor.panels.sketch_text.layout().is_visible())
     s = sketch_of(editor, id)
-    let text = last_of(s, 7)
+    let text = last_of(s, text_kind)
     assert(text >= 0 and near(s.radius(text), 8.0) and s.text_content(text) == "CAD")
     # It all reads back from its text.
     assert(CadSketch.parse(s.text()).text() == s.text())
@@ -295,8 +296,8 @@ func projected_edge(editor: Luce3D) -> unit!:
     e.choose("Project")
     click(editor, 10.0, 3.0)
     var s = sketch_of(editor, id)
-    assert(s.link_count() == 1 and s.kind(0) == 0)
-    let line = last_of(s, 1)
+    assert(s.link_count() == 1 and s.kind(0) == point_kind)
+    let line = last_of(s, line_kind)
     assert(line >= 0 and near(math.abs(s.x(s.part(line, 0))), 10.0))
     node_commands.select_node(w, box)
     node_commands.set_parameter(w, 0, 30.0)

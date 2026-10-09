@@ -1,11 +1,12 @@
 ## Node-specific viewport UI. Topology and intersections remain in luce-3d.
 from luce_ui.ui import Painter, Event, Point
 from luce_gpu.gpu import Rect, Color
-from luce_3d.graphics import Vector3, EditOverlay, Renderer, Knife
+from luce_3d.graphics import EditOverlay, Renderer, Knife
 from luce_window.input import EventKind, Key
 from workspace import Workspace
 from actions import Actions
 from luce_std import math
+import view_projection as gm
 import theme
 from luce_ui import ui
 from tool_icons import draw_icon, asset_name
@@ -20,23 +21,6 @@ from edit_types import smart_level, point_level, edge_level, face_level, level_n
 from tools import transform_tools
 from snapping import snap_names, snap_icons
 from luce_geocore.geocore import Mesh
-
-pub func projected(workspace: Workspace, point: Vector3, width: float, height: float) -> list[float]!:
-    let projection = workspace.view.camera.projection(math.max(1.0, width) / math.max(1.0, height))
-    let offset = point.subtract(projection.position)
-    let depth = -offset.dot(projection.backward)
-    if depth <= projection.near:
-        return [0.0, 0.0, -1.0]
-    return [(offset.dot(projection.right) * projection.focal / projection.aspect / depth + 1.0) * width * 0.5,
-            (1.0 - offset.dot(projection.up) * projection.focal / depth) * height * 0.5, depth]
-
-pub func view_ray(workspace: Workspace, x: float, y: float, width: float, height: float) -> Vector3!:
-    let projection = workspace.view.camera.projection(math.max(1.0, width) / math.max(1.0, height))
-    return projection.right.multiply_scalar((x / width * 2.0 - 1.0) * projection.aspect / projection.focal).add(
-        projection.up.multiply_scalar((1.0 - y / height * 2.0) / projection.focal)).subtract(projection.backward).normalized()
-
-pub func axis_vector(axis: int) -> Vector3:
-    return Vector3(1.0 if axis == 0 else 0.0, 1.0 if axis == 1 else 0.0, 1.0 if axis == 2 else 0.0)
 
 pub class ViewportTools:
     let workspace: Workspace
@@ -236,7 +220,7 @@ pub class ViewportTools:
     ## its kind, and its name.
     func draw_snap(self, painter: Painter, width: float, height: float) -> unit!:
         let mark = self.workspace.snap_mark else return
-        let p = projected(self.workspace, mark.at, width, height)
+        let p = gm.project(self.workspace, mark.at, width, height)
         if p[2] <= 0.0:
             return
         let ink = theme.accent()
@@ -316,19 +300,19 @@ pub class ViewportTools:
         let id = self.hovered
         let ink = theme.text()
         if self.hover_level == point_level and id < mesh.point_count():
-            let p = projected(w, mesh.point(id), width, height)
+            let p = gm.project(w, mesh.point(id), width, height)
             if p[2] > 0.0:
                 painter.rectangle(Rect(p[0] - 4.0, p[1] - 4.0, 8.0, 8.0), ink)
         elif self.hover_level == edge_level and id < mesh.edge_count():
-            let a = projected(w, mesh.point(mesh.edge_point(id, 0)), width, height)
-            let b = projected(w, mesh.point(mesh.edge_point(id, 1)), width, height)
+            let a = gm.project(w, mesh.point(mesh.edge_point(id, 0)), width, height)
+            let b = gm.project(w, mesh.point(mesh.edge_point(id, 1)), width, height)
             if a[2] > 0.0 and b[2] > 0.0:
                 painter.line(Point(a[0], a[1]), Point(b[0], b[1]), 2.5, ink)
         elif self.hover_level == face_level and id < mesh.face_count():
             let size = mesh.face_size(id)
             for at in 0..<size:
-                let a = projected(w, mesh.point(mesh.face_point(id, at)), width, height)
-                let b = projected(w, mesh.point(mesh.face_point(id, (at + 1) % size)), width, height)
+                let a = gm.project(w, mesh.point(mesh.face_point(id, at)), width, height)
+                let b = gm.project(w, mesh.point(mesh.face_point(id, (at + 1) % size)), width, height)
                 if a[2] > 0.0 and b[2] > 0.0:
                     painter.line(Point(a[0], a[1]), Point(b[0], b[1]), 1.5, ink)
 
@@ -350,7 +334,7 @@ pub class ViewportTools:
         if w.domain() == 2:
             if face >= -1:
                 return face
-            return mesh.ray_face(w.view.camera.position(), view_ray(w, x, y, width, height))
+            return mesh.ray_face(w.view.camera.position(), gm.ray(w, x, y, width, height).normalized())
         self.overlay.show(mesh, w.overlay_mode(), w.selection, self.hovered)
         return self.overlay.pick(w.view.camera, x, y, width, height, face)
 
@@ -482,33 +466,25 @@ pub class ViewportTools:
             face = renderer.pick_face(mesh, w.view.camera, x, y, width, height) catch failure:
                 recover -2
         if face == -2:
-            face = mesh.ray_face(w.view.camera.position(), view_ray(w, x, y, width, height))
+            face = mesh.ray_face(w.view.camera.position(), gm.ray(w, x, y, width, height).normalized())
         if point_level in levels:
             self.probe.show(mesh, 0, none, -1)
             let point = self.probe.pick(w.view.camera, x, y, width, height, face)
             if point >= 0:
-                let p = projected(w, mesh.point(point), width, height)
+                let p = gm.project(w, mesh.point(point), width, height)
                 if math.hypot(p[0] - x, p[1] - y) <= 8.0:
                     return [point_level, point]
         if edge_level in levels:
             self.probe.show(mesh, 1, none, -1)
             let edge = self.probe.pick(w.view.camera, x, y, width, height, face)
             if edge >= 0:
-                let a = projected(w, mesh.point(mesh.edge_point(edge, 0)), width, height)
-                let b = projected(w, mesh.point(mesh.edge_point(edge, 1)), width, height)
-                if segment_distance(x, y, a, b) <= 6.0:
+                let a = gm.project(w, mesh.point(mesh.edge_point(edge, 0)), width, height)
+                let b = gm.project(w, mesh.point(mesh.edge_point(edge, 1)), width, height)
+                if gm.segment_distance(x, y, a, b) <= 6.0:
                     return [edge_level, edge]
         if face_level in levels and face >= 0:
             return [face_level, face]
         return [w.smart_pick, -1]
-
-## How far (x, y) is from the screen segment `a`-`b`.
-func segment_distance(x: float, y: float, a: list[float], b: list[float]) -> float:
-    let dx = b[0] - a[0]
-    let dy = b[1] - a[1]
-    let length = dx * dx + dy * dy
-    let t = 0.0 if length <= 0.0 else math.max(0.0, math.min(1.0, ((x - a[0]) * dx + (y - a[1]) * dy) / length))
-    return math.hypot(x - a[0] - t * dx, y - a[1] - t * dy)
 
 ## The x of level button `index` (5: just past the last).
 func level_x(index: int) -> float:
