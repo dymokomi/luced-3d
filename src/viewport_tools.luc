@@ -8,7 +8,8 @@ from actions import Actions
 from luce_std import math
 import theme
 from luce_ui import ui
-from tool_icons import draw_icon
+from tool_icons import draw_icon, asset_name
+import sketch_tools
 from node_gizmos import NodeGizmos
 from viewport_placing import ViewportPlacing
 import modeling_commands
@@ -59,6 +60,9 @@ pub class ViewportTools:
     ## Faces and corners placed by clicking (Plane from Face, PolyDraw).
     pub let placing: ViewportPlacing
     pub var hover_changed: bool = false
+    ## Pick a tool again from the column (the sketch's tools are the
+    ## editor's): the viewport sets it.
+    pub var on_reuse: func(str) -> unit!? = none
     ## The viewport's renderer: faces are picked from its GPU id pass.
     pub var renderer: Renderer? = none
     ## An object pick in progress: where it started and the pointer now.
@@ -167,26 +171,39 @@ pub class ViewportTools:
             let x = level_x(index)
             let on = index == (w.sketch_level if sketching else w.component_mode)
             let available = (sketching and index > 0) or (w.selecting() and w.level_available(index))
-            painter.rounded_rectangle(Rect(x, 44.0, 32.0, 30.0), theme.accent() if on else theme.surface(), 4.0)
+            painter.rounded_rectangle(Rect(x, 8.0, 32.0, 30.0), theme.accent() if on else theme.surface(), 4.0)
             let icon = levels[index].icon if not sketching and index < levels.length and levels[index].available else level_icons()[index]
             let ink = theme.grey(0.0) if on else (theme.accent() if self.hover_tool == 200 + index and available else (theme.text() if available else theme.text_muted()))
-            ui.draw_icon(painter.target(), icon, Rect(x + 5.0, 48.0, 22.0, 22.0), ink)
+            ui.draw_icon(painter.target(), icon, Rect(x + 5.0, 12.0, 22.0, 22.0), ink)
             if self.hover_tool == 200 + index:
-                tip(painter, f"{self.level_label(index)}  ({index + 1})", x, 80.0)
+                tip(painter, f"{self.level_label(index)}  ({index + 1})", x, 44.0)
         if sketching:
-            painter.text(sketch_level_names()[w.sketch_level], level_x(5) + 4.0, 51.0, theme.text_muted())
+            painter.text(sketch_level_names()[w.sketch_level], level_x(5) + 4.0, 15.0, theme.text_muted())
         elif w.selecting():
             let caption = w.level().name + (" (Smart)" if w.component_mode == smart_level else "")
-            painter.text(caption + (f" / {w.selected_count()} selected" if w.selected_count() > 0 else ""), level_x(5) + 4.0, 51.0, theme.text_muted())
+            painter.text(caption + (f" / {w.selected_count()} selected" if w.selected_count() > 0 else ""), level_x(5) + 4.0, 15.0, theme.text_muted())
         let tools = transform_tools()
         let keys = ["Q", "W", "E", "R", "T"]
+        let current = self.current_tool()
         for index in 0..<tools.length:
             let y = tools_top(height) + float(index) * 36.0
-            let on = w.edit_tool == tools[index]
+            let on = current == tools[index]
+            # In a sketch only Select is there (its own tools move things).
+            let usable = not sketching or index == 0
             painter.rounded_rectangle(Rect(16.0, y, 32.0, 30.0), theme.accent() if on else theme.surface(), 4.0)
-            draw_icon(painter, tools[index], 22.0, y + 5.0, 20.0, theme.grey(0.0) if on else (theme.accent() if self.hover_tool == 300 + index else theme.text()))
+            draw_icon(painter, tools[index], 22.0, y + 5.0, 20.0, theme.grey(0.0) if on else (theme.text_muted() if not usable else (theme.accent() if self.hover_tool == 300 + index else theme.text())))
             if self.hover_tool == 300 + index:
                 tip(painter, f"{tools[index]}  ({keys[index]})", 54.0, y)
+        # Below them, the tool in use (yellow), or the last one (to pick
+        # again).
+        let last = self.last_tool()
+        let y = tools_top(height) + float(tools.length) * 36.0 + 6.0
+        let active = last != "" and current == last
+        painter.rounded_rectangle(Rect(16.0, y, 32.0, 30.0), theme.accent() if active else theme.surface(), 4.0)
+        if last != "":
+            ui.draw_icon(painter.target(), tool_asset(last), Rect(22.0, y + 5.0, 20.0, 20.0), theme.grey(0.0) if active else (theme.accent() if self.hover_tool == 300 + tools.length else theme.text()))
+            if self.hover_tool == 300 + tools.length:
+                tip(painter, last if active else f"{last} (again)", 54.0, y)
         if let prompt = w.prompt:
             painter.rounded_rectangle(Rect(16.0, height - 40.0, 420.0, 28.0), theme.surface(), 4.0)
             painter.text(f"{prompt.label}: select components (Shift adds), Enter to finish, Esc to cancel", 24.0, height - 35.0, theme.accent())
@@ -201,15 +218,35 @@ pub class ViewportTools:
             return levels[index].name
         return level_names()[index] + ("" if self.workspace.level_available(index) else " (not here)")
 
+    ## The tool in use: the sketch editor's in a sketch, else the
+    ## workspace's (Select, Move, …, the Knife).
+    func current_tool(self) -> str:
+        let w = self.workspace
+        return w.sketch_tool if w.sketching() else w.edit_tool
+
+    ## The bottom slot's tool: the one in use when it is not Q, W, E, R or
+    ## T, else the last such ("" none yet).
+    func last_tool(self) -> str:
+        let w = self.workspace
+        if w.sketching():
+            return w.last_sketch_tool
+        if not (w.edit_tool in transform_tools()):
+            return w.edit_tool
+        return ""
+
     ## The button under (x, y): see hover_tool.
     func button_at(self, x: float, y: float, width: float, height: float) -> int:
         if y >= 8.0 and y <= 38.0 and x >= width - view_buttons_width() and x <= width - 18.0:
             return 100 + int((x - width + view_buttons_width()) / 38.0)
-        if y >= 44.0 and y <= 74.0 and x >= 16.0 and x < level_x(5) - 6.0:
+        if y >= 8.0 and y <= 38.0 and x >= 16.0 and x < level_x(5) - 6.0:
             return 200 + int((x - 16.0) / 38.0)
         let top = tools_top(height)
-        if x >= 16.0 and x <= 48.0 and y >= top and y < top + float(transform_tools().length) * 36.0 - 6.0:
+        let count = transform_tools().length
+        if x >= 16.0 and x <= 48.0 and y >= top and y < top + float(count) * 36.0 - 6.0:
             return 300 + int((y - top) / 36.0)
+        let slot = top + float(count) * 36.0 + 6.0
+        if x >= 16.0 and x <= 48.0 and y >= slot and y <= slot + 30.0 and self.last_tool() != "":
+            return 300 + count
         return -1
 
     ## Smart's hovered component on another level than the selection's:
@@ -275,7 +312,7 @@ pub class ViewportTools:
             if w.edit_tool != "Knife" or not w.selecting() or event.kind != EventKind.pointer_down or event.button != 0 or not event.inside or event.alt:
                 return false
             # The level switcher and the tool strip keep their clicks.
-            if event.y <= 80.0 or (event.x <= 90.0 and event.y >= 90.0):
+            if self.button_at(event.x, event.y, width, height) >= 0:
                 return false
             self.knifing = true
             self.knife_line = [event.x, event.y, event.x, event.y]
@@ -351,7 +388,17 @@ pub class ViewportTools:
     ## A click on button `button` (see hover_tool).
     func press(self, button: int) -> unit!:
         if button >= 300:
-            self.actions.tools[button - 300].trigger()
+            let index = button - 300
+            let w = self.workspace
+            if index == transform_tools().length:
+                if let reuse = self.on_reuse:
+                    reuse(self.last_tool())
+            elif w.sketching():
+                if index == 0:
+                    if let reuse = self.on_reuse:
+                        reuse("Select")
+            else:
+                self.actions.tools[index].trigger()
         elif button >= 200:
             if self.workspace.selecting() or self.workspace.sketching():
                 self.actions.modes[button - 200].trigger()
@@ -420,3 +467,8 @@ func outline(painter: Painter, r: Rect, color: Color) -> unit!:
 ## How far from the viewport's right edge its view buttons start.
 pub func view_buttons_width() -> float:
     return 126.0
+
+## A tool's icon: a sketch tool's own, else the editor's map's.
+func tool_asset(name: str) -> str:
+    let sketched = sketch_tools.icon_of(name)
+    return sketched if sketched != "" else asset_name(name)
