@@ -46,6 +46,41 @@ pub func code_node_tests() -> unit!:
     let rows = code_node.spare_rows(w.network.require(id))
     assert(rows.length == 2 and rows[0].components == 2 and rows[1].components == 4)
     assert(math.abs((w.geometry else trap("rows")).bounds().maximum.y - 5.0) < 1e-6)
+    # nearpoints averaging keeps a clean sphere round, a little smaller.
+    let sw = Workspace()
+    node_commands.delete_selected(sw)
+    node_commands.add_node(sw, "Sphere", 0.0, 0.0)
+    node_commands.set_parameter(sw, 1, 32.0)
+    node_commands.add_node(sw, "Code", 0.0, 100.0)
+    let smooth_id = sw.network.selected
+    code_node.set_code(sw, smooth_id, code_cook.body_slot, "let g = k.input(0)\nlet near = g.nearpoints(p.P, 0.3, 8)\nvar sum: f32[4] = [0.0, 0.0, 0.0, 0.0]\nfor i in 0..<near.count:\n    sum = sum + g.point_P(near.points[i])\np.P = sum * (1.0 / (f32)near.count)\n")
+    node_commands.display_selected(sw)
+    let round = (sw.geometry else trap("smoothed")).bounds()
+    # (The sphere sits on the ground: y 0 to 2, x -1 to 1.) The edit stays:
+    # its collapsed pole faces draw no guide and roll nothing back.
+    assert(sw.network.require(smooth_id).texts[code_cook.body_slot].starts_with("let g = k.input(0)"))
+    assert(round.maximum.x > 0.9 and round.maximum.x < 1.0 and round.maximum.y > 1.9 and round.maximum.y < 2.0 and round.minimum.y > 0.0 and round.minimum.y < 0.1)
+    # Second-input reads match geometry: a sphere of radius 1.5 sitting on
+    # the ground (center y 1.5), 64 segments; from the point (5, 0, 0) its
+    # surface is sqrt(25 + 1.5²) - 1.5 away; a ray up from (0, -1, 0) meets
+    # it at y 0.
+    let dw = Workspace()
+    node_commands.delete_selected(dw)
+    node_commands.add_node(dw, "Grid", 0.0, 0.0)
+    let dgrid = dw.network.selected
+    node_commands.add_node(dw, "Sphere", 200.0, 0.0)
+    node_commands.set_parameter(dw, 0, 1.5)
+    node_commands.set_parameter(dw, 1, 64.0)
+    let dball = dw.network.selected
+    dw.network.selected = dgrid
+    node_commands.add_node(dw, "Code", 0.0, 100.0)
+    let did = dw.network.selected
+    dw.network.connect(dball, did, 1)
+    code_node.set_code(dw, did, code_cook.body_slot, "let g = k.input(1)\nk.set_point_f32(p.ptnum, \"far\", g.xyzdist([5.0, 0.0, 0.0, 0.0]))\nlet hit = g.intersect([0.0, -1.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0])\nk.set_point_f32(p.ptnum, \"hit\", hit.position[1])\nk.set_point_i32(p.ptnum, \"prim\", hit.prim)\nk.set_point_f32(p.ptnum, \"top\", g.bounds().max[1])\n")
+    node_commands.display_selected(dw)
+    let dmesh = dw.geometry else trap("distances")
+    assert(math.abs(dmesh.attribute_value(dmesh.find_attribute("far", 0), 0, 0) - (math.sqrt(25.0 + 2.25) - 1.5)) < 0.01)
+    assert(math.abs(dmesh.attribute_value(dmesh.find_attribute("hit", 0), 0, 0)) < 0.01 and math.abs(dmesh.attribute_value(dmesh.find_attribute("top", 0), 0, 0) - 3.0) < 1e-5)
     # P and Cd written by one snippet both land.
     code_node.set_code(w, id, code_cook.body_slot, "p.P = p.P + [0.0, 1.0, 0.0, 0.0]\np.Cd = [1.0, 0.0, 0.0, 0.0]\n")
     let both = (w.geometry else trap("both")).bounds()

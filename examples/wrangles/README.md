@@ -26,3 +26,4 @@ an error, and the program writes these files again.
 | `holes` | Faces deleted at random (`k.remove_prim`), Houdini's delete-by-condition. |
 | `distance_color` | A grid colored and dipped by its distance to a sphere in the **second input** (`k.input(1).xyzdist`). |
 | `projection` | A flat sheet dropped onto noise terrain in the second input by a ray down from each point (`k.input(1).intersect`). |
+| `smoothing` | A rough noise blob smoothed by three Code nodes, each averaging every point with its nearest neighbors in the input (`k.input(0).nearpoints`, `point_P`): a point-cloud blur. |
