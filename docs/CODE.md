@@ -28,6 +28,7 @@ code gets:
 | Primitives | one face | `f`, `k` |
 | Detail (only once) | the whole geometry, once | `k` |
 | Numbers | each number `n` from 0 to Count - 1 | `n`, `k` |
+| Voxels | one voxel of a volume grid | `x`, `k` |
 
 The runs are independent. Each one reads the **input** geometry and writes
 only its own element. It never sees what other runs wrote, so neither the
@@ -133,7 +134,40 @@ attribute reaches.
 (trilinear; an SDF itself is sampled exactly), `volume_sample_vec3`,
 `volume_gradient(name, P)`, `volume_index(name, i, j, k)`,
 `volume_pos_to_index`, `volume_index_to_pos`, `volume_res`,
-`volume_voxel_size`. `""` names the first grid, or the SDF.
+`volume_voxel_size`. `""` names the first grid, or the SDF. Also
+`volume_smooth_sample` (tricubic), `volume_sample_index`,
+`volume_index_active`, `volume_type` (0 fog, 1 level set, 2 an SDF, -1
+none), `volume_background` and `volume_transform`.
+
+## Voxels: the Volume Wrangle
+
+Running over **Voxels**, the code runs once per active voxel of a grid,
+like Houdini's Volume Wrangle. The **Volume** row names the grid (empty:
+the first; `#2`: the third). Without that grid the input passes through.
+
+- `x.P` is the voxel's center in the world; `x.ix`, `x.iy`, `x.iz` its
+  index; `x.res` how many voxels the active ones span; `x.voxnum` its
+  number.
+- `x.value` is the grid's value here; assign to it to write.
+- `x.f32("temperature")` and `x.set_f32("temperature", v)` reach another
+  grid at the same voxel, and `x.vec3` / `x.set_vec3` a vector of three
+  grids (`vel.x`, `vel.y`, `vel.z`). Setting a grid the volume lacks makes
+  a fog grid over the same voxels.
+- **Dense** runs every voxel in the grid's box, activating them; off, only
+  the active ones run (a level set's narrow band).
+
+As with points, every run reads the input, so neighbors are read with
+`k.input(0).volume_sample(...)`, never seeing this cook's writes.
+
+The **Volume** node starts a grid from nothing: Fog or Level set, a box
+(center and size), voxel size, background, initial value, Dense and a
+Name. Chain several to hold several grids. A sphere's distance:
+
+```luce
+x.value = length(x.P) - 1.0
+```
+
+then **Convert to Mesh** shows the surface. Fog grids draw as smoke.
 
 ## Making and removing geometry
 

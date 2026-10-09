@@ -39,3 +39,7 @@ an error, and the program writes these files again.
 | `names` | Texts: faces named by quadrant (`k.sprintf`, `f.set_text`), colored by the number read back from the name (`slice`, `to_i32`), and one quadrant deleted downstream by a Blast of `@name=quad_2`. |
 | `median` | Arrays: spiky terrain cleaned by the median height of each point's neighborhood across the grid's edges (`k.floats`, `append`, `sort`), which drops spikes a mean would only smear. |
 | `neighbor_lists` | Array attributes, Houdini's `i[]@nbrs` idiom: one node stores each point's neighbors as an i32 array (`p.set_i32_array`), three later nodes read the lists back (`p.i32_array`) to average heights. The lists show in the Geometry Spreadsheet. |
+| `gyroid` | Volume Wrangle (Run Over Voxels): a Volume node makes an empty level set, the Code node writes a gyroid shell cut to a ball (`math32.max` of two distances, an intersection), Convert to Mesh shows its surface. |
+| `metaballs` | Five spheres orbiting with time, joined by a smooth minimum the header defines (`smin`), written per voxel and meshed. Press Play. |
+| `noise_cloud` | A fog volume: density from noise octaves, fading toward the edge, drifting with time (the classic Volume Wrangle cloud). The viewport draws fog as smoke. |
+| `eroded_points` | Volume from Points makes a level set of a sphere's points; a Voxels Code node adds noise to each voxel's distance (`x.value`), and Convert to Mesh shows the eroded rock. |
