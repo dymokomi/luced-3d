@@ -1236,3 +1236,10 @@ a JPEG with `Image.open`, sums every `get_sample(x, y, 0)` and prints the mean.
   `docs/SCRIPTING.md`.
 - luce-image: `src/image/module.lucb` (`Image.open`, `get_sample`). luce-fbx and luce-usd:
   `src/kernel.lucb`.
+
+## Owner decisions (2026-10-09)
+
+1. **Execution:** a native tool built by the real compiler, run in a long-lived child process. A trap fails the node, not the app. About 0.65 s per edit on the Mac is acceptable for now.
+2. **State:** the process stays alive between cooks, but each cook starts with fresh state, as Houdini's Python SOP does.
+3. **Access:** everything, with no sandbox, like Houdini's Python. Drop the sandbox stage and the per-node file and network grants.
+4. **Packages:** "There should not be extra work. We should be able to use existing packages without modifying them." A script imports any existing Luce package as it is: no adapters, no wrappers and no changes to the package. No luce-maya now. Maya data comes through whatever packages exist (FBX, USD).
