@@ -4,7 +4,8 @@
 ## editor loses focus, or on Cmd/Ctrl+Enter: not every keystroke. Completions
 ## and hover text come from luce-geocore's Code.complete and Code.hover, which
 ## read the API's docs from its stubs; a Script node's from ScriptHelp, which
-## reads its script's check package (script_check.luc).
+## reads its script's check package (script_check.luc) once that is warm: a
+## completion asked before then is asked again when it is.
 from luce_ui.ui import TextEditor, Highlight, Font, Diagnostic, Severity, CompletionList, CompletionKind
 from luce_geocore.geocore import Code, ScriptHelp
 from luce_gpu.gpu import Color
@@ -37,8 +38,12 @@ pub class CodeEditor:
     pub var part: int = 0
     pub var partner: CodeEditor? = none
     ## For a Script node, the script file of its check package, which
-    ## completion and hover read ("" the Code node's API).
+    ## completion and hover read ("" the Code node's API), and whether its
+    ## package set is warm (`set_script_ready`); a completion asked while it
+    ## is not waits for it.
     pub var script_file: str = ""
+    var script_ready: bool = true
+    var completion_waits: bool = false
     let connections: list[Connection]
 
     pub func init(self, font: Font) -> unit!:
@@ -125,6 +130,9 @@ pub class CodeEditor:
     ## What may come at the caret: the members after a dot, else the locals, the
     ## header's helpers, the lib and the keywords.
     func complete(self, items: CompletionList) -> unit!:
+        if self.script_file != "" and not self.script_ready:
+            self.completion_waits = true
+            return
         let line = self.line_of(items.caret())
         let column = items.caret() - self.editor.line_start(items.caret()) + 1
         let found = ScriptHelp.complete(self.script_file, self.editor.text(), line, column) if self.script_file != "" else Code.complete(self.run_over, self.header_text(), self.body_text(), self.part, line, column)
@@ -136,8 +144,26 @@ pub class CodeEditor:
     func hover(self, offset: int) -> str!:
         let column = offset - self.editor.line_start(offset) + 1
         if self.script_file != "":
+            if not self.script_ready:
+                return ""
             return ScriptHelp.hover(self.script_file, self.editor.text(), self.line_of(offset), column)
         return Code.hover(self.run_over, self.header_text(), self.body_text(), self.part, self.line_of(offset), column)
+
+    ## Whether the Script node's package set is warm (polled each frame): when
+    ## it becomes so, a completion asked meanwhile is asked again, if the
+    ## caret is still where one would start (after a dot or in a word).
+    pub func set_script_ready(self, ready: bool) -> unit!:
+        let became = ready and not self.script_ready
+        self.script_ready = ready
+        if not became or not self.completion_waits:
+            return
+        self.completion_waits = false
+        let caret = self.editor.caret()
+        if not self.editor.layout().is_focused() or caret == 0:
+            return
+        let before = self.editor.text_range(caret - 1, caret)
+        if before == "." or before == "_" or before.is_alnum():
+            self.editor.complete()
 
     ## The 1-based line of `offset`.
     func line_of(self, offset: int) -> int!:

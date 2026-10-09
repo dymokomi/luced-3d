@@ -103,6 +103,7 @@ func check_tests() -> unit!:
     finish(checker)
     assert(checker.failure.contains("line 4, column"), checker.failure)
     let failed_in = checker.seconds
+    let warmed_in = checker.warmed_in
     checker.start(broken.replace("let x: i64 = \"text\"", "k.warning(\"fine\")"), "", "", "")
     finish(checker)
     assert(checker.failure == "", checker.failure)
@@ -113,7 +114,7 @@ func check_tests() -> unit!:
         checker.start(broken.replace("let x: i64 = \"text\"", f"k.warning(\"fine {i}\")"), "", "", "")
         finish(checker)
         total += checker.seconds
-    print(f"PASS script check while typing: an error at its line in {format_ms(failed_in)}, clean in {format_ms(clean_in)}, then {format_ms(total / 20.0)} a check")
+    print(f"PASS script check while typing: the set warmed off the UI thread in {format_ms(warmed_in)}, an error at its line in {format_ms(failed_in)}, clean in {format_ms(clean_in)}, then {format_ms(total / 20.0)} a check")
 
 ## Completion and hover on the node's check package, with luce-image as a
 ## package: `k.` and `g.` list the API's members, a package's function shows
@@ -121,9 +122,15 @@ func check_tests() -> unit!:
 func help_tests() -> unit!:
     let checker = ScriptChecker()
     let script = "from luce_geocore.script import Cook\nfrom luce_image.image import Image\n\npub func cook(k: Cook*) -> !:\n    let g = k.geometry()\n    let opened = try Image.open(k.file(\"image\", \"a.jpg\"))\n    let image = try opened.get()\n    print(f\"{try image.width()} {g.point_count()}\")\n"
-    let file = checker.prepare("luce-image", "", "")
+    # Preparing a new set returns at once: its sync and first check run off
+    # this thread, and it is not ready (completion waits) until they end.
+    let preparing = time.now()
+    let file = checker.prepare("luce-image", "", "", script)
+    let prepared_in = float(time.now() - preparing) / 1000000000.0
+    assert(not checker.ready(), "a new set is warming")
     checker.start(script, "luce-image", "", "")
     finish(checker)
+    assert(checker.ready(), "the set is warm")
     assert(checker.failure == "", checker.failure)
     let k = labels(file, script + "    k.", 9, 7)
     for name in ["geometry", "input", "f32", "set_geometry", "warning"]:
@@ -144,7 +151,7 @@ func help_tests() -> unit!:
     checker.start(broken, "luce-image", "", "")
     finish(checker)
     assert(checker.failure.starts_with("line 8, column"), checker.failure)
-    print(f"PASS script completion and hover: k., g., a luce-image value, Image.open's doc (hover {format_ms(hover_in)})")
+    print(f"PASS script completion and hover: k., g., a luce-image value, Image.open's doc (prepared in {format_ms(prepared_in)}, hover {format_ms(hover_in)})")
 
 ## The labels completion gives at `line`, `column` of `text`.
 func labels(file: str, text: str, line: int, column: int) -> list[str]!:

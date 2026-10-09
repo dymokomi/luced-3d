@@ -4,16 +4,22 @@
 ## running build never sees it: its package.prisma names the same dependencies
 ## a build of the node takes (script_build.plan), and its src/script.lucb is the
 ## text. The editor's own checker checks that file in process (luce-geocore's
-## ScriptHelp, over luce-base's embed.Library.check_file): the first check of a
-## package set checks its packages and keeps them (about 90 ms), each later one
-## takes about 0.3 ms. A package set with registry packages is synced once
-## (`luc sync`, in the background) before its first check.
+## ScriptHelp, over luce-base's embed.Library.check_file).
+##
+## A new package set is warmed off the UI thread: synced once with `luc sync`
+## (a child process) when it names registry packages, then checked once on a
+## thread of its own (ScriptCheckJob), which reads and keeps its packages
+## (about 0.1 s). Until then the set is not `ready`: a pause's check waits
+## for it, and completion and hover answer nothing (the editor asks again once
+## it is ready). Once warm, a check takes about 0.4 ms and runs at once.
+## Checks run one at a time in the process (luce-kernel's check lock), so
+## nothing here asks for one while a job runs.
 ##
 ## An error underlines its line at once and the text waits; a clean check sends
 ## the text to the node, which builds and cooks it.
 from luce_std.process import Command
 from luce_std import files, paths
-from luce_geocore.geocore import ScriptHelp, CodeCheck
+from luce_geocore.geocore import ScriptHelp, ScriptCheckJob, CodeCheck
 from script_build import plan, tool
 from script_packages import editor_packages, manifest_dependencies
 import time
@@ -26,25 +32,39 @@ pub class ScriptChecker:
     var prepared: str = ""
     var project: str = ""
     pub var file: str = ""
-    ## `luc sync` of a new package set with registry packages, and the text
-    ## that waits for it.
+    ## The set's warming: its `luc sync`, then its first check on a thread;
+    ## `warm` once that check finished (or the sync failed, offline).
     var syncing: Command? = none
+    var job: ScriptCheckJob? = none
+    var warm: bool = false
+    ## The sync failed (offline, or a package that cannot be found): the
+    ## build says which, so the set's checks pass the text on.
+    var offline: bool = false
+    ## Jobs of sets left behind, released once they finish (a running check
+    ## cannot be stopped, and joining it would hold up the editor).
+    var leaving: list[ScriptCheckJob] = []
+    ## A pause's text that waits for the set to be warm.
+    var pending: bool = false
     var waiting: str = ""
     ## Whether a check finished that `poll` has not reported yet.
     var finished: bool = false
     ## The text the last check read, its failure ("" clean: "line L, column
-    ## C: message" for an error in the code) and how long it took (s).
+    ## C: message" for an error in the code) and how long the editor waited
+    ## for it (s); `warmed_in` how long the set's first check took on its
+    ## thread.
     pub var text: str = ""
     pub var failure: str = ""
     pub var seconds: float = 0.0
+    pub var warmed_in: float = 0.0
+    var warm_started: int = 0
 
     pub func init(self):
         self.finished = false
 
     ## The check package for `packages` and `lock` of a project in `folder`,
-    ## written when the set changed: the path of its script file. Completion
-    ## and hover read it too.
-    pub func prepare(self, packages: str, lock: str, folder: str) -> str!:
+    ## written when the set changed, and its warming started with `code`: the
+    ## path of its script file. Completion and hover read it too.
+    pub func prepare(self, packages: str, lock: str, folder: str, code: str) -> str!:
         let key = f"{packages}\n{lock}\n{folder}"
         if key == self.prepared and self.file != "":
             return self.file
@@ -52,36 +72,52 @@ pub class ScriptChecker:
         self.editor = editor
         let made = plan(-1, "", packages, lock, folder, "", editor, checking = true)
         made.write()
+        self.stop()
         self.prepared = key
         self.project = made.work
         self.file = paths.join(paths.join(made.work, "src"), "script.lucb")
         # Registry packages are synced into the project's .luc/deps once.
-        self.stop()
         if not synced(made.work, made.manifest):
             self.syncing = Command(tool("luc"), ["sync"], directory = made.work, output_limit = 1048576)
+            self.waiting = code
+        else:
+            self.warm_up(code)
         return self.file
 
-    ## Check `code` with `packages` and `lock` for a project in `folder`: now,
-    ## or once a new package set is synced.
+    ## Check `code` with `packages` and `lock` for a project in `folder`: now
+    ## when the set is warm, else once it is.
     pub func start(self, code: str, packages: str, lock: str, folder: str) -> unit!:
-        _ = self.prepare(packages, lock, folder)
+        _ = self.prepare(packages, lock, folder, code)
         self.text = code
-        if self.syncing != none:
-            self.waiting = code
+        if self.ready():
+            self.check(code)
             return
-        self.check(code)
+        self.waiting = code
+        self.pending = true
 
-    ## Check `code` in the check package now.
+    ## Whether the set is warm and nothing runs: a check, a completion or a
+    ## hover now takes a fraction of a millisecond.
+    pub func ready(self) -> bool:
+        return self.warm and self.syncing == none and self.job == none
+
+    ## Check `code` in the check package now (the set is warm).
     func check(self, code: str) -> unit!:
         let started = time.now()
-        let checked = ScriptHelp.check(self.file, code)
+        self.failure = ""
+        if not self.offline:
+            self.failure = first_error(ScriptHelp.check(self.file, code))
         self.seconds = float(time.now() - started) / 1000000000.0
-        self.failure = first_error(checked)
         self.finished = true
 
+    ## The set's first check, of `code`, on a thread of its own.
+    func warm_up(self, code: str) -> unit!:
+        self.warm_started = time.now()
+        self.job = ScriptCheckJob.start(self.file, code)
+
     ## Whether a check has finished since the last call: its result is in
-    ## `failure`.
+    ## `failure`. Polled each frame: it moves the set's warming along.
     pub func poll(self) -> bool!:
+        self.release_left()
         if let command = self.syncing:
             if not command.is_finished():
                 return false
@@ -89,31 +125,62 @@ pub class ScriptChecker:
             command.close()
             self.syncing = none
             if code != 0:
-                # Offline, or a package that cannot be found: the build says
-                # which; the text goes on.
-                self.failure = ""
-                self.seconds = 0.0
-                self.finished = true
+                # Offline, or a package that cannot be found: the build
+                # says which; the text goes on.
+                self.offline = true
+                self.warm = true
             else:
-                self.check(self.waiting)
+                self.warm_up(self.waiting)
+        if let job = self.job:
+            if not job.finished():
+                return false
+            job.close()
+            self.job = none
+            self.warm = true
+            self.warmed_in = float(time.now() - self.warm_started) / 1000000000.0
+        if self.pending and self.ready():
+            self.pending = false
+            self.check(self.waiting)
         if not self.finished:
             return false
         self.finished = false
         return true
 
-    ## Whether a check is waiting for its packages.
-    pub func running(self) -> bool:
-        return self.syncing != none
-
-    ## Stop a sync still running (its process, by PID); its text is not checked.
+    ## Stop warming the set: its sync (its process, by PID) is cancelled, its
+    ## job left to finish on its own; a waiting text is not checked.
     pub func stop(self):
         if let command = self.syncing:
             command.cancel()
             command.close()
-            # The set is synced again at its next check.
-            self.prepared = ""
         self.syncing = none
+        if let job = self.job:
+            self.leaving.append(job)
+        self.job = none
+        # The set is prepared (and warmed) again at its next check.
+        self.prepared = ""
+        self.warm = false
+        self.offline = false
+        self.pending = false
         self.finished = false
+
+    ## Give back the jobs of sets left behind that have finished.
+    func release_left(self) -> unit!:
+        if self.leaving.length == 0:
+            return
+        let running: list[ScriptCheckJob] = []
+        for job in self.leaving:
+            if job.finished():
+                job.close()
+            else:
+                running.append(job)
+        self.leaving = running
+
+    ## Stop, and wait for every job (the editor is closing).
+    pub func close(self):
+        self.stop()
+        for job in self.leaving:
+            job.close()
+        self.leaving = []
 
 ## Whether every registry dependency of `manifest` is in `project`'s .luc/deps
 ## (a checkout dependency is read where it is).

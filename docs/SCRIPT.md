@@ -213,10 +213,12 @@ and the node does not build or cook until the code checks clean
 
 The check runs inside the editor, on a small package it keeps for each set of
 Packages (the same dependencies the build takes, under
-`~/.luce/scripts/check`). The first check of a set reads and checks its
-packages, about 0.1 s; the editor keeps them checked, so each later check
-takes well under a millisecond. A set with registry packages is fetched
-once (`luc sync`) before its first check.
+`~/.luce/scripts/check`). A set is made ready when its node is selected,
+off the editor's thread: a set with registry packages is fetched once (`luc
+sync`), then a first check on a thread of its own reads and checks its
+packages, about 0.1 s. The editor keeps them checked, so each later check
+takes well under a millisecond. Until the set is ready, a pause's check
+waits for it, and completion opens once it is.
 
 A build error, a trap (`index out of bounds`), `k.error` and an error the
 script raises itself (`error(code, "...")`) name the line and column of the
@@ -232,7 +234,10 @@ the members of what is before it: `k.` the cook's, `g.` a `Geometry`'s, a
 `VoxelGrid`'s or a `Verb`'s, `Verb.` and `Geometry.` their static functions,
 and the members of any imported package's types and modules (an `Image` of
 luce-image, `math.` of luce-std). Elsewhere it lists the locals in scope,
-the imports, the script's own functions and the keywords. Each item shows its
+the imports, the script's own functions and the keywords; a helper nothing
+calls yet and an import nothing uses yet are listed too. Only what a script
+codes against is listed: what the editor itself uses to run a script lives
+in `luce_geocore.script_host`, and a script never imports it. Each item shows its
 signature and its `##` doc, read from the package's source. Hover shows the
 same for the word under the pointer, and a local's type.
 

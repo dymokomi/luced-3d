@@ -286,8 +286,9 @@ pub class Inspector:
             self.code_header.editor.layout().set_visible(not scripting)
             self.code_title.set_text("Script (runs once per cook, natively; imports any package)" if scripting else "Code (one element; it runs for all in parallel)")
             # Completion and hover read the Code node's API, or a script's
-            # check package (its imports, checked in process).
-            self.code_body.script_file = self.checker.prepare(node.texts[script_cook.packages_slot], node.texts[script_cook.lock_slot], self.workspace.network.folder) if scripting else ""
+            # check package (its imports, checked in process; warmed off this
+            # thread).
+            self.code_body.script_file = self.checker.prepare(node.texts[script_cook.packages_slot], node.texts[script_cook.lock_slot], self.workspace.network.folder, node.texts[script_cook.code_slot]) if scripting else ""
             # A Script's text is checked at a pause before it goes to the node.
             self.code_body.on_pause = (func (text: str) -> unit!: self.check_script(text)) if scripting else none
             if scripting:
@@ -417,7 +418,9 @@ pub class Inspector:
     pub func poll(self) -> unit!:
         self.code_body.poll()
         self.code_header.poll()
-        if self.checker.poll():
+        let reported = self.checker.poll()
+        self.code_body.set_script_ready(self.checker.ready())
+        if reported:
             # Only an error in the code holds the text back; anything else (a
             # package that cannot be found) is the build's to report.
             let place = code_node.failure_place(self.checker.failure)
@@ -427,13 +430,17 @@ pub class Inspector:
             else:
                 self.code_body.show_error(place[1], place[2], place[2] + 1, self.check_failure)
 
+    ## Whether the Script editor's package set is warm (captures wait for it).
+    pub func script_ready(self) -> bool:
+        return self.checker.ready()
+
     ## Check the selected Script node's `text` with its packages.
     func check_script(self, text: str) -> unit!:
         let node = self.workspace.selected() else return
         self.checker.start(text, node.texts[script_cook.packages_slot], node.texts[script_cook.lock_slot], self.workspace.network.folder)
 
     pub func close(self):
-        self.checker.stop()
+        self.checker.close()
         self.code_body.close()
         self.code_header.close()
         self.on_browse = none
