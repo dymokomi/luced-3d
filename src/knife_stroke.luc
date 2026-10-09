@@ -1,0 +1,48 @@
+## The Knife tool's stroke: press, drag a line across the model (Shift
+## snaps it to 15°), release to cut; Escape or a lost pointer cancels.
+from luce_ui.ui import Painter, Event, Point
+from luce_3d.graphics import Knife
+from luce_window.input import EventKind, Key
+from workspace import Workspace
+import theme
+import modeling_commands
+
+pub class KnifeStroke:
+    let workspace: Workspace
+    ## A stroke being drawn: its start and end in the view.
+    var active: bool = false
+    var line: list[float]
+
+    pub func init(self, workspace: Workspace):
+        self.workspace = workspace
+        self.line = []
+
+    ## The stroke's events (`on_button`: the press is on the chrome, which
+    ## keeps it); whether one was used.
+    pub func event(self, event: Event, width: float, height: float, on_button: bool) -> bool!:
+        let w = self.workspace
+        if not self.active:
+            if w.edit_tool != "Knife" or not w.selecting() or event.kind != EventKind.pointer_down or event.button != 0 or not event.inside or event.alt or on_button:
+                return false
+            self.active = true
+            self.line = [event.x, event.y, event.x, event.y]
+            return true
+        if event.cancelled or event.kind in [EventKind.pointer_left, EventKind.focus_lost] or (event.kind == EventKind.key_down and event.key == Key.escape):
+            self.active = false
+            return true
+        if event.kind == EventKind.pointer_moved or event.kind == EventKind.pointer_up:
+            var x = event.x
+            var y = event.y
+            if event.shift:
+                let snapped = Knife.snapped(self.line[0], self.line[1], x, y)
+                x = snapped.x
+                y = snapped.y
+            self.line = [self.line[0], self.line[1], x, y]
+            if event.kind == EventKind.pointer_up:
+                self.active = false
+                modeling_commands.knife(w, self.line[0], self.line[1], self.line[2], self.line[3], width, height)
+        return true
+
+    pub func draw(self, painter: Painter) -> unit!:
+        if self.active:
+            painter.line(Point(self.line[0], self.line[1]), Point(self.line[2], self.line[3]), 2.0, theme.accent())

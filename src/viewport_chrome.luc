@@ -1,0 +1,270 @@
+## The viewport's chrome, drawn over the scene and keeping its clicks
+## from every tool: the view buttons (top right; the shading button left
+## of them, view.luc's), the selection levels (top left, 1-5), the
+## transform tools (left center, Q, W, E, R, T) with the tool in use below
+## them, a tool prompt's hint, the snapping button and its options (bottom
+## left), and where the pointer snapped.
+from luce_ui.ui import Painter, Point
+from luce_gpu.gpu import Rect, Color
+from workspace import Workspace
+from actions import Actions
+from luce_std import math
+import view_projection as gm
+import theme
+from luce_ui import ui
+from tool_icons import draw_icon, asset_name
+import sketch_tools
+from edit_types import smart_level, level_names, level_icons, sketch_level_names
+from tools import transform_tools
+from snapping import snap_names, snap_icons
+
+pub class ViewportChrome:
+    let workspace: Workspace
+    let actions: Actions
+    ## The button under the pointer: 100 + a view button, 200 + a level,
+    ## 300 + a transform tool (the slot below them: 300 + their count), 400
+    ## the snapping button, 410 + one of its options (-1: none).
+    pub var hover_tool: int = -1
+    ## The snapping options shown (the snapping button opened them).
+    pub var snaps_open: bool = false
+    ## Pick a tool again from the column (the sketch's tools are the
+    ## editor's): the viewport sets it.
+    pub var on_reuse: func(str) -> unit!? = none
+
+    pub func init(self, workspace: Workspace, actions: Actions):
+        self.workspace = workspace
+        self.actions = actions
+
+    ## The view buttons, top right: Frame, Grid and Control hulls; then the
+    ## switchers, the prompt and snapping.
+    pub func draw(self, painter: Painter, width: float, height: float) -> unit!:
+        let w = self.workspace
+        let names = ["Frame", "Grid", "Hulls"]
+        let tips = ["Frame geometry (F)", "Toggle grid (G)", "Toggle control hulls"]
+        let shown = [false, w.view.grid_visible, w.view.hulls_visible]
+        for index in 0..<names.length:
+            let x = width - view_buttons_width() + float(index) * 38.0
+            painter.rounded_rectangle(Rect(x, 8.0, 32.0, 30.0), theme.surface(), 4.0)
+            draw_icon(painter, names[index], x + 6.0, 13.0, 20.0, theme.accent() if self.hover_tool == index + 100 or shown[index] else theme.text())
+            if self.hover_tool == index + 100:
+                painter.rounded_rectangle(Rect(width - 196.0, 43.0, 180.0, 30.0), theme.surface(), 4.0)
+                painter.text(tips[index], width - 188.0, 49.0, theme.text())
+        self.draw_switchers(painter, height)
+
+    ## Top left, the selection levels (1-5); left center, the transform
+    ## tools (Q, W, E, R, T); a tool prompt's hint at the bottom.
+    func draw_switchers(self, painter: Painter, height: float) -> unit!:
+        let w = self.workspace
+        let levels = w.levels()
+        let sketching = w.sketching()
+        for index in 0..<5:
+            let x = level_x(index)
+            let on = index == (w.sketch_level if sketching else w.component_mode)
+            let available = (sketching and index > 0) or (w.selecting() and w.level_available(index))
+            painter.rounded_rectangle(Rect(x, 8.0, 32.0, 30.0), theme.accent() if on else theme.surface(), 4.0)
+            let icon = levels[index].icon if not sketching and index < levels.length and levels[index].available else level_icons()[index]
+            let ink = theme.grey(0.0) if on else (theme.accent() if self.hover_tool == 200 + index and available else (theme.text() if available else theme.text_muted()))
+            ui.draw_icon(painter.target(), icon, Rect(x + 5.0, 12.0, 22.0, 22.0), ink)
+            if self.hover_tool == 200 + index:
+                tip(painter, f"{self.level_label(index)}  ({index + 1})", x, 44.0)
+        if sketching:
+            painter.text(sketch_level_names()[w.sketch_level], level_x(5) + 4.0, 15.0, theme.text_muted())
+        elif w.selecting():
+            let caption = w.level().name + (" (Smart)" if w.component_mode == smart_level else "")
+            painter.text(caption + (f" / {w.selected_count()} selected" if w.selected_count() > 0 else ""), level_x(5) + 4.0, 15.0, theme.text_muted())
+        let tools = transform_tools()
+        let keys = ["Q", "W", "E", "R", "T"]
+        let current = self.current_tool()
+        for index in 0..<tools.length:
+            let y = tools_top(height) + float(index) * 36.0
+            let on = current == tools[index]
+            # In a sketch only Select is there (its own tools move things).
+            let usable = not sketching or index == 0
+            painter.rounded_rectangle(Rect(16.0, y, 32.0, 30.0), theme.accent() if on else theme.surface(), 4.0)
+            draw_icon(painter, tools[index], 22.0, y + 5.0, 20.0, theme.grey(0.0) if on else (theme.text_muted() if not usable else (theme.accent() if self.hover_tool == 300 + index else theme.text())))
+            if self.hover_tool == 300 + index:
+                tip(painter, f"{tools[index]}  ({keys[index]})", 54.0, y)
+        # Below them, the tool in use (yellow), or the last one (to pick
+        # again).
+        let last = self.last_tool()
+        let y = tools_top(height) + float(tools.length) * 36.0 + 6.0
+        let active = last != "" and current == last
+        painter.rounded_rectangle(Rect(16.0, y, 32.0, 30.0), theme.accent() if active else theme.surface(), 4.0)
+        if last != "":
+            ui.draw_icon(painter.target(), tool_asset(last), Rect(22.0, y + 5.0, 20.0, 20.0), theme.grey(0.0) if active else (theme.accent() if self.hover_tool == 300 + tools.length else theme.text()))
+            if self.hover_tool == 300 + tools.length:
+                tip(painter, last if active else f"{last} (again)", 54.0, y)
+        if let prompt = w.prompt:
+            painter.rounded_rectangle(Rect(16.0, height - 78.0, 420.0, 28.0), theme.surface(), 4.0)
+            painter.text(f"{prompt.label}: select components (Shift adds), Enter to finish, Esc to cancel", 24.0, height - 73.0, theme.accent())
+        # Bottom left, snapping (snapping.luc): one button (lit while on),
+        # its options above it when open.
+        let snapping_on = w.snaps.on()
+        painter.rounded_rectangle(Rect(16.0, height - 40.0, 32.0, 30.0), theme.accent() if snapping_on else theme.surface(), 4.0)
+        ui.draw_icon(painter.target(), "snap", Rect(22.0, height - 35.0, 20.0, 20.0), theme.grey(0.0) if snapping_on else (theme.accent() if self.hover_tool == 400 else theme.text()))
+        if self.hover_tool == 400 and not self.snaps_open:
+            tip(painter, "Snapping (Cmd held: free)", 54.0, height - 40.0)
+        if self.snaps_open:
+            let names = snap_names()
+            let icons = snap_icons()
+            let top = snap_menu_top(height, names.length)
+            painter.rounded_rectangle(Rect(16.0, top - 4.0, snap_menu_width, float(names.length) * snap_row + 8.0), theme.surface(), 4.0)
+            for index in 0..<names.length:
+                let row = top + float(index) * snap_row
+                let on = w.snaps.flags[index]
+                if self.hover_tool == 410 + index:
+                    painter.rectangle(Rect(20.0, row, snap_menu_width - 8.0, snap_row - 2.0), theme.grey(72.0))
+                painter.rounded_rectangle(Rect(26.0, row + 6.0, 16.0, 16.0), theme.accent() if on else theme.grey(60.0), 3.0)
+                ui.draw_icon(painter.target(), icons[index], Rect(50.0, row + 4.0, 20.0, 20.0), theme.text() if on and (index == 0 or snapping_on) else theme.text_muted())
+                painter.text(names[index] if index > 0 else "Snapping", 78.0, row + 6.0, theme.text() if on and (index == 0 or snapping_on) else theme.text_muted())
+
+    ## Where the pointer snapped (the workspace's snap mark): a marker by
+    ## its kind, and its name.
+    pub func draw_snap(self, painter: Painter, width: float, height: float) -> unit!:
+        let mark = self.workspace.snap_mark else return
+        let p = gm.project(self.workspace, mark.at, width, height)
+        if p[2] <= 0.0:
+            return
+        let ink = theme.accent()
+        let (x, y) = (p[0], p[1])
+        if mark.kind == "Point":
+            outline(painter, Rect(x - 5.0, y - 5.0, 10.0, 10.0), ink)
+        elif mark.kind == "Middle":
+            painter.line(Point(x - 6.0, y + 5.0), Point(x + 6.0, y + 5.0), 1.5, ink)
+            painter.line(Point(x + 6.0, y + 5.0), Point(x, y - 6.0), 1.5, ink)
+            painter.line(Point(x, y - 6.0), Point(x - 6.0, y + 5.0), 1.5, ink)
+        elif mark.kind == "Crossing":
+            painter.line(Point(x - 6.0, y - 6.0), Point(x + 6.0, y + 6.0), 1.5, ink)
+            painter.line(Point(x - 6.0, y + 6.0), Point(x + 6.0, y - 6.0), 1.5, ink)
+        elif mark.kind == "Curve" or mark.kind == "Surface":
+            painter.line(Point(x - 6.0, y), Point(x, y - 6.0), 1.5, ink)
+            painter.line(Point(x, y - 6.0), Point(x + 6.0, y), 1.5, ink)
+            painter.line(Point(x + 6.0, y), Point(x, y + 6.0), 1.5, ink)
+            painter.line(Point(x, y + 6.0), Point(x - 6.0, y), 1.5, ink)
+        else:
+            painter.line(Point(x - 5.0, y), Point(x + 5.0, y), 1.5, ink)
+            painter.line(Point(x, y - 5.0), Point(x, y + 5.0), 1.5, ink)
+        painter.text(mark.kind, x + 10.0, y + 6.0, theme.text_muted())
+
+    ## Level `index`'s name in the current kind (Vertices, CVs), or its
+    ## universal name when the kind lacks it.
+    func level_label(self, index: int) -> str:
+        if self.workspace.sketching():
+            return sketch_level_names()[index] + (" (not in a sketch)" if index == 0 else "")
+        let levels = self.workspace.levels()
+        if index < levels.length and levels[index].available:
+            return levels[index].name
+        return level_names()[index] + ("" if self.workspace.level_available(index) else " (not here)")
+
+    ## The tool in use: the sketch editor's in a sketch, else the
+    ## workspace's (Select, Move, …, the Knife).
+    func current_tool(self) -> str:
+        let w = self.workspace
+        return w.sketch_tool if w.sketching() else w.edit_tool
+
+    ## The bottom slot's tool: the one in use when it is not Q, W, E, R or
+    ## T, else the last such ("" none yet).
+    func last_tool(self) -> str:
+        let w = self.workspace
+        if w.sketching():
+            return w.last_sketch_tool
+        if not (w.edit_tool in transform_tools()):
+            return w.edit_tool
+        return ""
+
+    ## The button under (x, y): see hover_tool (400 the snapping button,
+    ## 410 + one of its options).
+    pub func button_at(self, x: float, y: float, width: float, height: float) -> int:
+        if y >= 8.0 and y <= 38.0 and x >= width - view_buttons_width() and x <= width - 18.0:
+            return 100 + int((x - width + view_buttons_width()) / 38.0)
+        if y >= 8.0 and y <= 38.0 and x >= 16.0 and x < level_x(5) - 6.0:
+            return 200 + int((x - 16.0) / 38.0)
+        let top = tools_top(height)
+        let count = transform_tools().length
+        if x >= 16.0 and x <= 48.0 and y >= top and y < top + float(count) * 36.0 - 6.0:
+            return 300 + int((y - top) / 36.0)
+        if y >= height - 40.0 and y <= height - 10.0 and x >= 16.0 and x <= 48.0:
+            return 400
+        if self.snaps_open:
+            let options = snap_names().length
+            let rows = snap_menu_top(height, options)
+            if x >= 16.0 and x <= 16.0 + snap_menu_width and y >= rows and y < rows + float(options) * snap_row:
+                return 410 + int((y - rows) / snap_row)
+        let slot = top + float(count) * 36.0 + 6.0
+        if x >= 16.0 and x <= 48.0 and y >= slot and y <= slot + 30.0 and self.last_tool() != "":
+            return 300 + count
+        return -1
+
+    ## A click on button `button` (see hover_tool).
+    pub func press(self, button: int) -> unit!:
+        if button >= 410:
+            self.workspace.snaps.toggle(button - 410)
+            self.workspace.revision += 1
+        elif button == 400:
+            self.snaps_open = not self.snaps_open
+        elif button >= 300:
+            let index = button - 300
+            let w = self.workspace
+            if index == transform_tools().length:
+                if let reuse = self.on_reuse:
+                    reuse(self.last_tool())
+            elif w.sketching():
+                if index == 0:
+                    if let reuse = self.on_reuse:
+                        reuse("Select")
+            else:
+                self.actions.tools[index].trigger()
+        elif button >= 200:
+            if self.workspace.selecting() or self.workspace.sketching():
+                self.actions.modes[button - 200].trigger()
+        else:
+            [self.actions.frame, self.actions.grid, self.actions.hulls][button - 100].trigger()
+
+## The x of level button `index` (5: just past the last).
+func level_x(index: int) -> float:
+    return 16.0 + float(index) * 38.0
+
+## The top of the transform tool column, centered down the viewport's left.
+func tools_top(height: float) -> float:
+    return math.max(84.0, height * 0.5 - 90.0)
+
+## A tooltip at (x, y).
+func tip(painter: Painter, text: str, x: float, y: float) -> unit!:
+    painter.rounded_rectangle(Rect(x, y, float(text.length) * 7.5 + 16.0, 30.0), theme.surface(), 4.0)
+    painter.text(text, x + 8.0, y + 6.0, theme.text())
+
+## Rectangle `r`'s outline, a point wide.
+pub func outline(painter: Painter, r: Rect, color: Color) -> unit!:
+    painter.rectangle(Rect(r.x, r.y, r.width, 1.0), color)
+    painter.rectangle(Rect(r.x, r.y + r.height - 1.0, r.width, 1.0), color)
+    painter.rectangle(Rect(r.x, r.y, 1.0, r.height), color)
+    painter.rectangle(Rect(r.x + r.width - 1.0, r.y, 1.0, r.height), color)
+
+## How far from the viewport's right edge its view buttons start.
+pub func view_buttons_width() -> float:
+    return 126.0
+
+## The shading button, left of the view buttons.
+pub func shading_button(width: float) -> Rect:
+    return Rect(width - view_buttons_width() - 38.0, 8.0, 32.0, 30.0)
+
+## Whether (`x`, `y`) is on the shading button.
+pub func on_shading_button(x: float, y: float, width: float) -> bool:
+    let r = shading_button(width)
+    return x >= r.x and x <= r.x + r.width and y >= r.y and y <= r.y + r.height
+
+## A tool's icon: a sketch tool's own, else the editor's map's.
+func tool_asset(name: str) -> str:
+    let sketched = sketch_tools.icon_of(name)
+    return sketched if sketched != "" else asset_name(name)
+
+## Where the snapping button ends along the bottom.
+pub func snap_row_end() -> float:
+    return 54.0
+
+## The snapping options' rows: their height, the list's width, its top.
+let snap_row = 28.0
+let snap_menu_width = 170.0
+
+func snap_menu_top(height: float, count: int) -> float:
+    return height - 48.0 - float(count) * snap_row

@@ -1,0 +1,65 @@
+## Object picking in the viewport: a click picks the object under it, a
+## drag the ones seen in the box; Shift adds (a click on a picked one
+## removes it). The picked objects show their screen bounds.
+from luce_ui.ui import Painter, Event
+from luce_gpu.gpu import Rect
+from luce_window.input import EventKind, Key
+from workspace import Workspace
+from luce_std import math
+import theme
+import node_commands
+from viewport_objects import object_at, objects_in, screen_bounds
+from viewport_chrome import outline
+
+pub class ObjectBox:
+    let workspace: Workspace
+    ## A pick in progress: where it started and the pointer now.
+    var boxing: bool = false
+    var box: list[float]
+
+    pub func init(self, workspace: Workspace):
+        self.workspace = workspace
+        self.box = []
+
+    ## A press starts a pick at (`x`, `y`).
+    pub func start(self, x: float, y: float):
+        self.boxing = true
+        self.box = [x, y, x, y]
+
+    ## The pick's events once started; whether one was used.
+    pub func event(self, event: Event, width: float, height: float) -> bool!:
+        let w = self.workspace
+        if not self.boxing:
+            return false
+        if event.cancelled or event.kind in [EventKind.pointer_left, EventKind.focus_lost] or (event.kind == EventKind.key_down and event.key == Key.escape):
+            self.boxing = false
+            return true
+        if event.kind == EventKind.pointer_moved:
+            self.box = [self.box[0], self.box[1], event.x, event.y]
+            return true
+        if event.kind == EventKind.pointer_up:
+            self.boxing = false
+            self.box = [self.box[0], self.box[1], event.x, event.y]
+            if self.dragged():
+                let ids = objects_in(w, self.box[0], self.box[1], self.box[2], self.box[3], width, height)
+                if ids.length > 0:
+                    node_commands.pick_nodes(w, ids, event.shift)
+            else:
+                let id = object_at(w, event.x, event.y, width, height)
+                if id >= 0:
+                    node_commands.pick_node(w, id, event.shift)
+                elif not event.shift:
+                    w.network.picked = [w.network.selected]
+                    w.revision += 1
+        return true
+
+    ## The picked objects' screen bounds, and the box being dragged.
+    pub func draw(self, painter: Painter, width: float, height: float) -> unit!:
+        for id in self.workspace.network.selection():
+            let bounds = screen_bounds(self.workspace, id, width, height) else continue
+            outline(painter, bounds, theme.accent())
+        if self.boxing and self.dragged():
+            outline(painter, Rect(math.min(self.box[0], self.box[2]), math.min(self.box[1], self.box[3]), math.abs(self.box[2] - self.box[0]), math.abs(self.box[3] - self.box[1])), theme.text())
+
+    func dragged(self) -> bool:
+        return math.abs(self.box[2] - self.box[0]) > 4.0 or math.abs(self.box[3] - self.box[1]) > 4.0

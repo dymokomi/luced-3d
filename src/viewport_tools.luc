@@ -1,89 +1,60 @@
-## Node-specific viewport UI. Topology and intersections remain in luce-3d.
-from luce_ui.ui import Painter, Event, Point
-from luce_gpu.gpu import Rect, Color
-from luce_3d.graphics import EditOverlay, Renderer, Knife
-from luce_window.input import EventKind, Key
+## The viewport's node tools over the scene: the chrome's buttons
+## (viewport_chrome.luc), the edit overlay and component picking
+## (component_pick.luc), click placing (viewport_placing.luc), the Knife
+## (knife_stroke.luc), object picking (object_box.luc) and the node gizmos
+## (node_gizmos.luc). Topology and intersections remain in luce-3d.
+from luce_ui.ui import Painter, Event
+from luce_3d.graphics import EditOverlay
+from luce_window.input import EventKind
 from workspace import Workspace
 from actions import Actions
-from luce_std import math
-import view_projection as gm
 import theme
-from luce_ui import ui
-from tool_icons import draw_icon, asset_name
-import sketch_tools
 from node_gizmos import NodeGizmos
 from viewport_placing import ViewportPlacing
-import modeling_commands
+from viewport_chrome import ViewportChrome
+from component_pick import ComponentPicker, draw_hover
+from knife_stroke import KnifeStroke
+from object_box import ObjectBox
 import selection_commands
-import node_commands
-from viewport_objects import object_at, objects_in, screen_bounds
-from edit_types import smart_level, point_level, edge_level, face_level, level_names, level_icons, sketch_level_names
-from tools import transform_tools
-from snapping import snap_names, snap_icons
-from luce_geocore.geocore import Mesh
+from edit_types import smart_level
 
 pub class ViewportTools:
     let workspace: Workspace
-    let actions: Actions
     pub var dragging: bool = false
     pub let gizmos: NodeGizmos
+    pub let chrome: ViewportChrome
+    pub let picker: ComponentPicker
+    let knife: KnifeStroke
+    let objects: ObjectBox
+    ## The hovered component, and under Smart its level (-1: the
+    ## selection's).
     pub var hovered: int = -1
-    ## A knife stroke being drawn: its start and end in the view.
-    var knifing: bool = false
-    var knife_line: list[float]
-    var hover_revision: int = -1
-    ## The button under the pointer: 100 + a view button, 200 + a level,
-    ## 300 + a transform tool (-1: none).
-    var hover_tool: int = -1
-    ## Under Smart, the level of the hovered component, and a second overlay
-    ## that probes points and edges without disturbing the drawn one.
     var hover_level: int = -1
-    let probe: EditOverlay
+    var hover_revision: int = -1
     ## Wires, selection and point markers stay in Base, keyed by the mesh and
     ## the selection, so hover and camera frames never loop over the mesh here.
     pub let overlay: EditOverlay
     ## Faces and corners placed by clicking (Plane from Face, PolyDraw).
     pub let placing: ViewportPlacing
     pub var hover_changed: bool = false
-    ## The snapping options shown (the snapping button opened them).
-    pub var snaps_open: bool = false
-    ## Pick a tool again from the column (the sketch's tools are the
-    ## editor's): the viewport sets it.
-    pub var on_reuse: func(str) -> unit!? = none
-    ## The viewport's renderer: faces are picked from its GPU id pass.
-    pub var renderer: Renderer? = none
-    ## An object pick in progress: where it started and the pointer now.
-    var boxing: bool = false
-    var box: list[float]
 
     pub func init(self, workspace: Workspace, actions: Actions):
-        self.knife_line = []
-        self.box = []
         self.workspace = workspace
-        self.actions = actions
         self.gizmos = NodeGizmos(workspace)
         self.overlay = EditOverlay()
-        self.probe = EditOverlay()
         self.placing = ViewportPlacing(workspace)
+        self.chrome = ViewportChrome(workspace, actions)
+        self.picker = ComponentPicker(workspace, self.overlay)
+        self.knife = KnifeStroke(workspace)
+        self.objects = ObjectBox(workspace)
         # The renderer tints selected faces (Renderer.set_face_selection).
         self.overlay.set_fill(false)
 
     pub func draw(self, painter: Painter, width: float, height: float) -> unit!:
         let w = self.workspace
-        # The view buttons, top right: Frame, Grid and Control hulls.
-        let names = ["Frame", "Grid", "Hulls"]
-        let tips = ["Frame geometry (F)", "Toggle grid (G)", "Toggle control hulls"]
-        let shown = [false, w.view.grid_visible, w.view.hulls_visible]
-        for index in 0..<names.length:
-            let x = width - view_buttons_width() + float(index) * 38.0
-            painter.rounded_rectangle(Rect(x, 8.0, 32.0, 30.0), theme.surface(), 4.0)
-            draw_icon(painter, names[index], x + 6.0, 13.0, 20.0, theme.accent() if self.hover_tool == index + 100 or shown[index] else theme.text())
-            if self.hover_tool == index + 100:
-                painter.rounded_rectangle(Rect(width - 196.0, 43.0, 180.0, 30.0), theme.surface(), 4.0)
-                painter.text(tips[index], width - 188.0, 49.0, theme.text())
         if self.hover_revision != w.revision:
             self.hovered = -1
-        self.draw_switchers(painter, height)
+        self.chrome.draw(painter, width, height)
         if w.selecting():
             let mesh = w.geometry else return
             # Points a soft selection reaches show its falloff (weighed in Base).
@@ -100,427 +71,72 @@ pub class ViewportTools:
             self.overlay.draw(w.view.camera, painter.target(), theme.grey(90.0), theme.accent(), theme.text(), wires = false, hidden = theme.grey(150.0) if through else none)
             self.placing.draw(painter)
             if not own and self.hovered >= 0:
-                self.draw_hover(painter, mesh, width, height)
+                draw_hover(painter, w, mesh, self.hover_level, self.hovered, width, height)
         if w.picking_objects():
-            self.draw_objects(painter, width, height)
-        if self.knifing:
-            let line = self.knife_line
-            painter.line(Point(line[0], line[1]), Point(line[2], line[3]), 2.0, theme.accent())
+            self.objects.draw(painter, width, height)
+        self.knife.draw(painter)
         self.gizmos.draw(painter, width, height)
-        self.draw_snap(painter, width, height)
+        self.chrome.draw_snap(painter, width, height)
 
-    ## The picked objects' screen bounds, and the box being dragged.
-    func draw_objects(self, painter: Painter, width: float, height: float) -> unit!:
-        for id in self.workspace.network.selection():
-            let bounds = screen_bounds(self.workspace, id, width, height) else continue
-            outline(painter, bounds, theme.accent())
-        if self.boxing and self.dragged():
-            outline(painter, Rect(math.min(self.box[0], self.box[2]), math.min(self.box[1], self.box[3]), math.abs(self.box[2] - self.box[0]), math.abs(self.box[3] - self.box[1])), theme.text())
-
-    func dragged(self) -> bool:
-        return math.abs(self.box[2] - self.box[0]) > 4.0 or math.abs(self.box[3] - self.box[1]) > 4.0
-
-    ## Object picking: a click picks the object under it, a drag the ones
-    ## seen in the box; Shift adds (a click on a picked one removes it).
-    func object_event(self, event: Event, width: float, height: float) -> bool!:
-        let w = self.workspace
-        if not self.boxing:
-            return false
-        if event.cancelled or event.kind in [EventKind.pointer_left, EventKind.focus_lost] or (event.kind == EventKind.key_down and event.key == Key.escape):
-            self.boxing = false
-            return true
-        if event.kind == EventKind.pointer_moved:
-            self.box = [self.box[0], self.box[1], event.x, event.y]
-            return true
-        if event.kind == EventKind.pointer_up:
-            self.boxing = false
-            self.box = [self.box[0], self.box[1], event.x, event.y]
-            if self.dragged():
-                let ids = objects_in(w, self.box[0], self.box[1], self.box[2], self.box[3], width, height)
-                if ids.length > 0:
-                    node_commands.pick_nodes(w, ids, event.shift)
-            else:
-                let id = object_at(w, event.x, event.y, width, height)
-                if id >= 0:
-                    node_commands.pick_node(w, id, event.shift)
-                elif not event.shift:
-                    w.network.picked = [w.network.selected]
-                    w.revision += 1
-            return true
-        return true
-
-    ## Top left, the selection levels (1-5); left center, the transform
-    ## tools (Q, W, E, R, T); a tool prompt's hint at the bottom.
-    func draw_switchers(self, painter: Painter, height: float) -> unit!:
-        let w = self.workspace
-        let levels = w.levels()
-        let sketching = w.sketching()
-        for index in 0..<5:
-            let x = level_x(index)
-            let on = index == (w.sketch_level if sketching else w.component_mode)
-            let available = (sketching and index > 0) or (w.selecting() and w.level_available(index))
-            painter.rounded_rectangle(Rect(x, 8.0, 32.0, 30.0), theme.accent() if on else theme.surface(), 4.0)
-            let icon = levels[index].icon if not sketching and index < levels.length and levels[index].available else level_icons()[index]
-            let ink = theme.grey(0.0) if on else (theme.accent() if self.hover_tool == 200 + index and available else (theme.text() if available else theme.text_muted()))
-            ui.draw_icon(painter.target(), icon, Rect(x + 5.0, 12.0, 22.0, 22.0), ink)
-            if self.hover_tool == 200 + index:
-                tip(painter, f"{self.level_label(index)}  ({index + 1})", x, 44.0)
-        if sketching:
-            painter.text(sketch_level_names()[w.sketch_level], level_x(5) + 4.0, 15.0, theme.text_muted())
-        elif w.selecting():
-            let caption = w.level().name + (" (Smart)" if w.component_mode == smart_level else "")
-            painter.text(caption + (f" / {w.selected_count()} selected" if w.selected_count() > 0 else ""), level_x(5) + 4.0, 15.0, theme.text_muted())
-        let tools = transform_tools()
-        let keys = ["Q", "W", "E", "R", "T"]
-        let current = self.current_tool()
-        for index in 0..<tools.length:
-            let y = tools_top(height) + float(index) * 36.0
-            let on = current == tools[index]
-            # In a sketch only Select is there (its own tools move things).
-            let usable = not sketching or index == 0
-            painter.rounded_rectangle(Rect(16.0, y, 32.0, 30.0), theme.accent() if on else theme.surface(), 4.0)
-            draw_icon(painter, tools[index], 22.0, y + 5.0, 20.0, theme.grey(0.0) if on else (theme.text_muted() if not usable else (theme.accent() if self.hover_tool == 300 + index else theme.text())))
-            if self.hover_tool == 300 + index:
-                tip(painter, f"{tools[index]}  ({keys[index]})", 54.0, y)
-        # Below them, the tool in use (yellow), or the last one (to pick
-        # again).
-        let last = self.last_tool()
-        let y = tools_top(height) + float(tools.length) * 36.0 + 6.0
-        let active = last != "" and current == last
-        painter.rounded_rectangle(Rect(16.0, y, 32.0, 30.0), theme.accent() if active else theme.surface(), 4.0)
-        if last != "":
-            ui.draw_icon(painter.target(), tool_asset(last), Rect(22.0, y + 5.0, 20.0, 20.0), theme.grey(0.0) if active else (theme.accent() if self.hover_tool == 300 + tools.length else theme.text()))
-            if self.hover_tool == 300 + tools.length:
-                tip(painter, last if active else f"{last} (again)", 54.0, y)
-        if let prompt = w.prompt:
-            painter.rounded_rectangle(Rect(16.0, height - 78.0, 420.0, 28.0), theme.surface(), 4.0)
-            painter.text(f"{prompt.label}: select components (Shift adds), Enter to finish, Esc to cancel", 24.0, height - 73.0, theme.accent())
-        # Bottom left, snapping (snapping.luc): one button (lit while on),
-        # its options above it when open.
-        let snapping_on = w.snaps.on()
-        painter.rounded_rectangle(Rect(16.0, height - 40.0, 32.0, 30.0), theme.accent() if snapping_on else theme.surface(), 4.0)
-        ui.draw_icon(painter.target(), "snap", Rect(22.0, height - 35.0, 20.0, 20.0), theme.grey(0.0) if snapping_on else (theme.accent() if self.hover_tool == 400 else theme.text()))
-        if self.hover_tool == 400 and not self.snaps_open:
-            tip(painter, "Snapping (Cmd held: free)", 54.0, height - 40.0)
-        if self.snaps_open:
-            let names = snap_names()
-            let icons = snap_icons()
-            let top = snap_menu_top(height, names.length)
-            painter.rounded_rectangle(Rect(16.0, top - 4.0, snap_menu_width, float(names.length) * snap_row + 8.0), theme.surface(), 4.0)
-            for index in 0..<names.length:
-                let row = top + float(index) * snap_row
-                let on = w.snaps.flags[index]
-                if self.hover_tool == 410 + index:
-                    painter.rectangle(Rect(20.0, row, snap_menu_width - 8.0, snap_row - 2.0), theme.grey(72.0))
-                painter.rounded_rectangle(Rect(26.0, row + 6.0, 16.0, 16.0), theme.accent() if on else theme.grey(60.0), 3.0)
-                ui.draw_icon(painter.target(), icons[index], Rect(50.0, row + 4.0, 20.0, 20.0), theme.text() if on and (index == 0 or snapping_on) else theme.text_muted())
-                painter.text(names[index] if index > 0 else "Snapping", 78.0, row + 6.0, theme.text() if on and (index == 0 or snapping_on) else theme.text_muted())
-
-    ## Where the pointer snapped (the workspace's snap mark): a marker by
-    ## its kind, and its name.
-    func draw_snap(self, painter: Painter, width: float, height: float) -> unit!:
-        let mark = self.workspace.snap_mark else return
-        let p = gm.project(self.workspace, mark.at, width, height)
-        if p[2] <= 0.0:
-            return
-        let ink = theme.accent()
-        let (x, y) = (p[0], p[1])
-        if mark.kind == "Point":
-            outline(painter, Rect(x - 5.0, y - 5.0, 10.0, 10.0), ink)
-        elif mark.kind == "Middle":
-            painter.line(Point(x - 6.0, y + 5.0), Point(x + 6.0, y + 5.0), 1.5, ink)
-            painter.line(Point(x + 6.0, y + 5.0), Point(x, y - 6.0), 1.5, ink)
-            painter.line(Point(x, y - 6.0), Point(x - 6.0, y + 5.0), 1.5, ink)
-        elif mark.kind == "Crossing":
-            painter.line(Point(x - 6.0, y - 6.0), Point(x + 6.0, y + 6.0), 1.5, ink)
-            painter.line(Point(x - 6.0, y + 6.0), Point(x + 6.0, y - 6.0), 1.5, ink)
-        elif mark.kind == "Curve" or mark.kind == "Surface":
-            painter.line(Point(x - 6.0, y), Point(x, y - 6.0), 1.5, ink)
-            painter.line(Point(x, y - 6.0), Point(x + 6.0, y), 1.5, ink)
-            painter.line(Point(x + 6.0, y), Point(x, y + 6.0), 1.5, ink)
-            painter.line(Point(x, y + 6.0), Point(x - 6.0, y), 1.5, ink)
-        else:
-            painter.line(Point(x - 5.0, y), Point(x + 5.0, y), 1.5, ink)
-            painter.line(Point(x, y - 5.0), Point(x, y + 5.0), 1.5, ink)
-        painter.text(mark.kind, x + 10.0, y + 6.0, theme.text_muted())
-
-    ## Level `index`'s name in the current kind (Vertices, CVs), or its
-    ## universal name when the kind lacks it.
-    func level_label(self, index: int) -> str:
-        if self.workspace.sketching():
-            return sketch_level_names()[index] + (" (not in a sketch)" if index == 0 else "")
-        let levels = self.workspace.levels()
-        if index < levels.length and levels[index].available:
-            return levels[index].name
-        return level_names()[index] + ("" if self.workspace.level_available(index) else " (not here)")
-
-    ## The tool in use: the sketch editor's in a sketch, else the
-    ## workspace's (Select, Move, …, the Knife).
-    func current_tool(self) -> str:
-        let w = self.workspace
-        return w.sketch_tool if w.sketching() else w.edit_tool
-
-    ## The bottom slot's tool: the one in use when it is not Q, W, E, R or
-    ## T, else the last such ("" none yet).
-    func last_tool(self) -> str:
-        let w = self.workspace
-        if w.sketching():
-            return w.last_sketch_tool
-        if not (w.edit_tool in transform_tools()):
-            return w.edit_tool
-        return ""
-
-    ## The button under (x, y): see hover_tool (400 the snapping button,
-    ## 410 + one of its options).
-    pub func button_at(self, x: float, y: float, width: float, height: float) -> int:
-        if y >= 8.0 and y <= 38.0 and x >= width - view_buttons_width() and x <= width - 18.0:
-            return 100 + int((x - width + view_buttons_width()) / 38.0)
-        if y >= 8.0 and y <= 38.0 and x >= 16.0 and x < level_x(5) - 6.0:
-            return 200 + int((x - 16.0) / 38.0)
-        let top = tools_top(height)
-        let count = transform_tools().length
-        if x >= 16.0 and x <= 48.0 and y >= top and y < top + float(count) * 36.0 - 6.0:
-            return 300 + int((y - top) / 36.0)
-        if y >= height - 40.0 and y <= height - 10.0 and x >= 16.0 and x <= 48.0:
-            return 400
-        if self.snaps_open:
-            let options = snap_names().length
-            let rows = snap_menu_top(height, options)
-            if x >= 16.0 and x <= 16.0 + snap_menu_width and y >= rows and y < rows + float(options) * snap_row:
-                return 410 + int((y - rows) / snap_row)
-        let slot = top + float(count) * 36.0 + 6.0
-        if x >= 16.0 and x <= 48.0 and y >= slot and y <= slot + 30.0 and self.last_tool() != "":
-            return 300 + count
-        return -1
-
-    ## Smart's hovered component on another level than the selection's:
-    ## a point's marker, an edge, or a face's outline.
-    func draw_hover(self, painter: Painter, mesh: Mesh, width: float, height: float) -> unit!:
-        let w = self.workspace
-        let id = self.hovered
-        let ink = theme.text()
-        if self.hover_level == point_level and id < mesh.point_count():
-            let p = gm.project(w, mesh.point(id), width, height)
-            if p[2] > 0.0:
-                painter.rectangle(Rect(p[0] - 4.0, p[1] - 4.0, 8.0, 8.0), ink)
-        elif self.hover_level == edge_level and id < mesh.edge_count():
-            let a = gm.project(w, mesh.point(mesh.edge_point(id, 0)), width, height)
-            let b = gm.project(w, mesh.point(mesh.edge_point(id, 1)), width, height)
-            if a[2] > 0.0 and b[2] > 0.0:
-                painter.line(Point(a[0], a[1]), Point(b[0], b[1]), 2.5, ink)
-        elif self.hover_level == face_level and id < mesh.face_count():
-            let size = mesh.face_size(id)
-            for at in 0..<size:
-                let a = gm.project(w, mesh.point(mesh.face_point(id, at)), width, height)
-                let b = gm.project(w, mesh.point(mesh.face_point(id, (at + 1) % size)), width, height)
-                if a[2] > 0.0 and b[2] > 0.0:
-                    painter.line(Point(a[0], a[1]), Point(b[0], b[1]), 1.5, ink)
-
-    ## The component under (x, y): the face from the renderer's GPU id pass
-    ## (a CPU ray before the first device frame), then for points and edges
-    ## the nearest one on that face.
+    ## The component under (x, y) at the selection's level.
     pub func pick(self, x: float, y: float, width: float, height: float) -> int!:
-        let w = self.workspace
-        let mesh = w.geometry else return -1
-        # A point cloud (CAD control vertices) is not drawn as a mesh: the
-        # nearest point on screen.
-        if mesh.face_count() == 0:
-            self.overlay.show(mesh, 0, w.selection, self.hovered)
-            return self.overlay.pick(w.view.camera, x, y, width, height, -1)
-        var face = -2
-        if let renderer = self.renderer:
-            face = renderer.pick_face(mesh, w.view.camera, x, y, width, height) catch failure:
-                recover -2
-        if w.domain() == 2:
-            if face >= -1:
-                return face
-            return mesh.ray_face(w.view.camera.position(), gm.ray(w, x, y, width, height).normalized())
-        self.overlay.show(mesh, w.overlay_mode(), w.selection, self.hovered)
-        return self.overlay.pick(w.view.camera, x, y, width, height, face)
+        return self.picker.pick(x, y, width, height, self.hovered)
 
     ## Returns true when node tools consume the input; otherwise navigation owns it.
     ## Records whether the highlight changed, so an idle pointer move over the
     ## same face requests no frame and a hover change requests exactly one.
     pub func event(self, event: Event, width: float, height: float) -> bool!:
-        let before = [self.hovered, self.hover_tool, self.gizmos.hovered]
+        let before = [self.hovered, self.chrome.hover_tool, self.gizmos.hovered]
         self.placing.moved = false
         let handled = self.handle(event, width, height)
-        self.hover_changed = before != [self.hovered, self.hover_tool, self.gizmos.hovered] or self.placing.moved
+        self.hover_changed = before != [self.hovered, self.chrome.hover_tool, self.gizmos.hovered] or self.placing.moved
         return handled
-
-    ## The Knife tool: press, drag a line across the model (Shift snaps it to
-    ## 15°), release to cut; Escape or a lost pointer cancels.
-    func knife_event(self, event: Event, width: float, height: float) -> bool!:
-        let w = self.workspace
-        if not self.knifing:
-            if w.edit_tool != "Knife" or not w.selecting() or event.kind != EventKind.pointer_down or event.button != 0 or not event.inside or event.alt:
-                return false
-            # The level switcher and the tool strip keep their clicks.
-            if self.button_at(event.x, event.y, width, height) >= 0:
-                return false
-            self.knifing = true
-            self.knife_line = [event.x, event.y, event.x, event.y]
-            return true
-        if event.cancelled or event.kind in [EventKind.pointer_left, EventKind.focus_lost] or (event.kind == EventKind.key_down and event.key == Key.escape):
-            self.knifing = false
-            return true
-        if event.kind == EventKind.pointer_moved or event.kind == EventKind.pointer_up:
-            var x = event.x
-            var y = event.y
-            if event.shift:
-                let snapped = Knife.snapped(self.knife_line[0], self.knife_line[1], x, y)
-                x = snapped.x
-                y = snapped.y
-            self.knife_line = [self.knife_line[0], self.knife_line[1], x, y]
-            if event.kind == EventKind.pointer_up:
-                self.knifing = false
-                let line = self.knife_line
-                modeling_commands.knife(w, line[0], line[1], line[2], line[3], width, height)
-            return true
-        return true
 
     func handle(self, event: Event, width: float, height: float) -> bool!:
         let w = self.workspace
         # The buttons keep their clicks from every tool.
-        let button = self.button_at(event.x, event.y, width, height) if event.inside and not event.alt else -1
+        let button = self.chrome.button_at(event.x, event.y, width, height) if event.inside and not event.alt else -1
         if event.kind == EventKind.pointer_down and event.button == 0 and button >= 0 and not self.gizmos.dragging:
-            self.press(button)
+            self.chrome.press(button)
             return true
         let handled = self.gizmos.event(event, width, height)
         self.dragging = self.gizmos.dragging
         if handled:
             return true
-        if self.knife_event(event, width, height):
+        if self.knife.event(event, width, height, button >= 0):
             return true
-        if self.object_event(event, width, height):
+        if self.objects.event(event, width, height):
             return true
         if event.kind == EventKind.pointer_moved:
             self.hovered = -1
             self.hover_level = -1
-            self.hover_tool = button
+            self.chrome.hover_tool = button
             self.hover_revision = w.revision
             if button < 0 and event.inside and not event.alt and not self.dragging and w.selecting() and not w.picking_objects():
                 if let placing = w.placing:
-                    self.placing.hover(placing, self.overlay, self.renderer, event.x, event.y, width, height)
+                    self.placing.hover(placing, self.overlay, self.picker.renderer, event.x, event.y, width, height)
                 elif w.component_mode == smart_level:
-                    let found = self.smart_pick(event.x, event.y, width, height)
+                    let found = self.picker.smart_pick(event.x, event.y, width, height)
                     self.hover_level = found[0]
                     self.hovered = found[1]
                 else:
                     self.hovered = self.pick(event.x, event.y, width, height)
         if event.kind == EventKind.pointer_left or event.kind == EventKind.focus_lost or event.cancelled or event.alt:
             self.hovered = -1
-            self.hover_tool = -1
+            self.chrome.hover_tool = -1
         if event.kind != EventKind.pointer_down or not event.inside or event.button != 0 or event.alt:
             return false
         if let placing = w.placing:
-            self.placing.click(placing, self.overlay, self.renderer, event.x, event.y, width, height)
+            self.placing.click(placing, self.overlay, self.picker.renderer, event.x, event.y, width, height)
             return true
         if w.picking_objects():
-            self.boxing = true
-            self.box = [event.x, event.y, event.x, event.y]
+            self.objects.start(event.x, event.y)
             return true
         if w.selecting():
             if w.component_mode == smart_level:
-                let found = self.smart_pick(event.x, event.y, width, height)
+                let found = self.picker.smart_pick(event.x, event.y, width, height)
                 selection_commands.choose_smart(w, found[0], found[1], event.shift)
             else:
                 selection_commands.choose_component(w, self.pick(event.x, event.y, width, height), event.shift)
             return true
         return false
-
-    ## A click on button `button` (see hover_tool).
-    func press(self, button: int) -> unit!:
-        if button >= 410:
-            self.workspace.snaps.toggle(button - 410)
-            self.workspace.revision += 1
-        elif button == 400:
-            self.snaps_open = not self.snaps_open
-        elif button >= 300:
-            let index = button - 300
-            let w = self.workspace
-            if index == transform_tools().length:
-                if let reuse = self.on_reuse:
-                    reuse(self.last_tool())
-            elif w.sketching():
-                if index == 0:
-                    if let reuse = self.on_reuse:
-                        reuse("Select")
-            else:
-                self.actions.tools[index].trigger()
-        elif button >= 200:
-            if self.workspace.selecting() or self.workspace.sketching():
-                self.actions.modes[button - 200].trigger()
-        else:
-            [self.actions.frame, self.actions.grid, self.actions.hulls][button - 100].trigger()
-
-    ## Smart's pick under (x, y): [level, component]. Among the kind's
-    ## Smart levels, a point within 8 pixels, else an edge within 6, else
-    ## the face; [the last level, -1] over nothing.
-    func smart_pick(self, x: float, y: float, width: float, height: float) -> list[int]!:
-        let w = self.workspace
-        let mesh = w.geometry else return [w.smart_pick, -1]
-        let levels = w.smart_levels()
-        var face = -1
-        if let renderer = self.renderer:
-            face = renderer.pick_face(mesh, w.view.camera, x, y, width, height) catch failure:
-                recover -2
-        if face == -2:
-            face = mesh.ray_face(w.view.camera.position(), gm.ray(w, x, y, width, height).normalized())
-        if point_level in levels:
-            self.probe.show(mesh, 0, none, -1)
-            let point = self.probe.pick(w.view.camera, x, y, width, height, face)
-            if point >= 0:
-                let p = gm.project(w, mesh.point(point), width, height)
-                if math.hypot(p[0] - x, p[1] - y) <= 8.0:
-                    return [point_level, point]
-        if edge_level in levels:
-            self.probe.show(mesh, 1, none, -1)
-            let edge = self.probe.pick(w.view.camera, x, y, width, height, face)
-            if edge >= 0:
-                let a = gm.project(w, mesh.point(mesh.edge_point(edge, 0)), width, height)
-                let b = gm.project(w, mesh.point(mesh.edge_point(edge, 1)), width, height)
-                if gm.segment_distance(x, y, a, b) <= 6.0:
-                    return [edge_level, edge]
-        if face_level in levels and face >= 0:
-            return [face_level, face]
-        return [w.smart_pick, -1]
-
-## The x of level button `index` (5: just past the last).
-func level_x(index: int) -> float:
-    return 16.0 + float(index) * 38.0
-
-## The top of the transform tool column, centered down the viewport's left.
-func tools_top(height: float) -> float:
-    return math.max(84.0, height * 0.5 - 90.0)
-
-## A tooltip at (x, y).
-func tip(painter: Painter, text: str, x: float, y: float) -> unit!:
-    painter.rounded_rectangle(Rect(x, y, float(text.length) * 7.5 + 16.0, 30.0), theme.surface(), 4.0)
-    painter.text(text, x + 8.0, y + 6.0, theme.text())
-
-func outline(painter: Painter, r: Rect, color: Color) -> unit!:
-    painter.rectangle(Rect(r.x, r.y, r.width, 1.0), color)
-    painter.rectangle(Rect(r.x, r.y + r.height - 1.0, r.width, 1.0), color)
-    painter.rectangle(Rect(r.x, r.y, 1.0, r.height), color)
-    painter.rectangle(Rect(r.x + r.width - 1.0, r.y, 1.0, r.height), color)
-
-## How far from the viewport's right edge its view buttons start.
-pub func view_buttons_width() -> float:
-    return 126.0
-
-## A tool's icon: a sketch tool's own, else the editor's map's.
-func tool_asset(name: str) -> str:
-    let sketched = sketch_tools.icon_of(name)
-    return sketched if sketched != "" else asset_name(name)
-
-## Where the snapping button ends along the bottom.
-pub func snap_row_end() -> float:
-    return 54.0
-
-## The snapping options' rows: their height, the list's width, its top.
-let snap_row = 28.0
-let snap_menu_width = 170.0
-
-func snap_menu_top(height: float, count: int) -> float:
-    return height - 48.0 - float(count) * snap_row

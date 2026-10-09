@@ -1,0 +1,102 @@
+## Picking a displayed mesh's components under the pointer: the face from
+## the renderer's GPU id pass (a CPU ray before its first frame), points
+## and edges the nearest on that face, and Smart's pick across levels.
+## Topology and intersections stay in luce-3d (EditOverlay).
+from luce_ui.ui import Painter, Point
+from luce_gpu.gpu import Rect
+from luce_3d.graphics import EditOverlay, Renderer
+from workspace import Workspace
+from luce_std import math
+import view_projection as gm
+import theme
+from edit_types import point_level, edge_level, face_level
+from luce_geocore.geocore import Mesh
+
+pub class ComponentPicker:
+    let workspace: Workspace
+    ## The drawn overlay (picks reuse its geometry), and a second one that
+    ## probes points and edges for Smart without disturbing it.
+    let overlay: EditOverlay
+    let probe: EditOverlay
+    ## The viewport's renderer: faces are picked from its GPU id pass.
+    pub var renderer: Renderer? = none
+
+    pub func init(self, workspace: Workspace, overlay: EditOverlay):
+        self.workspace = workspace
+        self.overlay = overlay
+        self.probe = EditOverlay()
+
+    ## The component under (x, y): the face from the renderer's GPU id pass
+    ## (a CPU ray before the first device frame), then for points and edges
+    ## the nearest one on that face.
+    pub func pick(self, x: float, y: float, width: float, height: float, hovered: int) -> int!:
+        let w = self.workspace
+        let mesh = w.geometry else return -1
+        # A point cloud (CAD control vertices) is not drawn as a mesh: the
+        # nearest point on screen.
+        if mesh.face_count() == 0:
+            self.overlay.show(mesh, 0, w.selection, hovered)
+            return self.overlay.pick(w.view.camera, x, y, width, height, -1)
+        var face = -2
+        if let renderer = self.renderer:
+            face = renderer.pick_face(mesh, w.view.camera, x, y, width, height) catch failure:
+                recover -2
+        if w.domain() == 2:
+            if face >= -1:
+                return face
+            return mesh.ray_face(w.view.camera.position(), gm.ray(w, x, y, width, height).normalized())
+        self.overlay.show(mesh, w.overlay_mode(), w.selection, hovered)
+        return self.overlay.pick(w.view.camera, x, y, width, height, face)
+
+    ## Smart's pick under (x, y): [level, component]. Among the kind's
+    ## Smart levels, a point within 8 pixels, else an edge within 6, else
+    ## the face; [the last level, -1] over nothing.
+    pub func smart_pick(self, x: float, y: float, width: float, height: float) -> list[int]!:
+        let w = self.workspace
+        let mesh = w.geometry else return [w.smart_pick, -1]
+        let levels = w.smart_levels()
+        var face = -1
+        if let renderer = self.renderer:
+            face = renderer.pick_face(mesh, w.view.camera, x, y, width, height) catch failure:
+                recover -2
+        if face == -2:
+            face = mesh.ray_face(w.view.camera.position(), gm.ray(w, x, y, width, height).normalized())
+        if point_level in levels:
+            self.probe.show(mesh, 0, none, -1)
+            let point = self.probe.pick(w.view.camera, x, y, width, height, face)
+            if point >= 0:
+                let p = gm.project(w, mesh.point(point), width, height)
+                if math.hypot(p[0] - x, p[1] - y) <= 8.0:
+                    return [point_level, point]
+        if edge_level in levels:
+            self.probe.show(mesh, 1, none, -1)
+            let edge = self.probe.pick(w.view.camera, x, y, width, height, face)
+            if edge >= 0:
+                let a = gm.project(w, mesh.point(mesh.edge_point(edge, 0)), width, height)
+                let b = gm.project(w, mesh.point(mesh.edge_point(edge, 1)), width, height)
+                if gm.segment_distance(x, y, a, b) <= 6.0:
+                    return [edge_level, edge]
+        if face_level in levels and face >= 0:
+            return [face_level, face]
+        return [w.smart_pick, -1]
+
+## Smart's hovered component `id` on level `level` (another than the
+## selection's): a point's marker, an edge, or a face's outline.
+pub func draw_hover(painter: Painter, w: Workspace, mesh: Mesh, level: int, id: int, width: float, height: float) -> unit!:
+    let ink = theme.text()
+    if level == point_level and id < mesh.point_count():
+        let p = gm.project(w, mesh.point(id), width, height)
+        if p[2] > 0.0:
+            painter.rectangle(Rect(p[0] - 4.0, p[1] - 4.0, 8.0, 8.0), ink)
+    elif level == edge_level and id < mesh.edge_count():
+        let a = gm.project(w, mesh.point(mesh.edge_point(id, 0)), width, height)
+        let b = gm.project(w, mesh.point(mesh.edge_point(id, 1)), width, height)
+        if a[2] > 0.0 and b[2] > 0.0:
+            painter.line(Point(a[0], a[1]), Point(b[0], b[1]), 2.5, ink)
+    elif level == face_level and id < mesh.face_count():
+        let size = mesh.face_size(id)
+        for at in 0..<size:
+            let a = gm.project(w, mesh.point(mesh.face_point(id, at)), width, height)
+            let b = gm.project(w, mesh.point(mesh.face_point(id, (at + 1) % size)), width, height)
+            if a[2] > 0.0 and b[2] > 0.0:
+                painter.line(Point(a[0], a[1]), Point(b[0], b[1]), 1.5, ink)
