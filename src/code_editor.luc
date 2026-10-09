@@ -1,8 +1,11 @@
 ## The Code node's editor: luce-ui's TextEditor with line numbers and Luce
 ## highlighting from luced's TextMate grammar (code_grammar.luc). What is
 ## typed goes to the node as one undo step when typing pauses, when the
-## editor loses focus, or on Cmd/Ctrl+Enter: not every keystroke.
-from luce_ui.ui import TextEditor, Highlight, Font, Diagnostic, Severity
+## editor loses focus, or on Cmd/Ctrl+Enter: not every keystroke. Completions
+## and hover text come from luce-geocore's Code.complete and Code.hover, which
+## read the API's docs from its stubs.
+from luce_ui.ui import TextEditor, Highlight, Font, Diagnostic, Severity, CompletionList, CompletionKind
+from luce_geocore.geocore import Code
 from luce_gpu.gpu import Color
 from luce_textmate.textmate import Grammar, Tokenizer
 from interop import Connection
@@ -22,12 +25,19 @@ pub class CodeEditor:
     var colored: int = -1
     ## Takes the text when it is committed.
     pub var on_commit: func(str) -> unit!? = none
+    ## The node's Run Over code, which text this editor holds (0 the body, 1 the
+    ## header) and the editor of the other, for completions and hover.
+    pub var run_over: int = 1
+    pub var part: int = 0
+    pub var partner: CodeEditor? = none
     let connections: list[Connection]
 
     pub func init(self, font: Font) -> unit!:
         self.editor = TextEditor("", font = font, line_numbers = true)
         self.tokens = Tokenizer(Grammar(luce_grammar()))
         self.connections = [self.editor.on_change(self.edited)]
+        self.editor.set_completion_provider(self.complete)
+        self.editor.set_hover_provider(self.hover)
 
     ## Show `text` (another node, an undo) unless it is what is being typed.
     pub func show(self, text: str) -> unit!:
@@ -84,11 +94,62 @@ pub class CodeEditor:
             return
         self.editor.set_diagnostics([Diagnostic(line, start, end, Severity.error, message)])
 
+    ## What may come at the caret: the members after a dot, else the locals, the
+    ## header's helpers, the lib and the keywords.
+    func complete(self, items: CompletionList) -> unit!:
+        let line = self.line_of(items.caret())
+        let column = items.caret() - self.editor.line_start(items.caret()) + 1
+        let found = Code.complete(self.run_over, self.header_text(), self.body_text(), self.part, line, column)
+        for at in 0..<found.count():
+            let detail = found.detail(at)
+            items.add(found.label(at), completion_kind(found.kind(at), detail), detail, found.doc(at))
+
+    ## The signature and doc of the word at `offset`, or "".
+    func hover(self, offset: int) -> str!:
+        let column = offset - self.editor.line_start(offset) + 1
+        return Code.hover(self.run_over, self.header_text(), self.body_text(), self.part, self.line_of(offset), column)
+
+    ## The 1-based line of `offset`.
+    func line_of(self, offset: int) -> int!:
+        return self.editor.text_range(0, self.editor.line_start(offset)).count("\n") + 1
+
+    func header_text(self) -> str!:
+        if self.part == 1:
+            return self.editor.text()
+        if let other = self.partner:
+            return other.editor.text()
+        return ""
+
+    func body_text(self) -> str!:
+        if self.part == 0:
+            return self.editor.text()
+        if let other = self.partner:
+            return other.editor.text()
+        return ""
+
     pub func close(self):
+        self.editor.clear_completion_provider()
+        self.editor.clear_hover_provider()
+        self.partner = none
         for connection in self.connections:
             connection.disconnect()
         self.connections.clear()
         self.on_commit = none
+
+## The popup's kind for one of Code.complete's ("module" items are types whose
+## detail says so).
+func completion_kind(kind: str, detail: str) -> CompletionKind:
+    if kind == "function":
+        return CompletionKind.function
+    if kind == "method":
+        return CompletionKind.method
+    if kind == "field":
+        return CompletionKind.field
+    if kind == "type":
+        return CompletionKind.module if detail == "module" else CompletionKind.datatype
+    if kind == "keyword":
+        return CompletionKind.keyword
+    return CompletionKind.variable
 
 ## The editor's color for a token scope, in the editor's palette, or none
 ## (plain text).
