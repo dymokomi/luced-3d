@@ -1,6 +1,7 @@
 ## PLY in the graph: the File node reads a mesh and a splat cloud, and the
 ## Export node writes them back.
 from luce_ply.ply import Ply
+from luce_geocore.geocore import SetAttributes
 from network import Network
 from stamps import stamp_graph
 import node_catalog
@@ -15,12 +16,13 @@ pub func ply_node_tests() -> unit!:
     assert(mesh.point_count() == 5 and mesh.face_count() == 2 and mesh.vertex_count() == 7)
     assert(mesh.find_attribute("Cd", 0) >= 0)
     assert(node_catalog.file_format("a.ply") == "")
-    # Splats: a point cloud with the raw 3DGS attributes.
+    # Splats: baked on reading (orient, scale, opacity, Cd, sh).
     let splats = graph.add("File", 200.0, 0.0)
     splats.texts[0] = "tests/fixtures/splats.ply"
     stamp_graph(graph)
     let cloud = graph.evaluate_data(splats.id).geometry
-    assert(not cloud.has_mesh() and cloud.cloud_count() == 2)
+    assert(not cloud.has_mesh() and cloud.cloud_count() == 2 and cloud.splat_count() == 2)
+    assert(SetAttributes.has(cloud, "orient", 0) and not SetAttributes.has(cloud, "f_dc_0", 0))
     assert(cloud.cloud_point(1).z == 3.0)
     # The Export node writes both back, the splats in the 3DGS layout.
     let mesh_out = graph.add("Export", 0.0, 60.0)
@@ -34,6 +36,12 @@ pub func ply_node_tests() -> unit!:
     assert(graph.evaluate_data(mesh_out.id).geometry.has_mesh())
     let header = Ply.header("exported_splats.ply")
     assert(header.contains("property float f_rest_8\nproperty float opacity\n") and header.contains("property float nx\n"))
+    # Read back, the exported splats bake to the same values.
+    let splats_again = graph.add("File", 400.0, 120.0)
+    splats_again.texts[0] = "exported_splats.ply"
+    stamp_graph(graph)
+    assert(graph.evaluate_data(splats_again.id).geometry.splat_count() == 2)
+    assert(Ply.load("exported_splats.ply").cloud_point(1).z == 3.0)
     let reread = graph.add("File", 0.0, 120.0)
     reread.texts[0] = "exported_quad.ply"
     stamp_graph(graph)

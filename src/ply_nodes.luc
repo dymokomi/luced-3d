@@ -1,7 +1,7 @@
 ## PLY in the node graph (luce-ply): the File node reading .ply (meshes,
 ## point clouds and 3D Gaussian splats) and the Export node writing it.
 from luce_ply.ply import Ply
-from luce_geocore.geocore import GeometrySet
+from luce_geocore.geocore import GeometrySet, GeometryVerbs, SetAttributes
 from geometry_data import GeometryData
 from usd_nodes import summary
 
@@ -10,12 +10,16 @@ pub func is_ply_path(path: str) -> bool:
     return path.trim().lower().ends_with(".ply")
 
 ## A File node's PLY file: a mesh when it has faces, else a point cloud.
-## Splat files come with luce-ply's raw 3DGS attributes (f_dc_*, opacity,
-## scale_*, rot_*, f_rest); baking them into the splat conventions waits for
-## luce-geocore's Bake GSplats (docs/research/GAUSSIAN-SPLATS.md §7).
+## A 3DGS splat file (luce-ply's raw f_dc_*, opacity, scale_*, rot_*,
+## f_rest) is baked into the splat conventions at once (orient, scale,
+## opacity, linear Cd, sh), as Bake GSplats with its defaults would.
 pub func load_ply(path: str) -> GeometryData!:
-    let data = GeometryData(geometry = Ply.load(path))
-    data.warning = summary(Ply.warnings())
+    var geometry = Ply.load(path)
+    let warning = summary(Ply.warnings())
+    if SetAttributes.has(geometry, "f_dc_0", 0) and SetAttributes.has(geometry, "rot_0", 0):
+        geometry = GeometryVerbs.run("Bake GSplats", geometry, none, "", 0, []).geometry()
+    let data = GeometryData(geometry = geometry)
+    data.warning = warning
     return data
 
 ## The Export node's cook for a .ply path: binary little-endian PLY of the
@@ -25,6 +29,9 @@ pub func export_ply(path: str, data: GeometryData) -> GeometryData!:
     var geometry = data.geometry
     if geometry.instance_count() > 0 and not geometry.has("points"):
         geometry = GeometrySet.of_mesh(geometry.realized())
+    # Baked splats go back to the file's own names and color encoding.
+    if geometry.splat_count() > 0:
+        geometry = geometry.unbaked_splats()
     Ply.save(geometry, path)
     let warning = summary(Ply.warnings())
     return data.passed(warning) if warning != "" else data
