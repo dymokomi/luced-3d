@@ -9,6 +9,8 @@ pub let kind_name = "Code"
 pub let body_slot = 1
 pub let header_slot = 2
 pub let spares_slot = 3
+## Text 4: the ramps, a line each (name, channels, the data).
+pub let ramps_slot = 4
 pub let run_over_slot = 0
 pub let count_slot = 1
 pub let first_spare_slot = 16
@@ -54,6 +56,52 @@ pub func spares_of(text: str) -> list[Spare]:
         result.append(Spare(parts[0], slot, components, parts[3] == "1"))
     return result
 
+## One ramp of the code (k.ramp / k.ramp_color): its name, channels (1
+## a float ramp, 3 a color ramp) and data (luce-std ramp's flat form).
+pub class Ramp:
+    pub let name: str
+    pub let channels: int
+    pub let data: list[float]
+
+    pub func init(self, name: str, channels: int, data: list[float]):
+        self.name = name
+        self.channels = channels
+        self.data = data
+
+## The ramps a node's text 4 lists (a line each: name, channels, data
+## comma apart, tab apart).
+pub func ramps_of(text: str) -> list[Ramp]:
+    let result: list[Ramp] = []
+    for line in text.split("\n"):
+        let parts = line.split("\t")
+        if parts.length != 3:
+            continue
+        let channels = int(parts[1]) catch failure:
+            recover 0
+        let data: list[float] = []
+        for piece in parts[2].split(","):
+            let value = float(piece) catch failure:
+                recover 0.0
+            data.append(value)
+        if channels == 1 or channels == 3:
+            result.append(Ramp(parts[0], channels, data))
+    return result
+
+pub func ramps_text(ramps: list[Ramp]) -> str:
+    let lines: list[str] = []
+    for r in ramps:
+        let values: list[str] = []
+        for v in r.data:
+            values.append(f"{v}")
+        lines.append(f"{r.name}\t{r.channels}\t{values.join(",")}")
+    return lines.join("\n")
+
+## A new ramp's data: 0 to 1 for a float ramp, black to white for color.
+pub func default_ramp(channels: int) -> list[float]:
+    if channels == 3:
+        return [1.0, 3.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    return [1.0, 1.0, 2.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
+
 pub func spares_text(spares: list[Spare]) -> str:
     let lines: list[str] = []
     for s in spares:
@@ -74,6 +122,13 @@ pub func cook(slots: list[float], texts: list[str], data: GeometryData, clock: l
         for c in 0..<s.components:
             names.append(f"{s.name}[{c}]")
             given.append(slots[s.slot + c])
+    # A ramp goes as "<name>#ramp" holding its length, then its data.
+    for r in ramps_of(texts[ramps_slot]):
+        names.append(r.name + "#ramp")
+        given.append(float(r.data.length))
+        for v in r.data:
+            names.append("")
+            given.append(v)
     let frame = clock[0] if clock.length == 3 else 1.0
     let time = clock[1] if clock.length == 3 else 0.0
     let fps = clock[2] if clock.length == 3 else 24.0

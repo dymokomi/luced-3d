@@ -77,7 +77,7 @@ pub class Inspector:
         self.description = Text("", font = font, muted = true)
         self.parameters = ParameterPanel([], font = font)
         self.connections.append(self.parameters.on_begin(func (index: int) -> unit!:
-            if self.roles[index] in ["value", "dimension", "angle_dimension"]:
+            if self.roles[index] in ["value", "dimension", "angle_dimension", "ramp"]:
                 workspace.begin("Change " + self.rows[index].name)))
         self.connections.append(self.parameters.on_change(self.changed))
         self.connections.append(self.parameters.on_commit(func (index: int) -> unit!:
@@ -111,6 +111,9 @@ pub class Inspector:
                 node_commands.set_parameter(self.workspace, row.slot + component, self.parameters.component(index, component))
         elif role == "text":
             node_commands.set_text(self.workspace, row.slot, self.parameters.text(index))
+        elif role == "ramp":
+            let node = self.workspace.selected() else return
+            code_node.set_ramp(self.workspace, node.id, row.slot, self.parameters.ramp(index))
         elif role == "dimension" or role == "angle_dimension":
             let node = self.workspace.selected() else return
             let value = self.parameters.value(index)
@@ -173,7 +176,7 @@ pub class Inspector:
         for row in fields:
             specs.append(row.spec(shown))
             self.rows.append(row)
-            self.roles.append("text" if row.kind in ["text", "path"] else (("render" if row.name == "Render" else "reload") if row.kind == "button" else ("info" if row.kind == "info" else "value")))
+            self.roles.append("ramp" if row.kind in ["ramp", "color_ramp"] else "text" if row.kind in ["text", "path"] else (("render" if row.name == "Render" else "reload") if row.kind == "button" else ("info" if row.kind == "info" else "value")))
         if is_edit(kind):
             self.add(specs, "edits", ParameterSpec(name = "edits", label = "Edits", kind = ParameterKind.info))
             self.add(specs, "clear", ParameterSpec(name = "clear", label = "Clear edits", kind = ParameterKind.button,
@@ -218,6 +221,7 @@ pub class Inspector:
             self.add(specs, "keep_ids", ParameterSpec(name = "keep_ids", label = "Keep IDs", kind = ParameterKind.button,
                                                       doc = "Use the group's numbers on the input's current topology."))
         self.parameters.set_specs(specs)
+        self.show_ramps()
 
     ## An inspector row of the Edit node; `slot` is an operation's index.
     func add(self, specs: list[ParameterSpec], role: str, spec: ParameterSpec, slot: int = -1):
@@ -231,7 +235,7 @@ pub class Inspector:
         let changed = node.id != self.showing
         let file = node.kind == "File"
         let format = node_catalog.file_format(node.texts[0]) if file else ""
-        let key = f"{node.kind}|{format}|{self.compose(node.texts, node.source_revision) if format == "usd" else ""}|{self.sketch_key(node.kind, node.texts[0])}|{node.texts[code_cook.spares_slot] if node.kind == code_cook.kind_name else ""}|{self.workspace.network.units}"
+        let key = f"{node.kind}|{format}|{self.compose(node.texts, node.source_revision) if format == "usd" else ""}|{self.sketch_key(node.kind, node.texts[0])}|{node.texts[code_cook.spares_slot] + code_node.ramp_key(node) if node.kind == code_cook.kind_name else ""}|{self.workspace.network.units}"
         if key != self.built:
             self.build(node.kind, node.texts[0])
             self.built = key
@@ -239,6 +243,9 @@ pub class Inspector:
         self.state_rows.layout().set_visible(not file)
         let coding = node.kind == code_cook.kind_name
         self.code_box.layout().set_visible(coding)
+        # Ramp rows follow the node (an undo) unless one is being dragged.
+        if coding and not self.workspace.in_transaction():
+            self.show_ramps()
         if coding:
             self.code_body.show(node.texts[code_cook.body_slot])
             self.code_header.show(node.texts[code_cook.header_slot])
@@ -329,6 +336,18 @@ pub class Inspector:
         for d in self.sketch_dimensions(text):
             parts.append(f"{d.constraint}{"a" if d.angle else ""}{"d" if d.driven else ""}")
         return parts.join(",")
+
+    ## The Code node's ramp rows show its ramps' data.
+    func show_ramps(self) -> unit!:
+        let node = self.workspace.selected() else return
+        if node.kind != code_cook.kind_name:
+            return
+        let ramps = code_cook.ramps_of(node.texts[code_cook.ramps_slot])
+        for index in 0..<self.rows.length:
+            if self.roles[index] == "ramp" and self.rows[index].slot < ramps.length:
+                let data = ramps[self.rows[index].slot].data
+                if self.parameters.ramp(index) != data:
+                    self.parameters.set_ramp(index, data)
 
     ## A Code editor's text, to the selected Code node.
     func code_committed(self, slot: int, text: str) -> unit!:

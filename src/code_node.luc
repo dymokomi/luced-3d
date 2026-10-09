@@ -12,7 +12,7 @@
 ## while the code changes, so a tuned value survives edits.
 from luce_geocore.geocore import Code
 from network import Node
-from code_cook import Spare, spares_of, spares_text, value_count, first_spare_slot, run_over_slot, body_slot, header_slot, spares_slot
+from code_cook import Spare, spares_of, spares_text, value_count, first_spare_slot, run_over_slot, body_slot, header_slot, spares_slot, Ramp, ramps_of, ramps_text, ramps_slot, default_ramp
 from workspace import Workspace
 from parameter_rows import Parameter, number, whole, vector
 
@@ -40,7 +40,22 @@ pub func refresh(node: Node) -> unit!:
     let placed: list[Spare] = []
     let fresh: list[int] = []
     # Names the code still uses keep their slots (and values).
+    # Ramps keep their data by name and kind; new ones start at defaults.
+    let old_ramps = ramps_of(node.texts[ramps_slot])
+    let ramps: list[Ramp] = []
     for i in 0..<check.parameter_count():
+        let channels = check.parameter_ramp(i)
+        if channels == 0:
+            continue
+        var data = default_ramp(channels)
+        for r in old_ramps:
+            if r.name == check.parameter_name(i) and r.channels == channels:
+                data = r.data
+        ramps.append(Ramp(check.parameter_name(i), channels, data))
+    node.texts[ramps_slot] = ramps_text(ramps)
+    for i in 0..<check.parameter_count():
+        if check.parameter_ramp(i) != 0:
+            continue
         let name = check.parameter_name(i)
         let components = check.parameter_components(i)
         var slot = -1
@@ -75,9 +90,16 @@ func free_slot(spares: list[Spare], components: int) -> int:
         slot += 1
     return -1
 
-## The rows the inspector shows for the spares, in the code's order.
+## The rows the inspector shows for the spares, then the ramps (a ramp
+## row's slot is its index among the ramps).
 pub func spare_rows(node: Node) -> list[Parameter]:
     let rows: list[Parameter] = []
+    let ramps = ramps_of(node.texts[ramps_slot])
+    for at in 0..<ramps.length:
+        let row = Parameter(ramps[at].name, at, 0.0, 0.0, 1.0)
+        row.kind = "color_ramp" if ramps[at].channels == 3 else "ramp"
+        row.doc = f"A ramp of the code: k.{"ramp_color" if ramps[at].channels == 3 else "ramp"}(\"{ramps[at].name}\", t)."
+        rows.append(row)
     for s in spares_of(node.texts[spares_slot]):
         let doc = f"A parameter of the code: k.{"i32" if s.integer else "f32"}(\"{s.name}\", …)."
         if s.components > 1:
@@ -90,6 +112,25 @@ pub func spare_rows(node: Node) -> list[Parameter]:
         else:
             rows.append(number(s.name, s.slot, node.values[s.slot], -1000000.0, 1000000.0, 0.01, doc, soft = 10.0))
     return rows
+
+## What the inspector's ramp rows depend on: the ramps' names and kinds.
+pub func ramp_key(node: Node) -> str:
+    let parts: list[str] = []
+    for r in ramps_of(node.texts[ramps_slot]):
+        parts.append(f"{r.name}:{r.channels}")
+    return parts.join(",")
+
+## Ramp `index` of Code node `id` now holds `data` (a ramp row's edit, in
+## the undo step the panel's begin/commit bracket).
+pub func set_ramp(w: Workspace, id: int, index: int, data: list[float]) -> unit!:
+    let node = w.network.find(id) else return
+    let ramps = ramps_of(node.texts[ramps_slot])
+    if index < 0 or index >= ramps.length:
+        return
+    ramps[index] = Ramp(ramps[index].name, ramps[index].channels, data)
+    node.texts[ramps_slot] = ramps_text(ramps)
+    w.network.invalidate(node.id)
+    w.rebuild()
 
 ## Where a cook failure points: [part (0 body, 1 header), line, column], or
 ## [] when it names no line ("line 7, column 3: …", "header line 2, …").
