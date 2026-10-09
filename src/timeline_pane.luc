@@ -1,0 +1,75 @@
+## The timeline along the window's bottom: first, back, play, on and last
+## buttons, the playbar (timeline_bar.luc), the current frame, the range
+## and the frames per second, and looping.
+from luce_ui.ui import HStack, Button, Font, NumberField, Text
+from interop import Connection
+from workspace import Workspace
+from actions import Actions
+from timeline_bar import TimelineBar
+import timeline_commands
+
+pub class TimelinePane:
+    pub let body: HStack
+    pub let bar: TimelineBar
+    let w: Workspace
+    let actions: Actions
+    let frame: NumberField
+    let start: NumberField
+    let end: NumberField
+    let fps: NumberField
+    let connections: list[Connection]
+
+    pub func init(self, w: Workspace, actions: Actions, font: Font) -> unit!:
+        self.w = w
+        self.actions = actions
+        self.connections = []
+        self.bar = TimelineBar(w)
+        self.frame = NumberField(1.0, -100000.0, 100000.0, 1.0, 0, font = font, cells = 5.0)
+        self.start = NumberField(1.0, -100000.0, 100000.0, 1.0, 0, font = font, cells = 5.0)
+        self.end = NumberField(240.0, -100000.0, 100000.0, 1.0, 0, font = font, cells = 5.0)
+        self.fps = NumberField(24.0, 1.0, 1000.0, 1.0, 2, suffix = " fps", font = font, cells = 6.0)
+        self.connections = [actions.play.on_trigger(self.toggle_play),
+            actions.previous_frame.on_trigger(func () -> unit!: timeline_commands.step(w, -1.0)),
+            actions.next_frame.on_trigger(func () -> unit!: timeline_commands.step(w, 1.0)),
+            actions.first_frame.on_trigger(func () -> unit!: timeline_commands.set_frame(w, w.network.start)),
+            actions.last_frame.on_trigger(func () -> unit!: timeline_commands.set_frame(w, w.network.end)),
+            actions.looping.on_trigger(self.toggle_loop),
+            self.frame.on_change(func (value: float) -> unit!: timeline_commands.set_frame(w, value)),
+            self.start.on_change(func (value: float) -> unit!: timeline_commands.set_range(w, value, w.network.end)),
+            self.end.on_change(func (value: float) -> unit!: timeline_commands.set_range(w, w.network.start, value)),
+            self.fps.on_change(func (value: float) -> unit!: timeline_commands.set_fps(w, value))]
+        actions.looping.set_checked(true)
+        # Short labels on buttons that trigger the commands (their names
+        # and keys are the menus' and tooltips').
+        let buttons: list[Button] = []
+        for (label, command) in [("|<", actions.first_frame), ("<", actions.previous_frame), ("Play", actions.play), (">", actions.next_frame), (">|", actions.last_frame)]:
+            let button = Button(label, font = font)
+            let chosen = command
+            self.connections.append(button.on_click(func () -> unit!: chosen.trigger()))
+            buttons.append(button)
+        let loop = Button("Loop", font = font)
+        self.connections.append(loop.on_click(func () -> unit!: actions.looping.trigger()))
+        self.body = HStack([buttons[0], buttons[1], buttons[2], buttons[3], buttons[4], self.frame, self.bar, Text("Start", font = font, muted = true), self.start, Text("End", font = font, muted = true), self.end, self.fps, loop], spacing = 4.0, padding = 4.0)
+
+    func toggle_play(self) -> unit!:
+        self.bar.toggle()
+        self.actions.play.set_checked(self.bar.playing)
+
+    func toggle_loop(self) -> unit!:
+        self.bar.looping = not self.bar.looping
+        self.actions.looping.set_checked(self.bar.looping)
+
+    ## Each frame of the app's clock: playback, and the fields kept to the
+    ## timeline (an undo, a project opened).
+    pub func poll(self) -> unit!:
+        self.bar.poll()
+        let g = self.w.network
+        for (field, value) in [(self.frame, g.frame), (self.start, g.start), (self.end, g.end), (self.fps, g.fps)]:
+            if field.value() != value and not field.layout().is_focused():
+                field.set_value(value)
+        self.actions.play.set_checked(self.bar.playing)
+
+    pub func close(self):
+        for connection in self.connections:
+            connection.disconnect()
+        self.connections.clear()

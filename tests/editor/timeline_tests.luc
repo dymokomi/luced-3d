@@ -1,0 +1,64 @@
+## The timeline: a frame change re-stamps only nodes that follow the time
+## (and what follows them); going to a frame keeps within the range and is
+## no undo step, while the range and the rate are; the project keeps the
+## timeline, and one without it opens at frame 1 of 1–240 at 24 fps.
+from workspace import Workspace
+from network import Network
+from stamps import stamp_graph
+import node_commands
+import project_file
+import timeline_commands
+from luce_std import files, paths, math
+
+pub func timeline_tests() -> unit!:
+    let w = Workspace()
+    let cube = w.network.selected
+    node_commands.add_node(w, "Transform", 0.0, 100.0)
+    let moved = w.network.selected
+    node_commands.add_node(w, "Null", 0.0, 200.0)
+    let after = w.network.selected
+    stamp_graph(w.network)
+    let still = [w.network.require(cube).stamp, w.network.require(moved).stamp, w.network.require(after).stamp]
+    # Nothing follows the time: a new frame changes no stamp.
+    timeline_commands.set_frame(w, 12.0)
+    assert(w.network.frame == 12.0)
+    stamp_graph(w.network)
+    assert([w.network.require(cube).stamp, w.network.require(moved).stamp, w.network.require(after).stamp] == still)
+    # The Transform follows it: it and the Null after it change, the Cube not.
+    w.network.require(moved).time_dependent = true
+    stamp_graph(w.network)
+    let at_twelve = [w.network.require(moved).stamp, w.network.require(after).stamp]
+    timeline_commands.set_frame(w, 13.0)
+    stamp_graph(w.network)
+    assert(w.network.require(cube).stamp == still[0])
+    assert(w.network.require(moved).stamp != at_twelve[0] and w.network.require(after).stamp != at_twelve[1])
+    # Frames stay in the range and whole; stepping wraps when asked.
+    timeline_commands.set_frame(w, 1000.0)
+    assert(w.network.frame == 240.0)
+    timeline_commands.step(w, 1.0, wrap = true)
+    assert(w.network.frame == 1.0)
+    timeline_commands.set_frame(w, 7.4)
+    assert(w.network.frame == 7.0)
+    # Going to a frame is not an undo step; the range and the rate are.
+    let history = w.history.cursor
+    timeline_commands.set_frame(w, 9.0)
+    assert(w.history.cursor == history)
+    timeline_commands.set_range(w, 10.0, 48.0)
+    assert(w.network.start == 10.0 and w.network.end == 48.0 and w.network.frame == 10.0 and w.history.cursor == history + 1)
+    timeline_commands.set_fps(w, 30.0)
+    assert(w.network.fps == 30.0)
+    assert(math.abs(w.network.time() - 0.3) < 1e-12)
+    timeline_commands.set_frame(w, 40.0)
+    assert(math.abs(w.network.time() - 1.3) < 1e-12)
+    w.undo()
+    assert(w.network.fps == 24.0)
+    # Saved and read back.
+    let folder = files.create_temporary_directory(".")
+    let path = paths.join(folder, "timeline.prisma")
+    project_file.save(path, w, [1.0, 0.0, 0.0])
+    let back = project_file.load(path).graph
+    assert(back.frame == 40.0 and back.start == 10.0 and back.end == 48.0 and back.fps == 24.0)
+    files.remove_tree(folder)
+    let fresh = Network(false)
+    assert(fresh.frame == 1.0 and fresh.start == 1.0 and fresh.end == 240.0 and fresh.fps == 24.0)
+    print("PASS timeline: frame stamps for time-dependent nodes, range, rate, undo, project round trip")

@@ -1,0 +1,58 @@
+## The timeline's commands: going to a frame (not an undo step: it is
+## looking, as moving the camera is), stepping, and changing the range or
+## frames per second (undo steps: they are the scene's). A frame change
+## recooks only what follows the timeline (stamps.luc).
+from workspace import Workspace
+from luce_std import math
+
+## Go to frame `frame` (whole frames, within the range).
+pub func set_frame(w: Workspace, frame: float) -> unit!:
+    let g = w.network
+    let wanted = math.max(g.start, math.min(g.end, math.round(frame)))
+    if wanted == g.frame:
+        return
+    g.frame = wanted
+    w.revision += 1
+    if follows_time(w):
+        w.rebuild()
+
+## One frame on (`by` 1) or back (-1), wrapping round the range when `wrap`.
+pub func step(w: Workspace, by: float, wrap: bool = false) -> unit!:
+    let g = w.network
+    var next = g.frame + by
+    if wrap and next > g.end:
+        next = g.start
+    if wrap and next < g.start:
+        next = g.end
+    set_frame(w, next)
+
+## The range from `start` to `end` (whole frames, at least one).
+pub func set_range(w: Workspace, start: float, end: float) -> unit!:
+    let first = math.round(start)
+    let last = math.max(first, math.round(end))
+    let g = w.network
+    if first == g.start and last == g.end:
+        return
+    w.perform("Frame range", func () -> unit!:
+        g.start = first
+        g.end = last
+        g.frame = math.max(first, math.min(last, g.frame))
+        if follows_time(w):
+            w.rebuild())
+
+## Frames per second (1 to 1000).
+pub func set_fps(w: Workspace, fps: float) -> unit!:
+    let g = w.network
+    if not (fps >= 1.0 and fps <= 1000.0) or fps == g.fps:
+        return
+    w.perform("Frames per second", func () -> unit!:
+        g.fps = fps
+        if follows_time(w):
+            w.rebuild())
+
+## Whether any node's result follows the timeline.
+pub func follows_time(w: Workspace) -> bool:
+    for node in w.network.nodes:
+        if node.time_dependent and node.frozen == "":
+            return true
+    return false

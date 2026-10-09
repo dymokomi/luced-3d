@@ -1,0 +1,118 @@
+## The timeline's playbar (Houdini's): the range as a ruler with a tick a
+## frame (labels every so many), the current frame marked in the accent; a
+## press or drag scrubs. Playing advances the frame on the UI clock at the
+## timeline's rate; when cooks fall behind, frames are skipped, not queued
+## (each submit supersedes the last).
+from luce_ui.ui import Widget, Layout, Constraints, Size, Event, Painter
+from luce_gpu.gpu import RenderTarget, Rect
+from luce_window.input import EventKind
+from workspace import Workspace
+import timeline_commands
+import theme
+from luce_std import math
+import time
+
+pub class TimelineBar: Widget:
+    let box: Layout
+    let w: Workspace
+    pub var playing: bool = false
+    pub var looping: bool = true
+    ## Playing: the time not yet turned into frames, and the clock (ns) at
+    ## the last poll.
+    var carried: float = 0.0
+    var polled: int = 0
+    var scrubbing: bool = false
+    var shown_frame: float = -1.0
+
+    pub func init(self, w: Workspace) -> unit!:
+        self.w = w
+        self.box = Layout()
+        self.box.set_flex()
+        self.box.set_interactive(true)
+
+    pub func layout(self) -> Layout:
+        return self.box
+
+    pub func measure(self, available: Constraints) -> Size!:
+        return Size(200.0, 28.0)
+
+    ## Play from here, or stop.
+    pub func toggle(self) -> unit!:
+        self.playing = not self.playing
+        self.carried = 0.0
+        self.box.invalidate()
+
+    ## Polled by the app (any number of times a frame): playing moves on by
+    ## as many frames as the clock has covered since; a stop at the end
+    ## unless looping.
+    pub func poll(self) -> unit!:
+        let g = self.w.network
+        let now = time.now()
+        let elapsed = float(now - self.polled) / 1000000000.0 if self.polled > 0 else 0.0
+        self.polled = now
+        if self.playing:
+            self.carried += math.min(elapsed, 1.0) * g.fps
+            if self.carried >= 1.0:
+                let frames = math.floor(self.carried)
+                self.carried -= frames
+                var next = g.frame + frames
+                if next > g.end:
+                    if self.looping:
+                        next = g.start + wrapped(next - g.start, g.end - g.start + 1.0)
+                    else:
+                        next = g.end
+                        self.playing = false
+                timeline_commands.set_frame(self.w, next)
+        if g.frame != self.shown_frame:
+            self.shown_frame = g.frame
+            self.box.invalidate()
+
+    pub func draw(self, target: RenderTarget) -> unit!:
+        let size = target.size()
+        let g = self.w.network
+        let p = Painter(target)
+        p.rectangle(Rect(0.0, 0.0, size.width, size.height), theme.surface_raised())
+        let span = math.max(1.0, g.end - g.start)
+        let left = 8.0
+        let right = size.width - 8.0
+        let per_frame = (right - left) / span
+        # A label every 1, 2, 5, 10, 20, 50, … frames, at least 40 points apart.
+        var every = 1.0
+        var steps = 0
+        while every * per_frame < 40.0:
+            every *= 2.5 if steps % 3 == 1 else 2.0
+            steps += 1
+        var frame = math.ceil(g.start)
+        while frame <= g.end:
+            let x = left + (frame - g.start) * per_frame
+            let labeled = wrapped(frame - g.start, every) == 0.0
+            if per_frame >= 4.0 or labeled:
+                p.rectangle(Rect(x, size.height - (10.0 if labeled else 5.0), 1.0, 10.0 if labeled else 5.0), theme.grey(110.0 if labeled else 80.0))
+            if labeled:
+                p.text(f"{int(frame)}", x + 3.0, 2.0, theme.text_muted())
+            frame += 1.0
+        let at = left + (g.frame - g.start) * per_frame
+        p.rectangle(Rect(at - 1.0, 0.0, 2.0, size.height), theme.accent())
+        p.text(f"{int(g.frame)}", math.min(at + 4.0, size.width - 40.0), 2.0, theme.accent())
+        p.close()
+
+    pub func event(self, event: Event) -> unit!:
+        if event.kind == EventKind.pointer_down and event.button == 0 and event.inside:
+            self.scrubbing = true
+            self.scrub(event.x)
+        elif event.kind == EventKind.pointer_moved and self.scrubbing:
+            self.scrub(event.x)
+        elif event.kind == EventKind.pointer_up or event.kind == EventKind.focus_lost or event.cancelled:
+            self.scrubbing = false
+
+    ## Go to the frame under `x`.
+    func scrub(self, x: float) -> unit!:
+        let g = self.w.network
+        let width = self.box.bounds().width
+        let span = math.max(1.0, g.end - g.start)
+        let fraction = (x - 8.0) / math.max(1.0, width - 16.0)
+        timeline_commands.set_frame(self.w, g.start + fraction * span)
+
+## `value` wrapped into 0..`span`.
+func wrapped(value: float, span: float) -> float:
+    return value - math.floor(value / span) * span
