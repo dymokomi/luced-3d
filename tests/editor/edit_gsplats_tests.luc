@@ -1,0 +1,118 @@
+## Edit GSplats: splats from a plane (GSplats from Polygons) edited in the
+## viewport. A box dragged over part of the view selects at the Splats level
+## every splat whose center is inside it and none far outside; Q cycles the
+## shape to a lasso and a brush; the Object level takes the whole cloud.
+## Delete, Recolor, Opacity and the gizmo's move are recipe steps; undo
+## restores. The selection is tinted on the drawn cloud.
+from app import Luce3D
+from workspace import Workspace
+from geometry_data import GeometryData
+from luce_geocore.geocore import SplatEdits
+from luce_3d.graphics import Vector3
+from luce_ui.ui import Event
+from luce_window.input import EventKind
+from luce_std import math
+import modeling_commands
+import node_commands
+import selection_commands
+import component_moves
+import view_projection as gm
+
+let width = 800.0
+let height = 600.0
+
+func data_of(w: Workspace) -> GeometryData!:
+    let node = w.selected() else trap("node")
+    return w.network.evaluate_data(node.id)
+
+func splats(w: Workspace) -> int!:
+    return SplatEdits.count(data_of(w).geometry)
+
+## A drag from (x0, y0) to (x1, y1) in the viewport's tools, through (x2, y2).
+func drag(editor: Luce3D, x0: float, y0: float, x1: float, y1: float, x2: float, y2: float, shift: bool = false) -> unit!:
+    let tools = editor.panels.view.tools
+    _ = tools.event(Event(kind = EventKind.pointer_down, x = x0, y = y0, button = 0, inside = true, shift = shift), width, height)
+    _ = tools.event(Event(kind = EventKind.pointer_moved, x = x2, y = y2, inside = true), width, height)
+    _ = tools.event(Event(kind = EventKind.pointer_moved, x = x1, y = y1, inside = true), width, height)
+    _ = tools.event(Event(kind = EventKind.pointer_up, x = x1, y = y1, button = 0, inside = true), width, height)
+
+pub func edit_gsplats_tests() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Grid", 0.0, 0.0)
+    let grid = w.network.selected
+    node_commands.add_node(w, "GSplats from Polygons", 0.0, 90.0)
+    let made = w.network.selected
+    node_commands.connect(w, grid, made, 0)
+    node_commands.add_node(w, "Edit GSplats", 0.0, 180.0)
+    let edit = w.network.selected
+    node_commands.connect(w, made, edit, 0)
+    node_commands.display_selected(w)
+    let total = splats(w)
+    assert(total > 500 and w.editing())
+    let kind = w.active_kind() else trap("kind")
+    assert(kind.tints and w.levels()[1].name == "Splats" and not w.level_available(2))
+    # Look straight down at the plane.
+    w.view.target = Vector3()
+    w.view.yaw = 0.0
+    w.view.pitch = 1.5
+    w.view.distance = 4.0
+    w.view.update_camera()
+    selection_commands.set_mode(w, 1)
+    # A box over the view's left half: every splat centered inside is
+    # selected; none whose center is 40 points past it.
+    drag(editor, 100.0, 100.0, 400.0, 500.0, 250.0, 300.0)
+    let pick = w.geometry else trap("pick")
+    let chosen = w.selection else trap("selection")
+    var inside = 0
+    for at in 0..<pick.point_count():
+        let p = gm.project(w, pick.point(at), width, height)
+        if p[0] > 100.0 and p[0] < 400.0 and p[1] > 100.0 and p[1] < 500.0:
+            assert(chosen.contains(at), "a splat centered in the box is selected")
+            inside += 1
+        if p[0] > 440.0 or p[1] < 60.0:
+            assert(not chosen.contains(at), "a splat far outside the box is not")
+    assert(inside > 50 and w.selected_count() >= inside and w.selected_count() < total)
+    # Delete: a step; the selected splats go.
+    let node = w.selected() else trap("node")
+    let picked = w.selected_count()
+    modeling_commands.model(w, "Delete")
+    assert(node.edits.length == 1 and node.edits[0].verb == "GSplats Delete" and splats(w) == total - picked)
+    w.undo()
+    # Undo restores a copy of the network: the node again.
+    let restored = w.selected() else trap("node")
+    assert(splats(w) == total and restored.edits.length == 0)
+    # Q again: a lasso (a triangle over the middle), then a brush dab.
+    modeling_commands.choose_tool(w, "Select")
+    assert(w.splat_shape == 1)
+    let tools = editor.panels.view.tools
+    _ = tools.event(Event(kind = EventKind.pointer_down, x = 400.0, y = 150.0, button = 0, inside = true), width, height)
+    for point in [[550.0, 450.0], [250.0, 450.0], [399.0, 151.0]]:
+        _ = tools.event(Event(kind = EventKind.pointer_moved, x = point[0], y = point[1], inside = true), width, height)
+    _ = tools.event(Event(kind = EventKind.pointer_up, x = 399.0, y = 151.0, button = 0, inside = true), width, height)
+    let lasso = w.selected_count()
+    assert(lasso > 20 and lasso < picked)
+    modeling_commands.choose_tool(w, "Select")
+    assert(w.splat_shape == 2)
+    drag(editor, 400.0, 300.0, 400.0, 300.0, 400.0, 300.0)
+    let dab = w.selected_count()
+    assert(dab > 0 and dab < lasso)
+    # Shift paints more on.
+    drag(editor, 300.0, 300.0, 500.0, 300.0, 400.0, 300.0, true)
+    assert(w.selected_count() > dab)
+    # Recolor and Opacity: steps with their numbers on the tool bar.
+    modeling_commands.model(w, "Recolor")
+    modeling_commands.model(w, "Opacity")
+    assert(restored.edits.length == 2 and restored.edits[0].verb == "GSplats Recolor" and restored.edits[1].verb == "GSplats Opacity" and splats(w) == total)
+    # The gizmo moves the selection up one unit, the rest stays.
+    let moved_count = w.selected_count()
+    let before = (w.geometry else trap("pick")).bounds().maximum.y
+    component_moves.move_selection(w, Vector3(0.0, 1.0, 0.0))
+    assert(restored.edits.length == 3 and restored.edits[2].verb == "Transform Components")
+    assert(math.abs((w.geometry else trap("pick")).bounds().maximum.y - (before + 1.0)) < 0.01 and w.selected_count() == moved_count)
+    # The Object level takes the whole cloud.
+    selection_commands.set_mode(w, 0)
+    w.splat_shape = 0
+    drag(editor, 380.0, 280.0, 420.0, 320.0, 400.0, 300.0)
+    assert(w.selected_count() == total)

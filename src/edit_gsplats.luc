@@ -1,0 +1,97 @@
+## Edit GSplats: the Edit framework's kind for Gaussian splat clouds (and
+## plain point clouds). Houdini 22 edits splats as points with its usual
+## point tools; this kind gathers those tools in one recipe node, as Edit Mesh
+## does for polygons. Its levels are Object (the whole cloud) and Splats; the
+## viewport selects splats with a box, a lasso or a brush (Q cycles them) by
+## their footprint
+## on screen (splat_select.luc, luce-geocore's SplatEdits.select), not only
+## their centers, and tints the selection (luce-3d's set_marks) instead of
+## drawing point markers. The gizmo moves, rotates and scales the selection,
+## each splat's orient, scale and SH frame exactly; Delete removes it,
+## Recolor mixes its color toward another, Opacity multiplies or sets its
+## opacity. Every edit is a recipe step on groups of the pick mesh (the
+## cloud's points as a mesh without faces). Other components pass through.
+from luce_geocore.geocore import Mesh, Domain, GroupType, SplatEdits, Vector3
+from geometry_data import GeometryData
+from edit_operations import EditStep
+from edit_types import EditKind, EditLevel, EditTool, missing, own_data, point_level
+from parameter_rows import Parameter, number, vector, menu
+from luce_ui import ui
+
+pub let kind_name = "Edit GSplats"
+
+pub func kind() -> EditKind:
+    return EditKind(kind_name, levels(), tool_list(), [], start, pick, run, create, smart = no_smart(), tints = true)
+
+func no_smart() -> list[int]:
+    let result: list[int] = []
+    return result
+
+## Object picks the whole cloud; Splats single splats.
+func levels() -> list[EditLevel]:
+    return [EditLevel("Object", "cube", Domain.point, GroupType.points, whole_cloud), EditLevel("Splats", "vertex-select", Domain.point, GroupType.points),
+            missing("Edge"), missing("Face")]
+
+func whole_cloud(mesh: Mesh, point: int) -> str!:
+    return "*"
+
+## Delete, Recolor and Opacity on either level; the gizmo moves.
+func tool_list() -> list[EditTool]:
+    let all: list[int] = []
+    let color = vector("Color", 0, [1.0, 0.25, 0.05], "The color the splats are mixed toward (linear RGB).", 0.0, 1.0)
+    color.kind = "color"
+    return [EditTool("Delete", "GSplats Delete", all, [0.0], no_rows()),
+            EditTool("Recolor", "GSplats Recolor", all, [1.0, 0.25, 0.05, 1.0],
+                     [color, number("Amount", 3, 1.0, 0.0, 1.0, 0.05, "How far toward the color: 1 replaces it. The SH bands fade by as much.", true)]),
+            EditTool("Opacity", "GSplats Opacity", all, [0.0, 0.5],
+                     [menu("Mode", 0, "Multiply|Set", 0.0, "Multiply the splats' opacity by the value, or set it."),
+                      number("Value", 1, 0.5, 0.0, 10.0, 0.05, "The factor, or the opacity.", soft = 1.0)])]
+
+func no_rows() -> list[Parameter]:
+    let result: list[Parameter] = []
+    return result
+
+## The node's parameter rows: none. How the viewport selects (the shape,
+## the brush's radius, the footprint) is the viewport's state, not the
+## recipe's (Workspace.splat_shape; splat_select.luc), so changing it cooks
+## nothing; the framework's soft radius and symmetry do not apply to splats.
+pub func fields() -> list[Parameter]:
+    let result: list[Parameter] = []
+    return result
+
+## The input's point cloud; other components pass through (with a warning
+## when there is none).
+func start(data: GeometryData) -> GeometryData!:
+    let own = own_data(data)
+    if SplatEdits.count(data.geometry) == 0:
+        return data.passed("The input has no splats; it passes through (connect a splat cloud)")
+    return own
+
+## Both levels pick on the cloud's points as a mesh, made once per result.
+func pick(data: GeometryData, level: int) -> Mesh?!:
+    if let known = data.pick_cache:
+        return known
+    let made = SplatEdits.pick_mesh(data.geometry)
+    data.pick_cache = made
+    return made
+
+func run(step: EditStep, data: GeometryData) -> GeometryData!:
+    if SplatEdits.count(data.geometry) == 0:
+        error(ui.invalid, "Edit GSplats has no splats to edit: connect a splat cloud")
+    let shown = pick(data, point_level) else error(ui.invalid, "Edit GSplats has no splats to edit")
+    if step.topology != 0 and step.topology != shown.topology_hash():
+        error(ui.invalid, "The splats upstream changed. Undo the upstream change or clear this node's edits.")
+    let v = step.numbers
+    if step.verb == "Transform Components":
+        return GeometryData(geometry = SplatEdits.transformed(data.geometry, step.group, v))
+    if step.verb == "GSplats Delete":
+        return GeometryData(geometry = SplatEdits.without(data.geometry, step.group))
+    if step.verb == "GSplats Recolor" and v.length >= 4:
+        return GeometryData(geometry = SplatEdits.recolored(data.geometry, step.group, Vector3(v[0], v[1], v[2]), v[3]))
+    if step.verb == "GSplats Opacity" and v.length >= 2:
+        return GeometryData(geometry = SplatEdits.with_opacity(data.geometry, step.group, int(v[0]), v[1]))
+    error(ui.invalid, f"{step.verb} does not apply to splats")
+
+## No primitives.
+func create(name: str) -> EditStep?!:
+    return none

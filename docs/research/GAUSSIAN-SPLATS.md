@@ -435,7 +435,7 @@ Houdini names are used where Houdini has a node, and GSOPs names otherwise.
 
 **As built (stage 7).** The three conversions are luce-geocore set verbs (`set_verbs/splat_conversions.lucb`).
 - **GSplats from Polygons** (`splats/from_surface.lucb`): Density, Size (0: 0.6/√density, so neighbors overlap), Thickness, Opacity, Color (without a `Cd`), Seed, Keep Input. Discs land on the display triangles, density × area each, the fraction and the points drawn from a hash of the seed, so a cook is the same on any thread count. `Cd` comes from the mesh's point, vertex or primitive `Cd`, and `N` is the face normal. No texture lookup yet.
-- **GSplats to Volume** (`fields/splat_density.lucb`, in fields because it builds a grid): Voxel Size (0: the median largest σ), Density Scale, Cutoff (σ, default 3), Keep Input, and the grid's Name in the text row. Each Gaussian is widened by half a voxel, so sub-voxel splats still land, and normalized so its voxels integrate to its mass, opacity · (2π)^{3/2} σ₁σ₂σ₃. Inside the cutoff its peak is therefore about 3% high at 3σ. On the 1.16M-splat bonsai capture at 0.05 voxels, the volume takes 0.44 s and Convert to Mesh (isovalue 0.2) 0.31 s, giving 4.6M faces. On the bonsai alone (cropped to 124k splats, 0.01 voxels), the volume takes 55 ms and the mesh 30 ms, 172k faces.
+- **GSplats to Volume** (`fields/splat_density.lucb`, in fields because it builds a grid): Voxel Size (0 sizes it to the capture since stage 8: about 256³ voxels across the extent between the 1st and 99th percentiles, never finer than the median largest σ; the median alone made 8M-point meshes of whole captures), Density Scale, Cutoff (σ, default 3), Keep Input, and the grid's Name in the text row. Each Gaussian is widened by half a voxel, so sub-voxel splats still land, and normalized so its voxels integrate to its mass, opacity · (2π)^{3/2} σ₁σ₂σ₃. Inside the cutoff its peak is therefore about 3% high at 3σ. On the 1.16M-splat bonsai capture at 0.05 voxels, the volume takes 0.44 s and Convert to Mesh (isovalue 0.2) 0.31 s, giving 4.6M faces. On the bonsai alone (cropped to 124k splats, 0.01 voxels), the volume takes 55 ms and the mesh 30 ms, 172k faces.
 - **Normals from GSplats** (`splats/normals.lucb`, `orientation.lucb`): Houdini's fast idea, the shortest axis, with Search Radius, Refine Normals, Smooth Amount, Sharpen Amount and Visualize Normals.
   - Each splat's side is first voted by its 16 nearest neighbors' centroid.
   - That vote points inward in concave regions; a bumpy ball showed inward patches. So the sides then propagate over a minimum spanning tree of 1 − |aᵢ·aⱼ| over the symmetric k-NN graph (Hoppe et al. 1992), and each connected part faces the way the sum of its votes says.
@@ -729,3 +729,26 @@ Training (Houdini's ML Train GSplats) is not on this list; see Q5.
 4. **Packages:** as designed. luce-ply and luce-spz are new, zstd goes in luce-compress, and `shade_quads` goes in luce-gpu, built by this session.
 5. **Defaults taken for Q6–Q7:** Run Over Points picks the cloud when the set has no mesh. Splats and plain points don't share a set, as in Houdini.
 6. **Up axis (stage 4):** Bake GSplats' Up Axis defaults to **Y Down (COLMAP)**. COLMAP's cameras look down +Z with +Y pointing down and a reconstruction keeps the first camera's frame, so a capture shot upright has its up near -Y. Checked on the Mip-NeRF 360 bonsai: the flattest axis of its dense splats is (0.13, 0.80, 0.59), the floor's sharp cutoff lies on its + side, so up is near -Y (the capture is also tilted about 36°, which no default fixes). The turn is exact (a half turn about X; `splats/axes.lucb` in luce-geocore), recorded in `gsplat_up_axis`, and undone on export.
+
+## 15. Stage 8 as built (2026-10-09)
+
+**Edit GSplats** (luced-3d `edit_gsplats.luc`, `splat_select.luc`; luce-geocore `SplatEdits`, `splats/footprints.lucb`, `splats/edits.lucb`). Houdini 22 has no node of this name; it edits splats as points with its usual point tools and selection shapes. This node gathers them on the Edit framework, as Edit Mesh does for polygons:
+- Levels: Object (the whole cloud) and Splats. Edges and faces are missing.
+- Selection: a drag selects with a box, a lasso or a brush. Q pressed again while Select is active cycles the shape, and [ and ] size the brush. Shift adds and Ctrl removes. A click is a dab.
+- A splat is selected where its footprint (the EWA ellipse out to where its Gaussian falls to the footprint alpha, 0.1) meets the shape, not only by its center. Selection goes through the depth, as SuperSplat's does.
+- The selection is tinted on the drawn cloud (luce-3d `set_marks`). No point markers are drawn.
+- Tools: Delete, Recolor (Cd toward a color, the SH faded by as much) and Opacity (multiply or set). The QWERT gizmo moves, rotates and scales, each splat's orient, scale and SH frame exactly. Every edit is a recipe step on groups of the pick mesh.
+- On the 1.16M-splat bonsai: a box selection takes 13 ms, a brush update about 11 ms, and a Recolor step 0.2 s.
+
+**One sort for all clouds** (luce-3d `SplatScene`, `renderers/splat_view.lucb`). Every displayed cloud and instance takes a run of slots in one index space. Each cloud is projected into its slots, then one gather and one radix sort order them all. Interleaved clouds now composite in depth order: `tests/splat_pixels` checks this from both sides, and drawing the clouds apart fails the same check.
+
+**Level of detail** (luce-3d `renderers/splat_lod.lucb`).
+- Clouds of 2^20 splats or more are packed in Morton order. One merged, moment-matched splat is appended per run of 4, 16, 64 and 256 splats.
+- Per view, the coarsest merged splat whose 3σ footprint is under 2 pixels stands in for its run. This engages once the clouds drawn number 10M or more.
+- On a 20M-splat field 200 units across, at 2800×1800 on the M4 Max:
+  - from eye level: 37 ms without LOD, 33 ms at 2 px and 17 ms at 4 px;
+  - from overhead: 29 ms without LOD, 22.5 ms at 2 px and 7 ms at 4 px.
+- At 2 px the images match the full draw within noise.
+
+**Not done:** the StopThePop per-pixel sort (optional).
+

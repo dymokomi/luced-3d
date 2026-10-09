@@ -1,7 +1,8 @@
 ## The viewport's node tools over the scene: the chrome's buttons
 ## (viewport_chrome.luc), the edit overlay and component picking
 ## (component_pick.luc), click placing (viewport_placing.luc), the Knife
-## (knife_stroke.luc), object picking (object_box.luc) and the node gizmos
+## (knife_stroke.luc), object picking (object_box.luc), splat selection
+## (splat_select.luc) and the node gizmos
 ## (node_gizmos.luc). Topology and intersections remain in luce-3d.
 from luce_ui.ui import Painter, Event
 from luce_3d.graphics import EditOverlay
@@ -15,6 +16,7 @@ from viewport_chrome import ViewportChrome
 from component_pick import ComponentPicker, draw_hover
 from knife_stroke import KnifeStroke
 from object_box import ObjectBox
+from splat_select import SplatSelect
 import selection_commands
 from edit_types import smart_level
 
@@ -26,6 +28,8 @@ pub class ViewportTools:
     pub let picker: ComponentPicker
     let knife: KnifeStroke
     let objects: ObjectBox
+    ## Box, lasso and brush selection of splats (Edit GSplats).
+    pub let splats: SplatSelect
     ## The hovered component, and under Smart its level (-1: the
     ## selection's).
     pub var hovered: int = -1
@@ -47,6 +51,7 @@ pub class ViewportTools:
         self.picker = ComponentPicker(workspace, self.overlay)
         self.knife = KnifeStroke(workspace)
         self.objects = ObjectBox(workspace)
+        self.splats = SplatSelect(workspace)
         # The renderer tints selected faces (Renderer.set_face_selection).
         self.overlay.set_fill(false)
 
@@ -55,7 +60,10 @@ pub class ViewportTools:
         if self.hover_revision != w.revision:
             self.hovered = -1
         self.chrome.draw(painter, width, height)
-        if w.selecting():
+        if self.splats.applies():
+            # Splats show their selection tinted (the view sets the marks).
+            self.splats.draw(painter)
+        elif w.selecting():
             let mesh = w.geometry else return
             # Points a soft selection reaches show its falloff (weighed in Base).
             let soft = w.soft_selection()
@@ -89,7 +97,9 @@ pub class ViewportTools:
         let before = [self.hovered, self.chrome.hover_tool, self.gizmos.hovered]
         self.placing.moved = false
         let handled = self.handle(event, width, height)
-        self.hover_changed = before != [self.hovered, self.chrome.hover_tool, self.gizmos.hovered] or self.placing.moved
+        # The splat brush's circle follows the pointer.
+        let brushing = event.kind == EventKind.pointer_moved and self.workspace.splat_shape == 2 and self.splats.applies()
+        self.hover_changed = before != [self.hovered, self.chrome.hover_tool, self.gizmos.hovered] or self.placing.moved or brushing
         return handled
 
     func handle(self, event: Event, width: float, height: float) -> bool!:
@@ -107,12 +117,15 @@ pub class ViewportTools:
             return true
         if self.objects.event(event, width, height):
             return true
+        if self.splats.event(event, width, height):
+            return true
+        let splats = self.splats.applies()
         if event.kind == EventKind.pointer_moved:
             self.hovered = -1
             self.hover_level = -1
             self.chrome.hover_tool = button
             self.hover_revision = w.revision
-            if button < 0 and event.inside and not event.alt and not self.dragging and w.selecting() and not w.picking_objects():
+            if button < 0 and event.inside and not event.alt and not self.dragging and w.selecting() and not w.picking_objects() and not splats:
                 if let placing = w.placing:
                     self.placing.hover(placing, self.overlay, self.picker.renderer, event.x, event.y, width, height)
                 elif w.component_mode == smart_level:
@@ -131,6 +144,9 @@ pub class ViewportTools:
             return true
         if w.picking_objects():
             self.objects.start(event.x, event.y)
+            return true
+        if splats:
+            self.splats.start(event, width, height)
             return true
         if w.selecting():
             if w.component_mode == smart_level:

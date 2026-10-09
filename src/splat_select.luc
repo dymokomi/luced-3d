@@ -1,0 +1,194 @@
+## Selecting splats in the viewport while an Edit GSplats node is edited:
+## a drag selects with the workspace's shape (Q again cycles it): a box, a
+## lasso drawn freely, or a brush painted over the splats (its radius on
+## [ and ]). A splat is selected where its footprint on screen meets the
+## shape (luce-geocore's SplatEdits.select), not only its center. Shift adds,
+## Ctrl takes away, a plain drag starts over; a click is a dab of the brush,
+## or a point. At the Object level anything picked selects the whole cloud.
+## The brush paints live; each gesture is one undo step.
+from luce_ui.ui import Painter, Event, Point
+from luce_gpu.gpu import Rect, Color
+from luce_window.input import EventKind, Key
+from luce_geocore.geocore import SplatEdits
+from luce_std import math
+from workspace import Workspace
+from viewport_chrome import outline
+from edit_types import object_level
+from tool_prompts import follow_prompt
+import theme
+
+## Selection shapes (Workspace.splat_shape).
+pub let box_shape = 0
+pub let lasso_shape = 1
+pub let brush_shape = 2
+
+pub func shape_names() -> list[str]:
+    return ["Box", "Lasso", "Brush"]
+
+pub class SplatSelect:
+    let workspace: Workspace
+    ## A gesture in progress: its shape, what it does (0 replace, 1 add,
+    ## 2 remove), and its points on screen (x, y pairs).
+    var active: bool = false
+    var shape: int = 0
+    var operation: int = 0
+    var points: list[float]
+    ## The pointer, for the brush's circle.
+    var pointer_x: float = -1000.0
+    var pointer_y: float = -1000.0
+
+    pub func init(self, workspace: Workspace):
+        self.workspace = workspace
+        self.points = []
+
+    ## Whether drags select splats now: an Edit GSplats node edited.
+    pub func applies(self) -> bool:
+        let w = self.workspace
+        let kind = w.active_kind() else return false
+        return kind.tints and w.editing() and w.selecting() and w.prompt == none and w.placing == none
+
+    ## A press at (x, y) starts a gesture.
+    pub func start(self, event: Event, width: float, height: float) -> unit!:
+        let w = self.workspace
+        self.active = true
+        self.shape = w.splat_shape
+        self.operation = 2 if event.control else (1 if event.shift else 0)
+        self.points = [event.x, event.y]
+        if self.shape == brush_shape:
+            w.begin("Select splats")
+            self.apply([event.x, event.y], self.operation, width, height)
+            # Later dabs add to (or take from) what the first made.
+            if self.operation == 0:
+                self.operation = 1
+
+    ## The gesture's events once started; whether one was used. Also follows
+    ## the pointer for the brush's circle.
+    pub func event(self, event: Event, width: float, height: float) -> bool!:
+        let w = self.workspace
+        if event.kind == EventKind.pointer_moved:
+            self.pointer_x = event.x
+            self.pointer_y = event.y
+        if not self.active:
+            return false
+        if event.cancelled or event.kind in [EventKind.pointer_left, EventKind.focus_lost] or (event.kind == EventKind.key_down and event.key == Key.escape):
+            self.active = false
+            if self.shape == brush_shape:
+                w.cancel()
+            return true
+        if event.kind == EventKind.pointer_moved:
+            self.moved(event.x, event.y, width, height)
+            return true
+        if event.kind == EventKind.pointer_up:
+            self.active = false
+            self.finish(width, height)
+            return true
+        return true
+
+    ## A pointer move: the box's corner, the lasso's next point, the brush's
+    ## next dabs (a third of its radius apart), painted at once.
+    func moved(self, x: float, y: float, width: float, height: float) -> unit!:
+        let n = self.points.length
+        if self.shape == box_shape:
+            self.points = [self.points[0], self.points[1], x, y]
+            return
+        let gap = self.workspace.splat_brush / 3.0 if self.shape == brush_shape else 3.0
+        let last_x = self.points[n - 2]
+        let last_y = self.points[n - 1]
+        let distance = math.hypot(x - last_x, y - last_y)
+        if distance < gap:
+            return
+        let added: list[float] = []
+        let steps = int(math.ceil(distance / gap))
+        for step in 0..<steps:
+            let t = float(step + 1) / float(steps)
+            added.append(last_x + (x - last_x) * t)
+            added.append(last_y + (y - last_y) * t)
+        self.points = self.points + added
+        if self.shape == brush_shape:
+            self.apply(added, self.operation, width, height)
+
+    ## The release: a box or lasso selects once; a click selects under the
+    ## pointer; the brush's strokes were painted already.
+    func finish(self, width: float, height: float) -> unit!:
+        let w = self.workspace
+        if self.shape == brush_shape:
+            w.commit()
+            follow_prompt(w)
+            return
+        let dragged = self.dragged()
+        var region = self.points
+        var shape = 0
+        if not dragged:
+            # A click: the splats under the pointer.
+            region = [self.points[0], self.points[1]]
+            shape = 1
+        elif self.shape == box_shape:
+            let p = self.points
+            region = [p[0], p[1], p[2], p[1], p[2], p[3], p[0], p[3]]
+        elif region.length < 6:
+            return
+        w.perform("Select splats", func () -> unit!:
+            self.select(region, shape, self.operation, width, height))
+        follow_prompt(w)
+
+    ## Whether the gesture went anywhere (a click does not).
+    func dragged(self) -> bool:
+        let p = self.points
+        if p.length < 4:
+            return false
+        for at in 0..<(p.length // 2):
+            if math.abs(p[at * 2] - p[0]) > 4.0 or math.abs(p[at * 2 + 1] - p[1]) > 4.0:
+                return true
+        return false
+
+    ## Brush dabs at `points`, inside a transaction the gesture opened.
+    func apply(self, points: list[float], operation: int, width: float, height: float) -> unit!:
+        self.select(points, 1, operation, width, height)
+        self.workspace.pending_changed = true
+        self.workspace.revision += 1
+
+    ## Change the selection by `region` (shape 0 a polygon, 1 brush dabs).
+    func select(self, region: list[float], shape: int, operation: int, width: float, height: float) -> unit!:
+        let w = self.workspace
+        let mesh = w.geometry else return
+        let chosen = w.current_selection() else return
+        let radius = w.splat_brush if self.shape == brush_shape else 0.0
+        var made = SplatEdits.select(mesh, chosen, screen_view(w, width, height), shape, region, radius, w.splat_footprint, operation)
+        # The Object level takes the whole cloud, or nothing.
+        if w.level_index() == object_level:
+            made = made.filled(made.count() > 0)
+        w.selection = made
+
+    ## The gesture, and the brush's circle at the pointer.
+    pub func draw(self, painter: Painter) -> unit!:
+        let w = self.workspace
+        let ink = theme.text()
+        if w.splat_shape == brush_shape:
+            circle(painter, self.pointer_x, self.pointer_y, w.splat_brush, theme.accent() if self.active else ink)
+        if not self.active or not self.dragged():
+            return
+        let p = self.points
+        if self.shape == box_shape:
+            outline(painter, Rect(math.min(p[0], p[2]), math.min(p[1], p[3]), math.abs(p[2] - p[0]), math.abs(p[3] - p[1])), ink)
+        elif self.shape == lasso_shape:
+            let n = p.length // 2
+            for at in 0..<n:
+                let next = (at + 1) % n
+                painter.line(Point(p[at * 2], p[at * 2 + 1]), Point(p[next * 2], p[next * 2 + 1]), 1.0, ink)
+
+## The camera as SplatEdits.select reads it: eye, right, up and view
+## direction, the focal lengths, the viewport's size and the near distance,
+## in the viewport's points (y down).
+pub func screen_view(w: Workspace, width: float, height: float) -> list[float]!:
+    let lens = w.view.camera.projection(math.max(1.0, width) / math.max(1.0, height))
+    let p = lens.position
+    let forward = lens.backward.multiply_scalar(-1.0)
+    return [p.x, p.y, p.z, lens.right.x, lens.right.y, lens.right.z, lens.up.x, lens.up.y, lens.up.z, forward.x, forward.y, forward.z,
+            lens.focal / lens.aspect * width * 0.5, lens.focal * height * 0.5, width, height, lens.near]
+
+## A circle of `radius` around (x, y), as 32 segments.
+func circle(painter: Painter, x: float, y: float, radius: float, color: Color) -> unit!:
+    for at in 0..<32:
+        let a = float(at) * math.pi / 16.0
+        let b = float(at + 1) * math.pi / 16.0
+        painter.line(Point(x + radius * math.cos(a), y + radius * math.sin(a)), Point(x + radius * math.cos(b), y + radius * math.sin(b)), 1.0, color)
