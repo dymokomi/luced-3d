@@ -5,7 +5,7 @@
 ## shading button. Its events go to the marking menu, the chrome, the sketch
 ## editor and the tools before the camera's navigation.
 from luce_ui.ui import Widget, Layout, Constraints, Size, Event, Painter, SceneView
-from luce_3d.graphics import WireRenderer, Vector3, Renderer, SplatScene
+from luce_3d.graphics import WireRenderer, Vector3, Renderer, SplatScene, GaussianSplats
 from luce_3d import graphics as three
 from luce_gpu.gpu import RenderTarget, Rect
 from luce_window.input import EventKind, Key, ScrollUnit
@@ -178,18 +178,22 @@ pub class SceneViewport: Widget:
         overlay.rectangle(Rect(shading.x + 28.0, 34.0, 3.0, 3.0), theme.accent())
         overlay.close()
 
-    ## While Edit GSplats is edited, its cloud (the displayed one as large as
-    ## the pick geometry) shows the selected splats tinted; others show none.
-    func mark_selection(self) -> unit!:
+    ## While Edit GSplats is edited, its cloud shows the selected splats
+    ## tinted; others show none. Its cloud is the one the edited (displayed)
+    ## node drew from the very points the pick mesh shares: same node, same
+    ## positions id. Another cloud of the same size, even an earlier version
+    ## of this one shown by another node, is left alone.
+    pub func mark_selection(self) -> unit!:
         let w = self.workspace
         var mesh: Mesh? = none
         if let kind = w.active_kind():
             if kind.tints and w.editing():
                 mesh = w.geometry
-        for cloud in w.batches.clouds:
+        for at in 0..<w.batches.clouds.length:
+            let cloud = w.batches.clouds[at]
             var marks: Selection? = none
             if let picked = mesh:
-                if cloud.size() == picked.point_count():
+                if is_edited_cloud(cloud, w.batches.cloud_nodes, at, w.network.display, picked):
                     if let chosen = w.selection:
                         if chosen.domain() == 0 and chosen.fits(picked):
                             marks = chosen
@@ -338,3 +342,11 @@ pub class SceneViewport: Widget:
         if event.kind == EventKind.pointer_moved and not self.dragging and not self.tools.hover_changed:
             return
         self.layout().invalidate()
+
+## Whether drawn cloud `at` is the one an Edit node displayed as `node`
+## picks on with `picked`: it came from that node and was packed from the
+## positions the pick mesh shares.
+pub func is_edited_cloud(cloud: GaussianSplats, nodes: list[int], at: int, node: int, picked: Mesh) -> bool:
+    if at >= nodes.length or nodes[at] != node:
+        return false
+    return cloud.source_id() == picked.positions_id() and cloud.size() == picked.point_count()
