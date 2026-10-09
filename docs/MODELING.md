@@ -68,7 +68,12 @@ is drawn as smoke, as in Houdini's viewport: luce-3d's `FogVolume` ray-marches
 its densities on the GPU, lit by the key light (self-shadowed) and the sky,
 hidden behind meshes in front of it and veiling those behind. Its texels are
 made once per cook result (on the worker) and upload on the first frame, so
-orbiting redraws without uploading. The `noise_cloud` wrangle example shows one. Convert to
+orbiting redraws without uploading. A **Volume Visualization** node (Houdini's)
+sets how it looks: density scale, smoke color, shadow scale, the ray-marching
+step, and emission (scale and color) from a grid named in its Emission field
+row, which then glows instead of being drawn as smoke. The look is detail
+attributes on the geometry and the grids stay shared, so changing it uploads
+nothing. The `noise_cloud` and `fire` wrangle examples show both. Convert to
 Mesh makes real geometry of that surface. Volume Slice shows a colored plane
 through the field: blue inside, orange outside, with contour bands.
 

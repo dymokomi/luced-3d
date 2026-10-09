@@ -41,5 +41,6 @@ an error, and the program writes these files again.
 | `neighbor_lists` | Array attributes, Houdini's `i[]@nbrs` idiom: one node stores each point's neighbors as an i32 array (`p.set_i32_array`), three later nodes read the lists back (`p.i32_array`) to average heights. The lists show in the Geometry Spreadsheet. |
 | `gyroid` | Volume Wrangle (Run Over Voxels): a Volume node makes an empty level set, the Code node writes a gyroid shell cut to a ball (`math32.max` of two distances, an intersection), Convert to Mesh shows its surface. |
 | `metaballs` | Five spheres orbiting with time, joined by a smooth minimum the header defines (`smin`), written per voxel and meshed. Press Play. |
-| `noise_cloud` | A fog volume: density from noise octaves, fading toward the edge, drifting with time (the classic Volume Wrangle cloud). The viewport draws fog as smoke. |
+| `noise_cloud` | A fog volume: density from noise octaves, fading toward the edge, drifting with time (the classic Volume Wrangle cloud). The viewport draws fog as smoke; a Volume Visualization node sets how (density and shadow scales). |
+| `fire` | One Voxels run writes a flame's density and its `heat` (`x.set_f32`); Volume Visualization names heat the emission field, so it glows orange over thin dark smoke (Houdini's volvis_emitfield). Press Play. |
 | `eroded_points` | Volume from Points makes a level set of a sphere's points; a Voxels Code node adds noise to each voxel's distance (`x.value`), and Convert to Mesh shows the eroded rock. |

@@ -1,7 +1,9 @@
 ## Fog volumes in the viewport: a Volume node (fog) filled by a Code node over
 ## its voxels shows no surface; the viewport ray-marches it, without the
 ## worker and with it, and its atlas goes to the GPU once per cook result,
-## however often the view redraws or orbits.
+## however often the view redraws or orbits. A Volume Visualization node's
+## look (density, emission from a heat grid) changes the pixels and uploads
+## nothing.
 from app import Luce3D
 from workspace import Workspace
 from offscreen_pixels import OffscreenPixels
@@ -11,18 +13,23 @@ import code_cook
 import time
 
 ## A fog ball: a 2-unit Fog box of 0.05 voxels, its densities falling from 1
-## at the center to 0 at a radius of 0.9.
-func fog_ball(w: Workspace) -> int!:
+## at the center to 0 at a radius of 0.9, and the same values as "heat";
+## then a Volume Visualization naming heat its emission field. Returns the
+## Code node and the Visualization node.
+func fog_ball(w: Workspace) -> (int, int)!:
     node_commands.delete_selected(w)
     node_commands.add_node(w, "Volume", 0.0, 0.0)
     node_commands.add_node(w, "Code", 0.0, 100.0)
     let code = w.network.selected
     node_commands.set_parameter(w, code_cook.run_over_slot, 5.0)
     node_commands.set_text(w, 0, "density")
-    code_node.set_code(w, code, code_cook.body_slot, "x.value = math32.max(0.0, 1.0 - length(x.P) / 0.9)\n")
+    code_node.set_code(w, code, code_cook.body_slot, "x.value = math32.max(0.0, 1.0 - length(x.P) / 0.9)\nx.set_f32(\"heat\", x.value)\n")
     assert(w.network.require(code).failure == "")
+    node_commands.add_node(w, "Volume Visualization", 0.0, 200.0)
+    let look = w.network.selected
+    node_commands.set_text(w, 0, "heat")
     node_commands.display_selected(w)
-    return code
+    return (code, look)
 
 ## Draw the editor's viewport over the whole texture; the luminance of its
 ## middle.
@@ -35,9 +42,9 @@ func middle(editor: Luce3D, view: OffscreenPixels) -> int!:
 pub func fog_display_tests() -> unit!:
     let editor = Luce3D()
     let w = editor.workspace
-    let code = fog_ball(w)
+    let (code, look) = fog_ball(w)
     let data = w.network.evaluate_data(code)
-    assert(data.description().starts_with("1 volume grids") and data.field_preview() == none)
+    assert(data.description().starts_with("2 volume grids") and data.field_preview() == none)
     assert(w.batches.volumes.length == 1)
     let volume = w.batches.volumes[0]
     assert(volume.peak() > 0.9 and volume.upload_count() == 0)
@@ -53,6 +60,21 @@ pub func fog_display_tests() -> unit!:
     w.batches.volumes = []
     let bare = middle(editor, view)
     assert(fogged > bare + 20)
+    # Thicker smoke from the Visualization node: the same volume (its grids
+    # are unchanged), other pixels, no upload.
+    w.network.selected = look
+    node_commands.set_parameter(w, 0, 4.0)
+    assert(w.batches.volumes.length == 1 and w.batches.volumes[0] is volume and volume.look().density == 4.0)
+    let thick = middle(editor, view)
+    assert(thick != fogged and volume.upload_count() == 1)
+    # Orange emission from the heat grid: red rises over blue.
+    node_commands.set_parameter(w, 5, 2.0)
+    node_commands.set_parameter(w, 7, 0.4)
+    node_commands.set_parameter(w, 8, 0.0)
+    assert(w.batches.volumes[0] is volume)
+    let before_red = view.channel(400, 300, 0) - view.channel(400, 300, 2)
+    _ = middle(editor, view)
+    assert(view.channel(400, 300, 0) - view.channel(400, 300, 2) > before_red + 30 and volume.upload_count() == 1)
     # With the worker: the volume is made there and adopted once; a new
     # result that keeps the node's stamp keeps the same volume.
     w.enable_compute()
@@ -68,7 +90,15 @@ pub func fog_display_tests() -> unit!:
     while session.busy and time.now() < deadline:
         _ = w.poll_compute()
     assert(w.batches.volumes.length == 1 and w.batches.volumes[0] is adopted)
-    _ = middle(editor, view)
+    let glowing = middle(editor, view)
     assert(adopted.upload_count() == 1)
+    # A new look through the worker: the held volume takes it, no upload.
+    w.network.selected = look
+    node_commands.set_parameter(w, 5, 0.0)
+    deadline = time.now() + 20000000000
+    while session.busy and time.now() < deadline:
+        _ = w.poll_compute()
+    assert(w.batches.volumes.length == 1 and w.batches.volumes[0] is adopted and adopted.look().emission == 0.0)
+    assert(middle(editor, view) != glowing and adopted.upload_count() == 1)
     editor.close()
-    print("PASS fog display: no surface preview, ray-marched with and without the worker, one upload per result")
+    print("PASS fog display: no surface preview, ray-marched with and without the worker, one upload per result, looks from Volume Visualization")

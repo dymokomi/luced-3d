@@ -13,7 +13,7 @@ import sync
 import c
 from luce_geocore import geocore
 from luce_geocore.geocore import detached_mesh, mesh_overlay_points
-from luce_3d.graphics import Vector3, Matrix4, invalid, WireBatch, wire_batch_type, append_curve_segments, FogVolume, fog_volume_type, fog_volume_of
+from luce_3d.graphics import Vector3, Matrix4, invalid, WireBatch, wire_batch_type, append_curve_segments, FogVolume, FogLook, fog_volume_type, fog_volume_of, fog_look_of
 from luce_geocore.geocore import GeometrySet
 from luce_geocore.core.growing import Growing
 from overlay_lines import OverlayLines, line_points
@@ -42,8 +42,10 @@ struct Product:
     var curves: Vector3[]
     var hulls: Vector3[]
     ## A fog volume made here for the UI to adopt (its texels; the UI
-    ## uploads them on its first draw).
+    ## uploads them on its first draw), and the look a fog product draws
+    ## with (none for other products).
     var volume: FogVolume*?
+    var look: FogLook?
 
 ## Overlays of a key the UI holds, kept so unchanged keys need no extraction.
 struct Held:
@@ -264,13 +266,23 @@ pub struct ComputeChannel:
         try self.add(product)
 
     ## Publish fog grid `index` of `geometry`'s own volume placed by
-    ## `matrix`, shadowed for `light`, under a content key: its texels are
-    ## made here, off the UI thread.
+    ## `matrix`, shadowed for `light`, under its content key (FogVolume.key)
+    ## with the set's look: its texels are made here, off the UI thread,
+    ## unless the UI holds the key, when only the look goes.
     pub func volume(key: i64, node: i64, geometry: interop.Reference[GeometrySet], index: i64, matrix: Matrix4, light: Vector3) -> !:
         try self.check()
-        let made = try fog_volume_of(try geometry.get(), index, matrix, light)
+        let set = try geometry.get()
+        if self.merge(key, false):
+            return
+        if self.holds(key):
+            var reused = Product(key, none, node, true, false, false)
+            reused.look = fog_look_of(set)
+            try self.add(reused)
+            return
+        let made = try fog_volume_of(set, index, matrix, light)
         var product = Product(key, none, node, true, false, true)
         product.volume = made
+        product.look = fog_look_of(set)
         self.add(product) catch failure:
             made.close()
             free(made) in memory.heap
@@ -408,6 +420,14 @@ pub struct ComputeService:
     ## Whether the product carries a new fog volume to adopt.
     pub func volume_fresh(index: i64) -> bool:
         return (self.state else return false).products[(usize)index].volume != none
+
+    ## Whether product `index` is a fog volume's (new or held).
+    pub func volume_product(index: i64) -> bool:
+        return (self.state else return false).products[(usize)index].look != none
+
+    ## The look product `index`'s fog volume draws with.
+    pub func volume_look(index: i64) -> FogLook:
+        return (self.state else return FogLook()).products[(usize)index].look else FogLook()
 
     ## Adopt product `index`'s fog volume (once; the UI keeps it by key).
     pub func take_volume(index: i64) -> interop.Reference[FogVolume]!:

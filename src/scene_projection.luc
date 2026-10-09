@@ -54,20 +54,24 @@ pub func append_overlays(data: GeometryData, matrix: Matrix4, wires: OverlayLine
         if data.instance_visible(index):
             append_overlays(data.instance(index), matrix.multiply(data.instance_matrix(index)), wires, normals, depth + 1, polygons)
 
-## The fog volumes of `data` and its visible instances, placed by `matrix`:
-## the set's own come from its cache when unplaced, so they upload once.
-pub func append_fog(data: GeometryData, matrix: Matrix4, volumes: list[FogVolume], depth: int = 0) -> unit!:
+## The fog volumes of `data` and its visible instances, placed by `matrix`,
+## each with its set's look: a volume `held` under its content key is reused
+## (a new look uploads nothing); every volume goes into `kept` by its key.
+pub func append_fog(data: GeometryData, matrix: Matrix4, volumes: list[FogVolume], held: map[int, FogVolume], kept: map[int, FogVolume], depth: int = 0) -> unit!:
     if depth > 48:
         error(ui.invalid, "Scene hierarchy exceeds the display depth budget")
-    if matrix.is_identity():
-        for volume in data.fog_volumes():
+    let count = FogVolume.count(data.geometry)
+    if count > 0:
+        let look = FogVolume.look_of(data.geometry)
+        for index in 0..<count:
+            let key = FogVolume.key(data.geometry, index, matrix, key_light())
+            let volume = held[key] else FogVolume.of(data.geometry, index, matrix, key_light())
+            volume.set_look(look)
+            kept[key] = volume
             volumes.append(volume)
-    else:
-        for index in 0..<FogVolume.count(data.geometry):
-            volumes.append(FogVolume.of(data.geometry, index, matrix, key_light()))
     for index in 0..<data.instance_count():
         if data.instance_visible(index):
-            append_fog(data.instance(index), matrix.multiply(data.instance_matrix(index)), volumes, depth + 1)
+            append_fog(data.instance(index), matrix.multiply(data.instance_matrix(index)), volumes, held, kept, depth + 1)
 
 ## Analytic patch borders stay visible independently of polygon wire overlays.
 pub func append_patch_boundaries(data: GeometryData, matrix: Matrix4, lines: OverlayLines) -> unit!:
