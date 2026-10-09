@@ -1,0 +1,184 @@
+## The sketch tools the other sketch tests leave out, used as a user would:
+## the CREATE variants clicked on an empty sketch (Midpoint Line, Center
+## Rectangle, two- and center-circles, three-point and center arcs,
+## circumscribed and edge polygons, center point and arc slots); the
+## MODIFY tools on a prepared sketch (2-Tangent Circle, Extend, Break,
+## Move/Copy, Sketch Scale, the Patterns, Blend Curve G1 and G2, Parallel
+## by clicks); and every constraint tool on its picks (sketch_constrain).
+from app import Luce3D
+from luce_cad.sketch import CadSketch
+from sketch_kinds import line_kind, circle_kind, arc_kind, spline_kind, coincident, on_curve, tangent, equal, fix, midpoint, concentric, collinear, symmetric, parallel, curvature
+import sketch_constrain
+import node_commands
+from luce_std import math
+from sketch_support import open_sketch, render, click, near, sketch_of, kind_counts, last_of, line_length
+
+pub func sketch_tool_tests() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let id = open_sketch(editor, 60.0, 40.0, 400.0)
+    create_variants(editor, id)
+    modify_tools(editor, id)
+    constraint_tools()
+
+## Draw with `tool` by `clicks`; the kind counts it added.
+func drawn(editor: Luce3D, id: int, tool: str, clicks: list[list[float]]) -> list[int]!:
+    let before = kind_counts(sketch_of(editor, id))
+    editor.panels.view.sketch.editor.choose(tool)
+    for c in clicks:
+        click(editor, c[0], c[1])
+    let after = kind_counts(sketch_of(editor, id))
+    let added: list[int] = []
+    for at in 0..<after.length:
+        added.append(after[at] - before[at])
+    # A tool is used once.
+    let e = editor.panels.view.sketch.editor
+    if e.tool != "Select":
+        print(f"{tool} left {e.tool}: {editor.workspace.notice}")
+    assert(e.tool == "Select")
+    return added
+
+func create_variants(editor: Luce3D, id: int) -> unit!:
+    # Midpoint Line: its middle, then an end; the other end mirrored.
+    var added = drawn(editor, id, "Midpoint Line", [[10.0, 0.0], [20.0, 0.0]])
+    var s = sketch_of(editor, id)
+    assert(added[line_kind] == 1 and near(line_length(s, last_of(s, line_kind)), 20.0))
+    # Center Rectangle: four sides and a construction diagonal through the
+    # center.
+    added = drawn(editor, id, "Center Rectangle", [[45.0, 0.0], [55.0, 5.0]])
+    assert(added[line_kind] == 5)
+    added = drawn(editor, id, "Center Diameter Circle", [[80.0, 0.0], [86.0, 0.0]])
+    s = sketch_of(editor, id)
+    assert(added[circle_kind] == 1 and near(s.radius(last_of(s, circle_kind)), 6.0))
+    added = drawn(editor, id, "2-Point Circle", [[100.0, 0.0], [112.0, 0.0]])
+    s = sketch_of(editor, id)
+    let two = last_of(s, circle_kind)
+    assert(added[circle_kind] == 1 and near(s.radius(two), 6.0) and near(s.x(s.part(two, 0)), 106.0))
+    # Arcs: through three points; about a center from a start toward a
+    # third click.
+    added = drawn(editor, id, "3-Point Arc", [[0.0, 30.0], [20.0, 30.0], [10.0, 40.0]])
+    s = sketch_of(editor, id)
+    assert(added[arc_kind] == 1 and near(s.radius(last_of(s, arc_kind)), 10.0))
+    added = drawn(editor, id, "Center Point Arc", [[50.0, 30.0], [60.0, 30.0], [50.0, 40.0]])
+    s = sketch_of(editor, id)
+    assert(added[arc_kind] == 1 and near(s.radius(last_of(s, arc_kind)), 10.0))
+    # Polygons: six sides round a construction circle of radius 10 (its
+    # sides 2 · 10 · tan 30°), or on a side's two ends.
+    added = drawn(editor, id, "Circumscribed Polygon", [[90.0, 30.0], [100.0, 30.0]])
+    s = sketch_of(editor, id)
+    assert(added[line_kind] == 6 and added[circle_kind] == 1 and near(line_length(s, last_of(s, line_kind)), 20.0 * math.tan(math.pi / 6.0)))
+    added = drawn(editor, id, "Edge Polygon", [[0.0, 60.0], [10.0, 60.0]])
+    s = sketch_of(editor, id)
+    assert(added[line_kind] == 6 and near(line_length(s, last_of(s, line_kind)), 10.0))
+    # Slots: two sides, two round ends and a construction axis; an arc
+    # slot's outer, inner and two cap arcs about a construction centerline.
+    added = drawn(editor, id, "Center Point Slot", [[40.0, 60.0], [50.0, 60.0], [45.0, 63.0]])
+    assert(added[line_kind] == 3 and added[arc_kind] == 2)
+    added = drawn(editor, id, "Three Point Arc Slot", [[80.0, 60.0], [100.0, 60.0], [90.0, 70.0], [90.0, 73.0]])
+    assert(added[arc_kind] == 5)
+
+func modify_tools(editor: Luce3D, id: int) -> unit!:
+    let w = editor.workspace
+    let e = editor.panels.view.sketch.editor
+    let s = CadSketch.parse("")
+    _ = s.add_line(s.add_point(0.0, 0.0), s.add_point(30.0, 0.0))
+    _ = s.add_line(s.add_point(0.0, 0.0), s.add_point(0.0, 30.0))
+    let short = s.add_line(s.add_point(50.0, 0.0), s.add_point(60.0, 0.0))
+    _ = s.add_line(s.add_point(80.0, -10.0), s.add_point(80.0, 10.0))
+    _ = s.add_line(s.add_point(50.0, 30.0), s.add_point(90.0, 30.0))
+    _ = s.add_line(s.add_point(70.0, 20.0), s.add_point(70.0, 40.0))
+    let moved = s.add_circle(s.add_point(120.0, 0.0), 5.0)
+    let scaled = s.add_circle(s.add_point(150.0, 0.0), 5.0)
+    let round = s.add_circle(s.add_point(120.0, 50.0), 3.0)
+    let along = s.add_circle(s.add_point(0.0, 60.0), 2.0)
+    _ = s.add_line(s.add_point(0.0, 90.0), s.add_point(20.0, 90.0))
+    _ = s.add_line(s.add_point(40.0, 100.0), s.add_point(60.0, 100.0))
+    _ = s.add_line(s.add_point(80.0, 90.0), s.add_point(100.0, 90.0))
+    _ = s.add_line(s.add_point(120.0, 100.0), s.add_point(140.0, 100.0))
+    let p1 = s.add_line(s.add_point(100.0, 70.0), s.add_point(120.0, 72.0))
+    let p2 = s.add_line(s.add_point(100.0, 80.0), s.add_point(120.0, 85.0))
+    node_commands.set_text(w, 0, s.text())
+    render(editor)
+    # 2-Tangent Circle: two lines, then where (as big as the nearer line is
+    # far): radius 8 at (8, 8).
+    var added = drawn(editor, id, "2-Tangent Circle", [[15.0, 0.0], [0.0, 15.0], [8.0, 9.0]])
+    var now = sketch_of(editor, id)
+    let touching = last_of(now, circle_kind)
+    assert(added[circle_kind] == 1 and near(now.radius(touching), 8.0))
+    # Extend runs the short line on to the wall at x 80.
+    e.choose("Extend")
+    click(editor, 58.0, 0.0)
+    now = sketch_of(editor, id)
+    assert(near(math.max(now.x(now.part(short, 0)), now.x(now.part(short, 1))), 80.0))
+    # Break splits the line at y 30 where x 70 crosses it.
+    let lines = kind_counts(now)[line_kind]
+    e.choose("Break")
+    click(editor, 60.0, 30.0)
+    assert(kind_counts(sketch_of(editor, id))[line_kind] == lines + 1)
+    # Move/Copy: the picked circle from its center 20 up; Shift copies.
+    e.selection = [moved]
+    added = drawn(editor, id, "Move/Copy", [[120.0, 0.0], [120.0, 20.0]])
+    now = sketch_of(editor, id)
+    assert(added[circle_kind] == 0 and near(now.y(now.part(moved, 0)), 20.0))
+    e.selection = [moved]
+    e.choose("Move/Copy")
+    click(editor, 120.0, 20.0, shift = true)
+    click(editor, 130.0, 20.0, shift = true)
+    assert(kind_counts(sketch_of(editor, id))[circle_kind] == kind_counts(now)[circle_kind] + 1)
+    # Sketch Scale: about its center, a point to twice as far (clear of
+    # the circle: clicks snap within 9 points).
+    e.selection = [scaled]
+    _ = drawn(editor, id, "Sketch Scale", [[150.0, 0.0], [150.0, 20.0], [150.0, 40.0]])
+    assert(near(sketch_of(editor, id).radius(scaled), 10.0))
+    # The Patterns: six round a center (five copies), three along a step
+    # (two copies).
+    e.selection = [round]
+    added = drawn(editor, id, "Circular Pattern", [[140.0, 50.0]])
+    assert(added[circle_kind] == 5)
+    e.selection = [along]
+    added = drawn(editor, id, "Rectangular Pattern", [[0.0, 60.0], [10.0, 60.0]])
+    assert(added[circle_kind] == 2)
+    # Blend Curve: a quintic between two lines' near ends.
+    added = drawn(editor, id, "Blend Curve G1", [[19.0, 90.0], [41.0, 100.0]])
+    assert(added[spline_kind] == 1)
+    added = drawn(editor, id, "Blend Curve G2", [[99.0, 90.0], [121.0, 100.0]])
+    assert(added[spline_kind] == 1)
+    # Parallel by clicks: the second line turns to the first's way.
+    e.selection = []
+    e.choose("Parallel")
+    click(editor, 110.0, 71.0)
+    click(editor, 110.0, 82.5)
+    now = sketch_of(editor, id)
+    let ax = now.x(now.part(p1, 1)) - now.x(now.part(p1, 0))
+    let ay = now.y(now.part(p1, 1)) - now.y(now.part(p1, 0))
+    let bx = now.x(now.part(p2, 1)) - now.x(now.part(p2, 0))
+    let by = now.y(now.part(p2, 1)) - now.y(now.part(p2, 0))
+    assert(math.abs(ax * by - ay * bx) <= 1e-6 * math.hypot(ax, ay) * math.hypot(bx, by))
+
+## Each constraint tool on its picks makes its constraint; picks that do
+## not fit, or are too few, say so; Fix/UnFix takes a fix away again.
+func constraint_tools() -> unit!:
+    let s = CadSketch.parse("")
+    let a = s.add_point(0.0, 0.0)
+    let b = s.add_point(0.1, 0.1)
+    let l1 = s.add_line(s.add_point(0.0, 10.0), s.add_point(10.0, 10.0))
+    let l2 = s.add_line(s.add_point(0.0, 20.0), s.add_point(10.0, 21.0))
+    let c1 = s.add_circle(s.add_point(30.0, 0.0), 4.0)
+    let c2 = s.add_circle(s.add_point(30.5, 0.2), 6.0)
+    let spline = s.add_spline([s.add_point(10.0, 10.0), s.add_point(15.0, 12.0), s.add_point(20.0, 15.0), s.add_point(25.0, 20.0)], false)
+    for (tool, picks, kind) in [("Coincident", [a, b], coincident), ("Coincident", [l1, a], on_curve), ("Tangent", [l1, c1], tangent), ("Equal", [l1, l2], equal),
+                                ("MidPoint", [a, l1], midpoint), ("Concentric", [c1, c2], concentric), ("Collinear", [l1, l2], collinear),
+                                ("Symmetry", [a, b, l1], symmetric), ("Parallel", [l1, l2], parallel), ("Curvature", [spline, l1], curvature)]:
+        let made = sketch_constrain.constrain_picks(s, tool, picks)
+        assert(made >= 0 and s.constraint_kind(made) == kind)
+        s.unconstrain(made)
+    assert(sketch_constrain.constrain_picks(s, "Parallel", [l1]) == sketch_constrain.more_picks)
+    assert(sketch_constrain.constrain_picks(s, "Concentric", [l1, l2]) == sketch_constrain.no_fit)
+    let fixed = sketch_constrain.constrain_picks(s, "Fix/UnFix", [a])
+    assert(fixed >= 0 and s.constraint_kind(fixed) == fix)
+    assert(sketch_constrain.constrain_picks(s, "Fix/UnFix", [a]) == sketch_constrain.unfixed and s.constraint_count() == 0)
+    # Sketch Dimension measures what it is given.
+    let length = sketch_constrain.measure(s, [l1])
+    assert(length >= 0 and near(s.constraint_value(length), 10.0))
+    let apart = sketch_constrain.measure(s, [a, b])
+    assert(apart >= 0 and near(s.constraint_value(apart), math.hypot(0.1, 0.1)))

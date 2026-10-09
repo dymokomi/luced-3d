@@ -1,0 +1,82 @@
+## What the sketch editor's tests share: a fresh Sketch node looked at
+## from above, clicks and keys as a user gives them, and readings of what
+## the node holds.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_cad.sketch import CadSketch
+from view_projection import project
+import node_commands
+from luce_std import math
+from luce_gpu.gpu import Frame
+from luce_window import window
+
+## A new Sketch node in a new CAD node, displayed and looked at straight
+## down, the view `distance` away round sketch point (`x`, `y`); grid
+## snapping off so clicks land where tests put them. The node's id.
+pub func open_sketch(editor: Luce3D, x: float, y: float, distance: float) -> int!:
+    let w = editor.workspace
+    w.snaps.flags[1] = false
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Sketch", 0.0, 0.0)
+    let id = w.network.selected
+    node_commands.display_selected(w)
+    render(editor)
+    w.view.yaw = 0.0
+    w.view.pitch = 1.5
+    w.view.distance = distance
+    w.view.target = editor.panels.view.sketch.editor.frame.at(x, y)
+    w.view.update_camera()
+    render(editor)
+    return id
+
+## A frame drawn, as the app draws one (the panels refreshed first).
+pub func render(editor: Luce3D) -> unit!:
+    editor.panels.refresh()
+    let frame = Frame(window.Size(1600.0, 1000.0, 1600.0, 1000.0, 1.0))
+    editor.app.layout(1600.0, 1000.0)
+    editor.app.render(frame.target())
+    frame.close()
+
+## Click the viewport at sketch point (`x`, `y`) of the editor's plane
+## (`shift`: Shift held).
+pub func click(editor: Luce3D, x: float, y: float, shift: bool = false) -> unit!:
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    let f = view.sketch.editor.frame
+    let s = project(editor.workspace, f.at(x, y), bounds.width, bounds.height)
+    for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+        editor.app.dispatch(Event(kind = kind, x = bounds.x + s[0], y = bounds.y + s[1], button = 0, shift = shift))
+
+pub func key(editor: Luce3D, pressed: Key) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = pressed))
+
+pub func near(a: float, b: float) -> bool:
+    return math.abs(a - b) <= 1e-5 * math.max(1.0, math.abs(b))
+
+## The sketch node `id` holds now.
+pub func sketch_of(editor: Luce3D, id: int) -> CadSketch!:
+    return CadSketch.parse(editor.workspace.network.require(id).texts[0])
+
+## How many entities of each kind (sketch_kinds' numbers) `s` has.
+pub func kind_counts(s: CadSketch) -> list[int]:
+    let counts = [0, 0, 0, 0, 0, 0, 0, 0]
+    for at in 0..<s.entity_count():
+        counts[s.kind(at)] += 1
+    return counts
+
+## The last entity of kind `kind`, or -1.
+pub func last_of(s: CadSketch, kind: int) -> int:
+    var found = -1
+    for at in 0..<s.entity_count():
+        if s.kind(at) == kind:
+            found = at
+    return found
+
+## Line `line`'s length.
+pub func line_length(s: CadSketch, line: int) -> float:
+    let a = s.part(line, 0)
+    let b = s.part(line, 1)
+    return math.hypot(s.x(b) - s.x(a), s.y(b) - s.y(a))
