@@ -75,6 +75,14 @@ let count = k.i32("count", 4)
 let target = k.vec3("target", [0.0, 1.0, 0.0, 0.0])
 ```
 
+A ramp (Houdini's `chramp`) is a curve or gradient you edit in the node's
+parameters. Code reads it at any `t` from 0 to 1:
+
+```luce
+let falloff = k.ramp("falloff", d / radius)      # a float ramp
+p.Cd = k.ramp_color("colors", p.P[1] / 2.0)       # a color ramp
+```
+
 `k.frame`, `k.time` and `k.fps` come from the timeline (`f64`). A node that
 reads them recooks when the frame changes; other nodes don't. Detail
 attributes are `k.detail_f32("name")` and the like. In Detail and Numbers
@@ -138,6 +146,10 @@ within the run, so run `n` can name the points run `n - 1` made.
 | Ranges | `lerp`, `clamp`, `fit`, `fit01`, `smooth`, `degrees`, `radians` |
 | Noise | `noise` (0 to 1, around 0.5) and `snoise` (-1 to 1), Perlin, in 1D (`noise1`), 2D, 3D and 4D, `f32` and `f64` |
 | Random | `rand(seed)`, `rand3(seed)` (a vector), `rand_stream(seed, stream)`, all repeatable for the same seed |
+| Math | `abs`, `sign`, `frac`, `rint`, `trunc`, `min`, `max`, `avg`, `sum`, `product`, `pow`, `exp`, `log`, `log10`, `cbrt`, `sinpi`/`cospi`/`tanpi`, `solvequadratic`, `solvecubic`, `distance_pointline`, `distance_pointsegment`, `distance_pointray`, `planepointdistance` |
+| Matrices | `Mat3`, `Mat4`: `identity`, `rotation(angle, axis)`, `scaling`, `translation`, `multiply`, `transposed`, `determinant`, `inverted`, `transform`/`transform_point`/`transform_vector`, `rotate`, `scale`, `translate`; `maketransform`, `cracktransform`, `lookat`, `dihedral`, `polardecomp`. Row vectors as in VEX: `a.multiply(b)` applies `a` first |
+| Quaternions | `Quat`, `quaternion(angle, axis)`, `qmultiply`, `qrotate`, `qinvert`, `slerp`, `eulertoquaternion`, `quaterniontoeuler` |
+| Splines | `efit`, `fit10`, `fit11`, `invlerp`, `lspline`, `cspline`, `kspline`, `spline` (keys in an `f32[16]` with a count) |
 
 Helper functions go in the **Header** below the code:
 
