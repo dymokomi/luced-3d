@@ -2,27 +2,37 @@
 ## modify, D (in a sketch) its constraints, as a grid of icons around the
 ## pointer, taller than wide and split left and right of it so the pointer
 ## starts on none. It shows while the key is held: click an icon to use
-## it; letting the key go, Esc or a click outside closes it. What the items are is marking_items.luc's.
-from luce_ui.ui import Painter, Event
+## it; letting the key go, Esc or a click outside closes it. A family of
+## tools (the rectangles) is one icon, the one used last: a click uses it,
+## a long press shows them all above it to pick from. What the items are is
+## marking_items.luc's.
+from luce_ui.ui import Painter, Event, Point
+import time
 from luce_gpu.gpu import Rect
 from luce_window.input import EventKind, Key
 from luce_std import math
 from luce_ui import ui
 import theme
 
-## One icon of a marking menu: its name, icon (a luciaos-assets name), whether it
-## can be used now, and what using it does.
+## One icon of a marking menu: its name, icon (a luciaos-assets name),
+## whether it can be used now, and what using it does; or a family's: its
+## `variants`, one used at a time.
 pub class MarkItem:
     pub let name: str
     pub let icon: str
     pub let enabled: bool
     pub let run: func() -> unit!
+    pub let variants: list[MarkItem]
 
-    pub func init(self, name: str, icon: str, enabled: bool, run: func() -> unit!):
+    pub func init(self, name: str, icon: str, enabled: bool, run: func() -> unit!, variants: list[MarkItem] = []):
         self.name = name
         self.icon = icon
         self.enabled = enabled
         self.run = run
+        self.variants = variants
+
+## How long a press on a family opens its variants (nanoseconds).
+let long_press = 350000000
 
 ## A cell's size and the gap left around the pointer.
 let cell = 44.0
@@ -40,9 +50,18 @@ pub class MarkingMenu:
     var x: float = 0.0
     var y: float = 0.0
     pub var hover: int = -1
+    ## A family pressed (its item) and since when; its variants shown (the
+    ## item, -1 none) and the one under the pointer.
+    var pressing: int = -1
+    var pressed_at: int = 0
+    pub var family: int = -1
+    var family_hover: int = -1
+    ## Each family's variant used last, by the family's name.
+    let chosen: map[str, int]
 
     pub func init(self):
         self.items = []
+        self.chosen = {}
 
     pub func is_open(self) -> bool:
         return self.opened
@@ -60,6 +79,49 @@ pub class MarkingMenu:
     pub func close(self):
         self.opened = false
         self.hover = -1
+        self.pressing = -1
+        self.family = -1
+        self.family_hover = -1
+
+    ## What item `at` does on a click: itself, or its family's variant
+    ## used last.
+    func shown(self, at: int) -> MarkItem:
+        let item = self.items[at]
+        if item.variants.length == 0:
+            return item
+        let index = self.chosen[item.name] else return item.variants[0]
+        return item.variants[index] if index < item.variants.length else item.variants[0]
+
+    ## A press held long enough on a family opens its variants (the
+    ## viewport polls; `now` the time). Whether to draw again.
+    pub func poll(self, now: int) -> bool:
+        if self.opened and self.pressing >= 0 and self.family < 0 and now - self.pressed_at >= long_press:
+            self.family = self.pressing
+            return true
+        return false
+
+    ## Variant `at` of the family shown: its cell, a row centered above the
+    ## family's own.
+    func variant_cell(self, at: int, width: float, height: float) -> Rect:
+        let base = self.cell_of(self.family, width, height)
+        let count = self.items[self.family].variants.length
+        let left = base.x + cell * 0.5 - float(count) * cell * 0.5
+        let x = math.max(4.0, math.min(width - float(count) * cell - 4.0, left))
+        return Rect(x + float(at) * cell, base.y - cell - 8.0, cell, cell)
+
+    ## Variant `at`'s center (tests point at it).
+    pub func variant_center(self, at: int, width: float, height: float) -> list[float]:
+        let r = self.variant_cell(at, width, height)
+        return [r.x + r.width * 0.5, r.y + r.height * 0.5]
+
+    func variant_at(self, px: float, py: float, width: float, height: float) -> int:
+        if self.family < 0:
+            return -1
+        for at in 0..<self.items[self.family].variants.length:
+            let r = self.variant_cell(at, width, height)
+            if px >= r.x and px < r.x + r.width and py >= r.y and py < r.y + r.height:
+                return at
+        return -1
 
     ## Columns each side of the pointer: one for up to 8 icons, two for up
     ## to 24, then three.
@@ -111,15 +173,32 @@ pub class MarkingMenu:
         let right = self.cell_of(2 * self.side_columns() - 1, width, height)
         let top = first.y - 30.0
         painter.rounded_rectangle(Rect(first.x - 6.0, top, right.x + cell - first.x + 12.0, last.y + cell - top + 6.0), theme.surface(), 6.0)
-        let label = self.items[self.hover].name if self.hover >= 0 else self.title
+        let label = self.shown(self.hover).name if self.hover >= 0 else self.title
         painter.text(label, first.x + 4.0, top + 6.0, theme.text() if self.hover >= 0 else theme.text_muted())
         for at in 0..<self.items.length:
-            let item = self.items[at]
+            let item = self.shown(at)
             let r = self.cell_of(at, width, height)
-            if at == self.hover and item.enabled:
+            if (at == self.hover or at == self.family) and item.enabled:
                 painter.rounded_rectangle(Rect(r.x + 2.0, r.y + 2.0, cell - 4.0, cell - 4.0), theme.accent(), 4.0)
-            let ink = theme.grey(0.0) if at == self.hover and item.enabled else (theme.text() if item.enabled else theme.grey(100.0))
+            let ink = theme.grey(0.0) if (at == self.hover or at == self.family) and item.enabled else (theme.text() if item.enabled else theme.grey(100.0))
             ui.draw_icon(painter.target(), item.icon, Rect(r.x + 10.0, r.y + 10.0, 24.0, 24.0), ink)
+            # A family: a mark in its corner (press long for the others).
+            if self.items[at].variants.length > 0:
+                painter.mesh([Point(r.x + cell - 5.0, r.y + cell - 13.0), Point(r.x + cell - 5.0, r.y + cell - 5.0), Point(r.x + cell - 13.0, r.y + cell - 5.0)], ink)
+        # A family's variants, in a row above it.
+        if self.family >= 0:
+            let variants = self.items[self.family].variants
+            let first_variant = self.variant_cell(0, width, height)
+            painter.rounded_rectangle(Rect(first_variant.x - 4.0, first_variant.y - 4.0, float(variants.length) * cell + 8.0, cell + 8.0), theme.surface_raised(), 6.0)
+            for at in 0..<variants.length:
+                let v = variants[at]
+                let r = self.variant_cell(at, width, height)
+                if at == self.family_hover and v.enabled:
+                    painter.rounded_rectangle(Rect(r.x + 2.0, r.y + 2.0, cell - 4.0, cell - 4.0), theme.accent(), 4.0)
+                let ink = theme.grey(0.0) if at == self.family_hover and v.enabled else (theme.text() if v.enabled else theme.grey(100.0))
+                ui.draw_icon(painter.target(), v.icon, Rect(r.x + 10.0, r.y + 10.0, 24.0, 24.0), ink)
+            if self.family_hover >= 0:
+                painter.text(variants[self.family_hover].name, first.x + 4.0, top + 6.0, theme.text())
 
     ## Its events while open (true: taken), and its key's until it is let
     ## go (its repeats must not reach a tool's letter). Opening is the
@@ -138,27 +217,58 @@ pub class MarkingMenu:
             return true
         if event.kind == EventKind.pointer_moved:
             self.hover = self.item_at(event.x, event.y, width, height)
+            self.family_hover = self.variant_at(event.x, event.y, width, height)
             return true
         # Let go: it goes away.
         if event.kind == EventKind.key_up and event.key == self.key:
             self.close()
             self.held = false
             return true
-        # A click on a tool uses it; elsewhere, nothing. Either way it goes.
+        # A click on a tool uses it (a family: wait, a long press shows
+        # its variants); elsewhere nothing. Either way it goes.
         if event.kind == EventKind.pointer_down:
+            let variant = self.variant_at(event.x, event.y, width, height)
+            if variant >= 0:
+                self.held = true
+                self.use_variant(self.family, variant)
+                return true
             let at = self.item_at(event.x, event.y, width, height)
+            if at >= 0 and self.items[at].variants.length > 0:
+                self.pressing = at
+                self.pressed_at = time.now()
+                self.family = -1
+                return true
             self.held = true
             if at >= 0:
-                self.use(at)
+                self.use(self.shown(at))
             else:
                 self.close()
             return true
+        # A family let go: before the long press, its last variant; after,
+        # the variant under the pointer (else they stay up to click).
+        if event.kind == EventKind.pointer_up and self.pressing >= 0:
+            let at = self.pressing
+            self.pressing = -1
+            if self.family < 0:
+                self.held = true
+                self.use(self.shown(at))
+                return true
+            let variant = self.variant_at(event.x, event.y, width, height)
+            if variant >= 0:
+                self.held = true
+                self.use_variant(at, variant)
+            return true
         return event.kind in [EventKind.pointer_up, EventKind.key_down, EventKind.key_up, EventKind.scroll]
 
-    func use(self, at: int) -> unit!:
-        let item = self.items[at]
+    func use(self, item: MarkItem) -> unit!:
         if not item.enabled:
             return
         self.close()
         let run = item.run
         run()
+
+    ## Variant `variant` of family item `at`: used, and remembered.
+    func use_variant(self, at: int, variant: int) -> unit!:
+        let family = self.items[at]
+        self.chosen[family.name] = variant
+        self.use(family.variants[variant])
