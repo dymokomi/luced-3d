@@ -1,6 +1,6 @@
 ## The Script node's second round: Time Dependent inferred from the code and
 ## overridden by its row; an unchanged input's file kept between cooks; the
-## check while typing; the disk cache kept to its limit; and packages resolved
+## check, completion and hover while typing; the disk cache kept to its limit; and packages resolved
 ## as the editor's own build resolved them (a registry-named package in a
 ## workspace of checkouts takes the checkout, so luce-std comes in once).
 from luce_std import files, paths, process, math
@@ -13,6 +13,7 @@ import timeline_commands
 import code_cook
 import thread
 from script_check import ScriptChecker
+from luce_geocore.geocore import ScriptHelp
 from script_packages import editor_packages, dependencies
 import time
 
@@ -30,6 +31,7 @@ pub func script_edit_tests() -> unit!:
     time_tests()
     input_tests()
     check_tests()
+    help_tests()
     cache_tests()
     package_tests()
 
@@ -93,7 +95,7 @@ func input_tests() -> unit!:
     scripts.close()
     print(f"PASS script keeps an unchanged input's file: {w.network.require(id).console.split("\n")[0]}")
 
-## `luc check` at a pause: an error at its line, then a clean text.
+## The check at a pause, in process: an error at its line, then a clean text.
 func check_tests() -> unit!:
     let checker = ScriptChecker()
     let broken = "from luce_geocore.script import Cook\n\npub func cook(k: Cook*) -> !:\n    let x: i64 = \"text\"\n"
@@ -101,12 +103,59 @@ func check_tests() -> unit!:
     finish(checker)
     assert(checker.failure.contains("line 4, column"), checker.failure)
     let failed_in = checker.seconds
-    # A newer check stops the older one.
-    checker.start(broken, "", "", "")
     checker.start(broken.replace("let x: i64 = \"text\"", "k.warning(\"fine\")"), "", "", "")
     finish(checker)
     assert(checker.failure == "", checker.failure)
-    print(f"PASS script check while typing: an error at its line in {failed_in} s, clean in {checker.seconds} s")
+    let clean_in = checker.seconds
+    # A keystroke's check, once the packages are kept.
+    var total = 0.0
+    for i in 0..<20:
+        checker.start(broken.replace("let x: i64 = \"text\"", f"k.warning(\"fine {i}\")"), "", "", "")
+        finish(checker)
+        total += checker.seconds
+    print(f"PASS script check while typing: an error at its line in {format_ms(failed_in)}, clean in {format_ms(clean_in)}, then {format_ms(total / 20.0)} a check")
+
+## Completion and hover on the node's check package, with luce-image as a
+## package: `k.` and `g.` list the API's members, a package's function shows
+## its signature and doc.
+func help_tests() -> unit!:
+    let checker = ScriptChecker()
+    let script = "from luce_geocore.script import Cook\nfrom luce_image.image import Image\n\npub func cook(k: Cook*) -> !:\n    let g = k.geometry()\n    let opened = try Image.open(k.file(\"image\", \"a.jpg\"))\n    let image = try opened.get()\n    print(f\"{try image.width()} {g.point_count()}\")\n"
+    let file = checker.prepare("luce-image", "", "")
+    checker.start(script, "luce-image", "", "")
+    finish(checker)
+    assert(checker.failure == "", checker.failure)
+    let k = labels(file, script + "    k.", 9, 7)
+    for name in ["geometry", "input", "f32", "set_geometry", "warning"]:
+        assert(name in k, f"k. lacks {name}: {k}")
+    let g = labels(file, script + "    g.", 9, 7)
+    for name in ["positions", "add_point", "add_volume", "point_count"]:
+        assert(name in g, f"g. lacks {name}: {g}")
+    let image = labels(file, script + "    image.", 9, 11)
+    for name in ["width", "height", "get_sample"]:
+        assert(name in image, f"image. lacks {name}: {image}")
+    let started = time.now()
+    let hovered = ScriptHelp.hover(file, script, 6, 29)
+    let hover_in = float(time.now() - started) / 1000000000.0
+    assert(hovered.starts_with("open(path: str"), hovered)
+    assert(hovered.contains("\nRead the file now"), hovered)
+    # Underlined at its line.
+    let broken = script.replace("g.point_count()", "g.point_total()")
+    checker.start(broken, "luce-image", "", "")
+    finish(checker)
+    assert(checker.failure.starts_with("line 8, column"), checker.failure)
+    print(f"PASS script completion and hover: k., g., a luce-image value, Image.open's doc (hover {format_ms(hover_in)})")
+
+## The labels completion gives at `line`, `column` of `text`.
+func labels(file: str, text: str, line: int, column: int) -> list[str]!:
+    let found = ScriptHelp.complete(file, text, line, column)
+    let result: list[str] = []
+    for at in 0..<found.count():
+        result.append(found.label(at))
+    return result
+
+func format_ms(seconds: float) -> str:
+    return f"{math.round(seconds * 100000.0) / 100.0} ms"
 
 func finish(checker: ScriptChecker) -> unit!:
     let deadline = time.now() + 60000000000

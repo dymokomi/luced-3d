@@ -3,9 +3,10 @@
 ## typed goes to the node as one undo step when typing pauses, when the
 ## editor loses focus, or on Cmd/Ctrl+Enter: not every keystroke. Completions
 ## and hover text come from luce-geocore's Code.complete and Code.hover, which
-## read the API's docs from its stubs.
+## read the API's docs from its stubs; a Script node's from ScriptHelp, which
+## reads its script's check package (script_check.luc).
 from luce_ui.ui import TextEditor, Highlight, Font, Diagnostic, Severity, CompletionList, CompletionKind
-from luce_geocore.geocore import Code
+from luce_geocore.geocore import Code, ScriptHelp
 from luce_gpu.gpu import Color
 from luce_textmate.textmate import Grammar, Tokenizer
 from interop import Connection
@@ -35,9 +36,9 @@ pub class CodeEditor:
     pub var run_over: int = 1
     pub var part: int = 0
     pub var partner: CodeEditor? = none
-    ## Whether completion and hover answer (the Code node's API; off for a
-    ## Script node, whose imports the checker cannot reach yet).
-    pub var assist: bool = true
+    ## For a Script node, the script file of its check package, which
+    ## completion and hover read ("" the Code node's API).
+    pub var script_file: str = ""
     let connections: list[Connection]
 
     pub func init(self, font: Font) -> unit!:
@@ -124,20 +125,18 @@ pub class CodeEditor:
     ## What may come at the caret: the members after a dot, else the locals, the
     ## header's helpers, the lib and the keywords.
     func complete(self, items: CompletionList) -> unit!:
-        if not self.assist:
-            return
         let line = self.line_of(items.caret())
         let column = items.caret() - self.editor.line_start(items.caret()) + 1
-        let found = Code.complete(self.run_over, self.header_text(), self.body_text(), self.part, line, column)
+        let found = ScriptHelp.complete(self.script_file, self.editor.text(), line, column) if self.script_file != "" else Code.complete(self.run_over, self.header_text(), self.body_text(), self.part, line, column)
         for at in 0..<found.count():
             let detail = found.detail(at)
             items.add(found.label(at), completion_kind(found.kind(at), detail), detail, found.doc(at))
 
     ## The signature and doc of the word at `offset`, or "".
     func hover(self, offset: int) -> str!:
-        if not self.assist:
-            return ""
         let column = offset - self.editor.line_start(offset) + 1
+        if self.script_file != "":
+            return ScriptHelp.hover(self.script_file, self.editor.text(), self.line_of(offset), column)
         return Code.hover(self.run_over, self.header_text(), self.body_text(), self.part, self.line_of(offset), column)
 
     ## The 1-based line of `offset`.

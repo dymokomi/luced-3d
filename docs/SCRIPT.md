@@ -161,7 +161,10 @@ How the viewport draws a fog grid is its look, which the Volume
 Visualization node sets and a script can too: `fog.set_look(density = 8.0,
 shadow = 0.4, smoke = tint, emission = 2.0, emission_field = "heat")`, and
 `fog.set_emission_ramp(numbers, low, high)` for an emission color ramp
-(luce-std ramp numbers). `fog.look()` reads it back.
+(luce-std ramp numbers). The ramp reads the emission field's values, or with
+`emission_color_field = "temperature"` another grid's (Houdini's Emission
+Color Field: one grid says how bright, another which color). `fog.look()`
+reads it back.
 
 ## Verbs
 
@@ -204,10 +207,16 @@ changed since the node's last cook is not written again (the status line says
 
 ## Errors
 
-While you type, a pause runs a check of the code (`luc check`, about 0.1 s)
-in the background: an error is underlined at its line and the node does not
-build or cook until the code checks clean (Cmd/Ctrl+Enter, or leaving the
-editor, sends it anyway).
+While you type, a pause checks the code: an error is underlined at its line
+and the node does not build or cook until the code checks clean
+(Cmd/Ctrl+Enter, or leaving the editor, sends it anyway).
+
+The check runs inside the editor, on a small package it keeps for each set of
+Packages (the same dependencies the build takes, under
+`~/.luce/scripts/check`). The first check of a set reads and checks its
+packages, about 0.1 s; the editor keeps them checked, so each later check
+takes well under a millisecond. A set with registry packages is fetched
+once (`luc sync`) before its first check.
 
 A build error, a trap (`index out of bounds`), `k.error` and an error the
 script raises itself (`error(code, "...")`) name the line and column of the
@@ -216,8 +225,16 @@ passed up underlines the script's line that called into the package
 (luce-base's `failure.called_at`) and says where it was raised: *line 4,
 column 5: the file could not be opened (raised at luce_geocore/src/...)*.
 
-## Not yet
+## Completion and hover
 
-- Completion and hover: the editor's help reads the Code node's API; it
-  cannot see a script's imports until luce-base's `embed.Library` checks
-  package modules.
+The same check answers completion and hover. After a dot, completion lists
+the members of what is before it: `k.` the cook's, `g.` a `Geometry`'s, a
+`VoxelGrid`'s or a `Verb`'s, `Verb.` and `Geometry.` their static functions,
+and the members of any imported package's types and modules (an `Image` of
+luce-image, `math.` of luce-std). Elsewhere it lists the locals in scope,
+the imports, the script's own functions and the keywords. Each item shows its
+signature and its `##` doc, read from the package's source. Hover shows the
+same for the word under the pointer, and a local's type.
+
+A line still being typed is set aside while completing; when the rest does
+not check either, the last check that did answers for the names it knew.
