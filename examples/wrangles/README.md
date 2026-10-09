@@ -36,3 +36,5 @@ an error, and the program writes these files again.
 | `pc_smooth` | Point-cloud smoothing in one call: `k.input(0).pcopen(p.P, radius, 20).filter_vec3("P")`, VEX's pcfilter, two passes. |
 | `shrink_wrap` | A grid wrapped onto a signed distance field in the second input, stepping each point back along the field's gradient by its distance (`volume_gradient`, `volume_sample`). |
 | `console` | A Detail run printing the input's size to the node's console (`k.printf`) and warning when it is large (`k.warning`). Select the Code node to read it. |
+| `names` | Texts: faces named by quadrant (`k.sprintf`, `f.set_text`), colored by the number read back from the name (`slice`, `to_i32`), and one quadrant deleted downstream by a Blast of `@name=quad_2`. |
+| `median` | Arrays: spiky terrain cleaned by the median height of each point's neighborhood across the grid's edges (`k.floats`, `append`, `sort`), which drops spikes a mean would only smear. |

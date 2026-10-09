@@ -196,6 +196,22 @@ The whole of Base's arithmetic, `if`/`elif`/`else`, `while` and `for` loops,
 memory allocation, threads, files and calling native code: anything that
 could crash the editor. Code that uses them gets an error at its line.
 
+## Texts and arrays
+
+Texts are values of up to 256 bytes: `k.text("literal")`, `k.sprintf("quad_%d",
+(f32)n)`, `k.itoa(n)`, or a text attribute (`p.text("name")`,
+`g.point_text(i, "name")`). Their methods are `length`, `equals`, `startswith`,
+`endswith`, `find`, `concat`, `replace`, `slice(start, end)` (negative counts
+from the end), `split_count`/`split(sep, index)`, `join`, `to_i32`, and `to_f32`.
+Write one with `p.set_text("name", t)` or `k.set_point_text(i, "name", t)`;
+a face text named `name` drives groups downstream (`@name=quad_2`).
+
+Arrays hold up to 64 numbers or vectors: `k.floats()`, `k.ints()`, `k.vectors()`,
+then `append`, `insert`, `pop`, `remove`, `resize`, `reverse`, `slice`, `sort`,
+`argsort`, `find`, `len`, `at` and `set`. They are values: a changed array is a new
+one (`a = a.append(x)`). They live for one element's run; array attributes
+(Houdini's `f[]@`) are not stored yet.
+
 ## Messages
 
 `k.printf("point %d at %.2f\n", (f32)p.ptnum, p.P[0])` writes to the node's
