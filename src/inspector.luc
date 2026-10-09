@@ -19,7 +19,9 @@ import node_commands
 import cad_nodes
 import sketch_node
 import sketch_commands
+from sketch_commands import SketchDimension
 import units
+from angles import radians, degrees
 
 pub class Inspector:
     pub var on_browse: func() -> unit!? = none
@@ -50,8 +52,12 @@ pub class Inspector:
     var stage: Composition? = none
     var stage_key: str = ""
     var showing: int = -2
+    ## A Sketch node's dimensions, read once per text it has.
+    var dimensions_text: str = ""
+    var dimensions: list[SketchDimension]
 
     pub func init(self, workspace: Workspace, actions: Actions, font: Font) -> unit!:
+        self.dimensions = []
         self.workspace = workspace
         self.actions = actions
         self.connections = []
@@ -93,7 +99,7 @@ pub class Inspector:
         elif role == "dimension" or role == "angle_dimension":
             let node = self.workspace.selected() else return
             let value = self.parameters.value(index)
-            sketch_commands.set_dimension(self.workspace, node.id, row.slot, value * 0.017453292519943295 if role == "angle_dimension" else value)
+            sketch_commands.set_dimension(self.workspace, node.id, row.slot, radians(value) if role == "angle_dimension" else value)
 
     func acted(self, index: int) -> unit!:
         let role = self.roles[index]
@@ -178,10 +184,10 @@ pub class Inspector:
         # A sketch's dimensions, each a row in the document's unit (an
         # angle in degrees); its constraint is the row's slot.
         if kind == sketch_node.kind_name:
-            for d in sketch_commands.dimensions(path):
+            for d in self.sketch_dimensions(path):
                 let label = d.name + (" (driven)" if d.driven else "")
                 if d.angle:
-                    self.add(specs, "angle_dimension", ParameterSpec(name = d.name, label = label, value = d.value * 57.29577951308232, minimum = -360.0, maximum = 360.0, step = 1.0, decimals = 2, suffix = "°",
+                    self.add(specs, "angle_dimension", ParameterSpec(name = d.name, label = label, value = degrees(d.value), minimum = -360.0, maximum = 360.0, step = 1.0, decimals = 2, suffix = "°",
                                                                     doc = "An angle the sketch holds; change it and the sketch follows."), d.constraint)
                 else:
                     self.add(specs, "dimension", ParameterSpec(name = d.name, label = label, value = d.value, minimum = 0.0, maximum = 1000000.0, step = 1.0, decimals = 2, units = shown,
@@ -205,7 +211,7 @@ pub class Inspector:
         let changed = node.id != self.showing
         let file = node.kind == "File"
         let format = node_catalog.file_format(node.texts[0]) if file else ""
-        let key = f"{node.kind}|{format}|{self.compose(node.texts, node.source_revision) if format == "usd" else ""}|{sketch_key(node.kind, node.texts[0])}|{self.workspace.network.units}"
+        let key = f"{node.kind}|{format}|{self.compose(node.texts, node.source_revision) if format == "usd" else ""}|{self.sketch_key(node.kind, node.texts[0])}|{self.workspace.network.units}"
         if key != self.built:
             self.build(node.kind, node.texts[0])
             self.built = key
@@ -252,9 +258,9 @@ pub class Inspector:
             elif role == "keep_ids":
                 self.parameters.set_enabled(index, node.guard != 0)
             elif role == "dimension" or role == "angle_dimension":
-                for d in sketch_commands.dimensions(node.texts[0]):
+                for d in self.sketch_dimensions(node.texts[0]):
                     if d.constraint == row.slot:
-                        self.parameters.set_value(index, d.value * 57.29577951308232 if d.angle else d.value)
+                        self.parameters.set_value(index, degrees(d.value) if d.angle else d.value)
                         self.parameters.set_enabled(index, not d.driven)
         if node_catalog.places_children(node.kind):
             self.stats.set_text(f"{network.outputs(node.id).length} exposed children")
@@ -277,24 +283,30 @@ pub class Inspector:
             self.stage = composed
         return key
 
+    ## Sketch text `text`'s dimensions (none when it does not read).
+    func sketch_dimensions(self, text: str) -> list[SketchDimension]:
+        if text != self.dimensions_text:
+            self.dimensions_text = text
+            self.dimensions = sketch_commands.dimensions(text) catch failure:
+                recover []
+        return self.dimensions
+
+    ## What a Sketch node's dimension rows depend on: which constraints are
+    ## dimensions (their values refresh in place).
+    func sketch_key(self, kind: str, text: str) -> str:
+        if kind != sketch_node.kind_name:
+            return ""
+        let parts: list[str] = []
+        for d in self.sketch_dimensions(text):
+            parts.append(f"{d.constraint}{"a" if d.angle else ""}{"d" if d.driven else ""}")
+        return parts.join(",")
+
     pub func close(self):
         self.on_browse = none
         self.on_render = none
         for connection in self.connections:
             connection.disconnect()
         self.connections.clear()
-
-## What a Sketch node's dimension rows depend on: which constraints are
-## dimensions (their values refresh in place).
-func sketch_key(kind: str, text: str) -> str:
-    if kind != sketch_node.kind_name:
-        return ""
-    let found = sketch_commands.dimensions(text) catch failure:
-        recover []
-    let parts: list[str] = []
-    for d in found:
-        parts.append(f"{d.constraint}{"a" if d.angle else ""}{"d" if d.driven else ""}")
-    return parts.join(",")
 
 ## The panel's description of a catalog row.
 pub func spec_of(row: Parameter, shown: Unit) -> ParameterSpec:
