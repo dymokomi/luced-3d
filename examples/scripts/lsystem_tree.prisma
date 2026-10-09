@@ -1,0 +1,50 @@
+#prisma 4.0
+def luced3d "scene" {
+    int display = 2
+    int next_id = 3
+    bool preview = true
+    int scope = -1
+    int selected = 2
+    int take = 0
+    float64[4] time = [1, 1, 240, 24]
+    str units = "mm"
+    int version = 1
+    def network "nodes" {
+        def Script "n2" {
+            int edit_count = 0
+            bool enabled = true
+            str frozen = ""
+            int guard = 0
+            str[0] hidden = []
+            int id = 2
+            float64[2] inputs = [-1, -1]
+            str name = "Script 2"
+            int output = 1
+            float64[64] parameters = [30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 22.5, 0.080000000000000002, 0.029999999999999999, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            int parent = -1
+            float64[2] position = [0, 0]
+            float64[2] sources = [0, 0]
+            str[13] texts = ["", "## An L-system tree: rewrite a string, then walk it with a 3D turtle that\n## leaves a six-sided tube for every F, thinner the deeper the branch.\nfrom luce_std import math32\nfrom luce_geocore.script import Cook, Geometry, Domain3\nfrom luce_geocore.core.growing import Growing\n\n## The turtle: where it is, where it heads, its side direction and depth.\nstruct Turtle:\n    var at: f32[4]\n    var heading: f32[4]\n    var side: f32[4]\n    var depth: i64\n\npub func cook(k: Cook*) -> !:\n    let generations = k.i32(\"generations\", 4)\n    let angle = k.f32(\"angle\", 22.5) * math32.pi / 180.0\n    let length = k.f32(\"length\", 0.08)\n    let radius = k.f32(\"radius\", 0.03)\n    # Rewrite: F -> FF-[-F+F+F]+[+F-F-F].\n    var text = Growing[u8]()\n    try text.push('F')\n    for _ in 0..<generations:\n        var next = Growing[u8]()\n        for c in text.view():\n            if c == 'F':\n                for r in \"FF-[-F&F+F]+[+F^F-F]\".bytes: try next.push(r)\n            else:\n                try next.push(c)\n        text.close()\n        text = next\n    var g = try Geometry.empty()\n    var stack = Growing[Turtle]()\n    var t = Turtle(at = [0.0, 0.0, 0.0, 0.0], heading = [0.0, 1.0, 0.0, 0.0], side = [1.0, 0.0, 0.0, 0.0], depth = 0)\n    var tubes: i64 = 0\n    for c in text.view():\n        if c == 'F':\n            let end = t.at + t.heading * length\n            try tube(&g, t.at, end, t.heading, radius * math32.pow(0.8, (f32)t.depth))\n            t.at = end\n            tubes += 1\n        elif c == '+' or c == '-':\n            t.heading = turned(t.heading, t.side, angle if c == '+' else -angle)\n        elif c == '&' or c == '^':\n            let axis = cross(t.heading, t.side)\n            t.heading = turned(t.heading, axis, angle if c == '&' else -angle)\n            t.side = turned(t.side, axis, angle if c == '&' else -angle)\n        elif c == '[':\n            try stack.push(t)\n            t.depth += 1\n        elif c == ']':\n            stack.count -= 1\n            t = stack.items[stack.count]\n    # Color by height: brown trunk to green tips.\n    let colors = try g.point_vec3s(\"Cd\")\n    let positions = try g.positions_view()\n    for i in 0..<colors.length:\n        let h = positions[i].y / 2.5 if positions[i].y < 2.5 else 1.0\n        colors[i].x = 0.35 - 0.2 * h\n        colors[i].y = 0.2 + 0.5 * h\n        colors[i].z = 0.1\n    print(f\"{text.count} symbols, {tubes} tubes\")\n    try k.set_geometry(g)\n\n## A tube of six sides from `a` to `b` around `direction`.\nfunc tube(g: Geometry*, a: f32[4], b: f32[4], direction: f32[4], radius: f32) -> !:\n    let up: f32[4] = [0.0, 0.0, 1.0, 0.0] if direction[1] > 0.9 or direction[1] < -0.9 else [0.0, 1.0, 0.0, 0.0]\n    let u = normalized(cross(direction, up))\n    let v = cross(direction, u)\n    let first = g.point_count()\n    for ring in 0..<2:\n        let center = a if ring == 0 else b\n        for i in 0..<6:\n            let turn = (f32)i * math32.pi / 3.0\n            _ = try g.add_point(center + (u * math32.cos(turn) + v * math32.sin(turn)) * radius)\n    for i in 0..<6:\n        let j = (i + 1) % 6\n        let quad: i64[4] = [first + i, first + j, first + 6 + j, first + 6 + i]\n        _ = try g.add_polygon(quad)\n\nfunc cross(a: f32[4], b: f32[4]) -> f32[4]:\n    return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0], 0.0]\n\nfunc normalized(a: f32[4]) -> f32[4]:\n    let length = math32.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2])\n    return a * (1.0 / length) if length > 0.0 else a\n\n## `v` turned by `angle` about the unit `axis` (Rodrigues).\nfunc turned(v: f32[4], axis: f32[4], angle: f32) -> f32[4]:\n    let c = math32.cos(angle)\n    let s = math32.sin(angle)\n    let d = axis[0] * v[0] + axis[1] * v[1] + axis[2] * v[2]\n    return normalized(v * c + cross(axis, v) * s + axis * (d * (1.0 - c)))\n", "", "generations\t16\t1\t1\nangle\t17\t1\t0\nlength\t18\t1\t0\nradius\t19\t1\t0", "", "", "", "", "", "", "", "", ""]
+            bool time_dependent = false
+            bool visible = true
+            def recipes "edits" {
+            }
+        }
+    }
+    def takes "takes" {
+        def take "t0" {
+            str[1] cameras = [""]
+            float64[1] counts = [0]
+            float64[1] enabled = [1]
+            str[1] hidden = [""]
+            float64[1] ids = [2]
+            str name = "Main"
+            float64[0] transforms = []
+            float64[1] visible = [1]
+        }
+    }
+    def editor_view "view" {
+        float64[6] camera = [0.69999999999999996, 0.55000000000000004, 11.624434353819199, -0.045771181583404541, 2.2024424076080322, -0.47892105579376221]
+        float64[3] network = [1, 0, 0]
+    }
+}

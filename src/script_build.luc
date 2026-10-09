@@ -1,0 +1,287 @@
+## A Script node's code as a Luce Base tool package that luc builds: the node's
+## code byte for byte as src/script.lucb (so the compiler's lines are the
+## editor's), a generated main that serves cooks (luce-geocore's script.serve),
+## and a package.prisma naming luce-geocore, luce-std and the node's packages.
+## Each build lives in ~/.luce/scripts/build/<key>, the key covering the code,
+## the packages and their lock, the toolchain, the target and luce-geocore, so
+## an unchanged script never builds twice.
+##
+## Where luce-geocore comes from: LUCED_GEOCORE (a checkout's path), else the
+## checkout beside the luced-3d being run from source (its package.prisma in
+## the working directory), else the registry at the version this app was built
+## with. A package named bare ("luce-image") is taken from beside a checkout
+## luce-geocore when one is there, else from the registry.
+from luce_std import files, paths, process
+from luce_std.process import Command
+from luce_geocore.script import geocore_version
+from script_support import text_key, keep_tool
+import platform
+
+## Where Script builds and runs live: ~/.luce/scripts (LUC_HOME's when set).
+pub func scripts_home() -> str!:
+    if let home = process.variable("LUC_HOME"):
+        if home != "":
+            return paths.join(home, "scripts")
+    return paths.join(paths.join(files.home_directory(), ".luce"), "scripts")
+
+## A tool from the Luce toolchain: luc or luce-base, from the environment
+## (LUC, LUCE_BASE), else the first on PATH (the toolchain the user runs),
+## else where the installer puts it.
+pub func tool(name: str) -> str!:
+    let variable = "LUC" if name == "luc" else "LUCE_BASE"
+    if let given = process.variable(variable):
+        if given != "":
+            return given
+    let file = name + (".exe" if platform.windows else "")
+    let places: list[str] = []
+    if let search = process.variable("PATH"):
+        for place in search.split(";" if platform.windows else ":"):
+            if place != "":
+                places.append(place)
+    let home = files.home_directory()
+    places.append(paths.join(paths.join(paths.join(paths.join(home, "AppData"), "Local"), "luce"), "bin"))
+    places.append(paths.join(paths.join(home, ".local"), "bin"))
+    places.append(paths.join(paths.join(paths.join(home, ".local"), "luce"), "bin"))
+    for place in places:
+        let candidate = paths.join(place, file)
+        let kind = files.metadata(candidate).kind catch failure:
+            continue
+        if kind == files.FileKind.regular:
+            return candidate
+    return name
+
+## One dependency of a script tool: its package name, and either a path or a
+## registry owner and version requirement ("" the newest).
+pub class Dependency:
+    pub let name: str
+    pub let owner: str
+    pub let path: str
+    pub let version: str
+
+    pub func init(self, name: str, owner: str, path: str, version: str):
+        self.name = name
+        self.owner = owner
+        self.path = path
+        self.version = version
+
+    ## Its package.prisma block.
+    pub func block(self) -> str:
+        let source = f"        str path = \"{self.path}\"\n" if self.path != "" else (f"        str version = \"{self.version}\"\n" if self.version != "" else "")
+        return f"    def dependency \"{self.name}\" {{\n        str owner = \"{self.owner}\"\n{source}    }}\n"
+
+## luce-geocore: a checkout's path, or the registry at this app's version.
+pub func geocore_dependency() -> Dependency!:
+    if let given = process.variable("LUCED_GEOCORE"):
+        if given != "":
+            return Dependency("luce-geocore", "dymokomi", absolute(given), "")
+    let manifest = paths.join(process.current_directory(), "package.prisma")
+    let text = files.read_text(manifest) catch failure:
+        return Dependency("luce-geocore", "dymokomi", "", geocore_version)
+    if text.contains("def package \"luced-3d\""):
+        let path = dependency_path(text, "luce-geocore")
+        if path != "":
+            return Dependency("luce-geocore", "dymokomi", absolute(paths.join(process.current_directory(), path)), "")
+    return Dependency("luce-geocore", "dymokomi", "", geocore_version)
+
+## The `path` a manifest gives dependency `name`, or "".
+func dependency_path(manifest: str, name: str) -> str:
+    let at = manifest.index_of(f"def dependency \"{name}\"") else return ""
+    let rest = manifest[at..]
+    let end = rest.index_of("}") else return ""
+    let body = rest[..<end]
+    let key = body.index_of("str path = \"") else return ""
+    let value = body[key + 12..]
+    let close = value.index_of("\"") else return ""
+    return value[..<close]
+
+## The owner a package's manifest names ("dymokomi" when it names none).
+func manifest_owner(folder: str) -> str:
+    let text = files.read_text(paths.join(folder, "package.prisma")) catch failure:
+        return "dymokomi"
+    let at = text.index_of("str owner = \"") else return "dymokomi"
+    let value = text[at + 13..]
+    let close = value.index_of("\"") else return "dymokomi"
+    return value[..<close]
+
+## Every dependency of a script with `packages` (the node's Packages row:
+## entries apart by spaces or commas) in a project in `folder`.
+pub func dependencies(packages: str, folder: str) -> list[Dependency]!:
+    let geocore = geocore_dependency()
+    let result: list[Dependency] = [geocore]
+    # luce-std as luce-geocore takes it (scripts import luce_std too).
+    var std = Dependency("luce-std", "dymokomi", "", "")
+    if geocore.path != "":
+        let manifest = files.read_text(paths.join(geocore.path, "package.prisma")) catch failure:
+            recover ""
+        let path = dependency_path(manifest, "luce-std")
+        if path != "":
+            std = Dependency("luce-std", "dymokomi", absolute(paths.join(geocore.path, path)), "")
+    result.append(std)
+    for entry in packages.replace(",", " ").split(" "):
+        let item = entry.trim()
+        if item == "":
+            continue
+        let made = dependency_of(item, folder, geocore.path)
+        var known = false
+        for d in result:
+            if d.name == made.name:
+                known = true
+        if not known:
+            result.append(made)
+    return result
+
+## One Packages entry: a path (/..., ./..., ../..., ~/...), owner/name[@version],
+## name@version, or a bare name.
+func dependency_of(item: str, folder: str, geocore: str) -> Dependency!:
+    if item.starts_with("/") or item.starts_with(".") or item.starts_with("~"):
+        var path = item
+        if item.starts_with("~"):
+            path = files.home_directory() + item[1..]
+        elif not item.starts_with("/"):
+            path = paths.join(folder if folder != "" else process.current_directory(), item)
+        let full = absolute(path)
+        return Dependency(paths.base(full), manifest_owner(full), full, "")
+    var owner = "dymokomi"
+    var name = item
+    var version = ""
+    if let at = name.index_of("@"):
+        version = name[at + 1..]
+        name = name[..<at]
+    if let slash = name.index_of("/"):
+        owner = name[..<slash]
+        name = name[slash + 1..]
+    elif version == "" and geocore != "":
+        # Beside a checkout luce-geocore: the sibling checkout.
+        let sibling = paths.join(paths.directory(geocore), name)
+        let found = files.metadata(paths.join(sibling, "package.prisma")).kind catch failure:
+            return Dependency(name, owner, "", version)
+        if found == files.FileKind.regular:
+            return Dependency(name, manifest_owner(sibling), sibling, "")
+    return Dependency(name, owner, "", version)
+
+func absolute(path: str) -> str:
+    let canonical = files.canonical(path) catch failure:
+        return path
+    return canonical
+
+## A build of one script. The tool is kept under its key (`folder`); it is
+## built in a working project (`work`) a node keeps for one set of
+## dependencies, so an edit rebuilds incrementally (luce-base reuses the
+## unchanged pieces in the project's build folder) and only the tool is copied
+## out under the new key.
+pub class BuildPlan:
+    pub let key: str
+    pub let folder: str
+    pub let work: str
+    pub let program: str
+    pub let manifest: str
+    pub let code: str
+    pub let lock: str
+
+    pub func init(self, key: str, folder: str, work: str, manifest: str, code: str, lock: str) -> unit!:
+        self.key = key
+        self.folder = folder
+        self.work = work
+        self.program = paths.join(folder, executable())
+        self.manifest = manifest
+        self.code = code
+        self.lock = lock
+
+    ## Whether every dependency comes from the registry (so the key alone says
+    ## the build is current: checkouts can change under it).
+    pub func pinned(self) -> bool:
+        return not self.manifest.contains("str path =")
+
+    ## Write the working project (its build folder kept).
+    pub func write(self) -> unit!:
+        files.ensure_directory(paths.join(self.work, "src"))
+        write_changed(paths.join(self.work, "package.prisma"), self.manifest)
+        write_changed(paths.join(paths.join(self.work, "src"), "script.lucb"), self.code)
+        write_changed(paths.join(paths.join(self.work, "src"), "main.lucb"), main_text())
+        if self.lock != "":
+            write_changed(paths.join(self.work, "luc.lock"), self.lock)
+
+    ## Start `luc build --release` in the working project.
+    pub func start(self) -> Command!:
+        self.write()
+        return Command(tool("luc"), ["build", "--release"], directory = self.work, output_limit = 4194304)
+
+    ## Keep the tool the working project built under the key.
+    pub func keep(self) -> unit!:
+        files.ensure_directory(self.folder)
+        # luc names the tool after its package.
+        let built = paths.join(paths.join(self.work, "build"), "luced-script.exe" if platform.windows else "luced-script")
+        keep_tool(built, self.program)
+
+## The tool's file name on this system.
+func executable() -> str:
+    return "script.exe" if platform.windows else "script"
+
+## The plan for `code` with `packages` and `lock` for node `node`, in a
+## project in `folder`; `versions` names the compiler versions.
+pub func plan(node: int, code: str, packages: str, lock: str, folder: str, versions: str) -> BuildPlan!:
+    let manifest = manifest_text(dependencies(packages, folder))
+    let target = "windows" if platform.windows else ("macos" if platform.macos else "linux")
+    let setting = text_key(f"{manifest}\n--\n{lock}\n--\n{versions}\n--\n{target}\n--\n{geocore_version}")
+    let key = text_key(f"{code}\n--\n{setting}")
+    let home = scripts_home()
+    return BuildPlan(key, paths.join(paths.join(home, "build"), key), paths.join(paths.join(home, "work"), f"{setting}-{node}"), manifest, code, lock)
+
+func manifest_text(needed: list[Dependency]) -> str:
+    var text = "#prisma 4.0\ndef package \"luced-script\" {\n    str owner = \"luced\"\n    str version = \"0.1.0\"\n    str kind = \"tool\"\n    str language = \"luce-base\"\n    str description = \"A luced-3d Script node.\"\n    str entry = \"src/main.lucb\"\n"
+    for d in needed:
+        text = text + d.block()
+    return text + "}\n"
+
+## The generated main: the node's cook, served.
+func main_text() -> str:
+    return "## Generated by luced-3d: a Script node's tool. The node's code is script.lucb.\nfrom luce_geocore.script import serve\nimport script\n\npub func main(arguments: str[]) -> i32!:\n    return try serve(arguments, script.cook)\n"
+
+## Write `text` to `path` unless it already holds it (an unchanged file keeps
+## its time, so luc's incremental build sees no change).
+func write_changed(path: str, text: str) -> unit!:
+    let old = files.read_text(path) catch failure:
+        recover ""
+    if old != text:
+        files.write_text(path, text)
+
+## The toolchain's versions, for the build key ("luc 0.24.0 / luce-base 0.39.0").
+pub func toolchain() -> str!:
+    var text = ""
+    for name in ["luc", "luce-base"]:
+        let command = Command(tool(name), ["--version"], output_limit = 65536)
+        _ = command.wait() catch failure:
+            recover 0
+        text = text + command.output().trim() + " / "
+        command.close()
+    return text
+
+## A build's compiler output as the node's failure: the first error in the
+## node's code as "line L, column C: message" (the editor underlines it),
+## else the first error line as it is.
+pub func build_failure(output: str) -> str:
+    var first = ""
+    for line in output.split("\n"):
+        let trimmed = line.trim()
+        if trimmed == "" or trimmed.starts_with("compiling"):
+            continue
+        if let place = code_place(trimmed, "script.lucb:"):
+            return place
+        if first == "" and (trimmed.contains("error") or trimmed.starts_with("luce-base:") or trimmed.starts_with("luc:")):
+            first = trimmed
+    return "the script did not build: " + (first if first != "" else output.trim())
+
+## "line L, column C: message" for a compiler or trap line naming
+## `file:L:C: message`, else none.
+pub func code_place(line: str, file: str) -> str?:
+    let at = line.index_of(file) else return none
+    let rest = line[at + file.byte_count..]
+    let parts = rest.split(":")
+    if parts.length < 3:
+        return none
+    let row = int(parts[0]) catch failure:
+        return none
+    let column = int(parts[1]) catch failure:
+        return none
+    let message = rest[parts[0].byte_count + parts[1].byte_count + 2..].trim()
+    return f"line {row}, column {column}: {message}"

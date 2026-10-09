@@ -19,6 +19,8 @@ from take import Take
 import shader_nodes
 import cad_nodes
 import code_cook
+import script_cook
+from script_hosts import ScriptHosts
 from angles import radians
 
 pub func kinds() -> list[str]:
@@ -97,7 +99,7 @@ pub class Node:
             self.sources.append(0)
         self.surface_values = []
         self.values = []
-        for _ in 0..<(code_cook.value_count if kind == code_cook.kind_name else node_catalog.value_slots):
+        for _ in 0..<(code_cook.value_count if kind in [code_cook.kind_name, script_cook.kind_name] else node_catalog.value_slots):
             self.values.append(0.0)
         for parameter in node_catalog.parameters(kind):
             self.values[parameter.slot] = parameter.initial
@@ -112,6 +114,11 @@ pub class Node:
             self.texts = [f"materials/material{id}", "", ""]
         if kind == code_cook.kind_name:
             self.texts = ["", code_cook.starter(), "", "", ""]
+        if kind == script_cook.kind_name:
+            self.texts = []
+            for _ in 0..<script_cook.text_count:
+                self.texts.append("")
+            self.texts[script_cook.code_slot] = script_cook.starter()
         if kind == "File":
             # USD's Variants and Load payloads, empty: the stage as authored.
             self.texts = ["", "", ""]
@@ -213,6 +220,16 @@ pub class Node:
             return assign_material(self.texts, data, second else error(ui.invalid, "Connect the materials input"))
         if self.kind == code_cook.kind_name:
             return code_cook.cook(self.values, self.texts, data, clock, second)
+        if self.kind == script_cook.kind_name:
+            let wired = [self.inputs[0] >= 0, self.inputs[1] >= 0]
+            if let cache = sources:
+                return script_cook.cook(self.id, self.values, self.texts, data, clock, second, wired, progress, cache.scripts, cache.folder)
+            let hosts = ScriptHosts()
+            let result = script_cook.cook(self.id, self.values, self.texts, data, clock, second, wired, progress, hosts) catch failure:
+                hosts.close()
+                error(failure.code, failure.message)
+            hosts.close()
+            return result
         if self.kind == "Cache":
             return cook_cache(reads_file(self.kind, self.enabled, self.values), self.texts[0], self.stamp, data)
         if self.kind == "Export":
@@ -296,6 +313,9 @@ pub class Network:
     ## The document's length unit ("mm" or "in"): lengths are kept in
     ## millimeters and shown in it (units.luc).
     pub var units: str = "mm"
+    ## The project file's folder ("" when unsaved): a Script node reads its
+    ## relative file parameters from there (k.project()).
+    pub var folder: str = ""
     pub var on_progress: func(int, float, str) -> unit!? = none
     ## Process-lifetime import caches shared by every copy of this graph.
     pub var sources: SourceCache? = none
@@ -385,6 +405,7 @@ pub class Network:
             result.takes.append(take.copy())
         result.take = self.take
         result.units = self.units
+        result.folder = self.folder
         result.frame = self.frame
         result.start = self.start
         result.end = self.end
@@ -684,7 +705,11 @@ pub class Network:
         # An Edit node starts from nothing when unconnected (it can create);
         # a Camera or Light makes just its object.
         if node_catalog.optional_input(node.kind) and node.inputs[0] < 0:
-            return node.compute(GeometryData())
+            # A Code or Script node from nothing still reads the clock, and a
+            # Script its project's files.
+            if let cache = self.sources:
+                cache.folder = self.folder
+            return node.compute(GeometryData(), none, none, self.sources, [self.frame, self.time(), self.fps])
         if port < 0 or port >= node.inputs.length or node.inputs[port] < 0:
             error(ui.invalid, "Connect a geometry input")
         let data = self.evaluate_node(node.inputs[port], visiting)
@@ -699,4 +724,6 @@ pub class Network:
         let progress = func (fraction: float) -> unit!:
             if let report = self.on_progress:
                 report(node.id, fraction, "Tessellating" if node.kind == "Tessellate" else "Computing")
+        if let cache = self.sources:
+            cache.folder = self.folder
         return node.compute(data, second, progress, self.sources, [self.frame, self.time(), self.fps])

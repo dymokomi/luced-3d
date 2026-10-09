@@ -1,0 +1,35 @@
+## Base helpers for Script node builds: a stable content key, and keeping a built tool.
+import c
+import interop
+import strings
+from luce_std import files
+
+func mix(state: u64, value: u64, multiplier: u64) -> u64:
+    let scrambled = (state ^ value) *% multiplier
+    return scrambled ^ (scrambled >> 29)
+
+## A stable content key: 128 bits of two independent 64-bit mixes of the text's bytes,
+## as 32 hex digits. It names a build directory, so it must be the same in every run and
+## on every machine (Luce's `hash()` promises neither).
+pub func text_key(text: str) -> interop.Owned[str]!:
+    var a: u64 = 0xCBF29CE484222325
+    var b: u64 = 0x84222325CBF29CE4
+    for byte in text.bytes:
+        a = mix(a, (u64)byte, 0x100000001B3)
+        b = mix(b, (u64)byte + 0x9E, 0x9E3779B97F4A7C15)
+    a = mix(a, (u64)text.length, 0xFF51AFD7ED558CCD)
+    b = mix(b, (u64)text.length, 0xC4CEB9FE1A85EC53)
+    var digits: u8[32]
+    let hex = "0123456789abcdef"
+    for at in 0..<16:
+        digits[at] = hex.bytes[(usize)((a >> (u64)(60 - at * 4)) & 15)]
+        digits[16 + at] = hex.bytes[(usize)((b >> (u64)(60 - at * 4)) & 15)]
+    return try interop.copy_text((str)digits[0..<32])
+
+## Copy the tool at `source` to `destination` (replaced atomically), executable.
+pub func keep_tool(source: str, destination: str) -> !:
+    let from_text = try strings.copy(source)
+    defer strings.release(from_text)
+    let to_text = try strings.copy(destination)
+    defer strings.release(to_text)
+    _ = try files.copy_file((c.str)from_text, (c.str)to_text, replace = true, permissions = 493)

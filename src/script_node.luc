@@ -1,0 +1,86 @@
+## The Script node's commands (script_cook.luc cooks it): its code as one
+## undo step, the spare parameters its literal `k.f32("name", 0.3)` calls name
+## (rows placed as the Code node places them, code_node.place), its time use,
+## and its packages and their lock.
+from luce_geocore.script import ScriptText
+from luce_std import files, paths
+from luce_std.process import Command
+from network import Node
+from workspace import Workspace
+from code_node import Wanted, place
+from script_cook import code_slot, packages_slot, lock_slot
+from script_build import BuildPlan, plan, tool, scripts_home, dependencies
+
+## Put `text` in as the node's code, one undo step: its parameters become
+## rows and the node follows the timeline when the code reads it.
+pub func set_code(w: Workspace, id: int, text: str) -> unit!:
+    let node = w.network.find(id) else return
+    if node.texts[code_slot] == text:
+        return
+    w.perform("Edit script", func () -> unit!:
+        node.texts[code_slot] = text
+        refresh(node)
+        w.network.invalidate(node.id)
+        w.rebuild())
+
+## Read the code's parameter calls and time use again.
+pub func refresh(node: Node) -> unit!:
+    let scanned = ScriptText.scan(node.texts[code_slot])
+    node.time_dependent = scanned.reads_time()
+    let wanted: list[Wanted] = []
+    for i in 0..<scanned.parameter_count():
+        let kind = scanned.parameter_kind(i)
+        let components = scanned.parameter_components(i)
+        let row = Wanted(scanned.parameter_name(i), components, kind in ["i32", "menu", "toggle"])
+        row.kind = row_kind(kind)
+        if kind == "ramp":
+            row.ramp = 1
+        elif kind == "ramp_color":
+            row.ramp = 3
+        row.text = scanned.parameter_text(i)
+        row.choices = scanned.parameter_choices(i)
+        for c in 0..<components:
+            row.defaults.append(scanned.parameter_default(i, c))
+        wanted.append(row)
+    place(node, wanted)
+
+## The row kind a parameter call makes ("" a plain number or vector).
+func row_kind(call: str) -> str:
+    return call if call in ["toggle", "color", "menu", "text", "file"] else ""
+
+## The node's packages (entries apart by spaces: luce-image, owner/name@^1.2,
+## a path), one undo step; a lock of registry packages is made again.
+pub func set_packages(w: Workspace, id: int, text: str) -> unit!:
+    let node = w.network.find(id) else return
+    if node.texts[packages_slot] == text:
+        return
+    let lock = lock_of(text)
+    w.perform("Change packages", func () -> unit!:
+        node.texts[packages_slot] = text
+        node.texts[lock_slot] = lock
+        w.network.invalidate(node.id)
+        w.rebuild())
+
+## `luc lock` for a script with `packages`: the lock text to keep in the
+## project, so the build is the same everywhere ("" when every package is a
+## checkout). Run in a scratch project; offline, the lock waits for a build.
+pub func lock_of(packages: str) -> str!:
+    var registry = false
+    for d in dependencies(packages, ""):
+        if d.path == "":
+            registry = true
+    if not registry:
+        return ""
+    let made = plan(0, "", packages, "", "", "lock")
+    let scratch = paths.join(paths.join(scripts_home(), "lock"), made.key)
+    let project = BuildPlan(made.key, scratch, scratch, made.manifest, "", "")
+    project.write()
+    let command = Command(tool("luc"), ["lock"], directory = scratch, output_limit = 1048576)
+    let code = command.wait() catch failure:
+        command.close()
+        return ""
+    command.close()
+    if code != 0:
+        return ""
+    return files.read_text(paths.join(scratch, "luc.lock")) catch failure:
+        recover ""

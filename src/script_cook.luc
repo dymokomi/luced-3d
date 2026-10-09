@@ -1,0 +1,269 @@
+## Cooking a Script node (Houdini's Python SOP, in Luce Base; script_node.luc
+## has its commands): the node's code is built into a native tool
+## (script_build.luc) and run in a child process (script_hosts.luc). The
+## inputs go to it as .prism files with a request naming the parameters and
+## the clock; it replies with warnings, progress and `done`, and writes the
+## result. A trap, a crash or a runaway loop ends the child, never the app:
+## the node fails with the script's line. Kept apart from the commands so
+## network.luc can cook without importing the workspace.
+##
+## Texts: 0 the packages (one line, entries apart by spaces), 1 the code,
+## 2 the packages' lock, 3 the spare parameters, 4 the ramps, then the text
+## and file parameters' values. Values: 0 the time limit in seconds, the
+## spare parameters from code_cook.first_spare_slot on.
+from luce_std import files, paths, process
+from luce_geocore.geocore import GeometryFile
+from luce_geocore.script import ScriptProcess
+from geometry_data import GeometryData
+from script_hosts import ScriptHosts
+from script_build import code_place
+from code_cook import spares_of, ramps_of, spares_slot, ramps_slot, first_text_slot, text_slots
+from luce_ui import ui
+import time
+import thread
+
+pub let kind_name = "Script"
+pub let packages_slot = 0
+pub let code_slot = 1
+pub let lock_slot = 2
+pub let limit_slot = 0
+## Texts a Script node has: the five above and the text parameters' values.
+pub let text_count = first_text_slot + text_slots
+
+## What a new Script node says: Houdini's Python SOP starter, in Base.
+pub func starter() -> str:
+    return "## Runs once per cook over the whole geometry, as native code.\nfrom luce_geocore.script import Cook\n\n## k: the inputs, the parameters, the frame and the console.\n## k.geometry() is the output: a copy of input 0.\npub func cook(k: Cook*) -> !:\n    let lift = k.f32(\"lift\", 0.5)\n    let positions = try k.geometry().positions()\n    for i in 0..<positions.length:\n        positions[i].y += lift\n"
+
+## What the node's file parameters' files are now (size and time each, 0
+## for a missing file): part of its stamp, so editing a file recooks it.
+pub func file_stamps(texts: list[str], folder: str) -> list[int]!:
+    let result: list[int] = []
+    for s in spares_of(texts[spares_slot]):
+        if s.kind != "file":
+            continue
+        let info = files.metadata(file_path(texts[s.slot], folder)) catch failure:
+            result.append(0)
+            continue
+        result.append((info.size, info.modified.seconds, info.modified.nanoseconds).hash())
+    return result
+
+## A file parameter's path: a relative one from the project's folder (the
+## working directory for an unsaved project).
+pub func file_path(text: str, folder: str) -> str!:
+    let path = text.trim()
+    if path == "" or paths.is_absolute(path):
+        return path
+    return paths.join(folder if folder != "" else process.current_directory(), path)
+
+## The phase a Script node's progress shows: building, then running.
+pub func phase(fraction: float) -> str:
+    return "Building script" if fraction < 0.5 else "Running script"
+
+## Cook: build the code (or find its build), hand the inputs and parameters
+## to a child, and take its result. `progress` reports and, on the worker,
+## stops a superseded cook (the child is killed first); `folder` is the
+## project's folder.
+pub func cook(id: int, slots: list[float], texts: list[str], data: GeometryData, clock: list[float], second: GeometryData?, wired: list[bool], progress: func(float) -> unit!?, hosts: ScriptHosts, folder: str = "") -> GeometryData!:
+    let made = hosts.build(id, texts[code_slot], texts[packages_slot], texts[lock_slot], folder)
+    let waited = not made.done
+    while not made.poll():
+        report(progress, 0.1)
+        thread.sleep(10)
+    if made.failure != "":
+        error(ui.invalid, made.failure)
+    report(progress, 0.5)
+    let run = hosts.run_folder()
+    let request = write_request(run, slots, texts, data if wired[0] else none, clock, second if wired[1] else none, folder)
+    let starting = time.now()
+    let child = hosts.child(made) catch failure:
+        forget(run)
+        error(failure.code, failure.message)
+    let started = float(time.now() - starting) / 1000000.0
+    let result = serve(child, request, slots, progress) catch failure:
+        child.kill()
+        child.close()
+        forget(run)
+        hosts.prepare(made)
+        error(failure.code, failure.message)
+    child.close()
+    hosts.cooked += 1
+    # The next cook finds a child waiting.
+    hosts.prepare(made)
+    let loaded = GeometryData(geometry = GeometryFile.load(paths.join(run, "out.prism")))
+    # The status line: what the cook cost (a new build and a new tool's first
+    # start show only when this cook paid them).
+    let parts: list[str] = []
+    if waited:
+        parts.append(f"built in {round_to(made.seconds, 2)} s")
+    if started >= 1.0:
+        parts.append(f"started in {round_to(started, 0)} ms")
+    parts.append(f"cooked in {result.cook_ms} ms (load {result.load_ms} ms, save {result.save_ms} ms)")
+    loaded.console = "[" + parts.join(" · ") + "]\n" + result.console
+    loaded.warning = result.warning
+    forget(run)
+    return loaded
+
+## Remove a cook's run folder (what is left of it).
+func forget(run: str):
+    files.remove_tree(run) catch failure:
+        _ = failure
+
+## What a child said while it cooked.
+class Reply:
+    var console: str = ""
+    var warning: str = ""
+    var warnings: int = 0
+    ## The child's own times: loading the inputs, the cook, saving the result.
+    var load_ms: str = "0"
+    var cook_ms: str = "0"
+    var save_ms: str = "0"
+
+    func init(self):
+        self.warnings = 0
+
+func report(progress: func(float) -> unit!?, fraction: float) -> unit!:
+    if let call = progress:
+        call(fraction)
+
+## Send the request and read replies until `done`, the child's end, or the
+## time limit (the child is killed by the caller on any failure).
+func serve(child: ScriptProcess, request: str, slots: list[float], progress: func(float) -> unit!?) -> Reply!:
+    child.send("cook " + request)
+    let limit = int(slots[limit_slot] * 1000000000.0) if slots[limit_slot] > 0.0 else 30000000000
+    let started = time.now()
+    let reply = Reply()
+    while true:
+        let line = child.next_line(20)
+        if line == "":
+            if child.hung_up() or child.finished():
+                return error_of(child, reply)
+            if time.now() - started > limit:
+                error(ui.invalid, f"the script ran past its time limit ({limit / 1000000000} s) and was stopped")
+            report(progress, 0.5)
+            continue
+        if line.starts_with("warning "):
+            let rest = line[8..]
+            let space = rest.index_of(" ") else continue
+            let text = unescape(rest[space + 1..])
+            if reply.warnings == 0:
+                reply.warning = f"line {rest[..<space]}: {text}" if rest[..<space] != "0" else text
+            reply.warnings += 1
+        elif line.starts_with("progress "):
+            let fraction = float(line[9..]) catch failure:
+                recover 0.0
+            report(progress, 0.5 + fraction * 0.45)
+        elif line.starts_with("done ok"):
+            let times = line.split(" ")
+            if times.length == 5:
+                reply.load_ms = short(times[2])
+                reply.cook_ms = short(times[3])
+                reply.save_ms = short(times[4])
+            wait_end(child)
+            reply.console = console_of(child.console())
+            if reply.warnings > 1:
+                reply.warning = reply.warning + f" (and {reply.warnings - 1} more)"
+            return reply
+        elif line.starts_with("done error "):
+            # "done error LINE COLUMN TEXT"; 0 0 when the error was raised
+            # outside the script (the text names where).
+            let parts = line[11..].split(" ")
+            if parts.length < 3:
+                error(ui.invalid, unescape(line[11..]))
+            let message = unescape(parts[2..].join(" "))
+            error(ui.invalid, f"returned from cook: {message}" if parts[0] == "0" else f"line {parts[0]}, column {parts[1]}: {message}")
+    return reply
+
+## The failure of a child that ended without `done`: its trap at the
+## script's line when it trapped, else how it ended.
+func error_of(child: ScriptProcess, reply: Reply) -> Reply!:
+    wait_end(child)
+    let console = child.console()
+    for line in console.split("\n"):
+        if line.starts_with("trap: "):
+            if let place = code_place(line, "script.lucb:"):
+                error(ui.invalid, place)
+            error(ui.invalid, line[6..].trim())
+    let code = child.exit_code()
+    error(ui.invalid, f"the script process ended without a result (status {code})" + (": " + console.trim() if console.trim() != "" else ""))
+
+## Wait a moment for a child that said `done` (or hung up) to exit.
+func wait_end(child: ScriptProcess):
+    let deadline = time.now() + 2000000000
+    while not child.finished() and time.now() < deadline:
+        thread.sleep(1)
+
+## What the script printed, for the console (its first 200 lines).
+func console_of(text: str) -> str:
+    let lines = text.split("\n")
+    if lines.length <= 200:
+        return text
+    return lines[..<200].join("\n") + f"\n… ({lines.length - 200} more lines)"
+
+## `value` with `places` decimals, as text.
+func round_to(value: float, places: int) -> str:
+    var scale = 1.0
+    for _ in 0..<places:
+        scale = scale * 10.0
+    let rounded = float(int(value * scale + 0.5)) / scale
+    return f"{int(rounded)}" if places == 0 else f"{rounded}"
+
+## A number of milliseconds the child wrote, to one decimal.
+func short(text: str) -> str:
+    let value = float(text) catch failure:
+        return text
+    return round_to(value, 1)
+
+## `text` with backslash, tab and newline escaped, as request lines carry it.
+func escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
+
+## `text` with escape() undone.
+func unescape(text: str) -> str:
+    let pieces: list[str] = []
+    var escaping = false
+    for ch in text:
+        if escaping:
+            pieces.append("\n" if ch == "n" else ("\t" if ch == "t" else ("\r" if ch == "r" else ch)))
+            escaping = false
+        elif ch == "\\":
+            escaping = true
+        else:
+            pieces.append(ch)
+    return pieces.join("")
+
+## The request file for one cook: the inputs saved beside it, the clock,
+## the project and every parameter's value by name.
+func write_request(run: str, slots: list[float], texts: list[str], data: GeometryData?, clock: list[float], second: GeometryData?, folder: str) -> str!:
+    let lines: list[str] = []
+    if let given = data:
+        let path = paths.join(run, "in0.prism")
+        _ = GeometryFile.save(given.geometry, path)
+        lines.append(f"in0\t{path}")
+    if let other = second:
+        let path = paths.join(run, "in1.prism")
+        _ = GeometryFile.save(other.geometry, path)
+        lines.append(f"in1\t{path}")
+    lines.append(f"out\t{paths.join(run, "out.prism")}")
+    let frame = clock[0] if clock.length == 3 else 1.0
+    let at = clock[1] if clock.length == 3 else 0.0
+    let fps = clock[2] if clock.length == 3 else 24.0
+    lines.append(f"clock\t{frame}\t{at}\t{fps}")
+    lines.append(f"project\t{escape(folder)}")
+    for s in spares_of(texts[spares_slot]):
+        if s.textual():
+            # A relative file is the project's, not the child's (which runs in its build).
+            let value = file_path(texts[s.slot], folder) if s.kind == "file" else texts[s.slot]
+            lines.append(f"text\t{s.name}\t{escape(value)}")
+            continue
+        let values: list[str] = []
+        for c in 0..<s.components:
+            values.append(f"{slots[s.slot + c]}")
+        lines.append(f"number\t{s.name}\t{values.join("\t")}")
+    for r in ramps_of(texts[ramps_slot]):
+        let values: list[str] = []
+        for v in r.data:
+            values.append(f"{v}")
+        lines.append(f"number\t{r.name}\t{values.join("\t")}")
+    let path = paths.join(run, "request.txt")
+    files.write_text(path, lines.join("\n") + "\n")
+    return path

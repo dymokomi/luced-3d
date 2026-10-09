@@ -1,0 +1,174 @@
+## The Script node: its code built into a native tool and run in a child
+## process. The build cache hits and misses; a trap, k.error and a type error
+## fail the node at the script's line and the app goes on; a runaway script
+## is stopped at its time limit; every cook starts fresh; spare parameter rows
+## keep tuned values; an unmodified package (luce-json) is imported; a large
+## geometry crosses the process boundary (timed, logged); and on the compute
+## worker a superseded cook's child is killed.
+from luce_std import paths, process
+from workspace import Workspace
+import node_commands
+import script_node
+import script_cook
+import code_node
+import code_cook
+import timeline_commands
+from luce_std import math
+import time
+
+## Script builds find luce-geocore and the packages beside this checkout.
+func use_checkouts() -> unit!:
+    let here = process.variable("LUC_TEST_DIR") else trap("LUC_TEST_DIR")
+    let root = paths.directory(paths.directory(paths.directory(here)))
+    process.set_variable("LUCED_GEOCORE", paths.join(root, "luce-geocore"))
+
+func top(w: Workspace) -> float!:
+    return (w.geometry else trap("geometry")).bounds().maximum.y
+
+## A Grid (input 0) and a Script after it, displayed; the Script's id.
+func scene(w: Workspace, divisions: float = 4.0) -> int!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Grid", 0.0, 0.0)
+    node_commands.set_parameter(w, 1, divisions)
+    node_commands.add_node(w, "Script", 0.0, 100.0)
+    let id = w.network.selected
+    node_commands.display_selected(w)
+    return id
+
+pub func script_node_tests() -> unit!:
+    use_checkouts()
+    let w = Workspace()
+    # A new Script node builds its starter, which lifts the grid by its `lift` row (0.5).
+    let started = time.now()
+    let id = scene(w)
+    let node = w.network.require(id)
+    assert(node.failure == "", node.failure)
+    assert(math.abs(top(w) - 0.5) < 1e-5)
+    let first_build = float(time.now() - started) / 1000000.0
+    let scripts = (w.network.sources else trap("sources")).scripts
+    assert(scripts.built == 1)
+    # A tuned row recooks without a build.
+    let lift = code_cook.spares_of(node.texts[code_cook.spares_slot])[0]
+    assert(lift.name == "lift")
+    w.network.selected = id
+    let tuned = time.now()
+    node_commands.set_parameter(w, lift.slot, 2.0)
+    assert(math.abs(top(w) - 2.0) < 1e-5 and scripts.built == 1)
+    let recook = float(time.now() - tuned) / 1000000.0
+    # An edit builds again (a miss); the old code again is a hit.
+    let old = node.texts[script_cook.code_slot]
+    let edited = time.now()
+    # (a comment unique to this run, so the edit is new to the build cache)
+    script_node.set_code(w, id, old.replace("positions[i].y += lift", "positions[i].y += lift * 2.0") + f"# run {time.now()}\n")
+    assert(node.failure == "", node.failure)
+    let edit_ms = float(time.now() - edited) / 1000000.0
+    let edit_status = w.network.require(id).console.split("\n")[0]
+    assert(math.abs(top(w) - 4.0) < 1e-5 and scripts.built == 2)
+    # The tuned value survived the edit, its default changed or not.
+    script_node.set_code(w, id, old.replace("k.f32(\"lift\", 0.5)", "k.f32(\"lift\", 0.9)"))
+    assert(math.abs(top(w) - 2.0) < 1e-5)
+    script_node.set_code(w, id, old)
+    assert(scripts.built == 3)
+    let reverted = time.now()
+    w.undo()
+    w.undo()
+    assert(math.abs(top(w) - 4.0) < 1e-5 and scripts.built <= 3)
+    print(f"PASS script build cache: first build {first_build} ms, recook {recook} ms, edit to cook {edit_ms} ms, cached edit {float(time.now() - reverted) / 1000000.0} ms; the edit's status {edit_status}")
+
+    # Spare parameter rows of every kind (the node read again: undo replaced it).
+    script_node.set_code(w, id, "from luce_geocore.script import Cook\n\npub func cook(k: Cook*) -> !:\n    let at = k.vec3(\"offset\", [0.0, 1.0, 0.0, 0.0])\n    let up = k.toggle(\"up\", true)\n    let count = k.i32(\"count\", 3)\n    let mode = k.menu(\"mode\", \"Low|High\", 1)\n    let tint = k.color(\"tint\", [1.0, 0.5, 0.25, 0.0])\n    let name = k.text(\"label\", \"hello\")\n    let positions = try k.geometry().positions()\n    for i in 0..<positions.length:\n        positions[i].y += at[1] * (1.0 if up else -1.0) + (f32)(count + mode) + tint[2] * 0.0\n    print(name)\n")
+    assert(w.network.require(id).failure == "", w.network.require(id).failure)
+    let rows = code_node.spare_rows(w.network.require(id))
+    assert(rows.length == 6)
+    assert(math.abs(top(w) - 5.0) < 1e-5)
+    assert(w.network.require(id).console.contains("hello"))
+    print("PASS script spare parameters: vector, toggle, integer, menu, color, text")
+
+    # Failures name the script's line; the app goes on.
+    script_node.set_code(w, id, "from luce_geocore.script import Cook\n\npub func cook(k: Cook*) -> !:\n    let values: i64[2] = [1, 2]\n    let at = (usize)k.i32(\"at\", 5)\n    print(f\"{values[at]}\")\n")
+    assert(w.network.require(id).failure.contains("line 6, column"), w.network.require(id).failure)
+    assert(code_node.failure_place(w.network.require(id).failure).length == 3)
+    script_node.set_code(w, id, "from luce_geocore.script import Cook\n\npub func cook(k: Cook*) -> !:\n    k.warning(\"careful\")\n    try k.error(\"no image\")\n")
+    assert(w.network.require(id).failure.contains("line 5, column 1: no image"), w.network.require(id).failure)
+    script_node.set_code(w, id, "from luce_geocore.script import Cook\n\npub func cook(k: Cook*) -> !:\n    let x: i64 = \"text\"\n")
+    assert(w.network.require(id).failure.contains("line 4, column"), w.network.require(id).failure)
+    # An error the script raises names its line and column (failure.at); one a
+    # call raised elsewhere says where it was raised.
+    script_node.set_code(w, id, "from luce_geocore.script import Cook\n\nlet broken: ErrorCode = ErrorCode.package(1)\n\npub func cook(k: Cook*) -> !:\n    error(broken, \"bad row\")\n")
+    assert(w.network.require(id).failure.contains("line 6, column 5: bad row"), w.network.require(id).failure)
+    script_node.set_code(w, id, "from luce_geocore.script import Cook, Geometry\n\npub func cook(k: Cook*) -> !:\n    var g = try Geometry.load(\"missing.prism\")\n    try k.set_geometry(g)\n")
+    assert(w.network.require(id).failure.contains("returned from cook: ") and w.network.require(id).failure.contains("(raised at "), w.network.require(id).failure)
+    print("PASS script failures: a trap, k.error, a raised error and a type error at their lines")
+
+    # A runaway script is stopped at its limit.
+    node_commands.set_parameter(w, script_cook.limit_slot, 1.0)
+    let spinning = time.now()
+    script_node.set_code(w, id, "from luce_geocore.script import Cook\n\npub func cook(k: Cook*) -> !:\n    var n: i64 = 0\n    while true:\n        n += 1\n")
+    let stopped = float(time.now() - spinning) / 1000000000.0
+    assert(w.network.require(id).failure.contains("time limit"), w.network.require(id).failure)
+    assert(stopped < 10.0)
+    node_commands.set_parameter(w, script_cook.limit_slot, 30.0)
+    print(f"PASS script time limit: stopped after {stopped} s")
+
+    # Fresh state: a module global seen by every cook starts at zero.
+    script_node.set_code(w, id, "from luce_geocore.script import Cook\n\nvar cooks: i64 = 0\n\npub func cook(k: Cook*) -> !:\n    cooks += 1\n    let positions = try k.geometry().positions()\n    for i in 0..<positions.length:\n        positions[i].y = (f32)cooks + (f32)k.frame() * 0.0\n")
+    assert(w.network.require(id).failure == "", w.network.require(id).failure)
+    assert(math.abs(top(w) - 1.0) < 1e-5)
+    timeline_commands.set_frame(w, 7.0)
+    assert(math.abs(top(w) - 1.0) < 1e-5)
+    timeline_commands.set_frame(w, 8.0)
+    assert(math.abs(top(w) - 1.0) < 1e-5 and scripts.cooked >= 3)
+    print("PASS script fresh state per cook")
+
+    # An unmodified package: luce-json parses a list of points.
+    w.network.selected = id
+    script_node.set_packages(w, id, "luce-json")
+    script_node.set_code(w, id, "from luce_geocore.script import Cook, Geometry\nfrom luce_json import json\n\npub func cook(k: Cook*) -> !:\n    let document = try json.decode(\"[[0, 1, 2], [3, 4.5, 6]]\")\n    defer document.release()\n    let root = (try document.get()).root()\n    var g = try Geometry.empty()\n    for i in 0..<root.length():\n        let p = root.at(i) else continue\n        let x = (p.at(0) else continue).number() else 0.0\n        let y = (p.at(1) else continue).number() else 0.0\n        let z = (p.at(2) else continue).number() else 0.0\n        _ = try g.add_point([(f32)x, (f32)y, (f32)z, 0.0])\n    try k.set_geometry(g)\n")
+    assert(w.network.require(id).failure == "", w.network.require(id).failure)
+    assert(math.abs(top(w) - 4.5) < 1e-5)
+    print("PASS script imports an unmodified package (luce-json)")
+
+    # Large geometry across the boundary.
+    script_node.set_packages(w, id, "")
+    node_commands.set_parameter(w, script_cook.limit_slot, 30.0)
+    let big = scene(w, 1000.0)
+    script_node.set_code(w, big, "from luce_geocore.script import Cook\n\npub func cook(k: Cook*) -> !:\n    k.warning(\"passes\")\n")
+    let grid = w.network.require(big).inputs[0]
+    let crossing = time.now()
+    w.network.selected = grid
+    node_commands.set_parameter(w, 0, 3.0)
+    let cooked = float(time.now() - crossing) / 1000000.0
+    assert(w.network.require(big).failure == "")
+    assert((w.geometry else trap("geometry")).face_count() == 1000000)
+    print(f"PASS script 1M quads round trip: cook with the grid {cooked} ms, status {w.network.require(big).console.split("\n")[0]}")
+    (w.network.sources else trap("sources")).scripts.close()
+    worker_tests()
+
+## On the compute worker: a cook, then a runaway script superseded by an edit
+## (its child killed), then the edit's result.
+func worker_tests() -> unit!:
+    let w = Workspace()
+    w.enable_compute()
+    settle(w)
+    let id = scene(w)
+    let node = w.network.require(id)
+    script_node.set_code(w, id, node.texts[script_cook.code_slot])
+    settle(w)
+    assert(w.network.require(id).failure == "" and math.abs(top(w) - 0.5) < 1e-5)
+    script_node.set_code(w, id, "from luce_geocore.script import Cook\n\npub func cook(k: Cook*) -> !:\n    var n: i64 = 0\n    while true:\n        n += 1\n")
+    let deadline = time.now() + 3000000000
+    while time.now() < deadline:
+        _ = w.poll_compute()
+    let superseded = time.now()
+    script_node.set_code(w, id, node.texts[script_cook.code_slot].replace("while true", "while n < 10"))
+    settle(w)
+    assert(w.network.require(id).failure == "", w.network.require(id).failure)
+    print(f"PASS script on the worker: a superseded runaway cook is killed ({float(time.now() - superseded) / 1000000.0} ms to the next result)")
+    (w.compute else trap("compute")).close()
+
+func settle(w: Workspace) -> unit!:
+    let session = w.compute else trap("compute")
+    let deadline = time.now() + 60000000000
+    while session.busy and time.now() < deadline:
+        _ = w.poll_compute()
+    assert(not session.busy)

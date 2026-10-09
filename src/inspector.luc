@@ -7,6 +7,8 @@ from luce_ui.ui import VStack, HStack, Text, TextField, Font, Button, ParameterP
 from code_editor import CodeEditor
 import code_node
 import code_cook
+import script_cook
+import script_node
 from interop import Connection
 from workspace import Workspace
 from actions import Actions
@@ -27,7 +29,8 @@ from angles import radians, degrees
 import tool_prompts
 
 pub class Inspector:
-    pub var on_browse: func() -> unit!? = none
+    ## A path row's Browse: pick a file for text slot `slot`.
+    pub var on_browse: func(int) -> unit!? = none
     ## The Render node's Render button.
     pub var on_render: func() -> unit!? = none
     pub let body: VStack
@@ -58,10 +61,13 @@ pub class Inspector:
     ## A Sketch node's dimensions, read once per text it has.
     var dimensions_text: str = ""
     var dimensions: list[SketchDimension]
-    ## A Code node's body and header editors, shown for Code nodes only.
+    ## A Code node's body and header editors, shown for Code nodes; a Script
+    ## node's code in the body editor, without a header.
     let code_box: VStack
     let code_body: CodeEditor
     let code_header: CodeEditor
+    let code_title: Text
+    let header_title: Text
     ## What the code's k.printf calls said in the last cook (many lines).
     let console: TextEditor
 
@@ -102,8 +108,9 @@ pub class Inspector:
         self.code_header.partner = self.code_body
         self.console = TextEditor("", read_only = true, line_numbers = false, font = font)
         self.console.layout().set_limits(Size(240.0, 40.0), Size(16384.0, 200.0))
-        self.code_box = VStack([Text("Code (one element; it runs for all in parallel)", font = font, muted = true), self.code_body.editor, self.console,
-                                Text("Header (helper functions)", font = font, muted = true), self.code_header.editor], spacing = 4.0, padding = 6.0)
+        self.code_title = Text("Code (one element; it runs for all in parallel)", font = font, muted = true)
+        self.header_title = Text("Header (helper functions)", font = font, muted = true)
+        self.code_box = VStack([self.code_title, self.code_body.editor, self.console, self.header_title, self.code_header.editor], spacing = 4.0, padding = 6.0)
         self.generic_rows = VStack([header, self.parameters, self.code_box, footer], spacing = 0.0)
         self.body = VStack([self.generic_rows], spacing = 0.0)
         self.refresh()
@@ -117,7 +124,11 @@ pub class Inspector:
             for component in 0..<row.components:
                 node_commands.set_parameter(self.workspace, row.slot + component, self.parameters.component(index, component))
         elif role == "text":
-            node_commands.set_text(self.workspace, row.slot, self.parameters.text(index))
+            let node = self.workspace.selected() else return
+            if node.kind == script_cook.kind_name and row.slot == script_cook.packages_slot:
+                script_node.set_packages(self.workspace, node.id, self.parameters.text(index))
+            else:
+                node_commands.set_text(self.workspace, row.slot, self.parameters.text(index))
         elif role == "ramp":
             let node = self.workspace.selected() else return
             code_node.set_ramp(self.workspace, node.id, row.slot, self.parameters.ramp(index))
@@ -130,7 +141,7 @@ pub class Inspector:
         let role = self.roles[index]
         if role == "text":
             if let callback = self.on_browse:
-                callback()
+                callback(self.rows[index].slot)
         elif role == "reload":
             node_commands.reload_file(self.workspace)
         elif role == "render":
@@ -176,8 +187,8 @@ pub class Inspector:
         var specs: list[ParameterSpec] = []
         let shown = units.document_unit(self.workspace)
         var fields = node_catalog.fields(kind, path, self.stage)
-        # A Code node's spare parameters, from its code.
-        if kind == code_cook.kind_name:
+        # A Code or Script node's spare parameters, from its code.
+        if kind == code_cook.kind_name or kind == script_cook.kind_name:
             if let node = self.workspace.selected():
                 fields = fields + code_node.spare_rows(node)
         for row in fields:
@@ -242,13 +253,14 @@ pub class Inspector:
         let changed = node.id != self.showing
         let file = node.kind == "File"
         let format = node_catalog.file_format(node.texts[0]) if file else ""
-        let key = f"{node.kind}|{format}|{self.compose(node.texts, node.source_revision) if format == "usd" else ""}|{self.sketch_key(node.kind, node.texts[0])}|{node.texts[code_cook.spares_slot] + code_node.ramp_key(node) if node.kind == code_cook.kind_name else ""}|{self.workspace.network.units}"
+        let key = f"{node.kind}|{format}|{self.compose(node.texts, node.source_revision) if format == "usd" else ""}|{self.sketch_key(node.kind, node.texts[0])}|{node.texts[code_cook.spares_slot] + code_node.ramp_key(node) if node.kind in [code_cook.kind_name, script_cook.kind_name] else ""}|{self.workspace.network.units}"
         if key != self.built:
             self.build(node.kind, node.texts[0])
             self.built = key
         self.showing = node.id
         self.state_rows.layout().set_visible(not file)
-        let coding = node.kind == code_cook.kind_name
+        let scripting = node.kind == script_cook.kind_name
+        let coding = node.kind == code_cook.kind_name or scripting
         self.code_box.layout().set_visible(coding)
         # Ramp rows follow the node (an undo) unless one is being dragged.
         if coding and not self.workspace.in_transaction():
@@ -257,11 +269,20 @@ pub class Inspector:
             if self.console.text() != node.console:
                 self.console.set_text(node.console)
             self.console.layout().set_visible(node.console != "")
-            let run_over = int(node.values[code_cook.run_over_slot])
-            self.code_body.run_over = run_over
-            self.code_header.run_over = run_over
-            self.code_body.show(node.texts[code_cook.body_slot])
-            self.code_header.show(node.texts[code_cook.header_slot])
+            self.header_title.layout().set_visible(not scripting)
+            self.code_header.editor.layout().set_visible(not scripting)
+            self.code_title.set_text("Script (runs once per cook, natively; imports any package)" if scripting else "Code (one element; it runs for all in parallel)")
+            # Completion and hover read the Code node's API; a script's
+            # imports are not in reach of the checker yet.
+            self.code_body.assist = not scripting
+            if scripting:
+                self.code_body.show(node.texts[script_cook.code_slot])
+            else:
+                let run_over = int(node.values[code_cook.run_over_slot])
+                self.code_body.run_over = run_over
+                self.code_header.run_over = run_over
+                self.code_body.show(node.texts[code_cook.body_slot])
+                self.code_header.show(node.texts[code_cook.header_slot])
             let place = code_node.failure_place(node.failure)
             let message = node.failure
             self.code_body.show_error(place[1] if place.length == 3 and place[0] == 0 else 0, place[2] if place.length == 3 else 0, (place[2] if place.length == 3 else 0) + 1, message)
@@ -354,7 +375,7 @@ pub class Inspector:
     ## The Code node's ramp rows show its ramps' data.
     func show_ramps(self) -> unit!:
         let node = self.workspace.selected() else return
-        if node.kind != code_cook.kind_name:
+        if not (node.kind in [code_cook.kind_name, script_cook.kind_name]):
             return
         let ramps = code_cook.ramps_of(node.texts[code_cook.ramps_slot])
         for index in 0..<self.rows.length:
@@ -368,6 +389,8 @@ pub class Inspector:
         let node = self.workspace.selected() else return
         if node.kind == code_cook.kind_name:
             code_node.set_code(self.workspace, node.id, slot, text)
+        elif node.kind == script_cook.kind_name and slot == code_cook.body_slot:
+            script_node.set_code(self.workspace, node.id, text)
 
     ## Each frame: the code editors commit when typing pauses.
     pub func poll(self) -> unit!:

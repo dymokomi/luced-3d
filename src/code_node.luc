@@ -9,12 +9,13 @@
 ##
 ## A spare parameter is a literal `k.f32("amount", 0.2)` (or f64, i32,
 ## vec3...) in the code: each name gets a value row, its slots kept by name
-## while the code changes, so a tuned value survives edits.
+## while the code changes, so a tuned value survives edits. The Script node
+## (script_node.luc) places its rows, ramps and failures with the same calls.
 from luce_geocore.geocore import Code
 from network import Node
-from code_cook import Spare, spares_of, spares_text, value_count, first_spare_slot, run_over_slot, body_slot, header_slot, spares_slot, Ramp, ramps_of, ramps_text, ramps_slot, default_ramp
+from code_cook import Spare, spares_of, spares_text, value_count, first_spare_slot, first_text_slot, text_slots, run_over_slot, body_slot, header_slot, spares_slot, Ramp, ramps_of, ramps_text, ramps_slot, default_ramp
 from workspace import Workspace
-from parameter_rows import Parameter, number, whole, vector
+from parameter_rows import Parameter, number, whole, vector, toggle, menu, entry
 
 ## Put `text` in slot `slot` (the body or the header) as one undo step;
 ## the parameters the code names become rows, and the node follows the
@@ -36,45 +37,74 @@ pub func refresh(node: Node) -> unit!:
     if not check.ok():
         return
     node.time_dependent = check.reads_time()
-    let old = spares_of(node.texts[spares_slot])
-    let placed: list[Spare] = []
-    let fresh: list[int] = []
-    # Names the code still uses keep their slots (and values).
-    # Ramps keep their data by name and kind; new ones start at defaults.
+    let wanted: list[Wanted] = []
+    for i in 0..<check.parameter_count():
+        let row = Wanted(check.parameter_name(i), check.parameter_components(i), check.parameter_integer(i))
+        row.ramp = check.parameter_ramp(i)
+        for c in 0..<row.components:
+            row.defaults.append(check.parameter_default(i, c))
+        wanted.append(row)
+    place(node, wanted)
+
+## A spare parameter a node's code names (Code and Script nodes): its
+## name, components and row kind, defaults, a text default and a menu's
+## choices; `ramp` its channels when it is a ramp (1 float, 3 color).
+pub class Wanted:
+    pub let name: str
+    pub let components: int
+    pub let integer: bool
+    pub var kind: str = ""
+    pub var defaults: list[float]
+    pub var text: str = ""
+    pub var choices: str = ""
+    pub var ramp: int = 0
+
+    pub func init(self, name: str, components: int, integer: bool):
+        self.name = name
+        self.components = components
+        self.integer = integer
+        self.defaults = []
+
+## Give `node` rows for the `wanted` parameters: a name the node already
+## has keeps its slot (and value) when its shape is the same; a new one
+## takes free slots at its defaults. Ramps keep their data by name and kind.
+pub func place(node: Node, wanted: list[Wanted]) -> unit!:
     let old_ramps = ramps_of(node.texts[ramps_slot])
     let ramps: list[Ramp] = []
-    for i in 0..<check.parameter_count():
-        let channels = check.parameter_ramp(i)
-        if channels == 0:
+    for w in wanted:
+        if w.ramp == 0:
             continue
-        var data = default_ramp(channels)
+        var data = default_ramp(w.ramp)
         for r in old_ramps:
-            if r.name == check.parameter_name(i) and r.channels == channels:
+            if r.name == w.name and r.channels == w.ramp:
                 data = r.data
-        ramps.append(Ramp(check.parameter_name(i), channels, data))
+        ramps.append(Ramp(w.name, w.ramp, data))
     node.texts[ramps_slot] = ramps_text(ramps)
-    for i in 0..<check.parameter_count():
-        if check.parameter_ramp(i) != 0:
+    let old = spares_of(node.texts[spares_slot])
+    let placed: list[Spare] = []
+    let fresh: list[Wanted] = []
+    for w in wanted:
+        if w.ramp != 0:
             continue
-        let name = check.parameter_name(i)
-        let components = check.parameter_components(i)
         var slot = -1
         for s in old:
-            if s.name == name and s.components == components:
+            if s.name == w.name and s.components == w.components and s.textual() == (w.kind in ["text", "file"]):
                 slot = s.slot
         if slot >= 0:
-            placed.append(Spare(name, slot, components, check.parameter_integer(i)))
+            placed.append(Spare(w.name, slot, w.components, w.integer, w.kind, w.choices))
         else:
-            fresh.append(i)
+            fresh.append(w)
     # New names take free slots, at their defaults.
-    for i in fresh:
-        let components = check.parameter_components(i)
-        let slot = free_slot(placed, components)
+    for w in fresh:
+        let textual = w.kind in ["text", "file"]
+        let slot = free_text_slot(placed) if textual else free_slot(placed, w.components)
         if slot < 0:
             continue
-        placed.append(Spare(check.parameter_name(i), slot, components, check.parameter_integer(i)))
-        for c in 0..<components:
-            node.values[slot + c] = check.parameter_default(i, c)
+        placed.append(Spare(w.name, slot, w.components, w.integer, w.kind, w.choices))
+        if textual:
+            node.texts[slot] = w.text
+        for c in 0..<w.components:
+            node.values[slot + c] = w.defaults[c] if c < w.defaults.length else 0.0
     node.texts[spares_slot] = spares_text(placed)
 
 ## The first run of `components` value slots no spare holds, or -1.
@@ -83,11 +113,22 @@ func free_slot(spares: list[Spare], components: int) -> int:
     while slot + components <= value_count:
         var clear = true
         for s in spares:
-            if s.slot >= 0 and slot < s.slot + s.components and s.slot < slot + components:
+            if not s.textual() and slot < s.slot + s.components and s.slot < slot + components:
                 clear = false
         if clear:
             return slot
         slot += 1
+    return -1
+
+## The first text slot no text or file parameter holds, or -1.
+func free_text_slot(spares: list[Spare]) -> int:
+    for slot in first_text_slot..<first_text_slot + text_slots:
+        var clear = true
+        for s in spares:
+            if s.textual() and s.slot == slot:
+                clear = false
+        if clear:
+            return slot
     return -1
 
 ## The rows the inspector shows for the spares, then the ramps (a ramp
@@ -101,12 +142,22 @@ pub func spare_rows(node: Node) -> list[Parameter]:
         row.doc = f"A ramp of the code: k.{"ramp_color" if ramps[at].channels == 3 else "ramp"}(\"{ramps[at].name}\", t)."
         rows.append(row)
     for s in spares_of(node.texts[spares_slot]):
-        let doc = f"A parameter of the code: k.{"i32" if s.integer else "f32"}(\"{s.name}\", …)."
-        if s.components > 1:
+        let call = s.kind if s.kind != "" else ("i32" if s.integer else ("vec3" if s.components > 1 else "f32"))
+        let doc = f"A parameter of the code: k.{call}(\"{s.name}\", …)."
+        if s.textual():
+            rows.append(entry(s.name, s.slot, doc, "path" if s.kind == "file" else "text"))
+        elif s.kind == "toggle":
+            rows.append(toggle(s.name, s.slot, node.values[s.slot], doc))
+        elif s.kind == "menu":
+            rows.append(menu(s.name, s.slot, s.choices, node.values[s.slot], doc))
+        elif s.components > 1:
             let defaults: list[float] = []
             for c in 0..<s.components:
                 defaults.append(node.values[s.slot + c])
-            rows.append(vector(s.name, s.slot, defaults, doc))
+            let row = vector(s.name, s.slot, defaults, doc)
+            if s.kind == "color":
+                row.kind = "color"
+            rows.append(row)
         elif s.integer:
             rows.append(whole(s.name, s.slot, node.values[s.slot], -1000000.0, 1000000.0, doc))
         else:
