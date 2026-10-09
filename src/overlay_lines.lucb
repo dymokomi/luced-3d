@@ -11,7 +11,7 @@ from luce_geocore.geocore import Vector3, Matrix4, Bounds, Mesh, invalid, mesh_o
 from luce_geocore.core.growing import Growing
 from luce_3d.graphics import WireBatch, wire_batch_type
 from luce_cad.model import CadOverlay, CadPreviewSet
-from luce_cad.sketch import CadSketch, CadProjection, sketch_samples, projection_samples, projection_per_edge
+from luce_cad.sketch import CadSketch, CadProjection, sketch_samples, projection_samples, projection_per_edge, sketch_trim_piece, sketch_offset_preview
 from luce_geocore.geocore import GeometrySet, SceneKind, LightShape, Projection, Camera, Light
 from luce_geocore.kernel import SceneObjects, scene_flattened
 
@@ -144,6 +144,26 @@ pub struct OverlayLines:
                 sweep = math.atan2(s.y(last) - cy, s.x(last) - cx) - start
                 while sweep <= 0.0: sweep += 2.0 * math.pi
             try self.add_arc(origin, u, v, cx, cy, s.radius(at), start, sweep)
+
+    ## The piece Trim would take from `curve` round sketch point (`x`, `y`).
+    pub func add_trim_piece(sketch: interop.Reference[CadSketch], curve: i64, x: f64, y: f64, origin: Vector3, u: Vector3, v: Vector3) -> !:
+        var points = Growing[f64]()
+        defer points.close()
+        try sketch_trim_piece(try sketch.get(), curve, x, y, &points)
+        try self.add_plane_runs(points.view(), origin, u, v)
+
+    ## What Offset would make of `curves` `distance` toward (`x`, `y`).
+    pub func add_offset_preview(sketch: interop.Reference[CadSketch], curves: const i64[], distance: f64, x: f64, y: f64, origin: Vector3, u: Vector3, v: Vector3) -> !:
+        var points = Growing[f64]()
+        defer points.close()
+        try sketch_offset_preview(try sketch.get(), curves, distance, x, y, &points)
+        try self.add_plane_runs(points.view(), origin, u, v)
+
+    ## Plane x, y pairs joined in runs (a NaN pair between runs).
+    func add_plane_runs(points: const f64[], origin: Vector3, u: Vector3, v: Vector3) -> !:
+        for k in 0..<points.length // 2 - 1:
+            if math.is_nan(points[2 * k]) or math.is_nan(points[2 * k + 2]): continue
+            try self.add_segment(planar(origin, u, v, points[2 * k], points[2 * k + 1]), planar(origin, u, v, points[2 * k + 2], points[2 * k + 3]))
 
     ## Project's cast edges on the plane through `origin` (axes `u`, `v`):
     ## every edge, or edge `edge` alone.

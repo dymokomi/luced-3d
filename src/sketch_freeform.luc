@@ -11,11 +11,11 @@
 ##   Text                   where its baseline starts, then how tall its
 ##                          capitals are; then what it says
 ##   Blend Curve (MODIFY)   a curve's end, then another's: a quintic
-##                          control point spline between them, as curved
-##                          as each (Curvature) where it is a line or arc
+##                          control point spline between them, G1, G2 or G3
+##                          to each line or arc (Tangent, Curvature, Smooth)
 from luce_cad.sketch import CadSketch
 from overlay_lines import OverlayLines
-from sketch_editor import SketchEditor, point_kind, line_kind, circle_kind, arc_kind, spline_kind, ellipse_kind, conic_kind, curvature
+from sketch_editor import SketchEditor, point_kind, line_kind, circle_kind, arc_kind, spline_kind, ellipse_kind, conic_kind, curvature, smooth, tangent
 import sketch_tools
 from luce_std import math
 
@@ -122,17 +122,26 @@ pub func blend_click(e: SketchEditor, curve: int, x: float, y: float) -> unit!:
     if start.point == finish.point:
         e.say("Blend Curve joins the ends of two curves")
         return
-    # Six control points: each end, and two along the way it leaves its
-    # curve, a fifth and two fifths of the gap out.
+    # A quintic: six control points (eight for G3, which holds four at each
+    # end), each end's on along the way it leaves its curve.
     let span = math.hypot(sketch.x(finish.point) - sketch.x(start.point), sketch.y(finish.point) - sketch.y(start.point))
-    let points = [start.point, start.out(sketch, span * 0.2), start.out(sketch, span * 0.4), finish.out(sketch, span * 0.4), finish.out(sketch, span * 0.2), finish.point]
+    let g3 = e.tool.ends_with("G3")
+    let reaches = [0.15, 0.3, 0.45] if g3 else [0.2, 0.4]
+    let points = [start.point]
+    for reach in reaches:
+        points.append(start.out(sketch, span * reach))
+    for at in 0..<reaches.length:
+        points.append(finish.out(sketch, span * reaches[reaches.length - 1 - at]))
+    points.append(finish.point)
     let spline = sketch.add_spline(points, false)
-    # As curved as a line or an arc where it leaves it.
+    # Along (G1), as curved as (G2), or as curved and changing as (G3) a
+    # line or an arc where it leaves it.
+    let continuity = tangent if e.tool.ends_with("G1") else (smooth if g3 else curvature)
     for (at, side) in [(0, 1.0), (1, -1.0)]:
         let other = picked[at]
         let kind = sketch.kind(other)
         if kind == line_kind or kind == arc_kind:
-            _ = sketch.constrain(curvature, spline, other, value = sketch.curvature_turn(spline, side, other), side = side)
+            _ = sketch.constrain(continuity, spline, other, value = sketch.curvature_turn(spline, side, other), side = side)
     if not sketch.solve():
         e.say("The blend cannot be as curved as both ends at once")
     e.commit("Blend Curve")

@@ -32,6 +32,13 @@ func near(a: float, b: float) -> bool:
 func sketch_of(editor: Luce3D, id: int) -> CadSketch!:
     return CadSketch.parse(editor.workspace.network.require(id).texts[0])
 
+## The line starting at (`x`, `y`), or -1.
+func line_from(s: CadSketch, x: float, y: float) -> int:
+    for at in 0..<s.entity_count():
+        if s.kind(at) == 1 and near(s.x(s.part(at, 0)), x) and near(s.y(s.part(at, 0)), y):
+            return at
+    return -1
+
 ## The last entity of kind `kind`, or -1.
 func last_of(s: CadSketch, kind: int) -> int:
     var found = -1
@@ -144,6 +151,54 @@ pub func sketch_curve_tests() -> unit!:
         if s.constraint_kind(at) == 20:
             curvatures += 1
     assert(curvatures == 2)
+    # Two lines crossing like an X at (160, -30): Trim on one's arm past
+    # the crossing takes that arm, the line ending at the crossing.
+    e.choose("Line")
+    click(editor, 150.0, -40.0)
+    click(editor, 170.0, -20.0)
+    key(editor, Key.escape)
+    click(editor, 150.0, -20.0)
+    click(editor, 170.0, -40.0)
+    key(editor, Key.escape)
+    s = sketch_of(editor, id)
+    let crossed = line_from(s, 150.0, -40.0)
+    e.choose("Trim")
+    click(editor, 166.0, -24.0)
+    s = sketch_of(editor, id)
+    let cut_end = s.part(crossed, 1)
+    assert(near(s.x(cut_end), 160.0) and near(s.y(cut_end), -30.0))
+    # Offset that line, its distance typed: a copy 4 away, the 4 kept as
+    # a dimension.
+    let lines_before = s.entity_count()
+    e.choose("Offset")
+    click(editor, 155.0, -35.0)
+    for c in [52]:
+        editor.app.dispatch(Event(kind = EventKind.text_input, codepoint = c))
+    key(editor, Key.enter)
+    s = sketch_of(editor, id)
+    var offset_dimension = false
+    for at in 0..<s.constraint_count():
+        if s.constraint_kind(at) == 14 and near(s.constraint_value(at), 4.0):
+            offset_dimension = true
+    assert(s.entity_count() > lines_before and offset_dimension)
+    # A G3 blend from the arc slot's inner arc (its start, at (115, -110))
+    # to a line: eight control points, held G3 at both ends, and solving.
+    e.choose("Line")
+    click(editor, 140.0, -90.0)
+    click(editor, 160.0, -90.0)
+    key(editor, Key.escape)
+    let smooth_before = sketch_of(editor, id).constraint_count()
+    e.choose("Blend Curve G3")
+    click(editor, 112.0, -100.0)
+    click(editor, 148.0, -90.0)
+    s = sketch_of(editor, id)
+    let g3 = last_of(s, 4)
+    var smooths = 0
+    for at in smooth_before..<s.constraint_count():
+        if s.constraint_kind(at) == 21:
+            smooths += 1
+    assert(CadSketch.parse(s.text()).solve())
+    assert(s.part_count(g3) == 8 and smooths == 2)
     # Text: its baseline's start, how tall, then what it says.
     e.choose("Text")
     click(editor, 130.0, 0.0)
@@ -161,7 +216,7 @@ pub func sketch_curve_tests() -> unit!:
     lettered_body(editor)
     projected_edge(editor)
     editor.close()
-    print("PASS Sketch curves: fit and control point splines, ellipse, conic, a triangle's 3-tangent circle, tangent arc, overall and arc slots, blend curve with curvature, text placed and extruded, a box's edge projected and following it")
+    print("PASS Sketch curves: fit and control point splines, ellipse, conic, a triangle's 3-tangent circle, tangent arc, overall and arc slots, blend curve with curvature, trim of crossing lines, typed offset, G3 blend, text placed and extruded, a box's edge projected and following it")
 
 ## An "I" alone in a sketch, extruded: a solid of its outline.
 func lettered_body(editor: Luce3D) -> unit!:
