@@ -705,3 +705,11 @@ Training (Houdini's ML Train GSplats) is not on this list; see Q5.
 - Wu et al. 2025 (3DGUT)
 - Kheradmand et al. 2024 (3DGS as MCMC)
 - Adinets & Merrill 2022 (Onesweep)
+
+## 14. Owner decisions (2026-10-09)
+
+1. **Names:** ours: `orient`, `scale`, `opacity`, `Cd`, one `sh` array; import also accepts Houdini's `GS_Alpha` / `GS_SPH_*`.
+2. **Color:** linearize at import, as Houdini's Bake option does. `Cd` is linear like every other `Cd`, and export converts back to the file's convention. The detail `gsplat_color_space` records what the file had, so a round trip restores it.
+3. **Training:** not now; splats trained elsewhere are imported.
+4. **Packages:** as designed. luce-ply and luce-spz are new, zstd goes in luce-compress, and `shade_quads` goes in luce-gpu, built by this session.
+5. **Defaults taken for Q6–Q7:** Run Over Points picks the cloud when the set has no mesh. Splats and plain points don't share a set, as in Houdini.
