@@ -64,19 +64,27 @@ takes an optional profile curve on its second input.
 Volume nodes work on SDFs and sparse level-set or fog volumes, also as set
 verbs. The viewport draws each SDF or level set by its surface preview, built
 once per component. An SDF's preview lies on the exact surface. A fog volume
-is drawn as smoke, as in Houdini's viewport: luce-3d's `FogVolume` ray-marches
-its densities on the GPU, lit by the key light (self-shadowed) and the sky,
-hidden behind meshes in front of it and veiling those behind. Its texels are
+is drawn as smoke, as in Houdini's viewport: luce-3d's `FogScene` ray-marches
+every `FogVolume` of the view on the GPU, lit by the key light (self-shadowed)
+and the sky, veiling the meshes behind it, and ending each pixel's march
+exactly at the nearest surface, so a mesh inside the fog is cut smoothly at
+any depth. Grids whose boxes overlap march together, each sample summing
+them, so two crossing smokes mix rather than one painting over the other. Its texels are
 made once per cook result (on the worker) and upload on the first frame, so
 orbiting redraws without uploading. A **Volume Visualization** node (Houdini's)
 sets how it looks, on the grids its Group names (each grid keeps its own
 look, as Houdini's volvis attributes are per primitive): density scale,
 smoke color, shadow scale, the ray-marching step; emission from a grid named
-in its Emission field row, which then glows instead of being drawn as smoke,
-in one color or through the **Emission color ramp** row along the emission
-min and max; and a Density field row naming a grid whose values show as the
-density. The grids' voxels stay shared, so a new look keeps the uploaded
-texels; only a changed ramp sends its 256-texel strip. The `noise_cloud`,
+in its Emission field row, which then glows instead of being drawn as smoke
+(the field times the emission scale; values of 0 or below emit nothing), in
+one color or through the **Emission color ramp** row along the emission min
+and max, read at the values of the grid in the **Emission color field** row
+when it names one (Houdini's: temperature picks the color while another field
+sets the strength), else at the emission field's; values outside the range,
+negative ones too, take the ramp's nearer end; and a Density field row naming
+a grid whose values show as the density. The grids' voxels stay shared, so a new look keeps the uploaded
+texels; only the viewport's small table of looks and 256-texel ramp strips
+goes to the GPU again. The `noise_cloud`,
 `fire` (a ramp) and `two_smokes` (two tinted grids in one set) wrangle
 examples show them. Convert to
 Mesh makes real geometry of that surface. Volume Slice shows a colored plane
