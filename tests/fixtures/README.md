@@ -13,3 +13,6 @@ FBX File node's. The format packages
 keep their own fixtures (FBX: luce-fbx; STEP: luce-step). `step_skip.step`
 (two unit squares on a plane, the second with a corner 0.1 above it, so no
 mesher follows it) checks the tessellation's skipped-face warning.
+`quad.ply` (an ASCII quad and triangle with point colors) and `splats.ply`
+(two degree-1 Gaussian splats in the 3DGS layout, ASCII) are original
+fixtures for the PLY File and Export nodes.

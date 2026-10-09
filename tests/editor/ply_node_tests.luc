@@ -1,0 +1,42 @@
+## PLY in the graph: the File node reads a mesh and a splat cloud, and the
+## Export node writes them back.
+from luce_ply.ply import Ply
+from network import Network
+from stamps import stamp_graph
+import node_catalog
+
+pub func ply_node_tests() -> unit!:
+    let graph = Network(false)
+    # A mesh: a quad and a triangle, with point colors.
+    let quad = graph.add("File", 0.0, 0.0)
+    quad.texts[0] = "tests/fixtures/quad.ply"
+    stamp_graph(graph)
+    let mesh = graph.evaluate_data(quad.id).mesh else trap("the PLY mesh")
+    assert(mesh.point_count() == 5 and mesh.face_count() == 2 and mesh.vertex_count() == 7)
+    assert(mesh.find_attribute("Cd", 0) >= 0)
+    assert(node_catalog.file_format("a.ply") == "")
+    # Splats: a point cloud with the raw 3DGS attributes.
+    let splats = graph.add("File", 200.0, 0.0)
+    splats.texts[0] = "tests/fixtures/splats.ply"
+    stamp_graph(graph)
+    let cloud = graph.evaluate_data(splats.id).geometry
+    assert(not cloud.has_mesh() and cloud.cloud_count() == 2)
+    assert(cloud.cloud_point(1).z == 3.0)
+    # The Export node writes both back, the splats in the 3DGS layout.
+    let mesh_out = graph.add("Export", 0.0, 60.0)
+    mesh_out.texts[0] = "exported_quad.ply"
+    graph.connect(quad.id, mesh_out.id, 0)
+    let splat_out = graph.add("Export", 200.0, 60.0)
+    splat_out.texts[0] = "exported_splats.ply"
+    graph.connect(splats.id, splat_out.id, 0)
+    stamp_graph(graph)
+    assert(graph.evaluate_data(splat_out.id).geometry.cloud_count() == 2)
+    assert(graph.evaluate_data(mesh_out.id).geometry.has_mesh())
+    let header = Ply.header("exported_splats.ply")
+    assert(header.contains("property float f_rest_8\nproperty float opacity\n") and header.contains("property float nx\n"))
+    let reread = graph.add("File", 0.0, 120.0)
+    reread.texts[0] = "exported_quad.ply"
+    stamp_graph(graph)
+    let again = graph.evaluate_data(reread.id).mesh else trap("the exported PLY mesh")
+    assert(again.face_count() == 2 and again.point(4).x == 2.0)
+    print("PASS PLY File and Export nodes")

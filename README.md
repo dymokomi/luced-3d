@@ -91,8 +91,9 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   Browse categories/submenus or type to filter; arrows and Enter choose.
 - File imports OBJ, FBX (scene hierarchy, transforms, layers and instances; see
   [FBX files](docs/MODELING.md#fbx-files)), USD (.usd, .usda, .usdc, .usdz; see
-  [USD files](docs/MODELING.md#usd-files)) and a bounded STEP subset. Export
-  writes a node's result to USD, FBX, OBJ or prism. Browse or enter
+  [USD files](docs/MODELING.md#usd-files)), PLY (meshes, point clouds and
+  Gaussian splats, through luce-ply) and a bounded STEP subset. Export
+  writes a node's result to USD, FBX, OBJ, PLY or prism. Browse or enter
   a path, then Reload for disk changes. STEP remains analytic: use Transform for
   scale and Tessellate for explicit polygon conversion. CAD surfaces appear
   automatically with patch boundaries using cached, disposable viewport meshes;
@@ -100,8 +101,8 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   name, path, Browse/Reload, geometry summary and actual import errors. STEP/STP
   adds **STEP tolerance / 0 = file**: zero uses the source uncertainty; a positive
   value overrides it in source units. This per-node setting is saved in projects,
-  supports undo, and reloads the analytic model off-main when changed. OBJ and FBX
-  do not show this setting. It is separate from tessellation density. See the
+  supports undo, and reloads the analytic model off-main when changed. OBJ, FBX
+  and PLY do not show this setting. It is separate from tessellation density. See the
   [import contracts](docs/DESIGN.md#imports) and the
   [CAD tessellation reference](docs/CAD_TESSELLATION.md).
 - Tessellate's **Target edge length / 0 = off** refines boundaries and inserts
