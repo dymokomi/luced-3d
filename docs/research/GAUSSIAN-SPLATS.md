@@ -749,6 +749,12 @@ Training (Houdini's ML Train GSplats) is not on this list; see Q5.
   - from eye level: 37 ms without LOD, 33 ms at 2 px and 17 ms at 4 px;
   - from overhead: 29 ms without LOD, 22.5 ms at 2 px and 7 ms at 4 px.
 - At 2 px the images match the full draw within noise.
+- The bonsai (1.16M splats, under the 10M threshold, so drawn whole by default) takes about 5 ms a view at 2800×1800: a 4.3 ms draw and a 0.9 ms sort pass. With LOD forced, a view from 7 units costs 4.2 + 0.8 ms at 4 px, and a view from 28 units 3.6 + 1.1 ms at 2 px, against 4.0 + 1.2 ms whole. At 4 px it looks the same as the full draw.
+- The viewport's settings are `ViewState.splat_lod` (2 px) and `splat_lod_from` (10M).
+
+**Follow-ups done in stage 8:**
+- **Antialiased captures.** SPZ's flag, the detail `gsplat_antialiased`, is drawn as Mip-Splatting trains: opacity × √(det Σ′ / det(Σ′ + 0.3)).
+- **Reduce GSplats Importance** keeps what shows: opacity × relative area^0.1 × (1 + 4 · color contrast with the 8 nearest). The bonsai's flowers now survive at 25%, as crisp as with Merge.
 
 **Not done:** the StopThePop per-pixel sort (optional).
 
