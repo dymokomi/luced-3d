@@ -10,21 +10,35 @@ and system language. Perfect for high speed geometry processing language."
 
 ## 1. Decision in one page
 
-**Language.** The Code node's text is Luce Base source: what `luce-base check` accepts,
-restricted to a safe subset (§4.4). The per-element program is an ordinary Base function;
-the element and the node arrive as typed values from an API module. The one-liner from the
-request:
+**Language.** It looks and works like VEX, but it is Luce Base: what `luce-base check`
+accepts, restricted to a safe subset (§4.4). As in a Wrangle, the user writes only the body.
+The node wraps it in generated code for its Run Over menu, and that code defines the element
+and the node (§4.2). The one-liner from the request, as typed in a Code node running over
+Points:
+
+```luce
+p.P[1] += math32.sin(p.P[0] * 4.0) * 0.1
+```
+
+What the node compiles (generated, never shown or edited):
 
 ```luce
 import math32
+from luce_kernel.lib import *
 from luce_geocore.code import Point, Kernel
 
 pub func point(p: Point*, k: const Kernel*):
-    p.P[1] += math32.sin(p.P[0] * 4.0) * 0.1
+    p.P[1] += math32.sin(p.P[0] * 4.0) * 0.1    # the user's text, line for line
 ```
 
-Defining `point` makes the node run over points; `prim`, `vertex`, `detail` or `number`
-choose the other run-overs. Positions, normals and colors are `f32[4]` vectors, which Base
+Run Over picks the wrapper:
+- Points: `p: Point*`.
+- Primitives: `f: Prim*`.
+- Vertices: `v: Vertex*`.
+- Detail: `k: Kernel*` alone.
+- Numbers: `n: i64` and `k`.
+
+Errors point at the user's lines, not the wrapper's. Positions, normals and colors are `f32[4]` vectors, which Base
 computes lane by lane with the ordinary operators (`p.P = p.P + p.N * 0.1`); other
 attributes go through accessors named after their storage type (`p.f32("mass")`,
 `p.set_f32("mass", 1.0)`); node parameters come from the `Kernel` value
@@ -44,8 +58,8 @@ the request to the language session.
 **Safety.** The subset excludes everything that can corrupt memory (pointers beyond the
 API's parameter types, allocation, `---`, `extern`, `asm`, the `c` module, threads) at
 check time, and turns every remaining trap the Base compiler would insert (bounds,
-overflow, division by zero, failed `T(x)`, `assert`, `trap`) into a lane fault: that
-element keeps its input values and the node reports the line and the count. The engine
+overflow, division by zero, failed `T(x)`, `assert`, `trap`) into an error that stops
+the cook: the node errors out with the line and the element. The engine
 itself cannot trap. §4.5.
 
 **Engine.** A column (batch) interpreter written in Base in the new general package
@@ -167,7 +181,7 @@ Houdini reports compile errors with the line and column of the snippet and marks
 red; runtime failures mostly do not exist (reading a missing attribute gives 0; bad indices
 are ignored). We follow that for reads and go one step further for arithmetic: compile
 errors are precise and shown at the line in the editor; a would-be trap at run time is a
-lane fault reported on the node with its line and count (§4.5); the engine never traps.
+an error on the node with its line and element (§4.5); the engine never traps.
 
 ## 3. The VEX function catalog against geocore
 
@@ -363,38 +377,33 @@ pub struct Kernel:
     pub func set_point_f32(index: i32, name: str, value: f32)   # S3, queued
 ```
 
-Three snippets as users would write them:
+Three snippets as users type them (bodies only; the wrapper of §1 defines `p`, `f` and `k`):
 
 ```luce
-## Noise displacement along the normal, animated, with two spare parameters.
-from luce_geocore.code import Point, Kernel
-from luce_kernel.lib import snoise
-
-pub func point(p: Point*, k: const Kernel*):
-    let amount = k.f32("amount", 0.2)
-    let scale = k.f32("scale", 3.0)
-    let n = snoise(p.P * scale + [0.0, 0.0, (f32)k.time, 0.0])
-    p.P = p.P + p.N * (n * amount)
+# Run Over Points: noise displacement along the normal, animated, two spare parameters.
+let amount = k.f32("amount", 0.2)
+let scale = k.f32("scale", 3.0)
+let n = snoise(p.P * scale + [0.0, 0.0, (f32)k.time, 0.0])
+p.P = p.P + p.N * (n * amount)
 ```
 
 ```luce
-## Color primitives by area class and put the big ones in a group.
-from luce_geocore.code import Prim, Kernel
-
-pub func prim(f: Prim*, k: const Kernel*):
-    let big = f.area() > k.f32("threshold", 0.01)
-    f.Cd = [1.0, 0.2, 0.2, 0.0] if big else [0.2, 0.2, 1.0, 0.0]
-    f.set_group("big", big)
+# Run Over Primitives: color by area and put the big ones in a group.
+let big = f.area() > k.f32("threshold", 0.01)
+f.Cd = [1.0, 0.2, 0.2, 0.0] if big else [0.2, 0.2, 1.0, 0.0]
+f.set_group("big", big)
 ```
 
 ```luce
-## Detail: one run; a reduction over the input, stored in float64.
-from luce_geocore.code import Kernel
-
-pub func detail(k: Kernel*):
-    let bounds = k.input(0).bounds()
-    k.set_detail_f64("height", (f64)bounds.size()[1])
+# Run Over Detail: one run; a reduction over the input, stored in float64.
+let bounds = k.input(0).bounds()
+k.set_detail_f64("height", (f64)bounds.size()[1])
 ```
+
+The generated wrapper imports `math32` and all of `luce_kernel.lib` (VEX's functions are
+there without imports), so the body calls `snoise`, `fit`, `rand` and the rest directly.
+Helper functions, if the user wants them, go in the node's second text area (a "Header"
+tab), which the wrapper places above the entry function.
 
 Why `f32[4]` for three-component attributes: Base's vectors are 8 or 16 bytes, so `f32[3]`
 is an array without lane operators while `f32[4]` has them (base.md §5.12: "`+`, `-`, `*`
@@ -459,14 +468,14 @@ Accepted (lowered to columns):
 - arithmetic (`+ - * / // %` and the `%`, `|`, `?` forms), comparisons, `and`/`or`/`not`,
   bit operators and shifts, casts `(T)x` and checked `T(x)`, `x if c else y`;
 - `if`/`elif`/`else`, `while` with a per-lane iteration cap (1M) that makes a runaway loop
-  a lane fault, `for i in a..<b`, `for x in span`, `match` on integers and enums with `_`,
+  a node error, `for i in a..<b`, `for x in span`, `match` on integers and enums with `_`,
   `break`/`continue`, `return`;
 - method calls on API values; field reads and writes through the entry point's `Point*`,
   `Prim*`, `Vertex*`, `Kernel*` parameters and `const Geometry*` results, which are the
   only pointer-typed values a kernel ever holds (they are the API's parameter and result
   types, never formed by the snippet);
 - `print` and `format` into a per-lane bounded buffer (the console);
-- `assert` and `trap(message)` (lane faults with the message, §4.5).
+- `assert` and `trap(message)` (node errors with the message, §4.5).
 
 Excluded (compile error at the line):
 
@@ -482,32 +491,38 @@ Excluded (compile error at the line):
   generics, `str` building before S5, arrays over 16 elements, structs the snippet declares
   (S4 for plain-scalar structs);
 - failure: `!` results, `try`, `catch`, `recover`, `error` (the API never fails; what could
-  fail is a lane fault).
+  fail is a node error).
 
 The list is checked against base.md §12.6's two lists: everything in the "undefined, as in
 C" list needs a construct from the excluded set, so a kernel cannot reach undefined
 behaviour; everything in the "defined and checked" list is a trap the engine turns into a
 fault (§4.5).
 
-### 4.5 Traps become lane faults
+### 4.5 Traps are errors on the node
 
-The Base compiler inserts traps for (base.md §11.5): out-of-bounds indexing, checked
-overflow, division by zero, shift by width, a failed `T(x)` conversion, `else trap`,
-`assert`, and `trap(...)` itself. In the column engine each of those is an instruction with
-a mask result: the op computes the condition for every lane (`index < length`, overflow
-flag, `divisor != 0`, ...), lanes that fail set their bit in the chunk's fault mask with the
-instruction's source position, and from then on their writes are masked off; at the end of
-the chunk, faulted lanes keep their input values for every bound attribute (the output
-column is initialised from the input before the run, so nothing partial escapes). The node
-collects faults per source line: "line 7: index out of bounds, 12 points", shown as a
-warning on the node and as a diagnostic at the line in the editor, and the cook succeeds for
-the other lanes. A `detail` fault (one lane) is an error on the node. The engine's own code
-never indexes outside a proven chunk bound and never allocates inside a chunk, so the
-engine cannot trap; that promise is fuzzed (§5.3). Stack exhaustion cannot happen: helper
-functions are inlined and recursion is refused.
+The Base compiler inserts traps (base.md §11.5) for:
+- out-of-bounds indexing;
+- checked overflow;
+- division by zero;
+- shifting by the type's width or more;
+- a failed `T(x)` conversion;
+- `else trap`, `assert`, and `trap(...)` itself.
 
-Deviations from Base's own semantics, stated in the kernel reference: a trap is a lane
-fault, not the end of the program; `print` goes to the node's console, in element order,
+In the column engine each of these is an instruction with a mask result: the op computes
+the condition for every lane (`index < length`, the overflow flag, `divisor != 0`, ...).
+The first lane that fails stops the cook. As the owner decided, the node errors out and
+shows why: "line 7: index out of bounds (point 1204)". That message is the node's failure,
+red in the network as any cook error is, and a diagnostic at the line in the editor.
+Nothing partial escapes: the output columns are written only when every chunk finished.
+Chunks run in parallel, so when several fail the error reported is the lowest element's.
+That keeps the message the same whatever the thread count.
+
+The engine's own code never indexes outside a proven chunk bound and never allocates inside
+a chunk, so the engine itself cannot trap; that promise is fuzzed (§5.3). Stack exhaustion
+cannot happen: helper functions are inlined and recursion is refused.
+
+Deviations from Base's own semantics, stated in the kernel reference: a trap is the node's
+error, not the end of the program; `print` goes to the node's console, in element order,
 capped. Everything else (literal typing: "context chooses the float type; absent context
 the default is `f64`", base.md §4.3; strict storage; C's `//` and `%`; IEEE floats) is
 Base's, because it is Base's checker that decides.
@@ -575,7 +590,7 @@ column registers; `v.sum()` is three adds.
 | Latency per code edit | 0.14 s + `as` + `ld` (measured) | < 1 ms lowering (+ the checker, ~ms) | ~1–5 ms | |
 | Runtime dependencies on the user's machine | `luce-base`, `as`, `ld` (MinGW on Windows), SDK via `xcrun` on macOS | none | none | |
 | Loading the result | needs a `dlopen` story (none in Base) or a worker process with shared-memory columns | in process | needs `MAP_JIT`/`PROT_EXEC`, code signing on macOS, W^X | |
-| Safety of user bugs | a trap kills the app unless out of process; the subset of §4.4 removes memory bugs but not traps | every op is checked; lane faults; cannot trap | same as b if the JIT is correct | |
+| Safety of user bugs | a trap kills the app unless out of process; the subset of §4.4 removes memory bugs but not traps | every op is checked; errors stop the cook; cannot trap | same as b if the JIT is correct | |
 | Work | compiler driver, dylib emission in luce-base, loader, worker protocol, 3-OS toolchain packaging | lowering from the typed tree, column IR, ~150 column ops, scheduler; all Base | all of b plus an arm64 and x86-64 encoder and a register allocator | b + a |
 | Determinism across thread counts | yes if written so | yes by construction | yes | |
 
@@ -749,7 +764,7 @@ luced runs no compiler check (its subprocesses are `luc info`, `luc new`, git). 
   the same version guard `update_highlights` has. luced and luced-2d get it for free.
 - On every edit (debounced), the UI thread checks the snippet against the last known
   attribute signature of the input and publishes diagnostics (checker errors, subset errors,
-  and the last cook's lane faults); the node's `failure` string gets the same
+  and the last cook's error); the node's `failure` string gets the same
   `line:column: message` text so it shows on the node and in the notice
   (`network.luc:590–618`).
 - Later: the `EditorPanel`/`Document`/`GrammarSet` glue moves from luced into luce-ui as a
@@ -768,7 +783,7 @@ are renumbered, removals are applied last with `kept_faces`/`compacted`
 (`geometries/polygon/subset.lucb`), and attributes of new elements are filled through
 `TopologyBuilder` parents (`verbs/builder.lucb`). This is Houdini's batching (reads, then
 creates, then sets on new geometry, then deletes). The queues are bounded per chunk
-(a lane may add at most 1,024 elements per run; more is a lane fault), so no allocation
+(a lane may add at most 1,024 elements per run; more is an error), so no allocation
 happens inside a chunk.
 
 ### 7.7 Undo
@@ -857,7 +872,7 @@ subset accepts.
 ### Stage 1: the node
 
 Scope: `luce-kernel` with the subset rules, the lowering, column IR and interpreter; widths
-f32/f64/i32/i64/u32/u64 and masks; lane faults with per-line counts; `lib` stubs and ops:
+f32/f64/i32/i64/u32/u64 and masks; traps as node errors with line and element; `lib` stubs and ops:
 vector functions, `fit/lerp/clamp/smooth`, `rand`, Perlin `noise`/`snoise` in f32 and f64;
 `luce_geocore.code` with `Point`, `Vertex`, `Prim`, `Kernel`, `Geometry.bounds()`,
 attribute fields and typed accessors, groups, `print`; run-over by entry point;
@@ -865,7 +880,7 @@ attribute fields and typed accessors, groups, `print`; run-over by entry point;
 luced-3d node, multi-line text in projects and requests, inspector code editor with the
 Luce grammar and the new diagnostics decoration, spare parameters, undo policy, stamps,
 cancellation.
-Deliverables: `luce-kernel` 0.1 (docs: the accepted subset, the exclusion list, lane faults,
+Deliverables: `luce-kernel` 0.1 (docs: the accepted subset, the exclusion list, errors,
 with the C/VEX framing; the `lib` reference generated from the stubs), geocore `code`
 module, luced-3d Code node, `docs/CODE.md` user page in luced-3d, the luce-ui decoration.
 Tests: luce-kernel unit tests per op against scalar references in every width; a
@@ -936,7 +951,7 @@ widget in luce-ui; keyframes on parameters over the timeline.
 Decided by the owner on 2026-10-08:
 
 1. **Syntax: pure Luce Base.** No `@` bindings, no `ch()`; a snippet is a Base module with
-   entry points and typed API values (§4.2); the safe subset and lane faults are §4.4–4.5.
+   entry points and typed API values (§4.2); the safe subset and node errors are §4.4–4.5.
    The Base compiler's front end is reused as a library (§4.3) rather than writing a second
    parser. (An earlier revision chose Luce syntax; Base replaced it because it names storage
    widths and has vector operators, which Luce lacks.)
@@ -950,19 +965,20 @@ Decided by the owner on 2026-10-08:
 6. **Node before Edit step** (§7.10).
 7. **Engine**: the column interpreter; native compilation per cook stays ruled out (§5.2).
 
-Still open, few and concrete:
+Also decided on 2026-10-08:
 
-1. **Pointer-typed entry points.** The API hands the element as `Point*` and the node as
-   `const Kernel*` (Base passes mutable structs by pointer; a by-value `Point` could not be
-   written to). The snippet never forms a pointer itself; these two types are the only
-   pointers it holds. Confirm this spelling, or ask for a by-value form with the `mutating`
-   convention (memory: "mutating inferred") if the language session prefers.
-2. **Lane faults versus whole-cook errors.** The design keeps faulted lanes at their input
-   values and turns the cook into a warning with per-line counts, so one bad point does not
-   blank a million. Houdini does the same for reads and has no overflow traps. Confirm, or
-   make any fault fail the cook.
-3. **`f32[4]` for three-component attributes.** Chosen for lane operators (§4.2); the
-   alternative is a `Vec3` struct with method calls and no operators. Confirm.
+8. **It looks and works like VEX, with Base syntax.**
+   - The user writes only the body, as in a Wrangle.
+   - The node generates the wrapper for its Run Over mode; the wrapper defines `p`, `f`, `v`, `n` and `k` and imports the kernel library (§1, §4.2).
+   - The entry points' pointer types live in generated code, never in the user's text.
+9. **A fault fails the node.**
+   - The first failing element stops the cook.
+   - The node errors out with the line and the element (§4.5).
+   - There are no partial results and no warnings with counts.
+10. **`f32[4]` for three-component attributes**, for Base's lane operators.
+
+Nothing is open now. Stage 0 (the Base front end as a library) was sent to the language
+session.
 
 ## Appendix A: benchmark details
 
