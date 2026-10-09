@@ -118,13 +118,23 @@ The snippet runs once per element of one domain:
 | Primitives | once per primitive (face) | `prim(f: Prim*, k: const Kernel*)` | `Domain.face` |
 | Numbers | N runs, only detail attributes; the index is the element | `number(i: usize, k: const Kernel*)` | none; N lanes |
 
-Houdini chooses the run-over with a menu; here the function the user defines chooses it
-(owner principle: what is typed every time is unnecessary). A module defining none or more
-than one of the five is a compile error at the line. geocore has a domain Houdini lacks,
+As in Houdini, a Run Over menu on the node chooses it, and the node generates the entry
+function around the user's text (§1). The column above is the generated signature; the
+user never types it. geocore has a domain Houdini lacks,
 `Domain.edge`, and calls Houdini's vertex a corner; the API keeps Houdini's word `vertex`
 because that is what users know, and an `edge` entry point is cheap later since groups
 already support edges. `detail` takes a mutable `Kernel*` because detail attributes and
 queued edits are written through it; the parallel entry points take it `const`.
+
+**One element's code, every element in parallel.** In Points mode, the code is written for
+a single point: `p` is "this point", exactly as `@P` is in a Point Wrangle. The node runs it
+for every point (in the group) in parallel, Houdini's model. Each run sees the same input
+geometry and writes only its own point's outputs, so the order and the thread count never
+change the result (§2.2's read/write rule). The engine does not run one point at a time. It
+runs each instruction of the snippet over a chunk of 4,096 points at once, on geocore's
+thread pool, one chunk per worker (§4.7, §5.3). That is how Houdini runs VEX too, and it is
+where the speed comes from. The user cannot tell the difference: for them, the code is one
+point's.
 
 ### 2.2 Attribute bindings
 
