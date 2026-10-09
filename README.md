@@ -137,7 +137,8 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
 ## Viewport
 
 Maya-style: **Alt-left-drag** orbits, **Alt-middle-drag** pans, and
-**Alt-right-drag** dollies (Option on macOS). Scroll/pinch also zooms.
+**Alt-right-drag** dollies (Option on macOS). On a touchpad, two fingers
+orbit, **Shift** with two fingers pans, and a pinch zooms; a mouse wheel zooms.
 Ordinary left-click is reserved for tools and selection.
 **F** frames the displayed geometry; **G** toggles the grid. Component picking
 ignores occluded points, edges and faces, with orange hover previews before
