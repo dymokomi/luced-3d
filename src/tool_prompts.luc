@@ -1,0 +1,230 @@
+## Tool prompts: a node waiting for its components while its input shows
+## for picking (Tool → Select, Reselect, Pick edges, Pick face, Pick
+## profiles); the node follows the selection, Shift or Cmd peeks at the
+## input, Enter keeps it, Esc removes it.
+from luce_geocore.geocore import Mesh, Domain
+from workspace import Workspace
+from edit_types import edge_level
+from tools import ToolRun
+from tool_prompt import ToolPrompt
+from edit_steps import insert_after_display, show
+import node_catalog
+import profile_pick
+import sketch_node
+
+## Tool → Select: the new node waits, empty, while the viewport shows its
+## input for picking; the node follows the selection (follow_prompt), Enter
+## keeps it (accept_prompt), Esc removes it.
+pub func start_prompt(w: Workspace, label: str, run: ToolRun) -> unit!:
+    if w.in_transaction():
+        return
+    w.begin(label)
+    let source = w.network.display
+    let node = insert_after_display(w, run) catch failure:
+        w.cancel()
+        w.notice = failure.message
+        w.revision += 1
+        return
+    node.texts[0] = ""
+    # The input is selected while picking, so its geometry is picked on.
+    w.network.selected = source
+    show(w, source)
+    w.prompt = ToolPrompt(node.id, source, label, false)
+    w.pending_changed = true
+    w.notice = f"Select components for {label} (Shift adds), then Enter; Esc cancels"
+    w.revision += 1
+    w.rebuild()
+
+## Reselect: show node `id`'s input with its group selected, to rewrite
+## the group (and its guard) as the selection changes.
+pub func reselect(w: Workspace, id: int) -> unit!:
+    let node = w.network.require(id)
+    if not node_catalog.is_mesh_verb(node.kind) or node.inputs[0] < 0 or w.in_transaction():
+        return
+    w.begin("Reselect")
+    w.prompt = ToolPrompt(node.id, node.inputs[0], "Reselect", true)
+    w.pending_group = node.texts[0] if node.texts[0].trim() != "" else "*"
+    w.pending_type = int(node.values[node_catalog.group_type_slot])
+    w.network.selected = node.inputs[0]
+    show_prompt(w)
+    w.pending_changed = true
+    w.notice = "Change the selection, then Enter; Esc cancels"
+    w.revision += 1
+    w.rebuild()
+
+## Pick edges: pick on the input body of Fillet or Chamfer node `id` (the
+## Edges level) while its result shows; each pick rewrites the node's
+## Edges as references to the picked edges.
+pub func pick_edges(w: Workspace, id: int) -> unit!:
+    let node = w.network.require(id)
+    if not (node.kind in ["Fillet", "Chamfer"]) or node.inputs[0] < 0 or w.in_transaction():
+        return
+    w.begin("Pick edges")
+    w.prompt = ToolPrompt(node.id, node.inputs[0], "Pick edges", true)
+    w.network.selected = node.inputs[0]
+    show_prompt(w)
+    w.adopt_level(edge_level)
+    w.selection = none
+    w.pending_changed = true
+    w.notice = "Pick the edges to blend (Shift adds), then Enter; Esc cancels"
+    w.revision += 1
+    w.rebuild()
+
+## What a prompt shows: its node's result, or its input while peeking or
+## while the node has no group yet (an empty group means everything).
+func show_prompt(w: Workspace) -> unit!:
+    let prompt = w.prompt else return
+    let node = w.network.find(prompt.node) else return
+    show(w, prompt.input if w.peeking or node.texts[0].trim() == "" else node.id)
+
+## Shift or Cmd pressed or released (`held`) during a tool prompt: peek at
+## its input, or show the tool's result again.
+pub func set_peek(w: Workspace, held: bool) -> unit!:
+    let peeking = held and w.prompt != none
+    if peeking == w.peeking:
+        return
+    w.peeking = peeking
+    show_prompt(w)
+    w.revision += 1
+    w.rebuild()
+
+## Pick face: show Sketch node `id`'s input body to pick the flat face the
+## sketch goes on; the first face picked is it (follow_prompt).
+pub func pick_face(w: Workspace, id: int) -> unit!:
+    let node = w.network.require(id)
+    if node.kind != sketch_node.kind_name or node.inputs[0] < 0 or w.in_transaction():
+        if node.kind == sketch_node.kind_name and node.inputs[0] < 0:
+            w.notice = "Connect the body to sketch on to the Sketch's input"
+            w.revision += 1
+        return
+    w.begin("Pick face")
+    w.prompt = ToolPrompt(node.id, node.inputs[0], "Pick face", true)
+    w.network.selected = node.inputs[0]
+    show(w, node.inputs[0])
+    w.adopt_level(w.level_of(2))
+    w.selection = none
+    w.pending_changed = true
+    w.notice = "Click the flat face to sketch on; Esc cancels"
+    w.revision += 1
+    w.rebuild()
+
+## Pick profiles: click the regions of Extrude's or Revolve's input sketch
+## to take (profile_pick.luc); the result shows as they change.
+pub func pick_profiles(w: Workspace, id: int) -> unit!:
+    let node = w.network.require(id)
+    if not (node.kind in ["Extrude", "Revolve"]) or node.inputs[0] < 0 or w.in_transaction():
+        return
+    w.begin(profile_pick.label)
+    w.prompt = ToolPrompt(node.id, node.inputs[0], profile_pick.label, true)
+    w.network.selected = node.id
+    show(w, node.id)
+    w.selection = none
+    w.pending_changed = true
+    w.notice = "Click the profiles to take (again to leave one out), then Enter; Esc cancels"
+    w.revision += 1
+    w.rebuild()
+
+## The selection changed during a prompt: the prompted node takes it (its
+## group, or for a blend references to the picked edges) and its result
+## shows (show_prompt), its input still picked on.
+pub func follow_prompt(w: Workspace) -> unit!:
+    let prompt = w.prompt else return
+    let node = w.network.find(prompt.node) else return
+    let mesh = w.geometry else return
+    let chosen = w.current_selection() else return
+    if node.kind == sketch_node.kind_name:
+        # Pick face: the first face picked is the sketch's, and that is all.
+        let names = mesh.find_attribute("cad_face_name", 2)
+        let first = chosen.next(-1)
+        if names < 0 or first < 0 or not w.on_domain(Domain.face):
+            return
+        let name = mesh.attribute_text(names, first)
+        if name == "":
+            w.notice = "This face has no name to keep: pick one of a body made inside a CAD node"
+            w.revision += 1
+            return
+        node.texts[1] = name
+        node.values[0] = float(sketch_node.face_plane)
+        w.network.invalidate(node.id)
+        w.network.selected = node.id
+        show(w, node.id)
+        w.prompt = none
+        w.peeking = false
+        w.selection = none
+        w.notice = ""
+        w.pending_changed = true
+        w.commit()
+        w.rebuild()
+        return
+    if chosen.count() == 0:
+        node.texts[0] = ""
+        w.network.invalidate(node.id)
+        show_prompt(w)
+        w.rebuild()
+        return
+    if node.kind in ["Fillet", "Chamfer"]:
+        let references = edge_references(w, mesh) else return
+        node.texts[0] = references
+    else:
+        node.texts[0] = chosen.expression(mesh)
+        node.values[node_catalog.group_type_slot] = float(w.group_type())
+        node.guard = mesh.topology_hash()
+    w.network.invalidate(node.id)
+    show_prompt(w)
+    w.notice = ""
+    w.pending_changed = true
+    w.rebuild()
+
+## The picked edges of `mesh` (the body's pick tessellation) as references
+## (their faces by name), which survive changes upstream that renumber the
+## body; none, with a notice, when they cannot be kept.
+func edge_references(w: Workspace, mesh: Mesh) -> str?!:
+    let chosen = w.current_selection() else return none
+    let owner = mesh.find_attribute("cad_edge", 4)
+    if owner < 0 or not w.on_domain(Domain.edge):
+        w.notice = "Pick edges of the body (the Edges level)"
+        w.revision += 1
+        return none
+    let texts = mesh.find_attribute("cad_edge_reference", 4)
+    if texts < 0:
+        w.notice = "These edges have no names to keep: pick them on a body made inside a CAD node"
+        w.revision += 1
+        return none
+    let references: list[str] = []
+    var at = chosen.next(-1)
+    while at >= 0:
+        let reference = mesh.attribute_text(texts, at)
+        if reference != "" and not (reference in references):
+            references.append(reference)
+        at = chosen.next(at)
+    return references.join(";")
+
+## Enter: keep the prompted node as the selection made it.
+pub func accept_prompt(w: Workspace) -> unit!:
+    let prompt = w.prompt else return
+    let node = w.network.find(prompt.node) else return
+    # Profiles were written as they were clicked.
+    if prompt.label == profile_pick.label:
+        w.prompt = none
+        w.peeking = false
+        w.notice = ""
+        w.commit()
+        w.rebuild()
+        return
+    let chosen = w.current_selection() else return
+    if chosen.count() == 0:
+        w.notice = "Select components first, or Esc to cancel"
+        w.revision += 1
+        return
+    w.network.selected = node.id
+    show(w, node.id)
+    w.prompt = none
+    w.peeking = false
+    w.notice = ""
+    if node.kind in ["Fillet", "Chamfer"]:
+        w.selection = none
+    else:
+        w.adopt_output = true
+    w.pending_changed = true
+    w.commit()
+    w.rebuild()

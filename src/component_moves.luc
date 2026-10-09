@@ -1,0 +1,76 @@
+## Moving the selected components: a Transform Components step on the
+## active Edit node (consecutive moves of one group merge), else a node
+## after the displayed one; gizmo previews redo the whole gesture from the
+## state before it, one undo per drag.
+from luce_geocore.geocore import Mesh
+from luce_3d.graphics import Vector3
+from workspace import Workspace
+from tools import ToolRun, verb_defaults
+from edit_steps import edit_step, insert_after_display
+
+pub func move_selection(w: Workspace, delta: Vector3) -> unit!:
+    if w.selected_count() == 0:
+        return
+    let mesh = w.geometry else return
+    w.perform("Move components", func () -> unit!:
+        append_transform(w, mesh, transform_numbers(delta, Vector3(), Vector3(1.0, 1.0, 1.0)))
+        w.rebuild())
+
+## A move of the selection: an Edit step on the active Edit node, else a
+## Transform Components node after the displayed one.
+func append_transform(w: Workspace, mesh: Mesh, numbers: list[float]) -> unit!:
+    let chosen = w.current_selection() else return
+    let group = chosen.expression(mesh)
+    if w.editing():
+        let node = w.selected() else return
+        let step = edit_step(w, node, "Transform Components", group, numbers, mesh)
+        # Consecutive moves of one group merge into one step (D19); each
+        # drag is still its own undo entry.
+        if node.edits.length > 0 and node.edits[-1].merges(step):
+            node.edits[-1] = node.edits[-1].merged(step)
+        else:
+            node.edits.append(step)
+        w.network.invalidate(node.id)
+        return
+    let node = insert_after_display(w, ToolRun("Transform Components", numbers))
+    node.texts[0] = group
+    node.guard = mesh.topology_hash()
+
+## Preview each gizmo delta against the original gesture snapshot, not
+## against the last frame. A whole drag becomes one undo entry.
+## One request per pointer move: the worker applies the preview recipe to
+## the stored state before the gesture, never replaying the node.
+pub func preview_move(w: Workspace, delta: Vector3) -> unit!:
+    preview_transform(w, delta, Vector3(), Vector3(1.0, 1.0, 1.0))
+
+## Transform Components' numbers: a translation, a rotation in degrees and
+## scale factors, about the selection's centroid.
+func transform_numbers(translate: Vector3, rotate: Vector3, scale: Vector3) -> list[float]:
+    let numbers = verb_defaults("Transform Components")
+    for (slot, value) in [(0, translate.x), (1, translate.y), (2, translate.z), (3, rotate.x), (4, rotate.y), (5, rotate.z), (6, scale.x), (7, scale.y), (8, scale.z)]:
+        numbers[slot] = value
+    return numbers
+
+## A gizmo frame on the selected components (or a transforming node's
+## translation): the whole gesture so far, from the state before it.
+pub func preview_transform(w: Workspace, delta: Vector3, rotate: Vector3, scale: Vector3) -> unit!:
+    let before = w.pending else return
+    w.dragging = true
+    w.network = before.graph.copy()
+    w.selection = before.selection
+    if w.transforming():
+        let node = w.selected() else return
+        node.values[1] += delta.x
+        node.values[2] += delta.y
+        node.values[3] += delta.z
+        w.network.invalidate(node.id)
+        w.pending_changed = true
+    elif w.selecting() and w.selected_count() > 0:
+        let mesh = w.geometry else return
+        append_transform(w, mesh, transform_numbers(delta, rotate, scale)) catch failure:
+            w.cancel()
+            w.notice = failure.message
+            w.revision += 1
+            return
+        w.pending_changed = true
+    w.rebuild()

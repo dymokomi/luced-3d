@@ -1,0 +1,64 @@
+## The steps a modeling command adds: a verb step on the displayed Edit
+## node (with its soft radius, falloff, symmetry and Keep), or a verb node
+## inserted after the displayed node and shown.
+from luce_geocore.geocore import Mesh, Verbs
+from workspace import Workspace
+from network import Node
+from edit_operations import EditStep
+from edit_types import soft_radius_slot, falloff_slot, symmetry_slot, keep_slot
+from tools import ToolRun
+import node_catalog
+
+## Append one verb step to the displayed Edit node, with its settings.
+pub func append_step(w: Workspace, label: str, verb: str, group: str, numbers: list[float], mesh: Mesh) -> unit!:
+    let node = w.selected() else return
+    w.perform(label + " components", func () -> unit!:
+        node.edits.append(edit_step(w, node, verb, group, numbers, mesh))
+        w.network.invalidate(node.id)
+        # A kind's own verb (not a mesh verb) keeps a selection that
+        # still fits.
+        let index = Verbs.index_of(verb)
+        w.adopt_output = index >= 0 and Verbs.changes_topology(index)
+        w.rebuild())
+
+## A step of Edit node `node`: its soft radius and falloff reach the
+## transform, its symmetry and Keep selection every step.
+pub func edit_step(w: Workspace, node: Node, verb: str, group: str, numbers: list[float], mesh: Mesh) -> EditStep:
+    var values = numbers.copy()
+    if verb == "Transform Components" and values.length >= 15:
+        values[13] = node.values[soft_radius_slot]
+        values[14] = node.values[falloff_slot]
+    return EditStep(verb, group, w.group_type(), values, mesh.topology_hash(), int(node.values[symmetry_slot]), node.values[keep_slot] != 0.0)
+
+## A verb node after the displayed node, inserted before what it fed;
+## display, selection and the tool's output selection move to it.
+pub func add_tool_node(w: Workspace, label: str, run: ToolRun, group: str, mesh: Mesh) -> unit!:
+    w.perform(label, func () -> unit!:
+        let node = insert_after_display(w, run)
+        node.texts[0] = group
+        node.guard = mesh.topology_hash() if group != "" else 0
+        w.adopt_output = true
+        w.rebuild())
+
+pub func insert_after_display(w: Workspace, run: ToolRun) -> Node!:
+    let source = w.network.display
+    let upstream = w.network.require(source)
+    let node = w.network.add(run.verb, upstream.x, upstream.y + 90.0)
+    for other in w.network.nodes:
+        if other.id == node.id: continue
+        for port in 0..<other.inputs.length:
+            if other.inputs[port] == source: other.inputs[port] = node.id
+    w.network.connect(source, node.id, 0)
+    for slot in 0..<run.numbers.length:
+        node.values[slot] = run.numbers[slot]
+    node.values[node_catalog.group_type_slot] = float(w.group_type())
+    w.network.selected = node.id
+    show(w, node.id)
+    w.end_modal_tool()
+    return node
+
+## Show node `id`'s result: display it, previewing it alone when it is
+## not one of the scope's outputs (a node feeding others).
+pub func show(w: Workspace, id: int) -> unit!:
+    w.network.display = id
+    w.network.preview = not w.network.is_output(id)
