@@ -17,23 +17,34 @@ from luce_geocore.geocore import ScriptHelp
 from script_packages import editor_packages, dependencies
 import time
 
-## Script builds find luce-geocore and the packages beside this checkout.
-func use_checkouts() -> unit!:
+## Script builds find luce-geocore and the packages beside this checkout, in a
+## workspace of checkouts; a clone from the registry has none beside it, and
+## its scripts take every package from the registry, as a released editor's do.
+## Whether there are checkouts.
+func use_checkouts() -> bool!:
     let here = process.variable("LUC_TEST_DIR") else trap("LUC_TEST_DIR")
     let root = paths.directory(paths.directory(paths.directory(here)))
-    process.set_variable("LUCED_GEOCORE", paths.join(root, "luce-geocore"))
+    let geocore = paths.join(root, "luce-geocore")
+    if not files.exists(paths.join(geocore, "package.prisma")):
+        process.unset_variable("LUCED_GEOCORE")
+        return false
+    process.set_variable("LUCED_GEOCORE", geocore)
+    return true
 
 func top(w: Workspace) -> float!:
     return (w.geometry else trap("geometry")).bounds().maximum.y
 
 pub func script_edit_tests() -> unit!:
-    use_checkouts()
+    let checkouts = use_checkouts()
     time_tests()
     input_tests()
     check_tests()
+    registry_check_tests()
+    failing_check_tests()
     help_tests()
     cache_tests()
-    package_tests()
+    editor_set_tests()
+    package_tests(checkouts)
 
 ## Auto follows the timeline when the code reads it; On and Off override.
 func time_tests() -> unit!:
@@ -115,6 +126,84 @@ func check_tests() -> unit!:
         finish(checker)
         total += checker.seconds
     print(f"PASS script check while typing: the set warmed off the UI thread in {format_ms(warmed_in)}, an error at its line in {format_ms(failed_in)}, clean in {format_ms(clean_in)}, then {format_ms(total / 20.0)} a check")
+
+## The check with every package from the registry (a released editor, or a
+## clone from the registry): the set is locked and synced first, and an error
+## is still found at its line.
+func registry_check_tests() -> unit!:
+    let saved = process.variable("LUCED_GEOCORE") else ""
+    process.unset_variable("LUCED_GEOCORE")
+    let checker = ScriptChecker()
+    let broken = "from luce_geocore.script import Cook\n\npub func cook(k: Cook*) -> !:\n    let x: i64 = \"text\"\n"
+    checker.start(broken, "", "", "")
+    finish(checker)
+    let manifest = files.read_text(paths.join(paths.directory(paths.directory(checker.file)), "package.prisma"))
+    if saved != "":
+        process.set_variable("LUCED_GEOCORE", saved)
+    assert(not manifest.contains("str path ="), manifest)
+    assert(checker.failure.starts_with("line 4, column"), checker.failure)
+    checker.start(broken.replace("let x: i64 = \"text\"", "k.warning(\"fine\")"), "", "", "")
+    finish(checker)
+    assert(checker.failure == "", checker.failure)
+    checker.close()
+    print(f"PASS script check with registry packages: locked, synced and warmed in {format_ms(checker.warmed_in)}, an error at its line")
+
+## A check that cannot check fails, never passes: a package that cannot be
+## found (its sync fails), and an import that resolves to nothing.
+func failing_check_tests() -> unit!:
+    let checker = ScriptChecker()
+    let clean = "from luce_geocore.script import Cook\n\npub func cook(k: Cook*) -> !:\n    k.warning(\"fine\")\n"
+    checker.start(clean, "dymokomi/luce-no-such-package", "", "")
+    finish(checker)
+    assert(checker.failure.starts_with("the script's packages could not be synced"), checker.failure)
+    let unsynced = checker.failure
+    # Every check of that set says so, not only the first.
+    checker.start(clean.replace("fine", "still"), "dymokomi/luce-no-such-package", "", "")
+    finish(checker)
+    assert(checker.failure == unsynced, checker.failure)
+    # An import of a package the set does not have.
+    checker.start("from luce_no_such_package.thing import Thing\n" + clean, "", "", "")
+    finish(checker)
+    assert(checker.failure != "", "an unresolved import passed the check")
+    let unresolved = checker.failure
+    checker.start(clean, "", "", "")
+    finish(checker)
+    assert(checker.failure == "", checker.failure)
+    checker.close()
+    print(f"PASS script check fails when it cannot check: [{unsynced}] [{unresolved}]")
+
+## The editor's set from a clone of luced-3d whose packages luc synced from
+## the registry (no checkouts beside it): each is found under .luc/deps by its
+## module name and named by its registry version, so a script shares it.
+func editor_set_tests() -> unit!:
+    let saved = process.variable("LUCED_GEOCORE") else ""
+    process.unset_variable("LUCED_GEOCORE")
+    let here = process.current_directory()
+    with files.TemporaryDirectory() as directory:
+        let clone = paths.join(directory.path(), "luced-3d")
+        files.ensure_directory(clone)
+        files.write_text(paths.join(clone, "package.prisma"), "#prisma 4.0\ndef package \"luced-3d\" {\n    str owner = \"dymokomi\"\n    str version = \"0.1.0\"\n    def dependency \"luce-geocore\" {\n        str owner = \"dymokomi\"\n        str path = \"../luce-geocore\"\n    }\n}\n")
+        for row in [["luce_geocore", "0.7.4", "luce-std"], ["luce_std", "0.7.2", ""]]:
+            let name = row[0]
+            let version = row[1]
+            let needs = row[2]
+            let folder = paths.join(paths.join(paths.join(clone, ".luc"), "deps"), name)
+            files.ensure_directory(folder)
+            let dependency = f"    def dependency \"{needs}\" {{\n        str owner = \"dymokomi\"\n        str path = \"../{needs}\"\n    }}\n" if needs != "" else ""
+            files.write_text(paths.join(folder, "package.prisma"), f"#prisma 4.0\ndef package \"{name.replace("_", "-")}\" {{\n    str owner = \"dymokomi\"\n    str version = \"{version}\"\n{dependency}}}\n")
+        process.change_directory(clone)
+        let editor = editor_packages()
+        process.change_directory(here)
+        if saved != "":
+            process.set_variable("LUCED_GEOCORE", saved)
+        assert("luce-geocore" in editor and "luce-std" in editor, "the clone's .luc/deps packages were not found")
+        let needed = dependencies("", "", editor)
+        assert(needed.length == 2)
+        for d in needed:
+            assert(d.path == "", f"{d.name} by its folder {d.path}")
+        assert(needed[0].name == "luce-geocore" and needed[0].version == "0.7.4", needed[0].block())
+        assert(needed[1].name == "luce-std" and needed[1].version == "0.7.2", needed[1].block())
+    print("PASS script editor set of a registry clone: its .luc/deps packages, by registry version")
 
 ## Completion and hover on the node's check package, with luce-image as a
 ## package: `k.` and `g.` list the API's members, a package's function shows
@@ -207,18 +296,20 @@ func cache_tests() -> unit!:
     print("PASS script cache: least recently used entries past the limit go; the setting is read")
 
 ## A registry-named package takes the workspace's checkout, so it shares the
-## editor's luce-std; and such a script builds and cooks.
-func package_tests() -> unit!:
-    let editor = editor_packages()
-    let std = editor["luce-std"] else trap("the editor set has no luce-std")
-    var image = ""
-    for d in dependencies("dymokomi/luce-image@^0.45.0", "", editor):
-        if d.name == "luce-image":
-            image = d.path
-    assert(image != "", "luce-image came from the registry")
-    let manifest = files.read_text(paths.join(image, "package.prisma"))
-    assert(manifest.contains("luce-std"))
-    assert(files.canonical(paths.join(paths.directory(image), "luce-std")) == std)
+## editor's luce-std; and such a script builds and cooks (from the registry,
+## with no checkouts).
+func package_tests(checkouts: bool) -> unit!:
+    if checkouts:
+        let editor = editor_packages()
+        let std = editor["luce-std"] else trap("the editor set has no luce-std")
+        var image = ""
+        for d in dependencies("dymokomi/luce-image@^0.45.0", "", editor):
+            if d.name == "luce-image":
+                image = d.path
+        assert(image != "", "luce-image came from the registry")
+        let manifest = files.read_text(paths.join(image, "package.prisma"))
+        assert(manifest.contains("luce-std"))
+        assert(files.canonical(paths.join(paths.directory(image), "luce-std")) == std)
     let w = Workspace()
     node_commands.delete_selected(w)
     node_commands.add_node(w, "Script", 0.0, 0.0)
@@ -229,4 +320,4 @@ func package_tests() -> unit!:
     assert(w.network.require(id).failure == "", w.network.require(id).failure)
     assert(w.network.require(id).warning.contains("no image"), w.network.require(id).warning)
     (w.network.sources else trap("sources")).scripts.close()
-    print("PASS script packages resolve as the editor's build did (one luce-std)")
+    print(f"PASS script packages resolve as the editor's build did (one luce-std{", checkouts" if checkouts else ", registry"})")

@@ -6,8 +6,11 @@
 ## The editor's set: walked from the luced-3d checkout being run (its
 ## package.prisma in the working directory) or from LUCED_GEOCORE's checkout,
 ## each dependency where the compiler finds it: its declared checkout path,
-## else its registry copy under .luc/deps. A released editor has no set, and
-## everything comes from the registry at this app's luce-geocore version.
+## else its registry copy under .luc/deps. A registry copy is named by its
+## registry version, not its folder, so a script's other registry packages
+## share it (a folder would bring its packages in a second time). A released
+## editor has no set, and everything comes from the registry at this app's
+## luce-geocore version.
 ##
 ## A Packages entry: a path (/..., ./..., ../..., ~/...) as it is; a name
 ## (luce-image, owner/name, name@^1.2) from the editor's set when it is there
@@ -40,8 +43,10 @@ pub class Dependency:
 pub func editor_packages() -> map[str, str]!:
     let found: map[str, str] = {}
     var root = ""
+    # A LUCED_GEOCORE that holds no package (a workspace without that
+    # checkout) is not a set: the working directory's is.
     if let given = process.variable("LUCED_GEOCORE"):
-        if given != "":
+        if given != "" and is_package(given):
             root = absolute(given)
             found["luce-geocore"] = root
     if root == "":
@@ -62,7 +67,7 @@ func walk(root: str, found: map[str, str], depth: int) -> unit!:
         return
     let text = files.read_text(paths.join(root, "package.prisma")) catch failure:
         return
-    let synced = root.contains("/.luc/deps/") or root.contains("\\.luc\\deps\\")
+    let synced = is_synced(root)
     for d in manifest_dependencies(text):
         if d.name in found:
             continue
@@ -76,11 +81,16 @@ func walk(root: str, found: map[str, str], depth: int) -> unit!:
         found[d.name] = folder
         walk(folder, found, depth + 1)
 
-## `.luc/deps/<name>` at `root` or the nearest folder above it, or "".
+## Where luc syncs registry package `name` into `project`:
+## .luc/deps/<its module name> (luce-std's is luce_std).
+pub func deps_folder(project: str, name: str) -> str!:
+    return paths.join(paths.join(paths.join(project, ".luc"), "deps"), name.replace("-", "_"))
+
+## Package `name`'s synced folder at `root` or the nearest folder above it, or "".
 func synced_folder(root: str, name: str) -> str!:
     var folder = root
     while true:
-        let candidate = paths.join(paths.join(paths.join(folder, ".luc"), "deps"), name)
+        let candidate = deps_folder(folder, name)
         if is_package(candidate):
             return absolute(candidate)
         let parent = paths.directory(folder)
@@ -90,7 +100,7 @@ func synced_folder(root: str, name: str) -> str!:
     return ""
 
 ## Whether `folder` holds a package.prisma.
-func is_package(folder: str) -> bool:
+pub func is_package(folder: str) -> bool:
     let kind = files.metadata(paths.join(folder, "package.prisma")).kind catch failure:
         return false
     return kind == files.FileKind.regular
@@ -120,12 +130,15 @@ func setting(body: str, key: str) -> str:
 
 ## The owner a package's manifest names ("dymokomi" when it names none).
 func manifest_owner(folder: str) -> str:
+    let owner = manifest_setting(folder, "owner")
+    return owner if owner != "" else "dymokomi"
+
+## The first `str key = "value"` of a package's manifest (its package's own,
+## which comes before its dependencies), or "".
+func manifest_setting(folder: str, key: str) -> str:
     let text = files.read_text(paths.join(folder, "package.prisma")) catch failure:
-        return "dymokomi"
-    let at = text.index_of("str owner = \"") else return "dymokomi"
-    let value = text[at + 13..]
-    let close = value.index_of("\"") else return "dymokomi"
-    return value[..<close]
+        return ""
+    return setting(text, key)
 
 ## Every dependency of a script with `packages` (the node's Packages row:
 ## entries apart by spaces or commas) in a project in `folder`, against the
@@ -147,10 +160,17 @@ pub func dependencies(packages: str, folder: str, editor: map[str, str]) -> list
             result.append(made)
     return result
 
-## Package `name` from the editor's set, or none.
+## Package `name` from the editor's set, or none: a checkout by its folder, a
+## registry copy by its version.
 func named(name: str, editor: map[str, str]) -> Dependency?:
     let folder = editor[name] else return none
+    if is_synced(folder):
+        return Dependency(name, manifest_owner(folder), "", manifest_setting(folder, "version"))
     return Dependency(name, manifest_owner(folder), folder, "")
+
+## Whether `folder` is a registry copy luc synced (under a .luc/deps).
+func is_synced(folder: str) -> bool:
+    return folder.contains("/.luc/deps/") or folder.contains("\\.luc\\deps\\")
 
 ## One Packages entry: a path (/..., ./..., ../..., ~/...), owner/name[@version],
 ## name@version, or a bare name.
@@ -174,7 +194,8 @@ func dependency_of(item: str, folder: str, geocore: str, editor: map[str, str]) 
         name = name[slash + 1..]
     if let known = named(name, editor):
         return known
-    # A workspace of checkouts: the one beside luce-geocore.
+    # A workspace of checkouts: the one beside luce-geocore (a registry
+    # luce-geocore has no path, and its neighbors are the registry's).
     if geocore != "":
         let sibling = paths.join(paths.directory(geocore), name)
         if is_package(sibling):

@@ -6,9 +6,10 @@
 ## text. The editor's own checker checks that file in process (luce-geocore's
 ## ScriptHelp, over luce-base's embed.Library.check_file).
 ##
-## A new package set is warmed off the UI thread: synced once with `luc sync`
-## (a child process) when it names registry packages, then checked once on a
-## thread of its own (ScriptCheckJob), which reads and keeps its packages
+## A new package set is warmed off the UI thread: its registry packages synced
+## once into .luc/deps by a child process (`luc lock` when the set has no lock
+## yet, as `luc build` would, else `luc sync`), then checked once on a thread of
+## its own (ScriptCheckJob), which reads and keeps its packages
 ## (about 0.1 s). Until then the set is not `ready`: a pause's check waits
 ## for it, and completion and hover answer nothing (the editor asks again once
 ## it is ready). Once warm, a check takes about 0.4 ms and runs at once.
@@ -16,12 +17,15 @@
 ## nothing here asks for one while a job runs.
 ##
 ## An error underlines its line at once and the text waits; a clean check sends
-## the text to the node, which builds and cooks it.
+## the text to the node, which builds and cooks it. A check never passes when it
+## could not check: a sync that failed, or a package the script imports that
+## cannot be found or does not check, is its failure (with no line: the text goes
+## on, and the build says the same on the node).
 from luce_std.process import Command
 from luce_std import files, paths
 from luce_geocore.geocore import ScriptHelp, ScriptCheckJob, CodeCheck
 from script_build import plan, tool
-from script_packages import editor_packages, manifest_dependencies
+from script_packages import editor_packages, manifest_dependencies, is_package, deps_folder
 import time
 
 pub class ScriptChecker:
@@ -32,14 +36,14 @@ pub class ScriptChecker:
     var prepared: str = ""
     var project: str = ""
     pub var file: str = ""
-    ## The set's warming: its `luc sync`, then its first check on a thread;
-    ## `warm` once that check finished (or the sync failed, offline).
+    ## The set's warming: its `luc lock` or `luc sync`, then its first check on
+    ## a thread; `warm` once that check finished (or the sync failed).
     var syncing: Command? = none
     var job: ScriptCheckJob? = none
     var warm: bool = false
-    ## The sync failed (offline, or a package that cannot be found): the
-    ## build says which, so the set's checks pass the text on.
-    var offline: bool = false
+    ## What luc said when the set's sync failed (offline, or a package that
+    ## cannot be found), "" when it did not: every check of the set fails with it.
+    var unsynced: str = ""
     ## Jobs of sets left behind, released once they finish (a running check
     ## cannot be stopped, and joining it would hold up the editor).
     var leaving: list[ScriptCheckJob] = []
@@ -76,9 +80,11 @@ pub class ScriptChecker:
         self.prepared = key
         self.project = made.work
         self.file = paths.join(paths.join(made.work, "src"), "script.lucb")
-        # Registry packages are synced into the project's .luc/deps once.
+        # Registry packages are synced into the project's .luc/deps once:
+        # resolved first when the set has no lock (`luc sync` needs one).
         if not synced(made.work, made.manifest):
-            self.syncing = Command(tool("luc"), ["sync"], directory = made.work, output_limit = 1048576)
+            let locked = files.exists(paths.join(made.work, "luc.lock"))
+            self.syncing = Command(tool("luc"), ["sync" if locked else "lock"], directory = made.work, output_limit = 1048576)
             self.waiting = code
         else:
             self.warm_up(code)
@@ -103,8 +109,8 @@ pub class ScriptChecker:
     ## Check `code` in the check package now (the set is warm).
     func check(self, code: str) -> unit!:
         let started = time.now()
-        self.failure = ""
-        if not self.offline:
+        self.failure = self.unsynced
+        if self.unsynced == "":
             self.failure = first_error(ScriptHelp.check(self.file, code))
         self.seconds = float(time.now() - started) / 1000000000.0
         self.finished = true
@@ -122,12 +128,13 @@ pub class ScriptChecker:
             if not command.is_finished():
                 return false
             let code = command.exit_code() else -1
+            let said = command.output() if code != 0 else ""
             command.close()
             self.syncing = none
             if code != 0:
-                # Offline, or a package that cannot be found: the build
-                # says which; the text goes on.
-                self.offline = true
+                # Offline, or a package that cannot be found: each check
+                # of the set says so.
+                self.unsynced = sync_failure(said)
                 self.warm = true
             else:
                 self.warm_up(self.waiting)
@@ -159,7 +166,7 @@ pub class ScriptChecker:
         # The set is prepared (and warmed) again at its next check.
         self.prepared = ""
         self.warm = false
-        self.offline = false
+        self.unsynced = ""
         self.pending = false
         self.finished = false
 
@@ -183,21 +190,44 @@ pub class ScriptChecker:
         self.leaving = []
 
 ## Whether every registry dependency of `manifest` is in `project`'s .luc/deps
-## (a checkout dependency is read where it is).
+## (a checkout dependency is read where it is; one whose checkout is not there
+## comes from the registry, as the compilers take it).
 func synced(project: str, manifest: str) -> bool!:
     for d in manifest_dependencies(manifest):
-        if d.path != "":
+        if d.path != "" and is_package(d.path):
             continue
-        let kind = files.metadata(paths.join(paths.join(paths.join(paths.join(project, ".luc"), "deps"), d.name), "package.prisma")).kind catch failure:
+        let kind = files.metadata(paths.join(deps_folder(project, d.name), "package.prisma")).kind catch failure:
             return false
         if kind != files.FileKind.regular:
             return false
     return true
 
+## The failure of a set whose sync failed: luc's last line that says
+## something (its error), after what it was doing.
+func sync_failure(said: str) -> str:
+    var last = ""
+    for line in said.split("\n"):
+        if line.trim() != "":
+            last = line.trim()
+    if last == "":
+        return "the script's packages could not be synced"
+    return f"the script's packages could not be synced: {last}"
+
 ## The first error a check found in the code, as "line L, column C: message";
-## "" when there is none (another package's error is the build's to report).
+## else the first error elsewhere (an import that cannot be found, a package
+## that does not check), as "packages: message", with no line; "" when the
+## check passed. A check that did not pass always says something.
 func first_error(checked: CodeCheck) -> str!:
+    var elsewhere = ""
     for at in 0..<checked.diagnostic_count():
-        if checked.diagnostic_severity(at) == 0 and checked.diagnostic_part(at) == 0:
+        if checked.diagnostic_severity(at) != 0:
+            continue
+        if checked.diagnostic_part(at) == 0:
             return f"line {checked.diagnostic_line(at)}, column {checked.diagnostic_column(at)}: {checked.diagnostic_message(at)}"
+        if elsewhere == "":
+            elsewhere = f"packages: {checked.diagnostic_message(at)}"
+    if elsewhere != "":
+        return elsewhere
+    if not checked.ok():
+        return "packages: the script did not check, and the checker said nothing"
     return ""
