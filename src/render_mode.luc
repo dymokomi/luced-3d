@@ -1,0 +1,248 @@
+## The viewport's Render shading mode: luce-render's progressive image of the
+## displayed scene through the viewport's camera, at the viewport's size, as
+## Cycles' or Karma's viewport shows it. The overlays (grid, wires, gizmos,
+## tools) draw over it (view.luc).
+##
+## What restarts the image, and what it costs (luce-render's RenderSession):
+## - the camera moves or the viewport resizes: the film starts over, nothing
+##   is uploaded;
+## - the scene recooks (the displayed outputs' sets change): it compiles on a
+##   thread of its own, and where only lights or materials changed, the
+##   geometry, its BLAS and TLAS stay on the GPU;
+## - the render settings change (the network's Render node, the sample cap):
+##   lights, materials and kernels load again over the same geometry.
+##
+## While the camera moves the image renders at a fraction of the viewport's
+## size, chosen from the measured speed so a sample takes about a frame; once
+## the camera has been still for a moment it renders at full size and refines
+## to the sample cap. Every sample is the renderer's: unbiased at any size.
+from luce_gpu.gpu import RenderTarget
+from luce_render.render import RenderSession
+from luce_geocore.geocore import GeometrySet, Vector3
+from workspace import Workspace
+from network import Node
+from scene_nodes import material_values
+import math
+import time
+
+## Seconds the camera must be still before the image renders at full size.
+let settle_seconds: float = 0.15
+## Paths a pass traces in scenes with Gaussian splats, whose paths cost the
+## most: passes stay near 40 ms on an M4 Max, so the UI keeps its frames.
+let splat_pool: int = 131072
+
+pub class RenderMode:
+    let session: RenderSession
+    ## What the session renders: the displayed sets' keys, the settings, and
+    ## the view (camera and size) it was last placed at.
+    var scene_keys: list[int]
+    var settings_key: str = ""
+    var view_key: str = ""
+    ## Whether a render was started (the mode is on and a scene shown).
+    pub var active: bool = false
+    ## When the camera last moved (ns), and the divisor of the viewport's
+    ## size the image renders at (1 once still).
+    var moved_at: int = 0
+    pub var divisor: int = 1
+    ## Measured cost: nanoseconds per pixel-sample at full size, from the
+    ## last still render (0 until measured).
+    var pixel_cost: float = 0.0
+    var cost_samples: int = 0
+    ## The display last set (exposure in stops, neutral tone mapping).
+    var exposure: float = 0.0
+    var neutral: bool = true
+    ## Whether the scene has no lights, so a grey sky lights it.
+    pub var default_sky: bool = false
+
+    pub func init(self) -> unit!:
+        self.session = RenderSession.make()
+        self.scene_keys = []
+
+    ## Render `w`'s displayed scene into (0, 0, width, height) of `target`;
+    ## whether more frames are wanted.
+    pub func draw(self, w: Workspace, target: RenderTarget, width: float, height: float) -> bool!:
+        let full_width = math.max(1, int(width))
+        let full_height = math.max(1, int(height))
+        self.follow_display(w)
+        if not self.follow_scene(w, full_width, full_height):
+            return false
+        self.follow_view(w, full_width, full_height)
+        self.measure()
+        let busy = self.session.draw(target, 0.0, 0.0, width, height)
+        # A preview while moving goes on refining until the full size takes over.
+        return busy or self.divisor > 1
+
+    ## The scene and its settings: start again when either changed. False
+    ## when there is nothing to render.
+    func follow_scene(self, w: Workspace, width: int, height: int) -> bool!:
+        let scenes = w.batches.scenes
+        let keys = w.batches.scene_keys
+        if scenes.length == 0:
+            self.stop()
+            return false
+        let render = render_node(w)
+        let settings = settings_key(render, w.view.render_samples)
+        if self.active and keys == self.scene_keys and settings == self.settings_key:
+            return true
+        # One set: the outputs as instances of it, sharing their arrays (so a
+        # light's change elsewhere keeps the geometry the renderer's).
+        var whole = scenes[0]
+        if scenes.length > 1:
+            whole = GeometrySet()
+            for part in scenes:
+                whole = whole.with_instance(part, Vector3(), Vector3(), Vector3(1.0, 1.0, 1.0))
+        self.default_sky = not has_lights(scenes)
+        self.configure(render, set_has_splats(w))
+        # The session needs a view before its first start.
+        if not self.active:
+            self.place(w, width, height, 1)
+        let (bounces, spectral) = limits(render)
+        self.session.start_view(whole, w.view.render_samples, bounces, spectral)
+        self.session.set_display(self.exposure, 1 if self.neutral else 0)
+        self.scene_keys = keys.copy()
+        self.settings_key = settings
+        self.active = true
+        return true
+
+    ## The session's material and limits from the network's Render node (the
+    ## defaults without one), its pool for splats, and a sky without lights.
+    func configure(self, render: Node?, splats: bool) -> unit!:
+        if let node = render:
+            let v = node.values
+            let (names, numbers) = material_values(v, 12, false)
+            self.session.set_material(names, numbers)
+            self.session.set_limits(int(v[6]), int(v[7]), int(v[8]), v[10], v[9], v[11] != 0.0, v[28])
+        else:
+            self.session.set_material("base_color\nspecular_roughness", [0.6, 0.6, 0.6, 0.0, 0.5, 0.0, 0.0, 0.0])
+            self.session.set_limits(1024, 1024, 1024, 0.0, 0.0, false, 0.5)
+        self.session.set_pool(splat_pool if splats else 0)
+        let sky = 0.5 if self.default_sky else 0.0
+        self.session.set_background(sky, sky, sky)
+
+    ## The camera: a move restarts the image at a preview size; a still
+    ## camera, once settled, at full size.
+    func follow_view(self, w: Workspace, width: int, height: int) -> unit!:
+        let p = w.view.camera.projection(float(width) / float(height))
+        let key = f"{p.position.x},{p.position.y},{p.position.z},{p.backward.x},{p.backward.y},{p.backward.z},{p.focal},{width},{height}"
+        let now = time.now()
+        if key != self.view_key:
+            self.view_key = key
+            self.moved_at = now
+            self.place(w, width, height, self.preview_divisor(width, height))
+        elif self.divisor > 1 and float(now - self.moved_at) / 1000000000.0 >= settle_seconds:
+            self.place(w, width, height, 1)
+
+    ## Place the session's view through the viewport's camera, at 1/`divisor`
+    ## of the viewport's size.
+    func place(self, w: Workspace, width: int, height: int, divisor: int) -> unit!:
+        let p = w.view.camera.projection(float(width) / float(height))
+        self.divisor = divisor
+        self.session.look(p.position, p.backward.multiply_scalar(-1.0), p.up, 1.0 / p.focal, math.max(1, width // divisor), math.max(1, height // divisor))
+        self.cost_samples = 0
+
+    ## The preview's divisor: a sample at most about 16 ms by the measured
+    ## cost (2 until measured), never more than 8.
+    func preview_divisor(self, width: int, height: int) -> int:
+        if self.pixel_cost <= 0.0:
+            return 2
+        let pixels = float(width * height)
+        var divisor = 1
+        while divisor < 8 and self.pixel_cost * pixels / float(divisor * divisor) > 16000000.0:
+            divisor *= 2
+        return divisor
+
+    ## Measure the cost of a full-size sample while the image refines still.
+    func measure(self) -> unit!:
+        if self.divisor != 1 or self.session.compiling_scene():
+            return
+        let done = self.session.samples_done()
+        if done >= 4 and done != self.cost_samples:
+            self.cost_samples = done
+            let pixels = float(self.session.width() * self.session.height())
+            self.pixel_cost = self.session.seconds() * 1000000000.0 / (pixels * float(done))
+
+    ## The display transform, shared with the Render panel.
+    func follow_display(self, w: Workspace) -> unit!:
+        if w.view.render_exposure != self.exposure or w.view.render_neutral != self.neutral:
+            self.exposure = w.view.render_exposure
+            self.neutral = w.view.render_neutral
+            self.session.set_display(self.exposure, 1 if self.neutral else 0)
+
+    ## Whether frames are still wanted: compiling, refining or previewing.
+    pub func running(self) -> bool:
+        return self.active and (self.session.running() or self.divisor > 1)
+
+    ## The corner label: what the image is at.
+    pub func label(self) -> str!:
+        let problem = self.session.problem()
+        if problem != "":
+            return f"Render: {problem}"
+        if self.session.compiling_scene() and not self.session.has_image():
+            return "Render  /  preparing the scene"
+        let done = self.session.samples_done()
+        let state = "preview" if self.divisor > 1 else f"{done} of {self.session.samples()} samples"
+        let sky = "  /  default sky" if self.default_sky else ""
+        return f"{state}  /  {self.session.seconds():.1f} s{sky}"
+
+    ## Whether a scene is compiling (the image shown is the last scene's).
+    pub func preparing(self) -> bool:
+        return self.active and self.session.compiling_scene()
+
+    pub func samples_done(self) -> int:
+        return self.session.samples_done()
+
+    ## Compiles, uploads and reloads so far (tests and benchmarks).
+    pub func counts(self) -> (int, int, int):
+        return (self.session.compile_count(), self.session.upload_count(), self.session.reload_count())
+
+    ## Leave the mode: the render and its GPU memory go.
+    pub func stop(self):
+        if self.active:
+            self.session.stop()
+        self.active = false
+        self.scene_keys = []
+        self.settings_key = ""
+        self.view_key = ""
+        self.divisor = 1
+
+## The Render node whose settings the viewport renders with: the selected
+## one, else the first in the network (none: the defaults).
+func render_node(w: Workspace) -> Node?:
+    if let selected = w.selected():
+        if selected.kind == "Render":
+            return selected
+    for node in w.network.nodes:
+        if node.kind == "Render" and node.enabled:
+            return node
+    return none
+
+## Bounces and spectral from a Render node (render_fields: color in slot 4,
+## 0 spectral; bounces in 5), else 12 bounces, spectral.
+func limits(render: Node?) -> (int, bool):
+    if let node = render:
+        return (math.max(1, int(node.values[5])), node.values[4] == 0.0)
+    return (12, true)
+
+## What the render's settings depend on: the Render node's values and the cap.
+func settings_key(render: Node?, samples: int) -> str:
+    var key = f"{samples}|"
+    if let node = render:
+        key = key + f"{node.id}|"
+        for value in node.values:
+            key = key + f"{value},"
+    return key
+
+func has_lights(scenes: list[GeometrySet]) -> bool!:
+    for whole in scenes:
+        if whole.has_scene():
+            let objects = whole.scene()
+            for at in 0..<objects.count():
+                if not objects.is_camera(at):
+                    return true
+    return false
+
+func set_has_splats(w: Workspace) -> bool:
+    for cloud in w.batches.clouds:
+        if cloud.is_splats():
+            return true
+    return false

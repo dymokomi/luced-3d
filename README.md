@@ -119,8 +119,10 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   CAD remains analytic when blasted before Tessellate. This is named primitive
   selection, not Houdini's complete expression/attribute-selection language.
 - Click or hold the top-right grouped viewport square for Wireframe, Flat +
-  Wireframe, Flat, Shaded, and Shaded + Wireframe. **Show normals** adds face-center
-  normal guides. Rendered is visibly unavailable until a render engine exists.
+  Wireframe, Flat, Shaded, Shaded + Wireframe, and **Render**. Render progressively
+  traces the displayed scene through the viewport camera, including CAD's cached
+  surface meshes. A default sky lights scenes without lights; Samples sets the
+  refinement limit. **Show normals** adds face-center normal guides.
 - Clicking a node selects its properties. **O** and the right-hand strip toggle
   Out; multiple results can be exposed. **D** toggles isolated preview without
   changing outputs. The left-hand strip toggles bypass (**B**).
@@ -199,7 +201,7 @@ This is an experimental modeling foundation. Transform/Group gizmos support Move
 Cube supports corner resizing. Shift snaps and +/- changes gizmo size.
 Limits include 128 nodes, 8,388,608 points/faces and 33,554,432 corners per mesh;
 individual operators and importers can have tighter safety budgets. General
-typed attribute sockets and a path tracer are not implemented. CAD tessellation
+typed attribute sockets are not implemented. CAD tessellation
 still has known difficult trims and poorly distributed regions under active work.
 
 ## Verification

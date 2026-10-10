@@ -7,6 +7,9 @@ import subprocess
 import sys
 import tempfile
 ROOT = Path(__file__).resolve().parents[1]
+# A trap ends the run: no crash window is started to wait for a click
+# (luce-ui's LUCE_CRASH_WINDOW).
+os.environ["LUCE_CRASH_WINDOW"] = "0"
 sys.path.insert(0, str(ROOT / "tests"))
 from run import prepare, build
 with tempfile.TemporaryDirectory(prefix="luced-3d-profile-") as temporary:
