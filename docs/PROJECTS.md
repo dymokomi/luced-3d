@@ -44,4 +44,4 @@ are reported, since the window system may constrain the requested dimensions.
 Context containers and Input nodes use the same v1 schema. Older Group/CAD nodes
 with zero input ports load with two disconnected ports. Existing root-level
 geometry and materials are preserved without reparenting; context restrictions
-apply to new authoring. New projects start with Cube inside Geo.
+apply to new authoring. Startup and File → New open at Scene, with Cube inside Geo.

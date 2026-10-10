@@ -19,8 +19,9 @@ The orange right-hand node strip and `O` toggle exposure. `Auto Out` restores
 automatic behavior. Visibility is independent: hidden results stay in the
 Outliner and can still feed consumers. Bypass changes evaluation, not exposure.
 `D` toggles an isolated preview without changing Out flags or Outliner membership.
-There is no dedicated Output operator. New projects open inside a Geo containing
-a Cube, automatically exposed as a terminal. Null remains an optional pass-through.
+There is no dedicated Output operator. New projects open at Scene with a Geo
+containing a Cube, automatically exposed as a terminal. Double-click Geo to model.
+Null remains an optional pass-through.
 
 ## Contexts and navigation
 

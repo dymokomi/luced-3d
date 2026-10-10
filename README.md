@@ -125,8 +125,10 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   Out; multiple results can be exposed. **D** toggles isolated preview without
   changing outputs. The left-hand strip toggles bypass (**B**).
 - **Tab** follows the current network. At `/ scene` it offers **Geo, CAD, SDF,
-  Volumes, GSplats, Materials, Group, Camera, Light, Render**. New projects open
-  inside Geo with a Cube. Mesh primitives live in Geo; CAD features, SDF operations,
+  Volumes, GSplats, Materials, Group, Camera, Light, Render**. Startup and File →
+  New open at Scene with one Geo container; double-click Geo to reach its Cube.
+  The popup title names the active context; press **U** to return to Scene.
+  Mesh primitives live in Geo; CAD features, SDF operations,
   volume operations and splat operations live in their corresponding containers.
   Materials contains Material nodes; each Material contains its shader graph.
 - Containers have **thicker outlines**. Double-click one to enter; **U** or Up
