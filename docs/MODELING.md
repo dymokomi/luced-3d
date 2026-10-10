@@ -68,8 +68,10 @@ is drawn as smoke, as in Houdini's viewport: luce-3d's `FogScene` ray-marches
 every `FogVolume` of the view on the GPU, lit by the key light (self-shadowed)
 and the sky, veiling the meshes behind it, and ending each pixel's march
 exactly at the nearest surface, so a mesh inside the fog is cut smoothly at
-any depth. Grids whose boxes overlap march together, each sample summing
-them, so two crossing smokes mix rather than one painting over the other. Its texels are
+any depth. Grids whose boxes overlap march together, up to four a pass,
+each sample summing them, so crossing smokes mix rather than one painting
+over another, and shadow each other: the key light's and the sky's optical
+depth at a sample runs through every grid covering it. Its texels are
 made once per cook result (on the worker) and upload on the first frame, so
 orbiting redraws without uploading. A **Volume Visualization** node (Houdini's)
 sets how it looks, on the grids its Group names (each grid keeps its own
