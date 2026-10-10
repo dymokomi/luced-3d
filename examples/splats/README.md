@@ -45,3 +45,10 @@ On a real capture, replace the first nodes with a File node on a `.ply`,
 `.spz` or `.splat` file. Clean GSplats first (Max Scale) keeps the huge
 background splats out of GSplats to Volume, and its Voxel Size of 0 uses the
 splats' median size.
+
+## Lighting and rendering
+
+| Scene | What it shows |
+|---|---|
+| `splat_relight` | The ball's splats (their `Cd` standing in for a capture's lit colors) get normals (**Normals from GSplats**), lose their light into `albedo` (**Delight GSplats**), and are lit again by a low sun from the side (**Relight GSplats**): diffuse and a highlight baked into `Cd` and the SH, shadowed through the splats' density. |
+| `splat_shadows` | Splats and meshes in one render: the ball's splats on a floor beside a sphere, under an area light, through a camera into a **Render** node (press Render). luce-render traces the splats as 3D Gaussian Ray Tracing does: they emit their colors (the floor takes on their glow), shadow the floor and the sphere, and let what is behind show through their thin edges. |
