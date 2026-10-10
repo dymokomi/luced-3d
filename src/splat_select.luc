@@ -3,14 +3,17 @@
 ## lasso drawn freely, or a brush painted over the splats (its radius on
 ## [ and ]). A splat is selected where its footprint on screen meets the
 ## shape (luce-geocore's SplatEdits.select), not only its center; through the
-## depth, or with Visible only (V) just the splats seen there. Shift adds,
+## depth, or with Visible only (V) just the splats seen there: not those
+## behind the cloud's own, the other displayed clouds' or the meshes on
+## screen (SplatOccluders). Shift adds,
 ## Ctrl takes away, a plain drag starts over; a click is a dab of the brush,
 ## or a point. At the Object level anything picked selects the whole cloud.
 ## The brush paints live; each gesture is one undo step.
 from luce_ui.ui import Painter, Event, Point
 from luce_gpu.gpu import Rect, Color
 from luce_window.input import EventKind, Key
-from luce_geocore.geocore import SplatEdits
+from luce_geocore.geocore import SplatEdits, SplatOccluders, Mesh
+from luce_3d.graphics import GaussianSplats
 from luce_std import math
 from workspace import Workspace
 from viewport_chrome import outline
@@ -154,7 +157,8 @@ pub class SplatSelect:
         let mesh = w.geometry else return
         let chosen = w.current_selection() else return
         let radius = w.splat_brush if self.shape == brush_shape else 0.0
-        var made = SplatEdits.select(mesh, chosen, screen_view(w, width, height), shape, region, radius, w.splat_footprint, operation, w.splat_visible)
+        let occluders = splat_occluders(w, mesh) if w.splat_visible else none
+        var made = SplatEdits.select(mesh, chosen, screen_view(w, width, height), shape, region, radius, w.splat_footprint, operation, w.splat_visible, occluders)
         # The Object level takes the whole cloud, or nothing.
         if w.level_index() == object_level:
             made = made.filled(made.count() > 0)
@@ -176,6 +180,28 @@ pub class SplatSelect:
             for at in 0..<n:
                 let next = (at + 1) % n
                 painter.line(Point(p[at * 2], p[at * 2 + 1]), Point(p[next * 2], p[next * 2 + 1]), 1.0, ink)
+
+## What hides the edited cloud's splats besides its own, for Visible only:
+## every other drawn cloud (its splats as placed, columns shared) and the
+## meshes on screen. Made for each selection, so it follows the display.
+func splat_occluders(w: Workspace, picked: Mesh) -> SplatOccluders!:
+    let occluders = SplatOccluders()
+    let clouds = w.batches.clouds
+    for at in 0..<clouds.length:
+        if not is_edited_cloud(clouds[at], w.batches.cloud_nodes, at, w.network.display, picked):
+            clouds[at].occlude(occluders)
+    let (_, meshes) = w.on_screen()
+    for mesh in meshes:
+        occluders.add_mesh(mesh)
+    return occluders
+
+## Whether drawn cloud `at` is the one an Edit node displayed as `node`
+## picks on with `picked`: it came from that node and was packed from the
+## positions the pick mesh shares.
+pub func is_edited_cloud(cloud: GaussianSplats, nodes: list[int], at: int, node: int, picked: Mesh) -> bool:
+    if at >= nodes.length or nodes[at] != node:
+        return false
+    return cloud.source_id() == picked.positions_id() and cloud.size() == picked.point_count()
 
 ## The camera as SplatEdits.select reads it: eye, right, up and view
 ## direction, the focal lengths, the viewport's size and the near distance,
