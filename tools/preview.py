@@ -12,6 +12,9 @@ import tempfile
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
+# A trap ends the run: no crash window is started to wait for a click
+# (luce-ui's LUCE_CRASH_WINDOW).
+os.environ["LUCE_CRASH_WINDOW"] = "0"
 
 
 def prepare(project):
