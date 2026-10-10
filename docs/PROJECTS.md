@@ -7,7 +7,7 @@ references. `project_session` owns native file dialogs, dirty state, commands an
 the Save / Don't Save / Cancel lifecycle. No custom file parser is used.
 
 `/scene` is a `luced3d` prim with a `network` child containing stable `n<ID>`
-node prims. Nodes author input IDs, parent Group ID, output/enabled/visibility,
+node prims. Nodes author input IDs, parent container ID, output/enabled/visibility,
 name, position and typed parameter arrays. Ordered Edit children retain operation
 kind, element IDs, a 64-bit topology hash guard, displacement and amount.
 Older projects' whole-connectivity guards load as unguarded recipes. `/scene/view`
@@ -40,3 +40,8 @@ failed-load atomicity, invalid cycles/text, floating viewport/all-floating layou
 split/tab restoration, preferences and corrupt-file preservation. Native Metal
 captures now accept `--width`, `--height` and `--viewport-only`; actual pixel sizes
 are reported, since the window system may constrain the requested dimensions.
+
+Context containers and Input nodes use the same v1 schema. Older Group/CAD nodes
+with zero input ports load with two disconnected ports. Existing root-level
+geometry and materials are preserved without reparenting; context restrictions
+apply to new authoring. New projects start with Cube inside Geo.

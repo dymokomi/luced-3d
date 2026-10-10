@@ -64,29 +64,79 @@ pub func requires_second(kind: str) -> bool:
     return not (kind in ["Switch", "Null", "Extrude", "Revolve", code_cook.kind_name, script_cook.kind_name])
 
 pub func sources() -> list[str]:
-    return ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus", "File", "Group", "CAD"] + generators() + solid_kinds()
+    return ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus", "File", "Input"] + context_kinds() + generators() + solid_kinds()
 
-## Nodes holding nodes: Groups (geometry nodes), CAD nodes (CAD features)
-## and Materials (shader nodes).
+## Scene-level networks. Material is a shader container within Materials.
+pub func context_kinds() -> list[str]:
+    return ["Geo", "CAD", "SDF", "Volumes", "GSplats", "Materials", "Group"]
+
+## Enterable networks, including each Material's shader network.
 pub func holds_nodes(kind: str) -> bool:
-    return kind in ["Group", "CAD", "Material"]
+    return kind in context_kinds() or kind == "Material"
 
-## Containers whose result is their exposed children placed as one instance,
-## by their transform and visibility.
+## Containers that cook their exposed children. Material resolves shader sockets instead.
+pub func collects_children(kind: str) -> bool:
+    return kind in context_kinds()
+
+## Spatial containers: their transform and visibility place their exposed children.
 pub func places_children(kind: str) -> bool:
-    return kind in ["Group", "CAD"]
+    return collects_children(kind) and kind != "Materials"
 
-## The menu's categories in a network's context: geometry nodes', inside a
-## CAD node ("cad") CAD nodes', inside a Material ("shading") shader nodes'.
-pub func categories(context: str = "geometry") -> list[str]:
+pub func transforming_kinds() -> list[str]:
+    return ["Transform", "Group", "CAD", "Geo", "SDF", "Volumes", "GSplats"]
+
+## Group inherits its enclosing context; the other containers introduce one.
+pub func child_context(kind: str) -> str:
+    if kind == "Geo": return "geometry"
+    if kind == "Material": return "shading"
+    if kind in ["CAD", "SDF", "Volumes", "GSplats", "Materials"]: return kind.lower()
+    return ""
+
+## The authoring menu and commands share these rules. Existing project graphs
+## retain their node kinds and wiring even if authored before contexts existed.
+pub func allowed(kind: str, context: str) -> bool:
+    if context == "scene": return kind in context_kinds() or kind in scene_kinds()
+    if context == "shading": return is_shader(kind)
+    if context == "materials": return kind in ["Material", "Group", "Input", "Merge", "Null", "Switch"]
+    if kind in ["Group", "Input", "Transform", "Merge", "Null", "Switch", "File", "Cache", "Export"]: return true
+    if context == "cad": return is_cad_only(kind) or kind == "Edit CAD"
+    if kind in context_kinds(): return true
+    if is_shader(kind) or is_cad_only(kind) or kind in scene_kinds() or kind == "Material": return false
+    if kind in [code_cook.kind_name, script_cook.kind_name]: return true
+    if context == "sdf":
+        return kind == "Edit SDF" or kind.starts_with("SDF ") or kind in ["Mesh to SDF", "Convert to Mesh", "Volume Slice"]
+    if context == "volumes":
+        return category(kind) == "Volumes" and not (kind.starts_with("SDF ") and kind != "SDF to Volume")
+    if context == "gsplats":
+        return category(kind) == "GSplats" or category(kind) == "Attributes"
+    if context == "geometry":
+        if kind in context_kinds() or kind == "Convert to Mesh": return true
+        return not (category(kind) in ["Volumes", "GSplats"]) and not (kind in ["Edit CAD", "Edit SDF"])
+    return false
+
+## Categories for the active network, with search restricted to the same context.
+pub func categories(context: str = "scene") -> list[str]:
+    if context == "scene": return ["Contexts", "Render", "All"]
+    if context == "materials": return ["Materials", "Utility", "All"]
+    if context == "sdf": return ["SDF", "Contexts", "Utility", "File I/O", "All"]
+    if context == "volumes": return ["Volumes", "Contexts", "Utility", "File I/O", "All"]
+    if context == "gsplats": return ["GSplats", "Contexts", "Attributes", "Utility", "File I/O", "All"]
     if context == "shading":
         return shader_categories()
     if context == "cad":
         return cad_categories()
-    return ["Primitives", "Modeling", "Deform", "Curves", "Volumes", "GSplats", "Transform / Copy", "Attributes", "Utility", "File I/O", "Materials", "Render", "All"]
+    return ["Primitives", "Modeling", "Subdivide", "Deform", "Curves", "Transform / Copy", "Attributes", "Utility", "File I/O", "Materials", "Contexts", "All"]
 
 ## A node's category in the menu of `context`.
 pub func category_in(kind: str, context: str) -> str:
+    if context == "scene": return "Contexts" if holds_nodes(kind) else "Render"
+    if context == "geometry" and kind == "Convert to Mesh": return "Modeling"
+    if context == "materials": return "Materials" if kind == "Material" else "Utility"
+    if context in ["sdf", "volumes", "gsplats"]:
+        if kind in context_kinds() and kind != "Group": return "Contexts"
+        if kind in ["File", "Cache", "Export"]: return "File I/O"
+        if kind in ["Group", "Input", "Transform", "Merge", "Null", "Switch", code_cook.kind_name, script_cook.kind_name]: return "Utility"
+        if context == "sdf": return "SDF"
     return cad_category(kind) if context == "cad" else category(kind)
 
 pub func category(kind: str) -> str:
@@ -105,8 +155,9 @@ pub func category(kind: str) -> str:
         return "Render"
     if kind in material_kinds():
         return "Materials"
-    if kind in ["Group", "CAD"]:
-        return "Utility"
+    if kind in context_kinds():
+        return "Utility" if kind == "Group" else "Contexts"
+    if kind == "Input": return "Utility"
     if kind in sources():
         return "Primitives"
     if kind in ["Transform", "Mirror", "CopyTransform", "CopyToPoints", "MatchSize"]:
@@ -118,9 +169,14 @@ pub func category(kind: str) -> str:
     return "Modeling"
 
 pub func kinds() -> list[str]:
-    return sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Switch", code_cook.kind_name, script_cook.kind_name] + scene_kinds() + material_kinds() + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Name", "Normal", "Measure", "UVProject", "Color"] + [sketch_node.kind_name, "Extrude", "Revolve", "Boolean", "Fillet", "Chamfer", "Mirror Body", "Pattern"] + shader_kinds()
+    let all = sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Switch", code_cook.kind_name, script_cook.kind_name] + scene_kinds() + material_kinds() + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Name", "Normal", "Measure", "UVProject", "Color"] + [sketch_node.kind_name, "Extrude", "Revolve", "Boolean", "Fillet", "Chamfer", "Mirror Body", "Pattern"] + shader_kinds()
+    let result: list[str] = []
+    for kind in all:
+        if not (kind in result): result.append(kind)
+    return result
 
 pub func input_count(kind: str) -> int:
+    if collects_children(kind): return 2
     if cad_nodes.two_inputs(kind):
         return 2
     if is_shader(kind):
@@ -395,7 +451,9 @@ func value_fields(kind: str) -> list[Parameter]:
         elif kind in ["Cylinder", "Cone"]:
             result.append(number("Height", 2, 2.0, 0.001, 100.0, 0.1, "Length along Y.", true, 10.0))
         return result
-    if kind in ["Transform", "Group", "CAD"]:
+    if kind == "Input":
+        return [menu("Input", 0, "First|Second", 0.0, "Read this input of the containing network node.")]
+    if kind in transforming_kinds():
         return [vector("Translate", 1, [0.0, 0.0, 0.0], "Moves the geometry, after rotating and scaling."),
                 vector("Rotate", 4, [0.0, 0.0, 0.0], "Rotation about X, then Y, then Z, in degrees, about the pivot.", suffix = "°"),
                 vector("Scale", 7, [1.0, 1.0, 1.0], "Scale along each axis about the pivot; never zero."),
@@ -625,7 +683,13 @@ pub func description(kind: str) -> str:
     if verb >= 0:
         return VerbCatalog.description(verb)
     if kind == "Group":
-        return "Nested network / double-click to enter"
+        return "Nested network / inherits its context; double-click to enter"
+    if kind == "Input": return "Read the containing network's first or second input"
+    if kind == "Geo": return "Polygon and curve network / double-click to model"
+    if kind == "SDF": return "Signed distance field network / double-click to enter"
+    if kind == "Volumes": return "Voxel and volume network / double-click to enter"
+    if kind == "GSplats": return "Gaussian splat network / double-click to enter"
+    if kind == "Materials": return "Material library / double-click to create materials"
     if kind == "CAD":
         return "Solid bodies from sketches and features / double-click to model"
     if kind == sketch_node.kind_name:

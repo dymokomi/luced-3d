@@ -124,9 +124,18 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
 - Clicking a node selects its properties. **O** and the right-hand strip toggle
   Out; multiple results can be exposed. **D** toggles isolated preview without
   changing outputs. The left-hand strip toggles bypass (**B**).
-- The **Outliner** shows exposed results and nested Groups. Double-click a Group
-  to enter its local network; Up returns to the parent. Groups have hierarchical
-  transforms and visibility. See [output rules and limits](docs/OUTLINER.md).
+- **Tab** follows the current network. At `/ scene` it offers **Geo, CAD, SDF,
+  Volumes, GSplats, Materials, Group, Camera, Light, Render**. New projects open
+  inside Geo with a Cube. Mesh primitives live in Geo; CAD features, SDF operations,
+  volume operations and splat operations live in their corresponding containers.
+  Materials contains Material nodes; each Material contains its shader graph.
+- Containers have **thicker outlines**. Double-click one to enter; **U** or Up
+  returns to its parent. Group inherits its enclosing context. The **Outliner**
+  shows exposed results and nested containers with transforms and visibility.
+- To feed data between networks, wire a container's first or second input, then
+  create **Input** inside it and choose First or Second. For example, connect a
+  Materials library to Geo, then wire Input into Assign Material's second port.
+  See [context and output rules](docs/OUTLINER.md).
 - Disabling Transform, an Edit node or Merge passes its first input through.
   Disabling Cube produces empty geometry. Delete/Backspace in Network deletes
   the selected node and disconnects its consumers.

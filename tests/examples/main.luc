@@ -6,6 +6,7 @@
 from luce_std import files, paths, process
 from workspace import Workspace
 import node_commands
+import node_catalog
 import code_node
 import code_cook
 import project_file
@@ -25,7 +26,26 @@ class Scene:
 
     ## A `kind` node after the selected one, its values `values` by slot.
     func add(self, kind: str, values: list[(int, float)] = []) -> int!:
+        # A saved handle can select a node in a previously visited network.
+        if self.w.network.selected >= 0:
+            node_commands.reveal_node(self.w, self.w.network.selected)
+        if kind in node_catalog.scene_kinds():
+            while self.w.network.scope >= 0: node_commands.leave_group(self.w)
+        elif not node_catalog.allowed(kind, self.w.network.context()):
+            var container = "Geo"
+            if kind.starts_with("SDF ") or kind == "Mesh to SDF": container = "SDF"
+            elif node_catalog.category(kind) == "Volumes": container = "Volumes"
+            elif node_catalog.category(kind) == "GSplats": container = "GSplats"
+            let source = self.w.network.selected
+            node_commands.add_node(self.w, container, 0.0, self.y)
+            let boundary = self.w.network.selected
+            if source >= 0 and node_catalog.input_count(kind) > 0:
+                node_commands.connect(self.w, source, boundary, 0)
+            node_commands.enter_group(self.w, boundary)
+            if source >= 0 and node_catalog.input_count(kind) > 0:
+                node_commands.add_node(self.w, "Input", 0.0, 0.0)
         node_commands.add_node(self.w, kind, 0.0, self.y)
+        assert((self.w.selected() else trap(kind)).kind == kind, self.w.notice)
         self.y += 90.0
         for (slot, value) in values:
             node_commands.set_parameter(self.w, slot, value)
@@ -45,7 +65,27 @@ class Scene:
 
     ## Connect node `source` to input `port` of node `target`.
     func wire(self, source: int, target: int, port: int) -> unit!:
-        self.w.network.connect(source, target, port)
+        # A nested source exposes its container at the target's level.
+        let graph = self.w.network
+        let parent = graph.require(target).parent
+        var exposed = source
+        while graph.require(exposed).parent != parent and graph.require(exposed).parent >= 0:
+            exposed = graph.require(exposed).parent
+        if graph.require(exposed).parent == parent:
+            graph.connect(exposed, target, port)
+        else:
+            # The target imports a source from its container's parent level.
+            exposed = source
+            let outside = graph.require(parent).parent
+            while graph.require(exposed).parent != outside and graph.require(exposed).parent >= 0:
+                exposed = graph.require(exposed).parent
+            graph.connect(exposed, parent, port)
+            let saved = graph.scope
+            graph.scope = parent
+            let input = graph.add("Input", 180.0, self.y)
+            input.values[0] = float(port)
+            graph.connect(input.id, target, port)
+            graph.scope = saved
         self.w.network.invalidate(target)
         self.w.rebuild()
         let node = self.w.network.require(target)
@@ -56,8 +96,14 @@ class Scene:
     func save(self, folder: str) -> unit!:
         # The last node is the scene's output, displayed and framed.
         let last = self.w.network.selected
+        let outputs = [last]
+        var parent = self.w.network.require(last).parent
+        while parent >= 0:
+            outputs.append(parent)
+            parent = self.w.network.require(parent).parent
         for node in self.w.network.nodes:
-            node.output = 1 if node.id == last else -1
+            # Ancestor networks stay exposed; each other network retains Auto.
+            node.output = 1 if node.id in outputs else 0
         node_commands.display_selected(self.w)
         self.w.network.preview = false
         self.w.view.yaw = 0.7

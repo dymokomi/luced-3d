@@ -180,7 +180,7 @@ pub class Node:
     ## only on the compute worker; synchronous callers use the same contract.
     ## `keys` are the inputs' content keys (their nodes' stamps) when the caller
     ## knows them: a Script node keeps an unchanged input's file.
-    pub func compute(self, data: GeometryData, second: GeometryData? = none, progress: func(float) -> unit!? = none, sources: SourceCache? = none, clock: list[float] = [], keys: list[int] = []) -> GeometryData!:
+    pub func compute(self, data: GeometryData, second: GeometryData? = none, progress: func(float) -> unit!? = none, sources: SourceCache? = none, clock: list[float] = [], keys: list[int] = [], direct_children: bool = false) -> GeometryData!:
         if self.frozen != "":
             return load_frozen(self.frozen)
         let v = self.values
@@ -189,7 +189,11 @@ pub class Node:
         let pivot = Vector3(v[10], v[11], v[12])
         let translation = Vector3(v[1], v[2], v[3]).add(pivot).subtract(Matrix4.compose(Vector3(), rotation, scale).transform_point(pivot))
         # A Group places its children as one instance, hidden with it.
+        if self.kind in ["Materials", "Input"]:
+            return data
         if node_catalog.places_children(self.kind):
+            if direct_children:
+                return data.transformed(translation, rotation, scale) if self.visible else GeometryData()
             return GeometryData().with_instance(data, translation, rotation, scale, self.visible)
         if node_catalog.is_set_verb(self.kind):
             if not self.enabled:
@@ -345,7 +349,12 @@ pub class Network:
         self.picked = []
         self.takes = [Take("Main")]
         if seed:
-            _ = self.add("Cube", 40.0, 70.0)
+            let cube = self.add("Cube", 40.0, 70.0)
+            let geo = self.add("Geo", 40.0, 70.0)
+            cube.parent = geo.id
+            self.scope = geo.id
+            self.selected = cube.id
+            self.display = cube.id
 
     pub func find(self, id: int) -> Node?:
         for node in self.nodes:
@@ -364,14 +373,14 @@ pub class Network:
         while ancestor >= 0:
             let group = self.require(ancestor)
             if not node_catalog.holds_nodes(group.kind):
-                error(ui.invalid, "Only a Group, a CAD node or a Material can contain nodes")
+                error(ui.invalid, "Only a context node can contain nodes")
             ancestor = group.parent
             depth += 1
         if depth >= 16:
             error(ui.invalid, "Group nesting is limited to 16 levels")
         # A Material holds shader nodes, a CAD node CAD nodes, and only they do.
         let context = self.context()
-        if not cad_nodes.allowed(kind, context, is_shader(kind)):
+        if (context in ["cad", "shading"] and not node_catalog.allowed(kind, context)) or (context != "shading" and is_shader(kind)) or (context != "cad" and cad_nodes.is_cad_only(kind)):
             if context == "shading":
                 error(ui.invalid, "Inside a Material, only shader nodes")
             if context == "cad":
@@ -435,15 +444,31 @@ pub class Network:
                     result.append(id)
         return result
 
-    ## What the network shown holds: "shading" (a Material's shader nodes),
-    ## "cad" (a CAD node's) or "geometry".
+    ## Groups inherit the nearest enclosing typed context; the root is scene.
     pub func context(self) -> str:
-        let scope = self.find(self.scope) else return "geometry"
-        if scope.kind == "Material":
-            return "shading"
-        if scope.kind == "CAD":
-            return "cad"
-        return "geometry"
+        return self.context_at(self.scope)
+
+    pub func context_at(self, parent: int) -> str:
+        var id = parent
+        for _ in 0..<17:
+            let scope = self.find(id) else return "scene"
+            let context = node_catalog.child_context(scope.kind)
+            if context != "": return context
+            id = scope.parent
+        return "scene"
+
+    ## Typed data stays directly usable by the next network (SDFs, grids,
+    ## splats and material libraries must not become opaque instances).
+    pub func direct_children(self, node: Node) -> bool:
+        return node.kind in ["Geo", "SDF", "Volumes", "GSplats", "Materials"] or (node.kind == "Group" and self.context_at(node.parent) in ["sdf", "volumes", "gsplats", "materials"])
+
+    ## Input nodes depend on the external source, never the containing
+    ## node's result: that result depends on the Input's consumers.
+    pub func context_input(self, node: Node) -> int:
+        let parent = self.find(node.parent) else return -1
+        let port = int(node.values[0])
+        if not node_catalog.collects_children(parent.kind) or port < 0 or port >= parent.inputs.length: return -1
+        return parent.inputs[port]
 
     ## Whether the network shown is a Material's shader nodes.
     pub func in_material(self) -> bool:
@@ -569,6 +594,10 @@ pub class Network:
             let node = self.require(id)
             for input in node.inputs:
                 pending.append(input)
+            if node.kind == "Input":
+                pending.append(self.context_input(node))
+            if node_catalog.collects_children(node.kind):
+                for child in self.outputs(node.id): pending.append(child.id)
         return false
 
     ## Connect `source`'s output `output` (shader nodes have several) to
@@ -577,7 +606,7 @@ pub class Network:
         let upstream = self.require(source)
         let node = self.require(target)
         if upstream.parent != node.parent:
-            error(ui.invalid, "Connections must stay inside one Group; connect the Group's result instead")
+            error(ui.invalid, "Connections must stay inside one network; connect the container and use an Input node inside")
         if port < 0 or port >= node.inputs.length:
             error(ui.invalid, "That node has no such geometry input")
         if output < 0 or (is_shader(upstream.kind) and output >= shader_nodes.outputs(upstream.kind).length) or (not is_shader(upstream.kind) and output != 0):
@@ -648,6 +677,8 @@ pub class Network:
                         pending.append(node.parent)
                 if next in node.inputs:
                     pending.append(node.id)
+                if node.kind == "Input" and node.parent == next:
+                    pending.append(node.id)
 
     pub func evaluate(self, id: int) -> Mesh!:
         return self.evaluate_data(id).require_mesh()
@@ -702,12 +733,19 @@ pub class Network:
             self.resolve_material(node)
         if node.frozen != "":
             return node.compute(GeometryData())
-        if node_catalog.places_children(node.kind):
+        if node.kind == "Input":
+            let source = self.context_input(node)
+            return self.evaluate_node(source, visiting) if source >= 0 else GeometryData()
+        if node_catalog.collects_children(node.kind):
             var children = GeometryData()
             if node.enabled:
                 for child in self.outputs(node.id):
-                    children = children.with_instance(self.evaluate_node(child.id, visiting), visible = child.visible)
-            return node.compute(children)
+                    let data = self.evaluate_node(child.id, visiting)
+                    if self.direct_children(node):
+                        if child.visible: children = children.merged(data)
+                    else:
+                        children = children.with_instance(data, visible = child.visible)
+            return node.compute(children, direct_children = self.direct_children(node))
         if node.kind in node_catalog.sources() or reads_file(node.kind, node.enabled, node.values):
             return node.compute(GeometryData())
         let port = int(node.values[0]) if node.kind == "Switch" and node.enabled else 0

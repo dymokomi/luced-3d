@@ -16,6 +16,8 @@ pub func group_nodes(graph: Network, ids: list[int]) -> Node!:
     var any_visible = false
     for id in ids:
         let node = graph.require(id)
+        if node.kind == "Input":
+            error(ui.invalid, "Group the nodes using an Input; the Input stays at the network boundary")
         if is_shader(node.kind):
             error(ui.invalid, "Shader nodes stay in their Material")
         if node.parent != outside:
@@ -28,7 +30,7 @@ pub func group_nodes(graph: Network, ids: list[int]) -> Node!:
     var at = 0
     while at < members.length:
         for input in graph.require(members[at]).inputs:
-            if input >= 0 and not (input in members):
+            if input >= 0 and not (input in members) and graph.require(input).kind != "Input":
                 members.append(input)
         at += 1
     let readers: list[Node] = []
@@ -57,11 +59,25 @@ pub func group_nodes(graph: Network, ids: list[int]) -> Node!:
                 last = last and not (member in graph.require(other).inputs)
             if last:
                 exposed.append(member)
+    # Boundary Inputs stay outside; the Group imports them through its ports.
+    let external: list[int] = []
+    for member in members:
+        for input in graph.require(member).inputs:
+            if input >= 0 and not (input in members) and not (input in external): external.append(input)
+    if external.length > 2:
+        error(ui.invalid, "A Group supports up to two external inputs")
     let saved = graph.scope
     graph.scope = outside
     let group = graph.add("Group", x, y) catch failure:
         graph.scope = saved
         error(failure.code, failure.message)
+    let imported: list[int] = []
+    graph.scope = group.id
+    for port in 0..<external.length:
+        group.inputs[port] = external[port]
+        let input = graph.add("Input", x - 150.0 + float(port) * 120.0, y - 100.0)
+        input.values[0] = float(port)
+        imported.append(input.id)
     graph.scope = saved
     if ids.length == 1:
         group.name = graph.require(ids[0]).name + " group"
@@ -70,6 +86,8 @@ pub func group_nodes(graph: Network, ids: list[int]) -> Node!:
     for member in members:
         let node = graph.require(member)
         node.parent = group.id
+        for port in 0..<node.inputs.length:
+            if let external_at = external.index_of(node.inputs[port]): node.inputs[port] = imported[external_at]
         if not any_visible:
             node.visible = true
         if member in exposed:

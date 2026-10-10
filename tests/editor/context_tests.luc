@@ -1,0 +1,179 @@
+## Context authoring, cross-network data, history, worker caches and old projects.
+from app import Luce3D
+from workspace import Workspace
+from network import Network
+from node_menu import NodeMenu
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_prism.prism import Document, Value
+from project_graph import write_graph, read_graph
+from stamps import stamp_graph
+import node_catalog
+import node_commands
+import project_file
+import time
+
+func add(w: Workspace, kind: str) -> int!:
+    node_commands.add_node(w, kind, 40.0, 70.0)
+    let node = w.selected() else trap(kind)
+    assert(node.kind == kind, w.notice)
+    return node.id
+
+func search(menu: NodeMenu, context: str, text: str) -> int!:
+    menu.open(context = context)
+    let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz "
+    for at in 0..<text.length:
+        let c = text[at..<at + 1]
+        let index = alphabet.index_of(c) else trap(c)
+        let scalar = index + 65 if index < 26 else (index - 26 + 97 if index < 52 else 32)
+        menu.event(Event(kind = EventKind.text_input, codepoint = scalar))
+    return menu.result_count()
+
+pub func context_tests() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let geo = w.network.scope
+    assert(w.network.require(geo).kind == "Geo" and w.network.require(1).parent == geo)
+    node_commands.leave_group(w)
+    assert(w.network.context() == "scene")
+    let menu = editor.panels.search
+    menu.open(context = w.network.context())
+    assert(menu.result_count() == 7)
+    for kind in ["Cube", "Sphere", "Material", "Edit SDF", "Volume", "OpenPBR Surface"]:
+        let before = w.network.nodes.length
+        node_commands.add_node(w, kind, 0.0, 0.0)
+        assert(w.network.nodes.length == before and w.notice != "")
+    assert(search(menu, "scene", "Cube") == 0)
+    assert(search(menu, "scene", "Camera") == 1 and search(menu, "scene", "Light") == 1 and search(menu, "scene", "Render") == 1)
+    assert(search(menu, "scene", "Material") == 1) # Materials, never Material
+    assert(search(menu, "geometry", "SDF Sphere") == 0 and search(menu, "sdf", "SDF Sphere") == 1)
+    assert(search(menu, "materials", "Material") == 1 and search(menu, "shading", "OpenPBR Surface") == 1)
+    assert(search(menu, "volumes", "Cube") == 0 and search(menu, "gsplats", "Cube") == 0)
+    menu.event(Event(kind = EventKind.key_down, key = Key.escape))
+    for (container, context, primitive) in [("Geo", "geometry", "Cube"), ("CAD", "cad", "Sketch"), ("SDF", "sdf", "SDF Sphere"), ("Volumes", "volumes", "Volume"), ("GSplats", "gsplats", "Edit GSplats"), ("Materials", "materials", "Material")]:
+        let id = add(w, container)
+        assert(w.network.require(id).inputs == [-1, -1]) # Creating a container consumes no existing object.
+        node_commands.enter_group(w, id)
+        assert(w.network.context() == context)
+        let group = add(w, "Group")
+        node_commands.enter_group(w, group)
+        assert(w.network.context() == context)
+        _ = add(w, primitive)
+        node_commands.leave_group(w)
+        node_commands.leave_group(w)
+        assert(w.network.context() == "scene")
+    # Every allowed entry has a browsable category, not just a search result.
+    for context in ["scene", "geometry", "cad", "sdf", "volumes", "gsplats", "materials", "shading"]:
+        for kind in node_catalog.kinds():
+            if node_catalog.allowed(kind, context):
+                assert(node_catalog.category_in(kind, context) in node_catalog.categories(context), context + ": " + kind)
+    editor.close()
+    connected_contexts()
+    typed_outputs()
+    legacy_graphs()
+    print("PASS context menus and commands, inherited Groups, typed outputs, material inputs, worker invalidation, history and project compatibility")
+
+func settle(w: Workspace) -> unit!:
+    let worker = w.compute else trap("worker")
+    let deadline = time.now() + 20000000000
+    while worker.busy and time.now() < deadline: _ = w.poll_compute()
+    assert(not worker.busy and w.notice == "", w.notice)
+
+func connected_contexts() -> unit!:
+    let w = Workspace()
+    let geo = w.network.scope
+    node_commands.leave_group(w)
+    let library = add(w, "Materials")
+    node_commands.enter_group(w, library)
+    let material = add(w, "Material")
+    node_commands.set_text(w, 0, "materials/red")
+    node_commands.enter_group(w, material)
+    assert(w.network.context() == "shading" and w.network.local_nodes()[0].kind == "OpenPBR Surface")
+    node_commands.leave_group(w)
+    node_commands.leave_group(w)
+    node_commands.connect(w, library, geo, 1)
+    node_commands.enter_group(w, geo)
+    let input = add(w, "Input")
+    node_commands.set_parameter(w, 0, 1.0)
+    node_commands.select_node(w, 1)
+    let assign = add(w, "Assign Material")
+    node_commands.connect(w, input, assign, 1)
+    node_commands.set_text(w, 1, "materials/red")
+    let data = w.network.evaluate_data(geo)
+    assert(data.geometry.material_paths() == "materials/red")
+    let mesh = data.require_mesh()
+    assert(mesh.face_count() == 6 and mesh.attribute_text(mesh.find_attribute("material", 2), 0) == "materials/red")
+    stamp_graph(w.network)
+    let before = w.network.require(assign).stamp
+    # Grouping a consumer preserves its boundary Input and its material binding.
+    node_commands.group_selected(w)
+    let group = w.network.selected
+    assert(w.network.require(group).kind == "Group" and w.network.require(input).parent == geo)
+    assert(w.network.evaluate_data(group).geometry.material_paths() == "materials/red")
+    w.undo()
+    assert(w.network.require(assign).inputs[1] == input)
+    w.enable_compute()
+    settle(w)
+    node_commands.reveal_node(w, material)
+    node_commands.set_text(w, 0, "materials/blue")
+    node_commands.reveal_node(w, assign)
+    node_commands.set_text(w, 1, "materials/blue")
+    settle(w)
+    assert(w.network.require(assign).stamp != before)
+    let result = w.geometry else trap("worker mesh")
+    assert(result.attribute_text(result.find_attribute("material", 2), 0) == "materials/blue")
+    w.undo()
+    w.undo()
+    settle(w)
+    assert(w.network.require(material).texts[0] == "materials/red")
+    let doc = Document()
+    write_graph(doc, w.network)
+    let restored = read_graph(doc)
+    assert(project_file.same_graph(w.network, restored))
+    restored.background = false
+    assert(restored.evaluate_data(geo).geometry.material_paths() == "materials/red")
+    # External container connections still reject indirect cycles.
+    var rejected = false
+    restored.connect(geo, library, 0) catch failure: rejected = failure.message.contains("cycle")
+    assert(rejected)
+    (w.compute else trap("worker")).close()
+
+func typed_outputs() -> unit!:
+    let graph = Network(false)
+    let sdf = graph.add("SDF", 0.0, 0.0)
+    graph.scope = sdf.id
+    let group = graph.add("Group", 0.0, 0.0)
+    graph.scope = group.id
+    _ = graph.add("SDF Sphere", 0.0, 0.0)
+    graph.scope = -1
+    let geo = graph.add("Geo", 200.0, 0.0)
+    graph.connect(sdf.id, geo.id, 0)
+    graph.scope = geo.id
+    let input = graph.add("Input", 0.0, 0.0)
+    let mesh = graph.add("Convert to Mesh", 0.0, 100.0)
+    graph.connect(input.id, mesh.id, 0)
+    assert(graph.evaluate(geo.id).face_count() > 100)
+    graph.scope = -1
+    let doc = Document()
+    write_graph(doc, graph)
+    assert(read_graph(doc).evaluate(geo.id).face_count() > 100)
+    group.visible = false
+    graph.visibility_changed(group)
+    assert(graph.evaluate_data(sdf.id).field_preview() == none)
+
+func legacy_graphs() -> unit!:
+    let graph = Network(false)
+    let cube = graph.add("Cube", 0.0, 0.0)
+    let group = graph.add("Group", 100.0, 0.0)
+    graph.scope = group.id
+    _ = graph.add("Sphere", 0.0, 0.0)
+    graph.scope = -1
+    let doc = Document()
+    write_graph(doc, graph)
+    # The old v1 representation had zero ports on Group/CAD.
+    doc.set(f"/scene/nodes/n{group.id}", "inputs", Value.numbers([0], []))
+    doc.set(f"/scene/nodes/n{group.id}", "sources", Value.numbers([0], []))
+    let restored = read_graph(doc)
+    assert(restored.require(group.id).inputs == [-1, -1])
+    assert(restored.require(cube.id).parent == -1 and restored.evaluate(cube.id).face_count() == 6)
+    assert(restored.evaluate(group.id).face_count() > 6)
