@@ -52,6 +52,11 @@ struct Product:
     ## its first draw), and whether the product is a cloud's (new or held).
     var splats: GaussianSplats*?
     var cloud: bool
+    ## A displayed output's whole set, for the viewport's render mode: a new
+    ## owner of the worker's immutable storage for the UI to adopt, and
+    ## whether the product is a set's (new or held).
+    var set: GeometrySet*?
+    var scene: bool
 
 ## Overlays of a key the UI holds, kept so unchanged keys need no extraction.
 struct Held:
@@ -106,6 +111,9 @@ struct State:
             if let splats = product.splats:
                 splats.close()
                 free(splats) in memory.heap
+            if let set = product.set:
+                set.close()
+                free(set) in memory.heap
         self.count = 0
         if let report = self.report:
             report.release()
@@ -322,6 +330,26 @@ pub struct ComputeChannel:
             free(made) in memory.heap
             error(failure.code, failure.message)
 
+    ## Publish a displayed output's set (its meshes, clouds, cameras, lights
+    ## and materials, all but CAD models) under a content key, for the
+    ## viewport to render: a new owner of the same immutable arrays, nothing
+    ## copied. A key the UI holds goes alone.
+    pub func scene(key: i64, node: i64, geometry: interop.Reference[GeometrySet]) -> !:
+        try self.check()
+        if self.merge(key, false):
+            return
+        var product = Product(key, none, node, true, false, not self.holds(key))
+        product.scene = true
+        if product.fresh:
+            # CAD models are Luce objects of this thread: they stay here
+            # (luce-render skips analytic CAD before a Tessellate node).
+            product.set = try (try geometry.get()).plain_storage()
+        self.add(product) catch failure:
+            if let made = product.set:
+                made.close()
+                free(made) in memory.heap
+            error(failure.code, failure.message)
+
     ## A key already in this result gains the inspect role instead of a copy.
     func merge(key: i64, inspect: bool) -> bool:
         for index in 0..<self.state.count:
@@ -493,6 +521,23 @@ pub struct ComputeService:
         state.products[(usize)index].splats = none
         return try interop.Reference[GaussianSplats].adopt(splats, gaussian_splats_type, memory.heap)
 
+    ## Whether product `index` is a displayed set's (new or held).
+    pub func scene_product(index: i64) -> bool:
+        return (self.state else return false).products[(usize)index].scene
+
+    ## Whether the product carries a new set to adopt.
+    pub func scene_fresh(index: i64) -> bool:
+        return (self.state else return false).products[(usize)index].set != none
+
+    ## Adopt product `index`'s set (once; the UI keeps it by key).
+    pub func take_scene(index: i64) -> interop.Reference[GeometrySet]!:
+        let state = self.state else error(invalid, "Compute service closed")
+        if index < 0 or (usize)index >= state.count or state.completed == 0:
+            error(invalid, "No completed scene")
+        let set = state.products[(usize)index].set else error(invalid, "Scene already consumed")
+        state.products[(usize)index].set = none
+        return try interop.Reference[GeometrySet].adopt(set, geocore.geometry_set_type, memory.heap)
+
     ## Combined overlays of the current result: fresh and held keys.
     pub func wires() -> interop.Reference[WireBatch]!:
         return try self.batch(0)
@@ -560,7 +605,7 @@ pub struct ComputeService:
         state.held_count = count
         for index in 0..<state.count:
             let product = &state.products[index]
-            if not product.fresh or product.mesh != none or product.volume != none or product.splats != none or not listed(kept, product.key) or state.held_count == state.held.length:
+            if not product.fresh or product.mesh != none or product.volume != none or product.splats != none or product.set != none or not listed(kept, product.key) or state.held_count == state.held.length:
                 continue
             state.held[state.held_count] = Held(product.key, product.wires, product.normals, product.patches, product.curves, product.hulls)
             state.held_count += 1

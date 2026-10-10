@@ -1,6 +1,8 @@
 ## The 3D viewport: the scene drawn by luce-3d's renderer (faces, wires,
 ## curves, hulls, normals, the ground grid, point clouds as Gaussian splats
-## or dots, fog volumes ray-marched over them), the node tools over it (viewport_tools.luc), the sketch editor's
+## or dots, fog volumes ray-marched over them), or in Render mode by
+## luce-render (render_mode.luc) with the same overlays over its image, the
+## node tools over it (viewport_tools.luc), the sketch editor's
 ## and profile picker's drawings, the marking menus (hold A, S or D) and the
 ## shading button. Its events go to the marking menu, the chrome, the sketch
 ## editor and the tools before the camera's navigation.
@@ -20,6 +22,7 @@ from sketch_view import SketchView
 from profile_pick import ProfilePick
 from actions import Actions
 from marking_menu import MarkingMenu, MarkItem
+from render_mode import RenderMode
 import marking_items
 import theme
 import units
@@ -45,6 +48,8 @@ pub class SceneViewport: Widget:
     pub let splats: SplatScene
     ## Every displayed fog drawing, marched together each view.
     pub let fog: FogScene
+    ## The Render shading mode's progressive render.
+    pub let render: RenderMode
     let actions: Actions
     ## A marking menu's node entry: add that node after the selected one.
     pub var on_add: func(str) -> unit!? = none
@@ -76,6 +81,7 @@ pub class SceneViewport: Widget:
         self.marking = MarkingMenu()
         self.splats = SplatScene()
         self.fog = FogScene()
+        self.render = RenderMode()
         self.actions = actions
         self.tools.chrome.on_reuse = self.reuse_tool
         self.view = SceneView(workspace.scene, workspace.view.camera, Renderer(true))
@@ -117,7 +123,21 @@ pub class SceneViewport: Widget:
         let wire_color = theme.grey(90.0) if polygons else (theme.grey(175.0) if w.view.display_mode == 0 else theme.grey(55.0))
         renderer.set_edges(1.0 if wired or polygons else 0.0, wire_color, w.view.display_mode != 0)
         renderer.set_wire_overlay(1.0 if wired or polygons or w.batches.patch_batch != none else 0.0)
-        self.view.draw(target)
+        let rendering = w.view.display_mode == 5
+        if rendering:
+            # The rasterized scene lays down the depth the overlays test
+            # against; luce-render's image then covers its colors, and the
+            # editing wires draw again over the image, alone.
+            renderer.set_edges(0.0, wire_color, true)
+            renderer.set_wire_overlay(0.0)
+            self.view.draw(target)
+            _ = self.render.draw(w, target, size.width, size.height)
+            if polygons:
+                renderer.set_edges(1.0, wire_color, false)
+                self.view.draw(target)
+        else:
+            self.render.stop()
+            self.view.draw(target)
         if wired:
             if let batch = w.batches.wire_batch:
                 batch.draw(w.view.camera, target, theme.grey(175.0) if w.view.display_mode == 0 else theme.grey(55.0))
@@ -158,19 +178,24 @@ pub class SceneViewport: Widget:
                 WireRenderer.lines(axes, w.view.camera, target, theme.accent(), 1.0, 0.0, writes_depth = false)
         # Point clouds after the opaque scene, all sorted together back to
         # front: they veil what lies behind them and hide behind what is in
-        # front.
-        self.mark_selection()
-        self.splats.set_look(w.view.splat_look())
-        self.splats.draw(w.batches.clouds, w.view.camera, target)
-        # Fog last of the 3D, every grid in one march: it veils the meshes,
-        # lines and grid behind it and ends at those in front.
-        self.fog.draw(w.batches.volumes, w.view.camera, target)
+        # front. Fog last of the 3D, every grid in one march: it veils the
+        # meshes, lines and grid behind it and ends at those in front. The
+        # render draws splats itself, and has no fog.
+        if not rendering:
+            self.mark_selection()
+            self.splats.set_look(w.view.splat_look())
+            self.splats.draw(w.batches.clouds, w.view.camera, target)
+            self.fog.draw(w.batches.volumes, w.view.camera, target)
         let overlay = Painter(target)
         # Where we are, centered along the top: the network's path (and
         # whether a node is previewed alone).
         let where = self.workspace.network.path() + ("  /  PREVIEW" if self.workspace.network.preview else "")
         overlay.text(where, (size.width - float(where.length) * 7.5) * 0.5, 14.0, theme.text_muted())
         overlay.text(f"Y up  /  grid: {units.length_text(grid_step(w.view.distance), units.document_unit(w))}", snap_row_end() + 10.0, size.height - 32.0, theme.text_muted())
+        if rendering:
+            # What the render is at, in the bottom-right corner.
+            let label = self.render.label()
+            overlay.text(label, size.width - float(label.length) * 7.5 - 16.0, size.height - 32.0, theme.text_muted())
         self.tools.draw(overlay, size.width, size.height)
         self.sketch.draw(overlay, size.width, size.height)
         self.marking.draw(overlay, size.width, size.height)

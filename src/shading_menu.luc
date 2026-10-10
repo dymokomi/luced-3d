@@ -8,7 +8,7 @@ import math
 from luce_ui import ui
 
 pub func mode_names() -> list[str]:
-    return ["Wireframe", "Flat + Wireframe", "Flat", "Shaded", "Shaded + Wireframe", "Rendered (not available)", "Show normals", "Zebra", "Isophotes", "Curvature"]
+    return ["Wireframe", "Flat + Wireframe", "Flat", "Shaded", "Shaded + Wireframe", "Render", "Show normals", "Zebra", "Isophotes", "Curvature"]
 
 pub func mode_asset(mode: int) -> str:
     return ["wireframe", "solid-wireframe", "solid-view", "material", "shaded-wireframe", "render", "surface-normal", "reflection", "light-sun", "gradient-tool"][mode]
@@ -27,6 +27,10 @@ func quality_divisions() -> list[int]:
 func quality_row(workspace: Workspace) -> str:
     let at = quality_divisions().index_of(workspace.view.cad_quality) else 1
     return f"CAD mesh: {quality_names()[at]}"
+
+## The Render mode's sample caps a click steps through.
+func render_caps() -> list[int]:
+    return [16, 64, 256, 1024, 4096]
 
 ## Fixed ranges a click steps through, in 1/unit; 0 is automatic.
 func curvature_ranges() -> list[float]:
@@ -65,6 +69,8 @@ func splat_rows(workspace: Workspace) -> list[str]:
     return ["Splats: Centers" if v.splat_centers else "Splats: Shaded", f"SH degree: {v.splat_degree}", f"Alpha cull: {cull}", f"Splat scale: {v.splat_scale}"]
 
 func mode_option_rows(workspace: Workspace) -> list[str]:
+    if workspace.view.display_mode == 5:
+        return [f"Samples: {workspace.view.render_samples}"]
     if workspace.view.display_mode == 9:
         let range = "Auto" if workspace.view.curvature_range <= 0.0 else f"{workspace.view.curvature_range} / unit"
         return [f"Value: {curvature_names()[workspace.view.curvature_kind]}", f"Range: {range}"]
@@ -77,7 +83,7 @@ func mode_option_rows(workspace: Workspace) -> list[str]:
 let row: float = 35.0
 
 pub func mode_icon(p: Painter, mode: int, x: float, y: float) -> unit!:
-    ui.draw_icon(p.target(), mode_asset(mode), Rect(x, y, 24.0, 24.0), theme.text_muted() if mode == 5 else theme.text())
+    ui.draw_icon(p.target(), mode_asset(mode), Rect(x, y, 24.0, 24.0), theme.text())
 
 pub class ShadingMenu: Widget:
     let box: Layout
@@ -105,13 +111,13 @@ pub class ShadingMenu: Widget:
         if index >= modes:
             self.option(index - modes)
             return
-        if index == 5 or index < 0:
+        if index < 0:
             return
         if index == 6:
             self.workspace.toggle_normals()
         else:
             self.workspace.set_display_mode(index)
-            if index in [7, 8, 9]:
+            if index in [5, 7, 8, 9]:
                 # Stay open: the options appear below.
                 self.box.invalidate()
                 return
@@ -129,6 +135,16 @@ pub class ShadingMenu: Widget:
             let qualities = quality_divisions()
             let at = qualities.index_of(w.view.cad_quality) else 1
             w.set_cad_quality(qualities[(at + 1) % qualities.length])
+            self.box.invalidate()
+            return
+        if w.view.display_mode == 5:
+            # The sample cap steps through 16 to 4096.
+            if index != 0:
+                return
+            let caps = render_caps()
+            let at = caps.index_of(w.view.render_samples) else 2
+            w.view.render_samples = caps[(at + 1) % caps.length]
+            w.revision += 1
             self.box.invalidate()
             return
         if w.view.display_mode == 9:
@@ -187,12 +203,12 @@ pub class ShadingMenu: Widget:
         for index in 0..<names.length:
             let y = 6.0 + float(index) * row
             let selected = index == self.workspace.view.display_mode or (index == 6 and self.workspace.view.normals_visible)
-            if self.hovered == index and index != 5:
+            if self.hovered == index:
                 p.rectangle(Rect(4.0, y, 260.0, 34.0), theme.grey(72.0))
             if selected:
                 p.rectangle(Rect(4.0, y, 3.0, 34.0), theme.accent())
             mode_icon(p, index, 12.0, y + 4.0)
-            p.text(names[index], 44.0, y + 8.0, theme.text_muted() if index == 5 else theme.text())
+            p.text(names[index], 44.0, y + 8.0, theme.text())
         let options = option_rows(self.workspace)
         for index in 0..<options.length:
             let y = 6.0 + float(names.length + index) * row

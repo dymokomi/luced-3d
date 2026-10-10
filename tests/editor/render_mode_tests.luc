@@ -1,0 +1,199 @@
+## The viewport's Render shading mode (render_mode.luc): luce-render's image
+## of the displayed scene through the viewport's camera, drawn offscreen as
+## the window would draw it.
+## - Switching into the mode renders, switching out stops the render.
+## - A camera move restarts the image (at a preview size when the scene is
+##   slow, settling to full size); a recook (a light's intensity) restarts it too, reloading the
+##   lights over the geometry already on the GPU.
+## - The overlays (the grid, the camera and light helpers, the chrome) still
+##   draw over the image.
+## - Through the scene camera's view, the image matches the Render panel's
+##   within noise.
+from app import Luce3D
+from workspace import Workspace
+from offscreen_pixels import OffscreenPixels
+from render_view import RenderView
+from luce_3d.graphics import Vector3
+import node_commands
+from luce_std import math
+import time
+
+## A sphere on a floor, a camera looking down at it, an area light and a
+## Render node (16 samples, 4 bounces, RGB); the light's id.
+func lit_scene(w: Workspace) -> int!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Sphere", 0.0, 0.0)
+    node_commands.set_parameter(w, 1, 48.0)
+    let ball = w.network.selected
+    node_commands.add_node(w, "Grid", 200.0, 0.0)
+    node_commands.set_parameter(w, 0, 12.0)
+    let floor = w.network.selected
+    node_commands.select_node(w, ball)
+    node_commands.add_node(w, "Merge", 0.0, 100.0)
+    node_commands.connect(w, floor, w.network.selected, 1)
+    node_commands.add_node(w, "Camera", 0.0, 200.0)
+    for (slot, value) in [(1, 0.0), (2, 2.5), (3, 6.0), (4, -18.0), (5, 0.0)]:
+        node_commands.set_parameter(w, slot, value)
+    node_commands.add_node(w, "Light", 0.0, 300.0)
+    for (slot, value) in [(1, 1.0), (2, 4.0), (3, 1.0), (10, 30.0), (14, 3.0), (15, 3.0)]:
+        node_commands.set_parameter(w, slot, value)
+    let light = w.network.selected
+    node_commands.add_node(w, "Render", 0.0, 400.0)
+    for (slot, value) in [(1, 320.0), (2, 200.0), (3, 16.0), (4, 1.0), (5, 4.0)]:
+        node_commands.set_parameter(w, slot, value)
+    node_commands.display_selected(w)
+    return light
+
+## Draw the viewport into `view`.
+func draw(w: Luce3D, view: OffscreenPixels) -> unit!:
+    let target = view.begin()
+    w.panels.view.draw(target)
+    view.end()
+
+## Draw until the render has `samples` at full size (or 60 s pass).
+func refine(editor: Luce3D, view: OffscreenPixels, samples: int) -> unit!:
+    let render = editor.panels.view.render
+    let deadline = time.now() + 60000000000
+    while (render.preparing() or render.samples_done() < samples or render.divisor > 1) and time.now() < deadline:
+        draw(editor, view)
+    assert(not render.preparing() and render.samples_done() >= samples and render.divisor == 1)
+
+## The mean luminance of a block of pixels.
+func block(view: OffscreenPixels, x: int, y: int, size: int) -> float:
+    var sum = 0
+    for dy in 0..<size:
+        for dx in 0..<size:
+            sum += view.luminance(x + dx, y + dy)
+    return float(sum) / float(size * size)
+
+## Pixels of the rows `y0..<y1` whose luminance differs by more than `by`.
+func changed(a: list[int], b: list[int], by: int) -> int:
+    var count = 0
+    for at in 0..<a.length:
+        if math.abs(float(a[at] - b[at])) > float(by):
+            count += 1
+    return count
+
+func rows(view: OffscreenPixels, width: int, y0: int, y1: int) -> list[int]:
+    let values: list[int] = []
+    for y in y0..<y1:
+        for x in 0..<width:
+            values.append(view.luminance(x, y))
+    return values
+
+## Place the viewport's camera where the scene's camera is, with the field of
+## view luce-render gives it at `width` × `height` (its film fits the width).
+func look_through_scene_camera(w: Workspace, width: int, height: int) -> unit!:
+    let data = w.network.evaluate_data(w.network.display)
+    let objects = data.geometry.scene()
+    for at in 0..<objects.count():
+        if not objects.is_camera(at):
+            continue
+        let item = objects.object(at)
+        let tan_half = 0.5 * item.camera.horizontal_aperture / item.camera.focal_length * float(height) / float(width)
+        let degrees = 2.0 * math.atan2(tan_half, 1.0) * 180.0 / math.pi
+        w.view.camera.set_projection(degrees, 0.05, 500.0)
+        let at_position = Vector3(item.matrix.translation.x, item.matrix.translation.y, item.matrix.translation.z)
+        let forward = Vector3(-item.matrix.z.x, -item.matrix.z.y, -item.matrix.z.z)
+        w.view.camera.set_position(at_position)
+        w.view.camera.look_at(at_position.add(forward))
+        return
+    trap("the scene has no camera")
+
+pub func render_mode_tests() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let light = lit_scene(w)
+    w.frame_cube()
+    let render = editor.panels.view.render
+    let view = OffscreenPixels(320, 200)
+
+    # Shaded: no render. Render: the image refines, and the floor under the
+    # light is lit where the shaded view's backdrop was.
+    draw(editor, view)
+    assert(not render.active)
+    w.view.render_samples = 16
+    w.set_display_mode(5)
+    refine(editor, view, 16)
+    let (compiles, uploads, reloads) = render.counts()
+    assert(compiles == 1 and uploads == 1 and reloads == 0)
+    assert(not render.running())
+
+    # A camera move restarts the image (at a preview size where a sample at
+    # full size would take longer than a frame; this scene is cheap enough),
+    # and it refines again.
+    w.view.orbit(30.0, 0.0)
+    draw(editor, view)
+    assert(render.samples_done() < 16 and render.running())
+    refine(editor, view, 16)
+    let (_, uploads_moved, _) = render.counts()
+    assert(uploads_moved == 1)
+
+    # A recook with a brighter light restarts the image; the geometry stays
+    # on the GPU (a reload, no upload).
+    let before = block(view, 150, 120, 20)
+    w.network.selected = light
+    node_commands.set_parameter(w, 10, 60.0)
+    draw(editor, view)
+    assert(render.running())
+    refine(editor, view, 16)
+    let (_, uploads_after, reloads_after) = render.counts()
+    assert(uploads_after == 1 and reloads_after == 1)
+    let brighter = block(view, 150, 120, 20)
+    assert(brighter > before + 5.0)
+
+    # The overlays draw over the image: the grid changes pixels where the
+    # floor is not, and the chrome's labels stay.
+    let with_grid = rows(view, 320, 150, 190)
+    w.view.grid_visible = false
+    w.revision += 1
+    draw(editor, view)
+    let without_grid = rows(view, 320, 150, 190)
+    assert(changed(with_grid, without_grid, 8) > 100)
+    w.view.grid_visible = true
+
+    # Out of the mode: the render stops.
+    w.set_display_mode(3)
+    draw(editor, view)
+    assert(not render.active and not render.running())
+
+    # Through the scene camera, the viewport's image matches the Render
+    # panel's: both 64 samples of the same scene and settings, compared by
+    # blocks away from the viewport's chrome.
+    w.view.grid_visible = false
+    w.view.hulls_visible = false
+    w.network.selected = w.network.display
+    node_commands.set_parameter(w, 3, 64.0)
+    w.view.render_samples = 64
+    look_through_scene_camera(w, 320, 200)
+    w.set_display_mode(5)
+    refine(editor, view, 64)
+    let node = w.network.require(w.network.display)
+    let panel = RenderView(w.view)
+    panel.start(w.network.evaluate_data(node.id), node.values, node.texts)
+    let framed = OffscreenPixels(336, 238)
+    let deadline = time.now() + 60000000000
+    while panel.running() and time.now() < deadline:
+        let target = framed.begin()
+        panel.draw(target)
+        framed.end()
+    let target = framed.begin()
+    panel.draw(target)
+    framed.end()
+    var worst = 0.0
+    var compared = 0
+    for y in [60, 80, 100, 120, 140]:
+        for x in [60, 100, 140, 180, 220, 260]:
+            let ours = block(view, x, y, 16)
+            let theirs = block(framed, x + 8, y + 30, 16)
+            if theirs > 12.0:
+                worst = math.max(worst, math.abs(ours - theirs) / theirs)
+                compared += 1
+    if compared < 10 or worst > 0.05:
+        print(f"render mode against the Render panel: {compared} blocks, worst relative difference {worst}")
+        assert(false)
+    panel.stop()
+    w.set_display_mode(3)
+    draw(editor, view)
+    editor.close()
+    print(f"ok    render mode: switches, restarts on camera moves and recooks (reloading lights over the same geometry), keeps overlays, matches the Render panel within {worst * 100.0:.2f}% ({compared} blocks)")

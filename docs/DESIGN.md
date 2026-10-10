@@ -197,6 +197,30 @@ and picking live in `node_gizmos`/`gizmo_math`, independent of evaluation.
   after Moves.
 - Selected faces tint in the surface pass from one bit per face; the overlay
   outlines up to 20k of them.
+- **Render mode** (the shading menu's Render, `render_mode.luc`) shows
+  luce-render's progressive image of the displayed scene through the viewport's
+  camera, at the viewport's size, as Cycles' or Karma's viewport does.
+  - **The scene:** the worker publishes each displayed output's set beside its
+    meshes (`ComputeChannel.scene`, keyed by the output's stamp), as a plain
+    storage sharing its arrays (`GeometrySet.plain_storage`: CAD models, Luce
+    objects of the worker's thread, stay behind; luce-render skips analytic
+    CAD anyway). Several outputs render as instances of one set.
+  - **Settings:** the network's Render node (the selected one, else the
+    first) gives the default material, bounces, color mode and light paths;
+    the menu's Samples row caps the samples. Without lights the scene is lit
+    by a grey sky, and the corner label says so.
+  - **Restarts** cost only what changed (luce-render's RenderSession): a camera
+    move or resize restarts the film; a recook compiles on a thread, and where
+    only lights or materials changed the geometry, BLAS and TLAS stay on the
+    GPU. While the camera moves the image renders at 1/2 to 1/8 of the size,
+    chosen from the measured cost so a sample takes about 16 ms; 0.15 s after
+    the camera stops it renders at full size and refines to the cap. Scenes
+    with splats trace passes of 2^17 paths, so passes stay short.
+  - **Compositing:** the rasterized scene draws first and lays down depth; the
+    render's image covers its colors (an image draw leaves depth alone); the
+    grid, guides, hulls, Edit wires (drawn again without surfaces), gizmos and
+    tools draw over it, depth-tested against the raster. The display transform
+    (exposure, neutral or standard) is the Render panel's (`ViewState`).
 
 ## Imports
 

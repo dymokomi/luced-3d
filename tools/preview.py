@@ -33,7 +33,7 @@ def build(project, binary, optimization="0"):
                    check=True, env=environment, timeout=480)
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--scene", choices=["default", "edit", "modeling", "spreadsheet", "occlusion", "menu", "shading", "outliner", "cad", "cad_wire", "analytic", "gizmo_move", "gizmo_rotate", "gizmo_scale", "gizmo_pivot", "param_copy", "param_ladder", "param_menu", "render", "shader", "takes", "objects", "cad_node", "cad_round", "cad_corners", "cad_smooth", "cad_pick", "cad_peek", "cad_sketch", "ux_tools", "sketch_curves", "sketch_trim", "sketch_snap", "project", "splats", "script"], default="default")
+parser.add_argument("--scene", choices=["default", "edit", "modeling", "spreadsheet", "occlusion", "menu", "shading", "outliner", "cad", "cad_wire", "analytic", "gizmo_move", "gizmo_rotate", "gizmo_scale", "gizmo_pivot", "param_copy", "param_ladder", "param_menu", "render", "shader", "takes", "objects", "cad_node", "cad_round", "cad_corners", "cad_smooth", "cad_pick", "cad_peek", "cad_sketch", "ux_tools", "sketch_curves", "sketch_trim", "sketch_snap", "project", "splats", "script", "render_mode"], default="default")
 parser.add_argument("--background", action="store_true", help="Run actual background graph computation while capturing")
 parser.add_argument("--file", type=Path, help="External STEP file for the cad scene, the .prisma for the project scene, or a PLY for the splats scene")
 parser.add_argument("--edge-size", type=float, default=0.0)
@@ -42,7 +42,7 @@ parser.add_argument("--group", default="", help="Isolate imported object paths t
 parser.add_argument("--patch", type=int, default=-1, help="Isolate an original CAD patch AFTER the complete cook, preserving global stations and display triangles")
 parser.add_argument("--patch-neighbors", action="store_true", help="Include CAD patches sharing a mesh edge with the selected patch, after the complete cook")
 parser.add_argument("--neutral", action="store_true", help="Use neutral material instead of imported Cd for isolated patch inspection")
-parser.add_argument("--mode", type=int, choices=[0, 1, 2, 3, 4, 7, 8, 9], default=3, help="Display mode; 7 zebra, 8 isophotes, 9 curvature")
+parser.add_argument("--mode", type=int, choices=[0, 1, 2, 3, 4, 5, 7, 8, 9], default=3, help="Display mode; 5 render, 7 zebra, 8 isophotes, 9 curvature")
 parser.add_argument("--cad-quality", type=int, choices=[8, 16, 32, 64], default=16, help="Viewport CAD mesh divisions")
 parser.add_argument("--output", type=Path)
 parser.add_argument("--opt", choices=["0", "1", "2", "3"], default="0")
