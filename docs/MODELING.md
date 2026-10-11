@@ -395,7 +395,7 @@ finishes. Picked profiles are kept by the curves round them, so they hold as
 dimensions change; **Closed shapes** forgets them.
 
 **Units.** Lengths are kept in millimeters; the document shows and reads
-them in its unit, millimeters or inches (File → Units), kept with the
+them in its unit, millimeters or inches (Window → Project settings), kept with the
 project. Every length parameter shows its unit and takes typed units
 ("25.4 mm", "1 in", "10 + 5 mm").
 

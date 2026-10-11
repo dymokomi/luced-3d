@@ -1,0 +1,138 @@
+## Window › Project Settings…: what the open project keeps for itself — the
+## unit lengths show in, and its time (frames per second and frame range) —
+## edited as a draft in a floating, centered dialog and applied together, as
+## one undo step.
+from luce_ui.ui import Widget, Font, Text, Button, VStack, HStack, Spacer, Size, Dialog, ListView, ListItem, NumberField, Menu, Command, Rule
+from interop import Connection
+from workspace import Workspace
+import timeline_commands
+
+## The project settings as the dialog edits them, apart from the project.
+pub struct ProjectValues:
+    pub var units: str
+    pub var fps: float
+    pub var start: float
+    pub var end: float
+
+## The settings `w`'s project has now.
+pub func current(w: Workspace) -> ProjectValues:
+    let g = w.network
+    return ProjectValues(units = g.units, fps = g.fps, start = g.start, end = g.end)
+
+## Make `values` the project's, as one undo step ("Project settings"); a value
+## already the project's changes nothing.
+pub func apply_values(w: Workspace, values: ProjectValues) -> unit!:
+    let before = current(w)
+    if before.units == values.units and before.fps == values.fps and before.start == values.start and before.end == values.end:
+        return
+    w.perform("Project settings", func () -> unit!:
+        w.set_units(values.units)
+        timeline_commands.set_range(w, values.start, values.end)
+        timeline_commands.set_fps(w, values.fps))
+
+## The unit names a project chooses among, and how the dialog shows them.
+func unit_names() -> list[str]: return ["mm", "in"]
+func unit_label(name: str) -> str: return "Inches" if name == "in" else "Millimeters"
+
+## The dialog after luced-2d's Settings: sections at the left (Units, Time),
+## the section's rows at the right, Cancel and Apply below. Edits go into a
+## draft; Cancel forgets it, Apply makes it the project's.
+pub class ProjectSettings:
+    pub let dialog: Dialog
+    let workspace: Workspace
+    let font: Font
+    ## The values being edited, made the project's by Apply.
+    pub var draft: ProjectValues
+    let sections: ListView
+    let pages: list[VStack]
+    let units_menu: Menu
+    let fps_field: NumberField
+    let start_field: NumberField
+    let end_field: NumberField
+    let connections: list[Connection]
+    ## Called after Apply, so the panels show the new values.
+    pub var applied: func() -> unit!? = none
+
+    pub func init(self, workspace: Workspace, font: Font) -> unit!:
+        self.workspace = workspace
+        self.font = font
+        self.draft = current(workspace)
+        self.connections = []
+        # Units: lengths are kept in millimeters and shown in this unit.
+        var unit_commands: list[Command] = []
+        for name in unit_names():
+            let chosen = name
+            let command = Command(unit_label(name), id = f"project_units_{name}")
+            self.connections.append(command.on_trigger(func () -> unit!:
+                self.draft.units = chosen
+                self.show_units()))
+            unit_commands.append(command)
+        self.units_menu = Menu("Millimeters ▾", unit_commands, font = font)
+        let units = VStack([self.row("Length", self.units_menu),
+                            Text("Lengths show and are typed in this unit.", font = font, muted = true), Spacer()], spacing = 8.0)
+        # Time: what the timeline plays and the nodes that follow it read.
+        self.fps_field = NumberField(24.0, 1.0, 1000.0, 1.0, 2, suffix = " fps", font = font, cells = 10.0)
+        self.start_field = NumberField(1.0, -100000.0, 100000.0, 1.0, 0, font = font, cells = 10.0)
+        self.end_field = NumberField(240.0, -100000.0, 100000.0, 1.0, 0, font = font, cells = 10.0)
+        self.connections.append(self.fps_field.on_change(func (value: float) -> unit!: self.draft.fps = value))
+        self.connections.append(self.start_field.on_change(func (value: float) -> unit!: self.draft.start = value))
+        self.connections.append(self.end_field.on_change(func (value: float) -> unit!: self.draft.end = value))
+        let time = VStack([self.row("Frame rate", self.fps_field), self.row("Start frame", self.start_field), self.row("End frame", self.end_field), Spacer()], spacing = 8.0)
+        self.pages = [units, time]
+        for page in self.pages:
+            page.layout().set_limits(Size(320.0, 160.0), Size(16384.0, 160.0))
+            page.layout().set_visible(false)
+        self.pages[0].layout().set_visible(true)
+        self.sections = ListView([ListItem(text = "Units"), ListItem(text = "Time")], font = font)
+        self.sections.layout().set_limits(Size(130.0, 160.0), Size(130.0, 160.0))
+        self.sections.select(0)
+        self.connections.append(self.sections.on_activate(self.show_page))
+        var content: list[Widget] = []
+        for page in self.pages: content.append(page)
+        let body = HStack([self.sections, Rule(structural = true, vertical = true), VStack(content, spacing = 0.0)], spacing = 12.0)
+        let footer = HStack([Spacer(), self.button("Cancel", self.cancel), self.button("Apply", self.apply)], spacing = 8.0)
+        self.dialog = Dialog([Text("Project Settings", font = font), body, footer], width = 520.0)
+
+    func row(self, label: str, control: Widget) -> HStack!:
+        let caption = Text(label, font = self.font, muted = true)
+        caption.layout().set_limits(Size(100.0, 0.0), Size(100.0, 16384.0))
+        return HStack([caption, control, Spacer()], spacing = 8.0)
+
+    func button(self, text: str, callback: func() -> unit!) -> Button!:
+        let button = Button(text, font = self.font)
+        self.connections.append(button.on_click(callback))
+        return button
+
+    ## Show section `index` (0 Units, 1 Time), picked in the list too.
+    pub func show_page(self, index: int) -> unit!:
+        self.sections.select(index)
+        for page in 0..<self.pages.length:
+            self.pages[page].layout().set_visible(page == index)
+
+    pub func is_open(self) -> bool:
+        return self.dialog.is_open()
+
+    ## Open on the project's settings: the draft starts as their copy.
+    pub func open(self) -> unit!:
+        self.draft = current(self.workspace)
+        self.show_units()
+        self.fps_field.set_value(self.draft.fps)
+        self.start_field.set_value(self.draft.start)
+        self.end_field.set_value(self.draft.end)
+        self.dialog.open()
+
+    func show_units(self) -> unit!:
+        self.units_menu.set_text(unit_label(self.draft.units) + " ▾")
+
+    pub func cancel(self) -> unit!:
+        self.dialog.hide()
+
+    pub func apply(self) -> unit!:
+        apply_values(self.workspace, self.draft)
+        self.dialog.hide()
+        if let done = self.applied: done()
+
+    pub func close(self):
+        self.applied = none
+        for connection in self.connections: connection.disconnect()
+        self.connections.clear()
