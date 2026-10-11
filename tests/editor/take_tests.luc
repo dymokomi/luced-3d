@@ -7,12 +7,14 @@ from luce_prism.prism import Document
 from project_graph import write_graph, read_graph
 import take_commands
 import takes
+import node_paths
+import scene_nodes
 from outliner import object_rows
 
 ## The Render node's scene: its lights and the camera it renders through.
 func rendered(graph: Network, id: int) -> (int, str)!:
     let scene = graph.evaluate_data(id).geometry.scene()
-    let wanted = graph.require(id).texts[0].trim()
+    let wanted = graph.render_camera(graph.require(id))
     var lights = 0
     var camera = ""
     for index in 0..<scene.count():
@@ -21,6 +23,10 @@ func rendered(graph: Network, id: int) -> (int, str)!:
         elif camera == "" and (wanted == "" or scene.path(index) == wanted):
             camera = scene.path(index)
     return (lights, camera)
+
+## Camera node `id`'s camera's path in the scene.
+func scene_path(graph: Network, id: int) -> str!:
+    return scene_nodes.camera_path(id, graph.require(id).texts)
 
 pub func take_tests() -> unit!:
     let w = Workspace()
@@ -37,15 +43,15 @@ pub func take_tests() -> unit!:
     graph.selected = render
     graph.display = render
     let (first_camera, second_camera, key, fill) = (chain[0], chain[1], chain[2], chain[3])
-    let second_path = takes.camera_path(graph.require(second_camera))
+    let second_path = scene_path(graph, second_camera)
     assert(graph.takes.length == 1 and graph.takes[0].name == "Main")
-    assert(rendered(graph, render) == (3, takes.camera_path(graph.require(first_camera))))
+    assert(rendered(graph, render) == (3, scene_path(graph, first_camera)))
 
     # A take of its own: the fill off, the second camera, the rim hidden.
     take_commands.add_take(w)
     assert(w.network.takes.length == 2 and w.network.take == 1 and w.network.takes[1].name == "Take 1")
     take_commands.toggle_light(w, fill)
-    take_commands.set_camera(w, second_path)
+    take_commands.set_camera(w, second_camera)
     take_commands.toggle_visible(w, rim)
     take_commands.rename_take(w, "Close-up")
     assert(rendered(w.network, render) == (1, second_path) and not w.network.require(rim).visible)
@@ -66,7 +72,7 @@ pub func take_tests() -> unit!:
 
     # Main as it was; the take's state again on the way back.
     take_commands.switch_take(w, 0)
-    assert(rendered(w.network, render) == (3, takes.camera_path(w.network.require(first_camera))))
+    assert(rendered(w.network, render) == (3, scene_path(w.network, first_camera)))
     assert(w.network.require(fill).enabled and w.network.require(rim).visible)
     assert(w.network.require(first_camera).values[2] != 7.5 and w.network.require(key).hidden.length == 0)
     take_commands.switch_take(w, 1)
@@ -82,7 +88,7 @@ pub func take_tests() -> unit!:
     write_graph(doc, w.network)
     let opened = read_graph(doc)
     assert(opened.take == 1 and takes.names(opened) == ["Main", "Close-up"])
-    assert(not opened.require(fill).enabled and opened.require(render).texts[0] == second_path)
+    assert(not opened.require(fill).enabled and opened.require(render).texts[0] == node_paths.absolute(opened.nodes, opened.require(second_camera)))
     assert(opened.require(key).hidden == [key_path] and opened.require(first_camera).values[2] == 7.5)
     takes.switch_to(opened, 0)
     assert(opened.require(fill).enabled and opened.require(render).texts[0] == "" and opened.require(rim).visible)

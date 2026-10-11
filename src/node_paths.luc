@@ -1,0 +1,400 @@
+## Node paths: the one way a parameter names another node (docs/NODE-PATHS.md).
+## A row declared with parameter_rows.node_path (node_catalog.node_path_rows
+## lists them all) holds a path in a text slot; this module parses and
+## normalizes it, resolves it, writes the path from one node to another,
+## lists what its picker offers, keeps it on its node through renames and
+## regrouping, and reports what it reaches for invalidation, stamps and the
+## worker.
+##
+## Paths are Houdini's operator paths. An absolute path starts at the root
+## and names each container down to the node: /Geo 2, /Geo 2/Sphere 4. A
+## relative one starts at the node holding the row: `..` is the network it
+## sits in, so ../Sphere 4 is a sibling and ../../Geo 2 an object beside its
+## own; `.` is the node itself. In a row that allows patterns, `*` (any run
+## of characters) and `?` (one) in a name read every node that matches, in
+## authoring order.
+from node import Node
+from parameter_rows import Parameter
+from take import Take
+from shader_nodes import is_shader
+from luce_ui import ui
+import node_catalog
+
+# -- Rows
+
+## Node `kind`'s node path rows.
+pub func rows(kind: str) -> list[Parameter]:
+    return node_catalog.node_path_rows(kind)
+
+## Whether node `kind` names other nodes by path.
+pub func holds_paths(kind: str) -> bool:
+    return node_catalog.node_path_rows(kind).length > 0
+
+## Node `kind`'s node path row in text slot `slot`, if it has one.
+pub func row(kind: str, slot: int) -> Parameter?:
+    for each in rows(kind):
+        if each.slot == slot:
+            return each
+    return none
+
+## The text slot of node `kind`'s row a take records (takes.luc), or -1.
+pub func recorded_slot(kind: str) -> int:
+    for each in rows(kind):
+        if each.recorded:
+            return each.slot
+    return -1
+
+# -- Parsing
+
+## Whether `path` starts at the root.
+pub func is_absolute(path: str) -> bool:
+    return path.trim().starts_with("/")
+
+## Whether `path` holds a wildcard: it names a set of nodes, not one.
+pub func is_pattern(path: str) -> bool:
+    return path.contains("*") or path.contains("?")
+
+## `path` as stored: trimmed, empty and `.` steps dropped, a name followed
+## by `..` cancelled ("/Geo 2//./Box/../Cube 1" is "/Geo 2/Cube 1"); a
+## relative path that ends where it starts is ".". Blank stays blank.
+pub func normalize(path: str) -> str:
+    let trimmed = path.trim()
+    if trimmed == "":
+        return ""
+    let rooted = trimmed.starts_with("/")
+    let kept: list[str] = []
+    for part in trimmed.split("/"):
+        if part == "" or part == ".":
+            continue
+        if part == ".." and kept.length > 0 and kept[kept.length - 1] != "..":
+            _ = kept.pop()
+            continue
+        kept.append(part)
+    let joined = kept.join("/")
+    if rooted:
+        return "/" + joined
+    return joined if joined != "" else "."
+
+## Why `name` can't name a node, or "": a name is one step of a path, so it
+## is not blank, holds no "/" and no wildcard, and is not "." or "..".
+pub func name_problem(name: str) -> str:
+    if name.trim() == "":
+        return "A node needs a name"
+    if name.contains("/"):
+        return "A name can't hold / (it separates a path's names)"
+    if is_pattern(name):
+        return "A name can't hold * or ? (they are path wildcards)"
+    if name == "." or name == "..":
+        return "That name is a step of a path"
+    return ""
+
+## Whether `name` matches `pattern`: `*` stands for any run of characters,
+## `?` for one, anything else for itself.
+pub func matches(pattern: str, name: str) -> bool:
+    var p = 0
+    var n = 0
+    var star = -1
+    var mark = 0
+    while n < name.length:
+        let symbol = pattern[p..<p + 1] if p < pattern.length else ""
+        if symbol == "*":
+            star = p
+            mark = n
+            p += 1
+        elif symbol != "" and (symbol == "?" or symbol == name[n..<n + 1]):
+            p += 1
+            n += 1
+        elif star >= 0:
+            p = star + 1
+            mark += 1
+            n = mark
+        else:
+            return false
+    while p < pattern.length and pattern[p..<p + 1] == "*":
+        p += 1
+    return p == pattern.length
+
+# -- Writing paths
+
+## A node's absolute path: each container's name, then its own, after a
+## "/" each (/Geo 2/Sphere 4).
+pub func absolute(nodes: list[Node], node: Node) -> str:
+    var path = "/" + node.name
+    var parent = node.parent
+    for _ in 0..<17:
+        let container = find(nodes, parent) else return path
+        path = "/" + container.name + path
+        parent = container.parent
+    return path
+
+## `target`'s path relative to `start` (`..` climbs from the node itself to
+## its network): ../Sphere 4 for a sibling, ../.. for the container `start`
+## sits in, "." for itself.
+pub func relative(nodes: list[Node], start: Node, target: Node) -> str:
+    let above = chain(nodes, start.id)
+    let below = chain(nodes, target.id)
+    # The innermost level both lie in (-1, the root, at worst).
+    var shared = 0
+    while shared < above.length and not (above[shared] in below):
+        shared += 1
+    let meet = above[shared] if shared < above.length else -1
+    let parts: list[str] = []
+    for _ in 0..<shared:
+        parts.append("..")
+    let names: list[str] = []
+    for id in below:
+        if id == meet:
+            break
+        if let node = find(nodes, id):
+            names.append(node.name)
+    for name in names.reversed():
+        parts.append(name)
+    return parts.join("/") if parts.length > 0 else "."
+
+## The path from `start` to `target`, relative or absolute.
+pub func written(nodes: list[Node], start: Node, target: Node, relative_path: bool) -> str:
+    return relative(nodes, start, target) if relative_path else absolute(nodes, target)
+
+# -- Resolving
+
+## The nodes `path` names, seen from `start` (relative paths begin there):
+## one node for an exact path, every match in authoring order for a
+## pattern, none when nothing is there. A wildcard matches only the nodes
+## `targets` allows (`fits`), never `start` or the containers it sits in.
+pub func resolve_all(nodes: list[Node], start: Node, path: str, targets: str) -> list[Node]:
+    let trimmed = path.trim()
+    let found: list[Node] = []
+    if trimmed == "":
+        return found
+    # Levels reached so far: node ids, -1 the root.
+    var at: list[int] = [-1] if trimmed.starts_with("/") else [start.id]
+    let parts = trimmed.split("/")
+    for index in 0..<parts.length:
+        let part = parts[index]
+        if part == "" or part == ".":
+            continue
+        let next: list[int] = []
+        if part == "..":
+            for id in at:
+                if id >= 0:
+                    next.append(parent_of(nodes, id))
+        else:
+            # A wildcard's exclusions apply to what the path ends at.
+            let wild = is_pattern(part) and index == parts.length - 1
+            for node in nodes:
+                if node.parent in at and matches(part, node.name) and not (node.id in next) and not (wild and excluded(nodes, start, node, targets)):
+                    next.append(node.id)
+        at = next
+    for node in nodes:
+        if node.id in at:
+            found.append(node)
+    if not is_pattern(trimmed) and found.length > 1:
+        return [found[0]]
+    return found
+
+## The one node exact path `path` names from `start`, else none (nothing
+## there, or a pattern).
+pub func resolve(nodes: list[Node], start: Node, path: str) -> Node?:
+    if is_pattern(path):
+        return none
+    let found = resolve_all(nodes, start, path, "")
+    return found[0] if found.length > 0 else none
+
+## What `holder`'s row `path_row` reaches now: its matches when the row
+## allows patterns, else the one node of an exact path. Blank and "."
+## reach nothing.
+pub func reached(nodes: list[Node], holder: Node, path_row: Parameter) -> list[Node]:
+    let path = holder.texts[path_row.slot].trim()
+    if path == "" or path == ".":
+        return []
+    if path_row.patterns:
+        return resolve_all(nodes, holder, path, path_row.targets)
+    if let node = resolve(nodes, holder, path):
+        return [node]
+    return []
+
+## Every node `holder`'s rows reach: what it depends on (Network.invalidate,
+## stamps, the worker's requests).
+pub func dependencies(nodes: list[Node], holder: Node) -> list[Node]:
+    let result: list[Node] = []
+    for each in rows(holder.kind):
+        for node in reached(nodes, holder, each):
+            if node.id != holder.id and not contains(result, node.id):
+                result.append(node)
+    return result
+
+## What `holder`'s rows reach, as one key: the ids, row by row. It changes
+## only when a path comes to name other nodes, never on a rename that the
+## paths followed.
+pub func resolution(nodes: list[Node], holder: Node) -> int:
+    let ids: list[int] = []
+    for each in rows(holder.kind):
+        ids.append(-1 - each.slot)
+        for node in reached(nodes, holder, each):
+            ids.append(node.id)
+    return ids.hash()
+
+## The node `holder`'s exact row in `slot` names, or why it can't:
+## `missing` when the path is blank, "No <what> at <path>" when nothing
+## there fits the row's targets.
+pub func require(nodes: list[Node], holder: Node, slot: int, what: str) -> Node!:
+    let path = holder.texts[slot].trim()
+    let path_row = row(holder.kind, slot) else error(ui.invalid, f"{holder.kind} has no node path in text {slot}")
+    let node = resolve(nodes, holder, path) else error(ui.invalid, f"No {what} at {path}")
+    if not fits(path_row.targets, node):
+        error(ui.invalid, f"No {what} at {path}")
+    return node
+
+## Whether `node` is one a row with `targets` names: "geometry", any node
+## with a result (not cameras, lights, Render or shader nodes); "camera",
+## a Camera; "" any node.
+pub func fits(targets: str, node: Node) -> bool:
+    if targets == "geometry":
+        return not (node.kind in node_catalog.scene_kinds()) and not is_shader(node.kind)
+    if targets == "camera":
+        return node.kind == "Camera"
+    return true
+
+## What a wildcard leaves out: what `targets` does not allow, the holder and
+## the containers it sits in (they read it).
+func excluded(nodes: list[Node], holder: Node, node: Node, targets: str) -> bool:
+    return not fits(targets, node) or node.id in chain(nodes, holder.id)
+
+# -- The picker
+
+## The nodes `holder`'s row `path_row` may name, as its picker lists them:
+## each level's in authoring order, depth first into containers, those
+## `fits` allows, never `holder` itself.
+pub func choices(nodes: list[Node], holder: Node, path_row: Parameter) -> list[Node]:
+    let result: list[Node] = []
+    gather(nodes, -1, holder, path_row.targets, result)
+    return result
+
+func gather(nodes: list[Node], parent: int, holder: Node, targets: str, result: list[Node]):
+    for node in nodes:
+        if node.parent != parent or node.id == holder.id:
+            continue
+        if fits(targets, node):
+            result.append(node)
+        if node_catalog.collects_children(node.kind):
+            gather(nodes, node.id, holder, targets, result)
+
+## The picker's entries for `holder`'s row: each choice's path from
+## `holder`, relative or absolute.
+pub func choice_paths(nodes: list[Node], holder: Node, path_row: Parameter, relative_paths: bool) -> list[str]:
+    let result: list[str] = []
+    for node in choices(nodes, holder, path_row):
+        result.append(written(nodes, holder, node, relative_paths))
+    return result
+
+# -- Paths kept through renames and regrouping
+
+## An exact path a row holds and the node it reaches: in `holder`'s text
+## `slot` when `take` is -1, else in what take `take` recorded for it.
+pub class Reference:
+    pub let holder: int
+    pub let slot: int
+    pub let take: int
+    pub let target: int
+
+    pub func init(self, holder: int, slot: int, take: int, target: int):
+        self.holder = holder
+        self.slot = slot
+        self.take = take
+        self.target = target
+
+## Every exact path the rows hold, in the nodes and in the takes other than
+## `active` (its state is the nodes'), with the node each reaches now: taken
+## before an edit renames or moves nodes, and handed to `retarget` after.
+## Patterns are left as typed, as Houdini leaves them.
+pub func references(nodes: list[Node], takes: list[Take], active: int) -> list[Reference]:
+    let result: list[Reference] = []
+    for holder in nodes:
+        for each in rows(holder.kind):
+            if let target = exact_target(nodes, holder, holder.texts[each.slot]):
+                result.append(Reference(holder.id, each.slot, -1, target))
+    for index in 0..<takes.length:
+        if index == active:
+            continue
+        let take = takes[index]
+        for at in 0..<take.ids.length:
+            let holder = find(nodes, take.ids[at]) else continue
+            let slot = recorded_slot(holder.kind)
+            if slot < 0:
+                continue
+            if let target = exact_target(nodes, holder, take.cameras[at]):
+                result.append(Reference(holder.id, slot, index, target))
+    return result
+
+## After an edit, point each of `taken` (from `references`) at its node
+## again: a path that no longer reaches it is rewritten, absolute as
+## absolute and relative as relative. A node that is gone leaves its path
+## as it was (the holder then says nothing is there). The ids of the
+## holders whose own paths changed.
+pub func retarget(nodes: list[Node], takes: list[Take], taken: list[Reference]) -> list[int]:
+    let changed: list[int] = []
+    for reference in taken:
+        let holder = find(nodes, reference.holder) else continue
+        let target = find(nodes, reference.target) else continue
+        let path = holder.texts[reference.slot] if reference.take < 0 else recorded(takes[reference.take], holder.id)
+        if let now = resolve(nodes, holder, path):
+            if now.id == target.id:
+                continue
+        let moved = written(nodes, holder, target, not is_absolute(path))
+        if reference.take >= 0:
+            let take = takes[reference.take]
+            for at in 0..<take.ids.length:
+                if take.ids[at] == holder.id:
+                    take.cameras[at] = moved
+            continue
+        holder.texts[reference.slot] = moved
+        if not (holder.id in changed):
+            changed.append(holder.id)
+    return changed
+
+## The node an exact, non-blank path other than "." reaches, by id.
+func exact_target(nodes: list[Node], holder: Node, text: str) -> int?:
+    let path = text.trim()
+    if path == "" or path == "." or is_pattern(path):
+        return none
+    if let target = resolve(nodes, holder, path):
+        return target.id
+    return none
+
+## The path take `take` recorded for node `id`.
+func recorded(take: Take, id: int) -> str:
+    for at in 0..<take.ids.length:
+        if take.ids[at] == id:
+            return take.cameras[at]
+    return ""
+
+# -- The tree
+
+## Node `id` and the containers above it, innermost first, ending with -1
+## (the root).
+pub func chain(nodes: list[Node], id: int) -> list[int]:
+    let result: list[int] = []
+    var at = id
+    for _ in 0..<18:
+        result.append(at)
+        if at < 0:
+            return result
+        at = parent_of(nodes, at)
+    return result
+
+func parent_of(nodes: list[Node], id: int) -> int:
+    if let node = find(nodes, id):
+        return node.parent
+    return -1
+
+func find(nodes: list[Node], id: int) -> Node?:
+    for node in nodes:
+        if node.id == id:
+            return node
+    return none
+
+func contains(found: list[Node], id: int) -> bool:
+    for node in found:
+        if node.id == id:
+            return true
+    return false

@@ -1,0 +1,365 @@
+## Node paths (node_paths.luc, docs/NODE-PATHS.md): the one system every
+## parameter naming another node uses. The module itself (normalizing,
+## names, wildcards, writing and resolving paths, targets, choices,
+## dependencies, references kept through edits, takes), Render's Camera
+## following renames and grouping with undo and redo, in the takes too,
+## the picker's Relative paths toggle, Import's Transform starting at Into
+## this object, the worker cooking after a rename, and Modify › Rename….
+from app import Luce3D
+from workspace import Workspace
+from network import Network
+from node import Node
+from luce_ui.ui import Event, Command
+from luce_window.input import EventKind, Key
+from object_import_tests import failure_of, settle
+from stamps import stamp_graph
+import node_paths
+import node_catalog
+import node_commands
+import import_node
+import take_commands
+
+pub func node_path_tests() -> unit!:
+    parsing()
+    resolving()
+    following()
+    render_camera()
+    camera_in_takes()
+    chooser()
+    default_transform()
+    camera_on_worker()
+    rename_command()
+    print("PASS node paths: normalize, names, wildcards, absolute and relative, targets and choices, dependencies, references through edits and takes; Render's Camera follows renames and grouping with undo; the picker's relative toggle; Import starts Into this object; the worker; Modify › Rename (F2)")
+
+## Normalizing, refused names and wildcards.
+func parsing() -> unit!:
+    assert(node_paths.normalize("  /Geo 2//./Box/../Cube 1/ ") == "/Geo 2/Cube 1")
+    assert(node_paths.normalize("../Sphere 4/.") == "../Sphere 4" and node_paths.normalize("../../a/..") == "../..")
+    assert(node_paths.normalize("Box/..") == "." and node_paths.normalize("") == "" and node_paths.normalize("/") == "/")
+    assert(node_paths.normalize("/Geo*/C?be") == "/Geo*/C?be")
+    assert(node_paths.is_absolute(" /Geo 2") and not node_paths.is_absolute("../Geo 2"))
+    assert(node_paths.is_pattern("/Geo*") and node_paths.is_pattern("Ge?") and not node_paths.is_pattern("/Geo 2"))
+    for name in ["Rock/Stone", "Rock*", "Ro?k", ".", "..", "  "]:
+        assert(node_paths.name_problem(name) != "", name)
+    assert(node_paths.name_problem("Geo 2") == "" and node_paths.name_problem("a.b") == "")
+    assert(node_paths.matches("G*o ?", "Geo 4") and node_paths.matches("*", "") and node_paths.matches("a*b*c", "aXbYbc"))
+    assert(not node_paths.matches("Geo ?", "Geo 12") and not node_paths.matches("a*c", "abd"))
+
+## Root: Geo `source` (Cube inside), a Camera, a Light, Geo `reader` with an
+## Import and a Group holding a Box; a Render.
+func tree() -> (Network, Node, Node, Node, Node, Node, Node)!:
+    let graph = Network(false)
+    let source = graph.add("Geo", 0.0, 0.0)
+    graph.scope = source.id
+    let cube = graph.add("Cube", 0.0, 0.0)
+    graph.scope = -1
+    let camera = graph.add("Camera", 200.0, 0.0)
+    _ = graph.add("Light", 300.0, 0.0)
+    let reader = graph.add("Geo", 400.0, 0.0)
+    graph.scope = reader.id
+    let importer = graph.add("Import", 0.0, 0.0)
+    let group = graph.add("Group", 0.0, 100.0)
+    graph.scope = group.id
+    _ = graph.add("Cube", 0.0, 0.0)
+    graph.scope = -1
+    let render = graph.add("Render", 0.0, 300.0)
+    return (graph, source, cube, camera, reader, importer, render)
+
+## Writing and resolving paths, targets, choices, dependencies.
+func resolving() -> unit!:
+    let (graph, source, cube, camera, reader, importer, render) = tree()
+    let nodes = graph.nodes
+    assert(node_paths.absolute(nodes, cube) == f"/{source.name}/{cube.name}")
+    assert(node_paths.relative(nodes, importer, cube) == f"../../{source.name}/{cube.name}")
+    assert(node_paths.relative(nodes, importer, reader) == ".." and node_paths.relative(nodes, importer, importer) == ".")
+    assert(node_paths.relative(nodes, render, camera) == f"../{camera.name}")
+    assert(node_paths.written(nodes, render, camera, false) == f"/{camera.name}")
+    # Either form reaches the same node; `.` the holder, nothing above the root.
+    for path in [f"/{source.name}/{cube.name}", f"../../{source.name}/./{cube.name}", f"../..//{source.name}/{cube.name}/"]:
+        let found = node_paths.resolve(nodes, importer, path) else trap(path)
+        assert(found.id == cube.id, path)
+    assert(node_paths.resolve(nodes, importer, ".") != none and node_paths.resolve(nodes, importer, "../../../..") == none)
+    assert(node_paths.resolve(nodes, importer, cube.name) == none and node_paths.resolve(nodes, importer, "/Geo*") == none)
+    # A wildcard matches only what the row names: the Import's Object never
+    # its own Geo, cameras or lights.
+    let object = node_paths.row("Import", import_node.object_slot) else trap("object row")
+    assert(object.patterns and object.targets == "geometry")
+    let matched = node_paths.resolve_all(nodes, importer, "/*", object.targets)
+    assert(matched.length == 1 and matched[0].id == source.id)
+    let cameras = node_paths.resolve_all(nodes, render, "/*", "camera")
+    assert(cameras.length == 1 and cameras[0].id == camera.id)
+    # Every node path row is declared in node_catalog, and is a "node" row
+    # among the pane's fields.
+    assert(node_paths.holds_paths("Import") and node_paths.holds_paths("Render") and not node_paths.holds_paths("Camera"))
+    let camera_row = node_paths.row("Render", 0) else trap("camera row")
+    assert(camera_row.targets == "camera" and camera_row.recorded and node_paths.recorded_slot("Render") == 0 and node_paths.recorded_slot("Import") < 0)
+    var declared = 0
+    for kind in ["Import", "Render"]:
+        for row in node_catalog.fields(kind):
+            if row.kind == "node":
+                declared += 1
+                assert(node_paths.row(kind, row.slot) != none, row.name)
+    assert(declared == 3)
+    # Choices: by target, the holder left out; written either way.
+    let geometry = node_paths.choice_paths(nodes, importer, object, false)
+    assert(f"/{source.name}" in geometry and f"/{source.name}/{cube.name}" in geometry and f"/{reader.name}" in geometry)
+    for path in geometry:
+        assert(not path.contains("Camera") and not path.contains("Light") and not path.contains("Import") and not path.contains("Render"), path)
+    assert(node_paths.choice_paths(nodes, render, camera_row, false) == [f"/{camera.name}"])
+    assert(node_paths.choice_paths(nodes, render, camera_row, true) == [f"../{camera.name}"])
+    # Dependencies and resolutions: what the rows reach, by id.
+    importer.texts[import_node.object_slot] = f"/{source.name}"
+    importer.texts[import_node.transform_object_slot] = "../../" + camera.name
+    let reached = node_paths.dependencies(nodes, importer)
+    assert(reached.length == 2 and reached[0].id == source.id and reached[1].id == camera.id)
+    let before = node_paths.resolution(nodes, importer)
+    importer.texts[import_node.object_slot] = f"../../{source.name}"
+    assert(node_paths.resolution(nodes, importer) == before)
+    importer.texts[import_node.object_slot] = "/nowhere"
+    assert(node_paths.resolution(nodes, importer) != before)
+    # `require`: a Render's Camera must name a Camera.
+    render.texts[0] = f"/{source.name}"
+    var refused = ""
+    _ = node_paths.require(nodes, render, 0, "camera") catch failure:
+        refused = failure.message
+        recover camera
+    assert(refused == f"No camera at /{source.name}")
+
+## References taken before an edit, retargeted after: absolute stays
+## absolute, relative relative, patterns and "." as typed; takes too.
+func following() -> unit!:
+    let (graph, source, cube, camera, _, importer, render) = tree()
+    importer.texts[import_node.object_slot] = f"../../{source.name}/{cube.name}"
+    importer.texts[import_node.transform_object_slot] = "."
+    render.texts[0] = f"/{camera.name}"
+    graph.takes[0].cameras = []
+    graph.takes.append(graph.takes[0].copy())
+    graph.takes[1].ids = [render.id]
+    graph.takes[1].cameras = [f"../{camera.name}"]
+    let taken = node_paths.references(graph.nodes, graph.takes, 0)
+    assert(taken.length == 3)
+    source.name = "Rock"
+    camera.name = "Hero"
+    let changed = node_paths.retarget(graph.nodes, graph.takes, taken)
+    assert(changed.length == 2 and importer.id in changed and render.id in changed)
+    assert(importer.texts[0] == f"../../Rock/{cube.name}" and importer.texts[1] == "." and render.texts[0] == "/Hero")
+    assert(graph.takes[1].cameras == ["../Hero"])
+    # Nothing moved: nothing rewritten.
+    assert(node_paths.retarget(graph.nodes, graph.takes, node_paths.references(graph.nodes, graph.takes, 0)).length == 0)
+
+## A Render node's Camera row through renames and grouping, undo and redo;
+## the render reaches the camera through it.
+func render_camera() -> unit!:
+    let w = Workspace()
+    node_commands.leave_group(w)
+    node_commands.add_node(w, "Camera", 300.0, 0.0)
+    let camera = w.network.selected
+    node_commands.add_node(w, "Light", 400.0, 0.0)
+    node_commands.add_node(w, "Render", 300.0, 200.0)
+    let render = w.network.selected
+    let name = w.network.require(camera).name
+    node_commands.set_text(w, 0, f"../{name}/")
+    assert(text(w, render, 0) == f"../{name}")
+    assert(failure_of(w.network, render) == "" and w.network.render_camera(w.network.require(render)) == f"camera{camera}")
+    stamp_graph(w.network)
+    let stamp = w.network.require(render).stamp
+    node_commands.reveal_node(w, camera)
+    node_commands.rename(w, "Hero")
+    assert(text(w, render, 0) == "../Hero" and failure_of(w.network, render) == "")
+    # A rename the path followed changes no stamp.
+    stamp_graph(w.network)
+    assert(w.network.require(render).stamp == stamp)
+    w.undo()
+    assert(w.network.require(camera).name == name and text(w, render, 0) == f"../{name}")
+    w.redo()
+    assert(text(w, render, 0) == "../Hero")
+    # The camera grouped: the relative path climbs into the Group.
+    node_commands.group_selected(w)
+    let group = w.network.require(camera).parent
+    assert(group >= 0)
+    assert(text(w, render, 0) == "../" + w.network.require(group).name + "/Hero")
+    assert(w.network.render_camera(w.network.require(render)) == f"camera{camera}")
+    w.undo()
+    assert(w.network.require(camera).parent == -1 and text(w, render, 0) == "../Hero")
+    # The Render grouped, an absolute path stays.
+    node_commands.reveal_node(w, render)
+    node_commands.set_text(w, 0, "/Hero")
+    node_commands.group_selected(w)
+    assert(w.network.require(render).parent >= 0 and text(w, render, 0) == "/Hero")
+    w.undo()
+    w.undo()
+    assert(text(w, render, 0) == "../Hero")
+    # A path to something that is not a camera, or to nothing.
+    node_commands.set_text(w, 0, "/nowhere")
+    assert(failure_of(w.network, render).contains("No camera at /nowhere"))
+
+## A take records the Render camera: an inactive take's path follows a
+## rename too, and switching to it renders through the renamed camera.
+func camera_in_takes() -> unit!:
+    let w = Workspace()
+    node_commands.leave_group(w)
+    node_commands.add_node(w, "Camera", 300.0, 0.0)
+    let first = w.network.selected
+    node_commands.add_node(w, "Camera", 400.0, 0.0)
+    let second = w.network.selected
+    node_commands.add_node(w, "Render", 300.0, 200.0)
+    let render = w.network.selected
+    take_commands.add_take(w)
+    take_commands.set_camera(w, second)
+    assert(text(w, render, 0) == "/" + w.network.require(second).name)
+    take_commands.switch_take(w, 0)
+    take_commands.set_camera(w, first)
+    # In Main, rename the camera the other take looks through: one undo
+    # step takes both back.
+    node_commands.reveal_node(w, second)
+    node_commands.rename(w, "Close")
+    assert("/Close" in w.network.takes[1].cameras)
+    w.undo()
+    assert(w.network.require(second).name != "Close" and not ("/Close" in w.network.takes[1].cameras))
+    w.redo()
+    assert("/Close" in w.network.takes[1].cameras)
+    take_commands.switch_take(w, 1)
+    assert(text(w, render, 0) == "/Close" and w.network.render_camera(w.network.require(render)) == f"camera{second}")
+    take_commands.switch_take(w, 0)
+    assert(text(w, render, 0) == "/" + w.network.require(first).name)
+
+## The picker lists what the row may name, written absolute or, with its
+## toggle, relative; choosing sets the row.
+func chooser() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1200.0, 800.0)
+    let geo = w.network.scope
+    let cube = w.network.children(geo)[0]
+    node_commands.leave_group(w)
+    node_commands.add_node(w, "Geo", 300.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Import", 0.0, 0.0)
+    let importer = w.network.selected
+    let picker = editor.panels.node_path_picker
+    picker.open(100.0, 100.0, import_node.object_slot)
+    let absolute = "/" + w.network.require(geo).name + "/" + cube.name
+    assert(labels(picker.commands).contains(absolute) and not picker.relative)
+    assert(picker.commands[0].text() == "Relative paths" and not picker.commands[0].is_checked())
+    # The toggle: the same nodes, relative to the Import.
+    picker.commands[0].trigger()
+    let relative = "../../" + w.network.require(geo).name + "/" + cube.name
+    assert(picker.relative and picker.commands[0].is_checked() and labels(picker.commands).contains(relative) and not labels(picker.commands).contains(absolute))
+    choose(picker.commands, relative)
+    assert(text(w, importer, import_node.object_slot) == relative and failure_of(w.network, importer) == "")
+    # Opened again: what the row names is checked; back to absolute.
+    picker.open(100.0, 100.0, import_node.object_slot)
+    for command in picker.commands:
+        if command.text() == relative:
+            assert(command.is_checked())
+    picker.commands[0].trigger()
+    choose(picker.commands, absolute)
+    assert(text(w, importer, import_node.object_slot) == absolute)
+    # The Transform Object row, and a Render's Camera row: only cameras.
+    picker.open(100.0, 100.0, import_node.transform_object_slot)
+    assert(labels(picker.commands).contains("/" + w.network.require(geo).name))
+    node_commands.leave_group(w)
+    node_commands.add_node(w, "Camera", 600.0, 0.0)
+    let camera = w.network.require(w.network.selected)
+    node_commands.add_node(w, "Render", 600.0, 200.0)
+    let render = w.network.selected
+    picker.open(100.0, 100.0, 0)
+    assert(labels(picker.commands) == ["Relative paths", "", "/" + camera.name])
+    picker.commands[0].trigger()
+    choose(picker.commands, "../" + camera.name)
+    assert(text(w, render, 0) == "../" + camera.name)
+    # A row that is not a node path opens nothing.
+    picker.open(100.0, 100.0, 1)
+    assert(labels(picker.commands) == ["Relative paths", "", "../" + camera.name])
+    editor.close()
+
+## A new Import carries its source into this object (Houdini's Object Merge
+## starts at None; the owner chose Into this object).
+func default_transform() -> unit!:
+    let graph = Network(false)
+    let importer = graph.add("Import", 0.0, 0.0)
+    assert(importer.values[import_node.transform_slot] == import_node.into_this_object)
+    let w = Workspace()
+    node_commands.add_node(w, "Import", 0.0, 0.0)
+    assert(w.network.require(w.network.selected).values[import_node.transform_slot] == import_node.into_this_object)
+
+## The worker renders through a camera that was renamed and grouped.
+func camera_on_worker() -> unit!:
+    let w = Workspace()
+    node_commands.leave_group(w)
+    node_commands.add_node(w, "Camera", 300.0, 0.0)
+    let camera = w.network.selected
+    node_commands.add_node(w, "Light", 400.0, 0.0)
+    node_commands.add_node(w, "Render", 300.0, 200.0)
+    let render = w.network.selected
+    node_commands.set_text(w, 0, "/" + w.network.require(camera).name)
+    # The worker cooks the selected node.
+    w.enable_compute()
+    settle(w)
+    assert(w.network.require(render).failure == "", w.network.require(render).failure)
+    node_commands.reveal_node(w, camera)
+    node_commands.rename(w, "Hero")
+    node_commands.group_selected(w)
+    node_commands.reveal_node(w, render)
+    settle(w)
+    assert(text(w, render, 0) == "/" + w.network.require(w.network.require(camera).parent).name + "/Hero")
+    assert(w.network.require(render).failure == "", w.network.require(render).failure)
+    # A path to nothing fails there too.
+    node_commands.set_text(w, 0, "/Hero")
+    settle(w)
+    assert(w.network.require(render).failure.contains("No camera at /Hero"), w.network.require(render).failure)
+    (w.compute else trap("worker")).close()
+
+## Modify › Rename… (F2) asks for the selected node's name and renames it
+## in one undo step, paths following.
+func rename_command() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1200.0, 800.0)
+    let a = editor.panels.actions
+    let shortcut = a.rename.shortcut()
+    assert(shortcut.key == Key.f2 and not shortcut.primary and not shortcut.shift)
+    var listed = false
+    for command in editor.panels.menus.modify_entries:
+        listed = listed or command.id() == "rename_node"
+    assert(listed)
+    # F2 is no other command's.
+    for command in a.all:
+        if command.id() != "rename_node":
+            assert(command.shortcut().key != Key.f2, command.text())
+    let cube = w.network.nodes[0].id
+    node_commands.select_node(w, cube)
+    editor.panels.refresh()
+    assert(a.rename.is_enabled())
+    a.rename.trigger()
+    assert(editor.panels.rename_prompt.is_open() and editor.panels.rename_prompt.value() == w.network.require(cube).name)
+    for c in [66, 111, 120]:
+        editor.app.dispatch(Event(kind = EventKind.text_input, codepoint = c))
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    assert(not editor.panels.rename_prompt.is_open() and w.network.require(cube).name == "Box")
+    assert(w.history.undo_label() == "Undo Rename node")
+    w.undo()
+    assert(w.network.require(cube).name != "Box")
+    # Nothing selected: nothing to rename.
+    w.network.selected = -1
+    w.network.picked = []
+    w.revision += 1
+    editor.panels.refresh()
+    assert(not a.rename.is_enabled())
+    editor.close()
+
+func text(w: Workspace, id: int, slot: int) -> str!:
+    return w.network.require(id).texts[slot]
+
+func labels(commands: list[Command]) -> list[str]:
+    let result: list[str] = []
+    for command in commands:
+        result.append(command.text())
+    return result
+
+func choose(commands: list[Command], label: str) -> unit!:
+    for command in commands:
+        if command.text() == label:
+            command.trigger()
+            return
+    trap(f"no entry {label}")

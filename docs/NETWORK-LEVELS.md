@@ -101,29 +101,24 @@ has no inputs. Its rows are Object Merge's, for one object line:
 | Object Merge | Import | Notes |
 | --- | --- | --- |
 | Object 1 | **Object** | A path, absolute or relative, with wildcards |
-| Transform | **Transform** | None (the default), Into This Object, Into Specified Object |
+| Transform | **Transform** | None, Into This Object (the default here; Houdini's is None), Into Specified Object |
 | Transform Object | **Transform Object** | Shown with Into Specified Object |
 | Invert Transform | **Invert Transform** | Off with None |
 
 ### Paths
 
-Paths are Houdini's operator paths. An absolute path starts at the root and
-names each container down to the node: `/Geo 2` (what the Geo yields),
-`/Group 1/CAD 3`, or a node inside an object, `/Geo 2/Sphere 4`. A relative
-path starts at the Import node itself, as in Houdini: `..` is the network it
-sits in, so `../Sphere 4` is a sibling, `../..` the container above, and
-`../../Geo 2` an object beside the Import's own. `.` is the node itself. The
-row's button lists the scene's nodes by absolute path.
+Object and Transform Object are node paths, as every parameter that names
+another node is ([NODE-PATHS.md](NODE-PATHS.md)): absolute from the root
+(`/Geo 2`, what the Geo yields; `/Geo 2/Sphere 4`, a node inside an
+object) or relative from the Import itself (`../Sphere 4` a sibling,
+`../../Geo 2` an object beside the Import's own). Each row's button opens
+the node path picker, with its Relative paths toggle.
 
 A name in the Object path may hold `*` (any run of characters) and `?` (one),
 like Houdini's `/obj/ball*`: the Import reads every match, each placed by
 the Transform menu, merged in authoring order. A wildcard never matches the
 Import, the containers it sits in (so `/Geo*` from inside Geo 4 reads the
 other Geos), cameras, lights, Render nodes or shader nodes.
-
-Since a name is one step of a path, renaming refuses a name that holds `/`,
-`*` or `?`, is `.` or `..`, or is already a sibling's. (Should two siblings
-share a name anyway, a path reads the first.)
 
 ### Transform
 
@@ -156,32 +151,23 @@ axis, X then Y then Z.
 
 ### Paths follow their nodes
 
-Renaming a node, or a container on a path, and grouping (which moves nodes
-into a new Group: a source, a container above it, or the Import itself)
-rewrite every exact Object and Transform Object path that named the moved or
-renamed node, in the same undo step (`Network.keeping_import_paths`). An
-absolute path stays absolute; a relative one stays relative, recomputed from
-the Import (grouping the Import adds a `..`). A wildcard path is left as
-typed, as Houdini leaves it. Deleting a source leaves the path and the
-Import's error ("Nothing at /Geo 2/Cube 1"); undo brings both back.
-
-Nodes move between containers only by grouping today; there is no ungroup,
-copy and paste, or duplicate of nodes. When those come, they follow Houdini:
-paths are copied as typed, so a relative path inside copied nodes names the
-copy of its sibling, and an absolute one still names the original.
-
-Takes record visibility, transforms, lights and the Render camera, never an
-Import's paths, so there is nothing in a take to rewrite.
+Renaming a node, or a container on a path, and grouping a source, a
+container above it or the Import itself rewrite every exact Object and
+Transform Object path in the same undo step, absolute as absolute and
+relative as relative; wildcard paths stay as typed, and a deleted source
+leaves the path and the Import's error ("Nothing at /Geo 2/Cube 1"). The
+node path system does this for every node path row alike
+([NODE-PATHS.md](NODE-PATHS.md#following-renames-and-regrouping)).
 
 ### Cooking
 
 It recooks when a source changes, or a container's placement above a source,
 above the Import or at or above its Transform Object changes
 (`Network.invalidate`); its stamp lists each source's stamp and placement
-steps, not the paths, so a rename recooks nothing. A rename that makes a path
-reach a different node (a path to nothing that now finds one) recooks it.
-The worker is sent an Import's paths with every request, since its stamp
-does not carry them. Both the local cook and the worker read through
+steps and what its paths reach, not the paths, so a rename recooks nothing.
+A rename that makes a path reach a different node (a path to nothing that
+now finds one) recooks it. The worker is sent an Import's paths with every
+request, since its stamp does not carry them ([NODE-PATHS.md](NODE-PATHS.md#cooking-and-invalidation)). Both the local cook and the worker read through
 `Network.import_read`, which refuses an empty path, a path to nothing, and a
 source that reads the Import ("An Import can't read what it is part of"):
 importing the container the Import feeds.
@@ -284,4 +270,5 @@ containers turned about several axes and scaled unevenly, nested
 containers, wildcards and the worker; `tests/editor/import_path_tests.luc`
 renames sources and their containers, groups a source, an ancestor and the
 Import, undoes and redoes each, and checks patterns, deleted sources,
-refused names and the worker.
+refused names and the worker; `tests/editor/node_path_tests.luc` checks the
+node path system every such row shares ([NODE-PATHS.md](NODE-PATHS.md#tests)).

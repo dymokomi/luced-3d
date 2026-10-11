@@ -1,0 +1,84 @@
+## The node path picker: a node path row's button (node_paths.luc) opens a
+## menu of the nodes the row may name (node_paths.choices), the one it
+## names now checked; choosing one sets the row. Above them, Houdini's
+## chooser toggle: Relative paths writes the path from the node holding the
+## row (../Sphere 4), else from the root (/Geo 2/Sphere 4); it is kept
+## while the editor runs. The menu is a ContextMenu anchored on an empty
+## label in the footer, rebuilt each time it opens, as the scene changes.
+from luce_ui.ui import Text, Font, Command, ContextMenu
+from interop import Connection
+from workspace import Workspace
+import node_paths
+import node_commands
+
+pub class NodePathPicker:
+    let workspace: Workspace
+    let anchor: Text
+    pub let menu: ContextMenu
+    ## The menu's entries as last opened: the toggle, a divider, the nodes.
+    pub let commands: list[Command]
+    let connections: list[Connection]
+    ## Whether choices are written relative to the node holding the row.
+    pub var relative: bool = false
+    ## After a choice: the panels show the new path.
+    pub var chosen: func() -> unit!? = none
+
+    pub func init(self, workspace: Workspace, font: Font) -> unit!:
+        self.workspace = workspace
+        self.anchor = Text("", font = font)
+        # A menu holds at least one entry: a placeholder until it opens.
+        self.commands = [Command("No nodes to choose", id = "node_path_none")]
+        self.connections = []
+        self.menu = ContextMenu(self.anchor, self.commands, font = font)
+
+    ## Open the menu for the selected node's node path row in text slot
+    ## `slot` at (`x`, `y`) in window points.
+    pub func open(self, x: float, y: float, slot: int) -> unit!:
+        let holder = self.workspace.selected() else return
+        let path_row = node_paths.row(holder.kind, slot) else return
+        # The new entries reach the menu before the old ones are let go:
+        # it holds the old ones until then (and the toggle's own callback is
+        # running when it reopens the menu).
+        let entries: list[Command] = []
+        let connections: list[Connection] = []
+        let nodes = self.workspace.network.nodes
+        let toggle = Command("Relative paths", id = "node_path_relative")
+        toggle.set_checked(self.relative)
+        connections.append(toggle.on_trigger(func () -> unit!:
+            self.relative = not self.relative
+            self.open(x, y, slot)))
+        entries.append(toggle)
+        entries.append(Command("", divider = true))
+        let named = node_paths.resolve(nodes, holder, holder.texts[slot])
+        let choices = node_paths.choices(nodes, holder, path_row)
+        for at in 0..<choices.length:
+            let target = choices[at]
+            let path = node_paths.written(nodes, holder, target, self.relative)
+            let command = Command(path, id = f"node_path_{at}")
+            if let now = named:
+                command.set_checked(now.id == target.id)
+            connections.append(command.on_trigger(func () -> unit!:
+                node_commands.set_text(self.workspace, slot, path)
+                if let after = self.chosen:
+                    after()))
+            entries.append(command)
+        if choices.length == 0:
+            let nothing = Command("No nodes to choose", id = "node_path_none")
+            nothing.set_enabled(false)
+            entries.append(nothing)
+        self.menu.set_commands(entries)
+        self.clear()
+        self.commands.extend(entries)
+        self.connections.extend(connections)
+        let origin = self.anchor.layout().bounds()
+        self.menu.open_at(x - origin.x, y - origin.y)
+
+    func clear(self):
+        for connection in self.connections:
+            connection.disconnect()
+        self.connections.clear()
+        self.commands.clear()
+
+    pub func close(self):
+        self.clear()
+        self.chosen = none

@@ -15,6 +15,8 @@ import shader_nodes
 import cad_nodes
 import levels
 import import_node
+import node_paths
+import scene_nodes
 
 pub func kinds() -> list[str]:
     return node_catalog.kinds()
@@ -494,7 +496,7 @@ pub class Network:
                     pending.append(node.id)
                 if node.kind == "Input" and node.parent == next:
                     pending.append(node.id)
-                if node.kind == import_node.kind_name and self.import_reads(node, next):
+                if node_paths.holds_paths(node.kind) and self.reads_by_path(node, next):
                     pending.append(node.id)
 
     pub func evaluate(self, id: int) -> Mesh!:
@@ -575,7 +577,7 @@ pub class Network:
             var scene = GeometryData()
             for child in self.outputs(-1):
                 scene = scene.merged(self.evaluate_node(child.id, visiting))
-            return node.compute(scene)
+            return self.render_result(node, scene)
         # Sources, and nodes with no inputs (a Camera, a Light), cook from nothing.
         if node.kind in node_catalog.sources() or node.inputs.length == 0 or reads_file(node.kind, node.enabled, node.values):
             return node.compute(GeometryData())
@@ -625,7 +627,8 @@ pub class Network:
     pub func import_sources(self, node: Node) -> list[Node]:
         if node.kind != import_node.kind_name:
             return []
-        return import_node.resolve_all(self.nodes, node, node.texts[import_node.object_slot])
+        let object = node_paths.row(node.kind, import_node.object_slot) else return []
+        return node_paths.reached(self.nodes, node, object)
 
     ## The sources Import node `node` cooks from, or why it can't.
     pub func import_read(self, node: Node) -> list[Node]!:
@@ -656,53 +659,66 @@ pub class Network:
             if path == "":
                 into = []
             elif path != ".":
-                let target = import_node.resolve(self.nodes, node, path) else error(ui.invalid, f"No object at {path} to transform into")
+                let target = node_paths.resolve(self.nodes, node, path) else error(ui.invalid, f"No object at {path} to transform into")
                 into = import_node.frame(self.nodes, target)
         if node.values[import_node.invert_slot] != 0.0:
             return import_node.carry(source, into, own)
         return import_node.carry(source, own, into)
 
-    ## Whether invalidating `id` changes what Import node `node` reads: a
-    ## source, or a container above a source, above the Import or at or
-    ## above its Transform Object (their placements place what it reads).
-    func import_reads(self, node: Node, id: int) -> bool:
+    # -- Render nodes
+
+    ## The scene path of the camera Render node `node` looks through, by its
+    ## Camera row (a node path): "" for the first camera when the row is
+    ## blank; an error when no Camera is at the path.
+    pub func render_camera(self, node: Node) -> str!:
+        if node.texts[0].trim() == "":
+            return ""
+        let camera = node_paths.require(self.nodes, node, 0, "camera")
+        return scene_nodes.camera_path(camera.id, camera.texts)
+
+    ## What Render node `node` yields from the root's `scene`: the scene,
+    ## once its camera is there (bypassed: as it is).
+    pub func render_result(self, node: Node, scene: GeometryData) -> GeometryData!:
+        if not node.enabled:
+            return scene
+        return scene_nodes.check_render(self.render_camera(node), scene)
+
+    # -- Node paths (node_paths.luc)
+
+    ## Whether invalidating `id` changes what node `node` reads by path: a
+    ## node its paths reach; for an Import also a container above a source,
+    ## above the Import or at or above its Transform Object (their
+    ## placements place what it reads).
+    func reads_by_path(self, node: Node, id: int) -> bool:
+        let reached = node_paths.dependencies(self.nodes, node)
+        for each in reached:
+            if each.id == id:
+                return true
         if node.kind != import_node.kind_name:
             return false
         let around: list[Node] = self.ancestors(node.parent)
-        for source in self.import_sources(node):
-            if source.id == id:
-                return true
-            around.extend(self.ancestors(source.parent))
-        let path = node.texts[import_node.transform_object_slot].trim()
-        if node.values[import_node.transform_slot] == import_node.into_specified_object and path != "" and path != ".":
-            if let target = import_node.resolve(self.nodes, node, path):
-                around.append(target)
-                around.extend(self.ancestors(target.parent))
+        for each in reached:
+            around.extend(self.ancestors(each.parent))
         for container in around:
             if container.id == id:
                 return true
         return false
 
-    ## Rename node `id`, rewriting the Import paths that name it or pass
-    ## through it. A name is one step of a path: no "/", no wildcard, not
-    ## "." or "..", and no sibling of the node has it.
+    ## Rename node `id`, rewriting the node paths that name it or pass
+    ## through it. A name is one step of a path (node_paths.name_problem),
+    ## and no sibling of the node has it.
     pub func rename(self, id: int, name: str) -> unit!:
         let node = self.require(id)
-        if name.trim() == "":
-            error(ui.invalid, "A node needs a name")
-        if name.contains("/"):
-            error(ui.invalid, "A name can't hold / (it separates a path's names)")
-        if import_node.is_pattern(name):
-            error(ui.invalid, "A name can't hold * or ? (they are path wildcards)")
-        if name == "." or name == "..":
-            error(ui.invalid, "That name is a step of a path")
+        let problem = node_paths.name_problem(name)
+        if problem != "":
+            error(ui.invalid, problem)
         for other in self.nodes:
             if other.parent == node.parent and other.id != id and other.name == name:
                 error(ui.invalid, f"Another node here is called {name}")
-        self.keeping_import_paths(func () -> unit!:
+        self.keeping_paths(func () -> unit!:
             node.name = name)
 
-    ## A name no node in `parent` has, for a new node there (Import paths
+    ## A name no node in `parent` has, for a new node there (node paths
     ## name nodes): `stem` and `number`, or the next free number after it.
     pub func fresh_name(self, parent: int, stem: str, number: int) -> str:
         var at = number
@@ -718,16 +734,17 @@ pub class Network:
         return false
 
     ## Run `edit` (a rename, or nodes moved into another container) keeping
-    ## every exact Import path on the node it names, absolute or relative
-    ## (import_node.retarget). Paths only follow their nodes, so an Import
-    ## recooks only when what it resolves to changed anyway (a pattern that
-    ## matches more, a path to nothing that now finds a node).
-    pub func keeping_import_paths(self, edit: func() -> unit!) -> unit!:
-        let taken = import_node.references(self.nodes)
-        let before = self.import_resolutions()
+    ## every exact node path, in the nodes and in the takes, on the node it
+    ## names, absolute or relative (node_paths.retarget). Paths only follow
+    ## their nodes, so a holder recooks only when what it resolves to
+    ## changed anyway (a pattern that matches more, a path to nothing that
+    ## now finds a node).
+    pub func keeping_paths(self, edit: func() -> unit!) -> unit!:
+        let taken = node_paths.references(self.nodes, self.takes, self.take)
+        let before = self.path_resolutions()
         edit()
-        _ = import_node.retarget(self.nodes, taken)
-        let after = self.import_resolutions()
+        _ = node_paths.retarget(self.nodes, self.takes, taken)
+        let after = self.path_resolutions()
         for at in 0..<after.length:
             let (id, reached) = after[at]
             var same = false
@@ -736,19 +753,12 @@ pub class Network:
             if not same:
                 self.invalidate(id)
 
-    ## Each Import's id with what its paths reach (its sources and its
-    ## Transform Object, as one key).
-    func import_resolutions(self) -> list[(int, int)]:
+    ## Each node holding paths, with what they reach (node_paths.resolution).
+    func path_resolutions(self) -> list[(int, int)]:
         let result: list[(int, int)] = []
         for node in self.nodes:
-            if node.kind != import_node.kind_name:
-                continue
-            let ids: list[int] = []
-            for source in self.import_sources(node):
-                ids.append(source.id)
-            if let target = import_node.resolve(self.nodes, node, node.texts[import_node.transform_object_slot]):
-                ids.append(-2 - target.id)
-            result.append((node.id, ids.hash()))
+            if node_paths.holds_paths(node.kind):
+                result.append((node.id, node_paths.resolution(self.nodes, node)))
         return result
 
     ## Container `parent` and the containers above it, innermost first.

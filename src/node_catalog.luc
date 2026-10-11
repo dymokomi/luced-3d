@@ -19,7 +19,7 @@ from fbx_nodes import is_fbx_path
 from shader_nodes import is_shader, shader_kinds, shader_categories, shader_category, math_operations
 import shader_nodes
 import sketch_node
-from parameter_rows import Parameter, number, whole, vector, toggle, menu, entry, heading
+from parameter_rows import Parameter, number, whole, vector, toggle, menu, entry, heading, node_path
 from cad_nodes import solid_kinds, cad_only_kinds, is_cad_only, cad_categories, cad_category
 import cad_nodes
 import code_cook
@@ -236,6 +236,24 @@ pub func has_group(kind: str) -> bool:
 pub func has_attribute_name(kind: str) -> bool:
     return kind in ["AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group"]
 
+## The rows of node `kind` that name another node by path (node_paths.luc),
+## every one declared here: Import's Object and Transform Object, Render's
+## Camera. Renaming and regrouping keep them on their nodes, their buttons
+## open the node path picker, and nothing else holds a node's path.
+pub func node_path_rows(kind: str) -> list[Parameter]:
+    if kind == "Import":
+        let object = node_path("Object", 0, "The node to read, by path: absolute (/Geo 2, /Geo 2/Sphere 4) or from this node (../Sphere 4, ../../Geo 2). * and ? in a name read every match, merged. The button lists the scene's nodes.", "geometry", true)
+        object.key = "object"
+        let target = node_path("Transform Object", 1, "The object whose frame the geometry is carried into, by path: blank for the world, . for the source's own frame.", "geometry")
+        target.key = "transform_object"
+        target.hide_when = "{ transform != 2 }"
+        return [object, target]
+    if kind == "Render":
+        let camera = node_path("Camera", 0, "The Camera node to render through, by path (/Camera 3, ../Camera 3); empty takes the first camera. Takes record it.", "camera")
+        camera.recorded = true
+        return [camera]
+    return []
+
 ## The value slots of a node: one Parameter a slot, a vector's components
 ## each their own, for defaults and clamping.
 pub func parameters(kind: str, path: str = "") -> list[Parameter]!:
@@ -291,9 +309,7 @@ pub func fields(kind: str, path: str = "", stage: Composition? = none) -> list[P
             for row in fbx_fields():
                 rows.append(row)
     if kind == "Import":
-        let object = entry("Object", 0, "The node to read, by path: absolute (/Geo 2, /Geo 2/Sphere 4) or from this node (../Sphere 4, ../../Geo 2). * and ? in a name read every match, merged. The button lists the scene's nodes.", "path")
-        object.key = "object"
-        rows.append(object)
+        rows.append(node_path_rows(kind)[0])
     if kind == "Cache":
         rows.append(entry("File", 0, "The .prism file the cooked geometry is saved to (and loaded from).", "path"))
     if kind == "Export":
@@ -313,7 +329,7 @@ pub func fields(kind: str, path: str = "", stage: Composition? = none) -> list[P
         let start = heading("Render", "button")
         start.doc = "Render the input in the Render panel, progressively."
         rows.append(start)
-        rows.append(entry("Camera", 0, "The path of the camera to render through; empty takes the first camera."))
+        rows.extend(node_path_rows(kind))
         rows.append(entry("Output", 1, "Where the image is written (.exr); empty only shows it.", "path"))
     if has_group(kind):
         let group = entry("Group", 0, "Elements to work on, in Houdini's group syntax: empty or * for all, 0 2-5 and 0-99:2 for numbers, names and globs, @P.y>0 or @name tests, ^ to remove, & to intersect, grow(x) and loop(x).")
@@ -485,14 +501,13 @@ func value_fields(kind: str) -> list[Parameter]:
     if kind == "Input":
         return [menu("Input", 0, "First|Second", 0.0, "Read this input of the containing network node.")]
     if kind == "Import":
-        # Houdini's Object Merge: Transform, Transform Object, Invert Transform.
-        let target = entry("Transform Object", 1, "The object whose frame the geometry is carried into, by path: blank for the world, . for the source's own frame.", "path")
-        target.key = "transform_object"
-        target.hide_when = "{ transform != 2 }"
+        # Houdini's Object Merge: Transform (here Into this object to start),
+        # Transform Object, Invert Transform.
+        let target = node_path_rows(kind)[1]
         let invert = toggle("Invert Transform", 1, 0.0, "Carry the geometry the other way: from this object's (or the Transform Object's) frame into the source's.")
         invert.key = "invert"
         invert.disable_when = "{ transform == 0 }"
-        return [menu("Transform", 0, "None|Into this object|Into specified object", 0.0, "None: in the source's own frame, without its object's transform. Into this object: where it sits in the scene, seen from this object. Into specified object: seen from the Transform Object."),
+        return [menu("Transform", 0, "None|Into this object|Into specified object", 1.0, "None: in the source's own frame, without its object's transform. Into this object: where it sits in the scene, seen from this object. Into specified object: seen from the Transform Object."),
                 target, invert]
     if kind in transforming_kinds():
         return [vector("Translate", 1, [0.0, 0.0, 0.0], "Moves the geometry, after rotating and scaling."),

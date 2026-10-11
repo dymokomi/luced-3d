@@ -2,7 +2,7 @@
 ## without copying the network. A take records each node's visibility and the
 ## objects hidden inside its result, its transform (Translate, Rotate, Scale,
 ## Pivot, Position), which lights are on (a Light node's bypass) and the camera
-## the Render nodes look through. The active take's state lives in the nodes, so
+## the Render nodes look through (the row node_paths.recorded_slot names). The active take's state lives in the nodes, so
 ## ordinary edits change it; switching records the state into the take left
 ## and applies the one chosen. The first take, Main, is where a scene starts.
 from network import Network
@@ -10,6 +10,7 @@ from node import Node
 from take import Take
 from shader_nodes import is_shader
 import node_catalog
+import node_paths
 
 ## The value slots of a kind's transform rows.
 pub func transform_slots(kind: str) -> list[int]!:
@@ -29,7 +30,8 @@ pub func capture(graph: Network, name: str) -> Take!:
         take.ids.append(node.id)
         take.visible.append(node.visible)
         take.enabled.append(node.enabled)
-        take.cameras.append(node.texts[0] if node.kind == "Render" else "")
+        let recorded = node_paths.recorded_slot(node.kind)
+        take.cameras.append(node.texts[recorded] if recorded >= 0 else "")
         take.hidden.append(node.hidden.join("\n"))
         let slots = transform_slots(node.kind)
         take.counts.append(slots.length)
@@ -61,8 +63,9 @@ pub func apply(graph: Network, take: Take) -> unit!:
         if node.kind == "Light" and node.enabled != take.enabled[at]:
             node.enabled = take.enabled[at]
             graph.invalidate(node.id)
-        if node.kind == "Render" and node.texts[0] != take.cameras[at]:
-            node.texts[0] = take.cameras[at]
+        let recorded = node_paths.recorded_slot(node.kind)
+        if recorded >= 0 and node.texts[recorded] != take.cameras[at]:
+            node.texts[recorded] = take.cameras[at]
             graph.invalidate(node.id)
 
 ## The takes with the active one's state as the nodes hold it now.
@@ -115,14 +118,10 @@ pub func scene_nodes(graph: Network, kind: str) -> list[Node]:
             result.append(node)
     return result
 
-## A Camera node's camera path, as the Render node names it.
-pub func camera_path(node: Node) -> str:
-    let path = node.texts[0].trim()
-    return f"camera{node.id}" if path == "" else path
-
-## The camera the Render nodes look through ("" the first; mixed: the first
-## Render node's).
-pub func render_camera(graph: Network) -> str:
+## The Camera node the Render nodes look through (mixed: the first Render
+## node's), and whether their Camera row is blank (the first camera).
+pub func render_camera(graph: Network) -> (Node?, bool):
     for node in scene_nodes(graph, "Render"):
-        return node.texts[0].trim()
-    return ""
+        let path = node.texts[0].trim()
+        return (node_paths.resolve(graph.nodes, node, path), path == "")
+    return (none, true)

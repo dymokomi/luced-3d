@@ -28,6 +28,8 @@ caching design are in [PERFORMANCE.md](docs/PERFORMANCE.md).
   how to measure and open work.
 - [GROUPS.md](docs/GROUPS.md): imported STEP hierarchy and Blast.
 - [OUTLINER.md](docs/OUTLINER.md): output rules, Groups and nested networks.
+- [NODE-PATHS.md](docs/NODE-PATHS.md): parameters that name other nodes by
+  path (Import's Object, Render's Camera), the picker, renames and regrouping.
 - [PROJECTS.md](docs/PROJECTS.md): the project schema and UI persistence.
 
 Related packages: CAD modeling and tessellation live in
@@ -101,7 +103,8 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   one submenu per Tab category (inside a displayed Edit node, its primitives
   first); a node chosen there goes below the selected node, wired to it.
   **Modify** holds what applies to the selection: display flag, bypass,
-  freeze, Set Output, Group, Delete, the transform tools, the active Edit
+  freeze, Set Output, Group, Rename… (F2, as Blender's and the desktop's),
+  Delete, the transform tools, the active Edit
   kind's tools and the selection edits, greyed out when they do not apply.
 - File imports OBJ, FBX (scene hierarchy, transforms, layers and instances; see
   [FBX files](docs/MODELING.md#fbx-files)), USD (.usd, .usda, .usdc, .usdz; see
@@ -158,8 +161,9 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   outside the container the network view is in; its search field filters them.
 - Objects at the root are not wired together. To bring one object into another,
   add an **Import** node inside it and pick the object (Houdini's Object Merge,
-  with its Transform, Transform Object and Invert Transform; paths may be
-  relative or hold wildcards, and follow renames and grouping): for example, Import a Materials library into a Geo and wire the Import into
+  with its Transform, Transform Object and Invert Transform; Transform starts
+  at Into this object; paths may be relative or hold wildcards, and follow
+  renames and grouping, as every node path does: [node paths](docs/NODE-PATHS.md)): for example, Import a Materials library into a Geo and wire the Import into
   Assign Material's second port. A container nested in a data network takes
   wires on its two inputs, read inside by **Input** nodes.
   See [context rules](docs/OUTLINER.md) and [network levels](docs/NETWORK-LEVELS.md).

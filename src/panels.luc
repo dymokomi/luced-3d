@@ -28,7 +28,7 @@ import node_commands
 import context_display
 from viewport_chrome import shading_button
 from icon_shelf import IconShelf
-from import_picker import ImportPicker
+from node_path_picker import NodePathPicker
 import take_commands
 from top_menus import TopMenus
 
@@ -49,7 +49,7 @@ pub class Panels:
     ## The Outliner's search field.
     pub let outliner_search: TextField
     ## The Import node's object menu.
-    pub let import_picker: ImportPicker
+    pub let node_path_picker: NodePathPicker
     pub let search: NodeMenu
     pub let shading: ShadingMenu
     let context_anchor: Text
@@ -63,6 +63,8 @@ pub class Panels:
     pub let project_settings: ProjectSettings
     ## What the sketch's Text tool says.
     pub let sketch_text: TextPrompt
+    ## Modify › Rename… (F2): the selected node's new name.
+    pub let rename_prompt: TextPrompt
     pub let actions: Actions
     ## The menu bar's Create and Modify menus.
     pub let menus: TopMenus
@@ -112,6 +114,13 @@ pub class Panels:
         self.sketch_text = TextPrompt(font)
         self.connections.append(self.sketch_text.on_submit(self.view.sketch.editor.place_text))
         self.view.sketch.editor.on_text = func () -> unit!: self.sketch_text.open("Sketch text", accept = "Place")
+        self.rename_prompt = TextPrompt(font)
+        self.connections.append(self.rename_prompt.on_submit(func (name: str) -> unit!:
+            node_commands.rename(workspace, name)
+            self.refresh()))
+        self.connections.append(self.actions.rename.on_trigger(func () -> unit!:
+            if let node = workspace.selected():
+                self.rename_prompt.open("Rename " + node.name, node.name, accept = "Rename")))
         self.view.sketch.editor.on_ask = self.ask_sketch_value
         self.view.sketch.editor.on_value = self.open_sketch_value
         self.view.sketch.editor.on_click = self.sketch_value.dismiss
@@ -203,10 +212,10 @@ pub class Panels:
         # and opened over the viewport's button (open_context_menu).
         self.context_anchor = Text("", font = font)
         self.context_menu = ContextMenu(self.context_anchor, self.actions.context_modes, font = font)
-        self.import_picker = ImportPicker(workspace, font)
-        self.import_picker.chosen = self.refresh
-        let footer = HStack([self.status, self.context_menu, self.import_picker.menu], padding = 6.0)
-        self.body = VStack([header, self.dock, self.timeline.body, footer, self.search, self.shading, self.sketch_value.body, self.tool_bar.body, self.sketch_text, self.project_settings.dialog, self.projects.confirm], spacing = 0.0)
+        self.node_path_picker = NodePathPicker(workspace, font)
+        self.node_path_picker.chosen = self.refresh
+        let footer = HStack([self.status, self.context_menu, self.node_path_picker.menu], padding = 6.0)
+        self.body = VStack([header, self.dock, self.timeline.body, footer, self.search, self.shading, self.sketch_value.body, self.tool_bar.body, self.sketch_text, self.rename_prompt, self.project_settings.dialog, self.projects.confirm], spacing = 0.0)
         self.body.layout().set_flex()
         self.refresh()
 
@@ -310,7 +319,10 @@ pub class Panels:
         let data = self.workspace.network.evaluate_data(node.id) catch failure:
             self.report_error(failure.message)
             return
-        self.render_view.start(data, node.values, node.texts) catch failure:
+        let camera = self.workspace.network.render_camera(node) catch failure:
+            self.report_error(f"Render: {failure.message}")
+            return
+        self.render_view.start(data, node.values, camera) catch failure:
             self.report_error(f"Render: {failure.message}")
             return
         if let panel = self.dock.find("render"):
@@ -373,7 +385,7 @@ pub class Panels:
         self.timeline.close()
         self.network_tools.close()
         self.project_settings.close()
-        self.import_picker.close()
+        self.node_path_picker.close()
         self.view.on_shading = none
         self.view.on_context_menu = none
         self.view.sketch.editor.on_value = none

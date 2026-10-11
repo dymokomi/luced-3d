@@ -4,13 +4,15 @@
 ## positions, display flags, selection or the Edit tool amount. Flags affect
 ## only what a level yields: a container's stamp lists the stamps of what it
 ## yields (Network.outputs), and a Render node's those of the root's objects.
-## An Import node's lists its source's stamp and the steps that place it.
+## An Import node's lists its source's stamp and the steps that place it. A
+## node path row's text is left out for what it reaches (node_paths.luc).
 from network import Network
 from node import Node
 from cache_node import reads_file, cache_stamp, frozen_stamp
 from edit_kinds import is_edit
 import node_catalog
 import script_cook
+import node_paths
 
 ## Stamp every node. Computed on the UI thread before each request; cheap,
 ## since Edit recipes carry their own precomputed content keys.
@@ -67,8 +69,9 @@ func stamp_of(graph: Network, node: Node, done: map[int, int], depth: int) -> in
     elif node.kind == "Cache":
         stamp = stamp_cache(node, inputs)
     else:
-        # An Import's path is a name: what it reads is in `children`.
-        let texts: list[str] = [] if node.kind == "Import" else node.texts
+        # A node path is a name: what it reaches is in the stamp instead
+        # (node_paths.resolution), and an Import's sources in `children`.
+        let texts = path_free(graph, node)
         stamp = nonzero((node.kind, node.enabled, node.values, texts, inputs, node.sources, children, node.source_revision, node.guard, graph.direct_children(node)).hash())
     # A Script node reads its file parameters' files: an edited file recooks it.
     if node.kind == script_cook.kind_name and node.frozen == "":
@@ -100,5 +103,17 @@ pub func prefix_stamp(node: Node, input: int, count: int) -> int:
     return nonzero((node.kind, input, recipes).hash())
 
 ## Zero means "never cooked" on both sides of the worker boundary.
+## `node`'s texts with each node path row's text left out for what it
+## reaches (node_paths.resolution): a rename the paths followed keeps the
+## stamp, a path that comes to name another node changes it.
+func path_free(graph: Network, node: Node) -> list[str]:
+    if not node_paths.holds_paths(node.kind):
+        return node.texts
+    let texts = node.texts.copy()
+    for each in node_paths.rows(node.kind):
+        texts[each.slot] = ""
+    texts.append(str(node_paths.resolution(graph.nodes, node)))
+    return texts
+
 func nonzero(value: int) -> int:
     return value if value != 0 else 1

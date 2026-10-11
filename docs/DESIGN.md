@@ -58,7 +58,8 @@ sphere and distant lights), and each looks or shines down its local -Z.
   Import node). Their Translate and Rotate use Transform's slots. Light's Type starts at Area
   (USD's RectLight).
 - **Render** takes the root's flagged objects (it has no input) once they hold
-  the camera its Camera text names (or any camera), and warns when they have
+  the camera of the Camera node its Camera row names by node path (blank:
+  any camera; [NODE-PATHS.md](NODE-PATHS.md)), and warns when they have
   no lights. Its Engine menu
   chooses the renderer; the first is Luce Path, luce-render's spectral GPU path
   tracer (built on luce-gpu compute).
