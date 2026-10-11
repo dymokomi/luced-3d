@@ -2,7 +2,7 @@
 ## outliner, render view and takes docked together, with the status line,
 ## the node search, the shading menu, the sketch's value and text boxes
 ## and the tool bar; it routes refreshes and the frame's poll to them.
-from luce_ui.ui import VStack, HStack, Text, TextField, Font, Button, Spacer, DStack, Panel, DockPosition, Size, ScrollView, Menu, TextPrompt
+from luce_ui.ui import VStack, HStack, Text, TextField, Font, Button, Spacer, DStack, Panel, DockPosition, Size, ScrollView, Menu, TextPrompt, ContextMenu
 from dock_layout import DockLayout
 from project_session import ProjectSession
 from node_menu import NodeMenu
@@ -25,6 +25,8 @@ import sketch_commands
 from render_view import RenderView
 from takes_pane import TakesList
 import node_commands
+import context_display
+from viewport_chrome import shading_button
 import take_commands
 
 pub class Panels:
@@ -40,6 +42,8 @@ pub class Panels:
     let path: Text
     pub let search: NodeMenu
     pub let shading: ShadingMenu
+    let context_anchor: Text
+    pub let context_menu: ContextMenu
     ## A new sketch dimension's value box.
     pub let sketch_value: SketchValue
     ## The Edit node's last tool step's parameters, along the viewport's bottom.
@@ -83,6 +87,7 @@ pub class Panels:
         self.search = NodeMenu(self.actions.add)
         self.shading = ShadingMenu(workspace)
         self.view.on_shading = self.open_shading
+        self.view.on_context_menu = self.open_context_menu
         self.sketch_value = SketchValue(workspace, font)
         self.tool_bar = ToolBar(workspace, font)
         self.timeline = TimelinePane(workspace, self.actions, font)
@@ -160,7 +165,11 @@ pub class Panels:
         self.connections.append(self.actions.reset_layout.on_trigger(self.dock_layout.reset))
         self.dock.layout().set_flex()
         self.status = Text("", font = font, muted = true)
-        let footer = HStack([self.status], padding = 6.0)
+        # The context display menu, anchored on an empty label in the footer
+        # and opened over the viewport's button (open_context_menu).
+        self.context_anchor = Text("", font = font)
+        self.context_menu = ContextMenu(self.context_anchor, self.actions.context_modes, font = font)
+        let footer = HStack([self.status, self.context_menu], padding = 6.0)
         self.body = VStack([header, self.dock, self.timeline.body, footer, self.search, self.shading, self.sketch_value.body, self.tool_bar.body, self.sketch_text, self.project_settings.dialog, self.projects.confirm], spacing = 0.0)
         self.body.layout().set_flex()
         self.refresh()
@@ -216,6 +225,15 @@ pub class Panels:
         for d in sketch_commands.dimensions(node.texts[0]):
             if d.constraint == constraint:
                 self.sketch_value.open(node.id, constraint, d.name, d.value, d.angle, bounds.x - root.x + x, bounds.y - root.y + y)
+
+    ## The context display modes' menu under its viewport button; `held` when
+    ## a long press opens it (letting go over a mode chooses it).
+    func open_context_menu(self, held: bool) -> unit!:
+        self.actions.refresh()
+        let bounds = self.view.layout().bounds()
+        let anchor = self.context_anchor.layout().bounds()
+        let button = context_display.button(shading_button(bounds.width))
+        self.context_menu.open_at(bounds.x + button.x - anchor.x, bounds.y + button.y + button.height + 4.0 - anchor.y, held = held)
 
     func open_shading(self, held: bool) -> unit!:
         let bounds = self.view.layout().bounds()
@@ -294,6 +312,7 @@ pub class Panels:
         self.timeline.close()
         self.project_settings.close()
         self.view.on_shading = none
+        self.view.on_context_menu = none
         self.view.sketch.editor.on_value = none
         self.view.sketch.editor.on_click = none
         self.view.sketch.editor.on_modify = none

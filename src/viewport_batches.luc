@@ -1,6 +1,7 @@
 ## The line batches the viewport draws over the displayed scene: wires (mesh
 ## and CAD edges), normal guides, CAD patch boundaries, curves and control
-## hulls; the point clouds it draws as Gaussian splats or dots; and the fog
+## hulls, the context's and, apart, the rest of the scene's around it
+## (context_view.luc), which the context display mode greys or hides; the point clouds it draws as Gaussian splats or dots; and the fog
 ## volumes it ray-marches over all of them. Made on the
 ## UI thread when the graph cooks synchronously, or taken from the worker's
 ## result, where only the batches whose content changed are fetched again (a
@@ -18,6 +19,9 @@ pub class ViewportBatches:
     ## without the worker, one for the whole result with it.
     pub let curve_batches: list[WireBatch]
     pub let hull_batches: list[WireBatch]
+    ## The rest of the scene's lines: wires and CAD edges, patch borders,
+    ## curves and hulls (no normal guides: those are the context's).
+    pub var around: list[WireBatch]
     ## The displayed fog volumes: the local cook's, or the worker result's
     ## (DisplayPublisher keeps them by key, so each uploads once).
     pub var volumes: list[FogVolume]
@@ -57,7 +61,8 @@ pub class ViewportBatches:
         self.scenes = []
         self.scene_keys = []
         self.scene_nodes = []
-        self.keys = [-1, -1, -1, -1, -1]
+        self.keys = [-1, -1, -1, -1, -1, -1, -1, -1, -1]
+        self.around = []
         self.helper_keys = []
         self.helper_lines = []
 
@@ -66,36 +71,45 @@ pub class ViewportBatches:
         self.curve_batches.clear()
         self.hull_batches.clear()
 
-    ## The lines of a synchronous cook (curve batches were added as it went).
-    pub func publish(self, wires: OverlayLines, normals: OverlayLines, patches: OverlayLines, hulls: OverlayLines) -> unit!:
+    ## The lines of a synchronous cook (curve batches were added as it went),
+    ## and the rest of the scene's (`around`).
+    pub func publish(self, wires: OverlayLines, normals: OverlayLines, patches: OverlayLines, hulls: OverlayLines, around: list[WireBatch]) -> unit!:
         self.wire_batch = wires.batch()
         self.normal_batch = normals.batch()
         self.patch_batch = patches.batch()
-        self.keys = [-1, -1, -1, -1, -1]
+        self.keys = [-1, -1, -1, -1, -1, -1, -1, -1, -1]
         self.hull_batches.append(hulls.batch())
+        self.around = around
 
-    ## The worker's batches, fetching only those that changed.
-    pub func adopt(self, service: ComputeService) -> unit!:
-        if self.changed(service, 0):
-            self.wire_batch = service.wires()
-        if self.changed(service, 1):
-            self.normal_batch = service.normals()
-        if self.changed(service, 2):
-            self.patch_batch = service.patches()
-        if self.changed(service, 3):
+    ## The worker's batches, fetching only those that changed; the products
+    ## of the nodes `outside` (the rest of the scene) go to `around`.
+    pub func adopt(self, service: ComputeService, outside: list[int]) -> unit!:
+        if self.changed(service, 0, outside, false):
+            self.wire_batch = service.wires(outside)
+        if self.changed(service, 1, outside, false):
+            self.normal_batch = service.normals(outside)
+        if self.changed(service, 2, outside, false):
+            self.patch_batch = service.patches(outside)
+        if self.changed(service, 3, outside, false):
             self.curve_batches.clear()
-            self.curve_batches.append(service.curve_lines())
-        if self.changed(service, 4):
+            self.curve_batches.append(service.curve_lines(outside))
+        if self.changed(service, 4, outside, false):
             self.hull_batches.clear()
-            self.hull_batches.append(service.hulls())
+            self.hull_batches.append(service.hulls(outside))
+        var around = false
+        for which in [0, 2, 3, 4]:
+            around = self.changed(service, which, outside, true) or around
+        if around:
+            self.around = [service.wires(outside, true), service.patches(outside, true), service.curve_lines(outside, true), service.hulls(outside, true)]
 
-    ## Whether the worker's batch `which` differs from the one shown (and
-    ## note the new one).
-    func changed(self, service: ComputeService, which: int) -> bool!:
-        let key = service.batch_key(which)
-        if self.keys[which] == key:
+    ## Whether the worker's batch `which` (of the context, or `around` it)
+    ## differs from the one shown (and note the new one).
+    func changed(self, service: ComputeService, which: int, outside: list[int], around: bool) -> bool!:
+        let key = service.batch_key(which, outside, around)
+        let slot = which + (5 if around else 0) - (1 if around and which > 1 else 0)
+        if self.keys[slot] == key:
             return false
-        self.keys[which] = key
+        self.keys[slot] = key
         return true
 
     ## Retained camera/light picking strokes, rebuilt only when outputs change.

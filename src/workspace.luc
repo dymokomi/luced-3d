@@ -20,6 +20,7 @@ from history import History, Snapshot
 from scene_projection import append_bounds
 from local_cook import cook_outputs
 from context_view import view_items, is_outside
+import context_display
 from compute_session import ComputeSession
 from display_publisher import DisplayPublisher
 from node_evaluation import SourceCache
@@ -106,6 +107,8 @@ pub class Workspace:
     var local_nodes: list[int]
     var local_meshes: list[Mesh]
     var local_around: list[Mesh]
+    ## The scope the worker's lines were split for (context_view.luc).
+    var batches_scope: int = -2
     let sources: SourceCache
     var pending_frame: bool = false
     var project_epoch: int = 0
@@ -271,6 +274,26 @@ pub class Workspace:
                 meshes.append(self.publisher.meshes[at])
         return (nodes, meshes)
 
+    ## The nodes drawn as the rest of the scene around the context.
+    func outside_nodes(self) -> list[int]:
+        let result: list[int] = []
+        for node in self.network.nodes:
+            if is_outside(self.network, node.id):
+                result.append(node.id)
+        return result
+
+    ## Draw the rest of the scene around a context as `mode` says (all,
+    ## greyed, hidden: context_display.luc). A view setting: nothing recooks.
+    pub func set_context_mode(self, mode: int) -> unit!:
+        if mode < context_display.all or mode > context_display.hidden or mode == self.view.context_mode:
+            return
+        self.view.context_mode = mode
+        if self.compute != none:
+            self.publisher.restyle(self.network, mode)
+        else:
+            self.rebuild()
+        self.revision += 1
+
     ## Every mesh drawn solid, the context's and the rest of the scene's:
     ## what hides what lies behind it (Visible only).
     pub func drawn(self) -> list[Mesh]:
@@ -278,6 +301,9 @@ pub class Workspace:
         let result = meshes.copy()
         if self.compute == none:
             for mesh in self.local_around: result.append(mesh)
+            return result
+        # Greyed or hidden, the rest of the scene hides nothing.
+        if self.view.context_mode != context_display.all:
             return result
         for at in 0..<self.publisher.nodes.length:
             if is_outside(self.network, self.publisher.nodes[at]):
@@ -581,7 +607,7 @@ pub class Workspace:
         self.network.picking_cad = self.prompt != none
         self.network.picking = self.picking()
         stamp_graph(self.network)
-        let cooked = cook_outputs(self.network, self.objects, self.batches, self.view.mesh_mode())
+        let cooked = cook_outputs(self.network, self.objects, self.batches, self.view.mesh_mode(), self.view.context_mode)
         self.notice = cooked.notice
         self.local_nodes = cooked.nodes
         self.local_meshes = cooked.meshes
@@ -639,8 +665,11 @@ pub class Workspace:
                 self.rebuild()
             self.revision += 1
             return true
-        if self.publisher.adopt(session.service, self.network):
-            self.batches.adopt(session.service)
+        # Lines split by the scope the result was styled for: a new scope
+        # with the same products splits them again.
+        if self.publisher.adopt(session.service, self.network, self.view.context_mode) or self.batches_scope != self.network.scope:
+            self.batches.adopt(session.service, self.outside_nodes())
+            self.batches_scope = self.network.scope
         self.batches.volumes = self.publisher.volumes
         self.batches.volume_nodes = self.publisher.volume_nodes
         self.batches.clouds = self.publisher.clouds

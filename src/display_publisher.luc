@@ -11,6 +11,9 @@
 ## Until the first result arrives the scene objects and line batches are the
 ## local cook's (made before the worker started); the first result replaces
 ## them whatever it holds, even nothing but fog.
+## Meshes of the rest of the scene around the context (context_view.luc)
+## draw after the context's, faded or not at all as the context display mode
+## says; changing the mode restyles the held meshes without a new result.
 from luce_geocore.geocore import Mesh, GeometrySet
 from luce_3d import graphics as three
 from luce_3d.graphics import Group, Vector3, FogVolume, GaussianSplats
@@ -18,6 +21,8 @@ from compute_bridge import ComputeService
 from network import Network
 from geometry_data import GeometryData
 from scene_projection import display_mesh
+from context_view import is_outside
+import context_display
 
 pub class DisplayPublisher:
     let objects: Group
@@ -39,8 +44,12 @@ pub class DisplayPublisher:
     pub var scenes: list[GeometrySet]
     pub var scene_keys: list[int]
     pub var scene_nodes: list[int]
+    ## Scene objects by (key, faded), and the displayed keys with their nodes
+    ## and the mode and scope they were styled for.
     let shown: map[int, three.Mesh]
     var shown_keys: list[int]
+    var shown_nodes: list[int]
+    var shown_style: (int, int) = (-1, -2)
     var product_keys: list[int]
     ## Every key the worker may re-publish without copying: this result's
     ## products, then recently dropped keys, newest first.
@@ -71,6 +80,7 @@ pub class DisplayPublisher:
         self.scene_nodes = []
         self.shown = {}
         self.shown_keys = []
+        self.shown_nodes = []
         self.product_keys = []
         self.kept = []
         self.bounds = []
@@ -79,8 +89,9 @@ pub class DisplayPublisher:
 
     ## Adopt the completed result. Returns whether its overlay batches differ
     ## from the previous result's, i.e. whether the caller must fetch them.
-    pub func adopt(self, service: ComputeService, network: Network) -> bool!:
+    pub func adopt(self, service: ComputeService, network: Network, mode: int) -> bool!:
         let displayed: list[int] = []
+        let displayed_nodes: list[int] = []
         let products: list[int] = []
         self.nodes = []
         self.meshes = []
@@ -129,6 +140,7 @@ pub class DisplayPublisher:
             let mesh = self.held[key] else continue
             if service.mesh_display(index):
                 displayed.append(key)
+                displayed_nodes.append(node)
                 self.nodes.append(node)
                 self.meshes.append(mesh)
             if service.mesh_inspect(index):
@@ -137,32 +149,54 @@ pub class DisplayPublisher:
                 if node == network.pick_node():
                     self.geometry = mesh
         let first = not self.showing
-        if first or displayed != self.shown_keys:
-            self.show(displayed)
+        if first or displayed != self.shown_keys or self.shown_style != (mode, network.scope):
+            self.show(displayed, displayed_nodes, network, mode)
         self.retain(products)
         let changed = first or fresh or products != self.product_keys
         self.product_keys = products
         return changed
 
-    ## The scene objects of the displayed keys: a key still on screen keeps its
+    ## Style the displayed meshes for context display `mode` again (no new
+    ## result): the rest of the scene shows, fades or hides.
+    pub func restyle(self, network: Network, mode: int) -> unit!:
+        if self.showing:
+            self.show(self.shown_keys, self.shown_nodes, network, mode)
+
+    ## The scene objects of the displayed keys, the context's first, then the
+    ## rest of the scene's as `mode` says: a key still on screen keeps its
     ## object, a newly shown one gets one.
-    func show(self, displayed: list[int]) -> unit!:
+    func show(self, displayed: list[int], nodes: list[int], network: Network, mode: int) -> unit!:
         self.objects.clear()
         self.bounds.clear()
+        let around: list[Vector3] = []
         let shown: map[int, three.Mesh] = {}
-        for key in displayed:
-            let mesh = self.held[key] else continue
-            if let existing = self.shown[key]:
-                shown[key] = existing
-            else:
-                shown[key] = display_mesh(mesh)
-            self.objects.add(shown[key] else continue)
-            self.bounds.append(mesh.bounds().minimum)
-            self.bounds.append(mesh.bounds().maximum)
+        for pass in [false, true]:
+            if pass and mode == context_display.hidden:
+                break
+            let faded = pass and mode == context_display.greyed
+            for at in 0..<displayed.length:
+                if is_outside(network, nodes[at]) != pass:
+                    continue
+                let key = displayed[at]
+                let mesh = self.held[key] else continue
+                let styled = (key, faded).hash()
+                if let existing = self.shown[styled]:
+                    shown[styled] = existing
+                else:
+                    shown[styled] = display_mesh(mesh, context_display.fade if faded else 0.0)
+                self.objects.add(shown[styled] else continue)
+                let corners = around if pass else self.bounds
+                corners.append(mesh.bounds().minimum)
+                corners.append(mesh.bounds().maximum)
+        # Framing takes the context, or the rest when there is none.
+        if self.bounds.length == 0:
+            for corner in around: self.bounds.append(corner)
         self.shown.clear()
         for key in shown.keys():
             self.shown[key] = shown[key] else continue
         self.shown_keys = displayed
+        self.shown_nodes = nodes
+        self.shown_style = (mode, network.scope)
         self.showing = true
 
     ## Keep this result's keys plus the six most recent dropped ones.

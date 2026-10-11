@@ -538,41 +538,47 @@ pub struct ComputeService:
         state.products[(usize)index].set = none
         return try interop.Reference[GeometrySet].adopt(set, geocore.geometry_set_type, memory.heap)
 
-    ## Combined overlays of the current result: fresh and held keys.
-    pub func wires() -> interop.Reference[WireBatch]!:
-        return try self.batch(0)
+    ## Combined overlays of the current result (fresh and held keys), of the
+    ## products whose node is (with `around`) or is not one of `outside`: the
+    ## rest of the scene around the context draws apart from the context.
+    pub func wires(outside: const i64[], around: bool = false) -> interop.Reference[WireBatch]!:
+        return try self.batch(0, outside, around)
 
-    pub func normals() -> interop.Reference[WireBatch]!:
-        return try self.batch(1)
+    pub func normals(outside: const i64[], around: bool = false) -> interop.Reference[WireBatch]!:
+        return try self.batch(1, outside, around)
 
-    pub func patches() -> interop.Reference[WireBatch]!:
-        return try self.batch(2)
+    pub func patches(outside: const i64[], around: bool = false) -> interop.Reference[WireBatch]!:
+        return try self.batch(2, outside, around)
 
-    pub func curve_lines() -> interop.Reference[WireBatch]!:
-        return try self.batch(3)
+    pub func curve_lines(outside: const i64[], around: bool = false) -> interop.Reference[WireBatch]!:
+        return try self.batch(3, outside, around)
 
     ## Every published hull: curve control polygons and handles, CV nets.
-    pub func hulls() -> interop.Reference[WireBatch]!:
-        return try self.batch(4)
+    pub func hulls(outside: const i64[], around: bool = false) -> interop.Reference[WireBatch]!:
+        return try self.batch(4, outside, around)
 
-    ## What overlay `which`'s batch holds: the keys of the products with
-    ## some of it (equal keys, equal lines), so an unchanged batch is kept.
-    pub func batch_key(which: i64) -> i64!:
+    ## What overlay `which`'s batch holds (of the products `outside` and
+    ## `around` choose, as `wires` does): the keys of the products with some
+    ## of it (equal keys, equal lines), so an unchanged batch is kept.
+    pub func batch_key(which: i64, outside: const i64[], around: bool = false) -> i64!:
         let state = self.state else error(invalid, "Compute service closed")
-        var key: u64 = 0x9E3779B97F4A7C15 ^ (u64)which
+        var key: u64 = 0x9E3779B97F4A7C15 ^ (u64)which ^ (0x5555 if around else 0)
         for product in state.products[..<state.count]:
+            if listed(outside, product.node) != around: continue
             if overlay_of(state, product, which).length > 0: key = (key ^ (u64)product.key) *% 0x100000001B3
         return (i64)(key >> 1)
 
-    func batch(which: i64) -> interop.Reference[WireBatch]!:
+    func batch(which: i64, outside: const i64[], around: bool) -> interop.Reference[WireBatch]!:
         let state = self.state else error(invalid, "Compute service closed")
         var total: usize = 0
         for product in state.products[..<state.count]:
+            if listed(outside, product.node) != around: continue
             total += overlay_of(state, product, which).length
         let points = try new Vector3[total] --- in memory.heap
         defer free(points) in memory.heap
         var at: usize = 0
         for product in state.products[..<state.count]:
+            if listed(outside, product.node) != around: continue
             let part = overlay_of(state, product, which)
             memory.copy(points[at..], part, part.length)
             at += part.length

@@ -3,7 +3,7 @@
 ## item's scene objects (context_view.luc) go into `objects` and its lines
 ## into the viewport batches; the displayed node's result comes back for
 ## picking.
-from luce_3d.graphics import Group, Matrix4, CurveLines
+from luce_3d.graphics import Group, Matrix4, CurveLines, WireBatch
 from luce_geocore.geocore import Mesh
 from network import Network
 from node import Node
@@ -13,6 +13,7 @@ from scene_projection import append_scene, append_placed, append_overlays, appen
 from viewport_batches import ViewportBatches
 from render_geometry import render_geometry
 from context_view import view_items
+import context_display
 
 pub class LocalCook:
     ## The node picked on (Network.pick_node) and its result, when it cooked.
@@ -34,8 +35,10 @@ pub class LocalCook:
 
 ## Cook what `graph`'s viewport draws (the context, then the rest of the
 ## root) into `objects` and `batches`, meshes prepared for display `mode`.
-## The render mode's sets are the root's objects, whatever the context.
-pub func cook_outputs(graph: Network, objects: Group, batches: ViewportBatches, mode: int) -> LocalCook!:
+## The render mode's sets are the root's objects, whatever the context. The
+## rest of the scene around the context draws as `context_mode` says
+## (context_display.luc), its lines apart.
+pub func cook_outputs(graph: Network, objects: Group, batches: ViewportBatches, mode: int, context_mode: int = 1) -> LocalCook!:
     let result = LocalCook()
     objects.clear()
     batches.clear_curves()
@@ -64,6 +67,11 @@ pub func cook_outputs(graph: Network, objects: Group, batches: ViewportBatches, 
     let normals = OverlayLines.make()
     let patches = OverlayLines.make()
     let hulls = OverlayLines.make()
+    # The rest of the scene's lines: wires and CAD edges, patch borders, hulls.
+    let around_wires = OverlayLines.make()
+    let around_patches = OverlayLines.make()
+    let around_hulls = OverlayLines.make()
+    let around: list[WireBatch] = []
     for item in view_items(graph):
         let node = item.node
         let matrix = item.matrix
@@ -76,8 +84,10 @@ pub func cook_outputs(graph: Network, objects: Group, batches: ViewportBatches, 
             result.data = data
         let branch = Group()
         if item.outside:
-            analytic += append_placed(data, matrix, branch) catch failure:
-                continue
+            let fade = context_display.fade if context_mode == context_display.greyed else 0.0
+            if context_mode != context_display.hidden:
+                analytic += append_placed(data, matrix, branch, fade = fade) catch failure:
+                    continue
         else:
             analytic += append_scene(data, branch, mode = mode) catch failure:
                 result.notice = failure.message
@@ -86,22 +96,30 @@ pub func cook_outputs(graph: Network, objects: Group, batches: ViewportBatches, 
         # The rest of the scene is not picked on: tools act on the context.
         if not item.outside:
             append_pick_meshes(data, Matrix4(), node.id, result)
-        else:
+        elif context_mode == context_display.all:
+            # Drawn as it is, the rest hides what lies behind it.
             let placed = LocalCook()
             append_pick_meshes(data, matrix, node.id, placed)
             for mesh in placed.meshes: result.around.append(mesh)
         # Overlays are display only: one that cannot be drawn says so and
         # leaves the cook (and the edit that made it) standing.
-        append_overlays(data, matrix, wires, normals) catch failure:
+        append_overlays(data, matrix, around_wires if item.outside else wires, OverlayLines.make() if item.outside else normals) catch failure:
             result.notice = f"{node.name}: guides not drawn: {failure.message}"
-        append_cad_hulls(data, matrix, hulls) catch failure:
+        append_cad_hulls(data, matrix, around_hulls if item.outside else hulls) catch failure:
             result.notice = f"{node.name}: hulls not drawn: {failure.message}"
         if data.geometry.has_scene():
-            hulls.add_scene(data.geometry, matrix)
+            let helpers = around_hulls if item.outside else hulls
+            helpers.add_scene(data.geometry, matrix)
         if CurveLines.count(data.geometry) > 0:
-            batches.curve_batches.append(CurveLines.batch(data.geometry, matrix = matrix))
-            batches.hull_batches.append(CurveLines.batch(data.geometry, true, matrix))
-        append_patch_boundaries(data, matrix, patches)
+            let curves = CurveLines.batch(data.geometry, matrix = matrix)
+            let curve_hulls = CurveLines.batch(data.geometry, true, matrix)
+            if item.outside:
+                around.append(curves)
+                around.append(curve_hulls)
+            else:
+                batches.curve_batches.append(curves)
+                batches.hull_batches.append(curve_hulls)
+        append_patch_boundaries(data, matrix, around_patches if item.outside else patches)
         append_fog(data, matrix, batches.volumes, held, batches.held_volumes) catch failure:
             result.notice = f"{node.name}: fog not drawn: {failure.message}"
         append_clouds(data, matrix, batches.clouds, held_clouds, batches.held_clouds) catch failure:
@@ -120,7 +138,10 @@ pub func cook_outputs(graph: Network, objects: Group, batches: ViewportBatches, 
                 result.node = node
     if analytic > 0 and result.notice == "":
         result.notice = f"CAD preview: {analytic} patches could not be meshed; boundaries remain visible"
-    batches.publish(wires, normals, patches, hulls)
+    around.append(around_wires.batch())
+    around.append(around_patches.batch())
+    around.append(around_hulls.batch())
+    batches.publish(wires, normals, patches, hulls, around)
     return result
 
 ## Match the worker's world-space picking meshes, including CAD and SDF.

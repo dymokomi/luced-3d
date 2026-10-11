@@ -7,7 +7,7 @@
 ## shading button. Its events go to the marking menu, the chrome, the sketch
 ## editor and the tools before the camera's navigation.
 from luce_ui.ui import Widget, Layout, Constraints, Size, Event, Painter, SceneView
-from luce_3d.graphics import GroundGrid, Vector3, Renderer, SplatScene, FogScene
+from luce_3d.graphics import GroundGrid, Vector3, Renderer, SplatScene, FogScene, GaussianSplats, FogVolume
 from luce_3d import graphics as three
 from luce_gpu.gpu import RenderTarget, Rect
 from luce_window.input import EventKind, Key, ScrollUnit
@@ -26,6 +26,8 @@ import theme
 import units
 import time
 from shading_menu import mode_icon
+from context_view import is_outside
+import context_display
 import modeling_commands
 import placing_commands
 from luce_geocore.geocore import Domain, Mesh, Selection
@@ -58,6 +60,10 @@ pub class SceneViewport: Widget:
     var last_y: float = 0.0
     var mode_press: int = -1
     pub var on_shading: func(bool) -> unit!? = none
+    ## The context display button (context_display.luc): when its press
+    ## began (-1: none), and what opens its menu (held or not).
+    var context_press: int = -1
+    pub var on_context_menu: func(bool) -> unit!? = none
     ## Tab: the node menu, at the pointer.
     pub var on_search: func() -> unit!? = none
     pub var pointer_x: float = 100.0
@@ -69,6 +75,10 @@ pub class SceneViewport: Widget:
         if self.mode_press >= 0 and time.now() - self.mode_press >= 350000000:
             self.mode_press = -1
             if let open = self.on_shading:
+                open(true)
+        if self.context_press >= 0 and time.now() - self.context_press >= 350000000:
+            self.context_press = -1
+            if let open = self.on_context_menu:
                 open(true)
 
     pub func init(self, workspace: Workspace, actions: Actions) -> unit!:
@@ -151,6 +161,11 @@ pub class SceneViewport: Widget:
         if not sketching:
             for batch in w.batches.curve_batches:
                 batch.draw(w.view.camera, target, theme.grey(225.0), 1.5)
+        # The rest of the scene's lines around a context: as they are, dim,
+        # or not at all.
+        if w.view.context_mode != context_display.hidden and not sketching:
+            for batch in w.batches.around:
+                batch.draw(w.view.camera, target, theme.grey(120.0) if w.view.context_mode == context_display.all else theme.grey(68.0))
         self.sketch.draw_lines(target)
         self.profiles.draw_lines(target)
         if w.view.normals_visible:
@@ -169,8 +184,9 @@ pub class SceneViewport: Widget:
         if not rendering:
             self.mark_selection()
             self.splats.set_look(w.view.splat_look())
-            self.splats.draw(w.batches.clouds, w.view.camera, target)
-            self.fog.draw(w.batches.volumes, w.view.camera, target)
+            let (clouds, volumes) = self.styled_around()
+            self.splats.draw(clouds, w.view.camera, target)
+            self.fog.draw(volumes, w.view.camera, target)
         let overlay = Painter(target)
         # Where we are, centered along the top: the network's path.
         let where = self.workspace.network.path()
@@ -188,7 +204,27 @@ pub class SceneViewport: Widget:
         overlay.rounded_rectangle(shading, theme.surface(), 4.0)
         mode_icon(overlay, w.view.display_mode, shading.x + 4.0, 11.0)
         overlay.rectangle(Rect(shading.x + 28.0, 34.0, 3.0, 3.0), theme.accent())
+        # The context display button, left of it.
+        context_display.draw_button(overlay, shading, w.view.context_mode, w.network.scope >= 0, context_display.on_button(self.pointer_x, self.pointer_y, shading))
         overlay.close()
+
+    ## The point clouds and fog volumes to draw: the rest of the scene's
+    ## faded (Greyed) or left out (Hidden) around a context.
+    func styled_around(self) -> (list[GaussianSplats], list[FogVolume]):
+        let w = self.workspace
+        let mode = w.view.context_mode
+        let clouds: list[GaussianSplats] = []
+        for at in 0..<w.batches.clouds.length:
+            let around = at < w.batches.cloud_nodes.length and is_outside(w.network, w.batches.cloud_nodes[at])
+            w.batches.clouds[at].set_faded(around and mode == context_display.greyed)
+            if not around or mode != context_display.hidden:
+                clouds.append(w.batches.clouds[at])
+        let volumes: list[FogVolume] = []
+        for at in 0..<w.batches.volumes.length:
+            let around = at < w.batches.volume_nodes.length and is_outside(w.network, w.batches.volume_nodes[at])
+            if not around or mode != context_display.hidden:
+                volumes.append(w.batches.volumes[at])
+        return (clouds, volumes)
 
     ## While Edit GSplats is edited, its cloud shows the selected splats
     ## tinted; others show none. Its cloud is the one the edited (displayed)
@@ -271,6 +307,7 @@ pub class SceneViewport: Widget:
             return
         if event.cancelled or event.kind == EventKind.focus_lost:
             self.mode_press = -1
+            self.context_press = -1
         # Shift or Cmd held during a tool prompt peeks at its input.
         if event.kind in [EventKind.modifiers_changed, EventKind.key_down, EventKind.key_up, EventKind.pointer_moved, EventKind.pointer_down]:
             tool_prompts.set_peek(self.workspace, event.shift or event.meta)
@@ -287,6 +324,20 @@ pub class SceneViewport: Widget:
             self.mode_press = -1
             if let open = self.on_shading:
                 open(false)
+            return
+        # The context display button: a click steps the mode, a held press
+        # or a right click opens its menu.
+        if event.kind == EventKind.pointer_down and event.inside and not event.alt and context_display.on_button(event.x, event.y, shading_button(bounds.width)):
+            if event.button == 1:
+                if let open = self.on_context_menu:
+                    open(false)
+            else:
+                self.context_press = time.now()
+            return
+        if event.kind == EventKind.pointer_up and self.context_press >= 0:
+            self.context_press = -1
+            self.workspace.set_context_mode((self.workspace.view.context_mode + 1) % context_display.names().length)
+            self.layout().invalidate()
             return
         if event.cancelled:
             self.dragging = false

@@ -101,12 +101,15 @@ The viewport always shows the root scene, however deep the network view is.
   button. A long press (or a right click) opens a menu of three modes; a click
   steps to the next one.
   - **All**: everything else draws normally.
-  - **Greyed** (the default): everything else draws ghosted. Meshes, CAD
-    previews, splats and their lines draw desaturated and semi-transparent,
-    after the context.
+  - **Greyed** (the default): everything else draws ghosted. Meshes and CAD
+    previews draw desaturated and see-through after the context, depth
+    tested without writing depth (luce-3d's `Material.fade`, luce-gpu's
+    `mesh_fade`), so the grid and what lies behind still show; splats fade
+    the same way (`GaussianSplats.set_faded`); their lines draw dim. Ghosts
+    hide nothing from Visible only.
   - **Hidden**: only the context draws.
-- **Edit tools and selection** act on the context only: ghosted objects can't
-  be picked.
+- **Edit tools and selection** act on the context only: the rest of the
+  scene can't be picked, in any mode.
 
 The mode is a view setting, like the shading mode: it is not undone and not
 saved with the project. Switching it redraws without recooking.

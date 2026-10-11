@@ -7,8 +7,13 @@ from network import Network
 from workspace import Workspace
 from context_view import view_items, is_outside
 from outliner import object_rows
+from app import Luce3D
+from offscreen_pixels import OffscreenPixels
+from luce_3d.graphics import Vector3
+import context_display
 import node_commands
 import levels
+import time
 
 pub func level_tests() -> unit!:
     root_renders_flagged()
@@ -16,7 +21,8 @@ pub func level_tests() -> unit!:
     materials_yield_all()
     viewport_shows_root()
     outliner_greys_outside()
-    print("PASS network levels: the root renders flagged objects, containers yield one output (Output node, display flag, warnings), Materials yields every material, Render renders the root, the viewport and the Outliner show the root from deep inside")
+    context_modes()
+    print("PASS network levels: the root renders flagged objects, containers yield one output (Output node, display flag, warnings), Materials yields every material, Render renders the root, the viewport and the Outliner show the root from deep inside, All/Greyed/Hidden pixels with and without the worker")
 
 ## Two Geo objects and a light at the root: each flagged one renders, and
 ## Render renders exactly them.
@@ -150,6 +156,10 @@ func viewport_shows_root() -> unit!:
     node_commands.enter_group(w, other)
     node_commands.add_node(w, "Sphere", 0.0, 0.0)
     node_commands.enter_group(w, geo)
+    # Greyed (the default), the rest is see-through and hides nothing; drawn
+    # as it is, it does.
+    assert(w.drawn().length == 1)
+    w.set_context_mode(context_display.all)
     assert(w.drawn().length == 2)
     let (nodes, _) = w.on_screen()
     assert(nodes.length == 1 and nodes[0] == 1)
@@ -172,3 +182,71 @@ func outliner_greys_outside() -> unit!:
     node_commands.reveal_node(w, 1)
     assert(w.network.scope == geo and w.network.selected == 1)
     assert(not is_outside(w.network, 1) and is_outside(w.network, sphere))
+
+## The viewport's light with a sphere outside the context (the network view
+## is inside the other Geo): drawn as it is (All), faded toward the backdrop
+## (Greyed) or not at all (Hidden); the same with the worker, where switching
+## restyles without a new result.
+func context_modes() -> unit!:
+    let pixels = OffscreenPixels(1600, 1000)
+    let editor = Luce3D()
+    let w = editor.workspace
+    let geo = w.network.scope
+    node_commands.leave_group(w)
+    node_commands.add_node(w, "Geo", 300.0, 0.0)
+    let other = w.network.selected
+    node_commands.set_parameter(w, 1, 3.0)
+    node_commands.enter_group(w, other)
+    node_commands.add_node(w, "Sphere", 0.0, 0.0)
+    node_commands.set_size(w, 1.5)
+    node_commands.enter_group(w, geo)
+    w.view.grid_visible = false
+    w.view.yaw = 0.0
+    w.view.pitch = 0.0
+    w.view.distance = 7.0
+    w.view.target = Vector3(3.0, 0.0, 0.0)
+    w.view.update_camera()
+    let backdrop = middle(editor, pixels, w, context_display.hidden)
+    let all = middle(editor, pixels, w, context_display.all)
+    let greyed = middle(editor, pixels, w, context_display.greyed)
+    assert(all > backdrop + 100000 and greyed > backdrop + 30000 and greyed < all - 30000, f"backdrop {backdrop}, all {all}, greyed {greyed}")
+    # The worker: the same, by restyling the result it published.
+    w.enable_compute()
+    settle(w)
+    let cooks = w.network.require(other).evaluations
+    assert(middle(editor, pixels, w, context_display.all) == all)
+    assert(middle(editor, pixels, w, context_display.greyed) == greyed)
+    assert(middle(editor, pixels, w, context_display.hidden) == backdrop)
+    assert(w.network.require(other).evaluations == cooks and not (w.compute else trap("worker")).busy)
+    # At the root nothing is outside: Hidden hides nothing.
+    node_commands.leave_group(w)
+    settle(w)
+    assert(middle(editor, pixels, w, context_display.hidden) == all)
+    editor.close()
+    pixels.close()
+
+## The viewport's light in context display `mode`.
+func middle(editor: Luce3D, pixels: OffscreenPixels, w: Workspace, mode: int) -> int!:
+    w.set_context_mode(mode)
+    editor.panels.refresh()
+    editor.app.layout(1600.0, 1000.0)
+    editor.app.render(pixels.begin())
+    pixels.end()
+    # The viewport's summed luminance, a 4-pixel lattice of it: the context
+    # adds the same in every mode, the rest of the scene its own share.
+    let view = editor.panels.view.layout().bounds()
+    var total = 0
+    var y = int(view.y) + 60
+    while y < int(view.y + view.height) - 40:
+        var x = int(view.x) + 60
+        while x < int(view.x + view.width) - 60:
+            total += pixels.luminance(x, y)
+            x += 4
+        y += 4
+    return total
+
+func settle(w: Workspace) -> unit!:
+    let worker = w.compute else return
+    let deadline = time.now() + 20000000000
+    while worker.busy and time.now() < deadline: _ = w.poll_compute()
+    assert(not worker.busy, w.notice)
