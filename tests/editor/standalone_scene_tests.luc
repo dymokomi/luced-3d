@@ -1,0 +1,81 @@
+## Scene creation never consumes the selected object's output.
+from app import Luce3D
+from workspace import Workspace
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_prism.prism import Document
+from project_graph import write_graph, read_graph
+import node_commands
+import node_catalog
+import time
+
+pub func standalone_scene_tests() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let geo = w.network.scope
+    node_commands.leave_group(w)
+    for kind in ["Camera", "Light"] + node_catalog.context_kinds() + ["Render"]:
+        let source = w.network.selected
+        node_commands.add_node(w, kind, 250.0, 100.0)
+        let made = w.selected() else trap(kind)
+        assert(made.kind == kind and made.parent == -1)
+        for input in made.inputs: assert(input == -1, kind + " unexpectedly connected")
+        assert(w.network.display == made.id and w.network.is_output(source))
+        if kind in ["Camera", "Light"]:
+            let data = w.network.evaluate_data(made.id)
+            assert(data.mesh == none and data.instance_count() == 0 and data.geometry.scene().count() == 1)
+        w.undo()
+        assert(w.network.selected == source and w.network.find(made.id) == none)
+        w.redo()
+        let redone = w.selected() else trap("redo")
+        assert(redone.kind == kind)
+        for input in redone.inputs: assert(input == -1)
+    # The actual Tab menu calls the same creation path with Geo selected.
+    node_commands.select_node(w, geo)
+    editor.panels.refresh()
+    editor.app.layout(1400.0, 900.0)
+    editor.app.focus(editor.panels.graph.layout())
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.tab))
+    let menu = editor.panels.search
+    for scalar in [67, 97, 109, 101, 114, 97]:
+        menu.event(Event(kind = EventKind.text_input, codepoint = scalar))
+    menu.event(Event(kind = EventKind.key_down, key = Key.enter))
+    let camera = w.selected() else trap("Camera")
+    assert(camera.kind == "Camera" and camera.inputs[0] == -1 and w.network.is_output(geo))
+    # Groups at Scene inherit the same creation behavior.
+    node_commands.add_node(w, "Group", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Camera", 0.0, 0.0)
+    node_commands.add_node(w, "Light", 200.0, 0.0)
+    let light = w.selected() else trap("Light")
+    assert(light.inputs[0] == -1)
+    # Deliberately wired/older scenes still round-trip and cook their chain.
+    node_commands.leave_group(w)
+    node_commands.add_node(w, "Light", 400.0, 0.0)
+    let lit = w.network.selected
+    node_commands.connect(w, camera.id, lit, 0)
+    node_commands.add_node(w, "Render", 400.0, 150.0)
+    node_commands.connect(w, lit, w.network.selected, 0)
+    let render = w.network.selected
+    let document = Document()
+    write_graph(document, w.network)
+    let restored = read_graph(document)
+    assert(restored.require(lit).inputs[0] == camera.id)
+    assert(restored.evaluate_data(render).geometry.scene().count() == 2)
+    w.enable_compute()
+    settle(w)
+    assert(w.network.require(camera.id).failure == "" and w.network.require(lit).failure == "")
+    # Operators inside Geo still follow the selected geometry as before.
+    node_commands.enter_group(w, geo)
+    node_commands.select_node(w, 1)
+    node_commands.add_node(w, "Transform", 0.0, 150.0)
+    assert((w.selected() else trap("Transform")).inputs[0] == 1)
+    settle(w)
+    editor.close()
+    print("PASS standalone Scene creation: all top-level kinds, actual Tab menu, inherited Groups, undo/redo, existing explicit wiring, worker and Geo operators")
+
+func settle(w: Workspace) -> unit!:
+    let worker = w.compute else return
+    let deadline = time.now() + 20000000000
+    while worker.busy and time.now() < deadline: _ = w.poll_compute()
+    assert(not worker.busy)
