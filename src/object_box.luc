@@ -1,14 +1,16 @@
 ## Object picking in the viewport: a click picks the object under it, a
 ## drag the ones seen in the box; Shift adds (a click on a picked one
-## removes it). The picked objects show their screen bounds.
+## removes it). Picked objects have a thick contour of their rendered shape.
 from luce_ui.ui import Painter, Event
 from luce_gpu.gpu import Rect
+from luce_geocore.geocore import Mesh
+from luce_3d.graphics import Silhouette, GaussianSplats, FogVolume
 from luce_window.input import EventKind, Key
 from workspace import Workspace
 from luce_std import math
 import theme
 import node_commands
-from viewport_objects import object_at, objects_in, screen_bounds
+from viewport_objects import object_at, objects_in, helper_node
 from viewport_chrome import outline
 
 pub class ObjectBox:
@@ -16,10 +18,12 @@ pub class ObjectBox:
     ## A pick in progress: where it started and the pointer now.
     var boxing: bool = false
     var box: list[float]
+    pub let silhouette: Silhouette
 
     pub func init(self, workspace: Workspace):
         self.workspace = workspace
         self.box = []
+        self.silhouette = Silhouette()
 
     ## A press starts a pick at (`x`, `y`).
     pub func start(self, x: float, y: float):
@@ -53,11 +57,30 @@ pub class ObjectBox:
                     w.revision += 1
         return true
 
-    ## The picked objects' screen bounds, and the box being dragged.
+    ## Only the selection marquee is rectangular. Object highlights follow
+    ## their surfaces/opacity, while Camera and Light highlight their glyphs.
     pub func draw(self, painter: Painter, width: float, height: float) -> unit!:
-        for id in self.workspace.network.selection():
-            let bounds = screen_bounds(self.workspace, id, width, height) else continue
-            outline(painter, bounds, theme.accent())
+        let w = self.workspace
+        let selected = w.network.selection()
+        let (nodes, shown) = w.on_screen()
+        let meshes: list[Mesh] = []
+        let clouds: list[GaussianSplats] = []
+        let volumes: list[FogVolume] = []
+        for at in 0..<shown.length:
+            if nodes[at] in selected: meshes.append(shown[at])
+        for at in 0..<w.batches.clouds.length:
+            if w.batches.cloud_nodes[at] in selected: clouds.append(w.batches.clouds[at])
+        for at in 0..<w.batches.volumes.length:
+            if w.batches.volume_nodes[at] in selected: volumes.append(w.batches.volumes[at])
+        let key = (w.revision, w.batches.scene_keys, selected, w.view.splat_look()).hash()
+        self.silhouette.draw(meshes, clouds, volumes, w.view.camera, painter.target(), theme.accent(), key, w.view.splat_look())
+        if w.view.hulls_visible:
+            for at in 0..<w.batches.scenes.length:
+                let scene = w.batches.scenes[at].scene()
+                let helpers = w.batches.helpers(at)
+                for index in 0..<helpers.length:
+                    if helper_node(w, scene.path(index), "Camera" if scene.is_camera(index) else "Light", w.batches.scene_nodes[at]) in selected:
+                        helpers[index].draw(w.view.camera, painter.target(), theme.accent())
         if self.boxing and self.dragged():
             outline(painter, Rect(math.min(self.box[0], self.box[2]), math.min(self.box[1], self.box[3]), math.abs(self.box[2] - self.box[0]), math.abs(self.box[3] - self.box[1])), theme.text())
 

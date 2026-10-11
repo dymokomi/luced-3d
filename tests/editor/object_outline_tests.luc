@@ -1,0 +1,106 @@
+## GPU pixels of object contours, including curved CAD and non-mesh objects.
+from app import Luce3D
+from workspace import Workspace
+from offscreen_pixels import OffscreenPixels
+from luce_ui.ui import Painter
+from luce_3d.graphics import Vector3
+import node_commands
+import time
+
+func draw(editor: Luce3D, pixels: OffscreenPixels) -> unit!:
+    let painter = Painter(pixels.begin())
+    editor.panels.view.tools.objects.draw(painter, 320.0, 240.0)
+    painter.close()
+    pixels.end()
+
+func count(pixels: OffscreenPixels) -> int:
+    var total = 0
+    for y in 0..<240:
+        for x in 0..<320:
+            if pixels.luminance(x, y) > 10: total += 1
+    return total
+
+func settle(w: Workspace) -> unit!:
+    let worker = w.compute else return
+    let deadline = time.now() + 20000000000
+    while worker.busy and time.now() < deadline: _ = w.poll_compute()
+    assert(not worker.busy and w.notice == "", w.notice)
+
+pub func object_outline_tests() -> unit!:
+    let pixels = OffscreenPixels(320, 240)
+    let first_editor = Luce3D()
+    let first_workspace = first_editor.workspace
+    node_commands.delete_selected(first_workspace)
+    node_commands.add_node(first_workspace, "Sphere", 0.0, 0.0)
+    let bounds = (first_workspace.geometry else trap("sphere")).bounds()
+    let center = bounds.minimum.add(bounds.maximum).multiply_scalar(0.5)
+    node_commands.leave_group(first_workspace)
+    first_workspace.view.camera.set_position(center.add(Vector3(0.0, 0.0, 7.0)))
+    first_workspace.view.camera.look_at(center)
+    draw(first_editor, pixels)
+    assert(count(pixels) > 150)
+    # An empty center and empty diagonal corners distinguish a circular
+    # silhouette from a box, fill or triangulation overlay.
+    assert(pixels.luminance(160, 120) == 0)
+    var left = 320
+    var right = 0
+    var top = 240
+    var bottom = 0
+    for y in 0..<240:
+        for x in 0..<320:
+            if pixels.luminance(x, y) > 10:
+                left = x if x < left else left
+                right = x if x > right else right
+                top = y if y < top else top
+                bottom = y if y > bottom else bottom
+    assert(right - left > 20 and bottom - top > 20)
+    for x in [left + 2, right - 2]:
+        for y in [top + 2, bottom - 2]: assert(pixels.luminance(x, y) == 0)
+    var stroke = 0
+    for x in left..<160:
+        if pixels.luminance(x, 120) > 10: stroke += 1
+    assert(stroke >= 2 and stroke <= 5, f"stroke {stroke}")
+    let silhouette = first_editor.panels.view.tools.objects.silhouette
+    let builds = silhouette.mask_builds()
+    draw(first_editor, pixels)
+    assert(silhouette.mask_builds() == builds)
+    first_workspace.view.camera.set_position(center.add(Vector3(1.0, 0.0, 7.0)))
+    first_workspace.view.camera.look_at(center)
+    draw(first_editor, pixels)
+    assert(silhouette.mask_builds() == builds + 1)
+    node_commands.toggle_visible(first_workspace)
+    draw(first_editor, pixels)
+    assert(count(pixels) == 0)
+    first_editor.close()
+    for kind in ["CAD", "GSplats", "Volumes", "Light", "Camera"]:
+        let editor = Luce3D()
+        let w = editor.workspace
+        node_commands.leave_group(w)
+        node_commands.delete_selected(w)
+        node_commands.add_node(w, kind, 0.0, 0.0)
+        let selected = w.network.selected
+        if kind in ["Camera", "Light"]:
+            for slot in [1, 2, 3]: node_commands.set_parameter(w, slot, 0.0)
+        if kind in ["CAD", "GSplats", "Volumes"]:
+            node_commands.enter_group(w, selected)
+            if kind == "CAD": node_commands.add_node(w, "Solid Cylinder", 0.0, 0.0)
+            elif kind == "GSplats":
+                node_commands.add_node(w, "File", 0.0, 0.0)
+                node_commands.set_text(w, 0, "tests/fixtures/splats.ply")
+            else:
+                node_commands.add_node(w, "Volume", 0.0, 0.0)
+                # A zero-density grid has no visible contour; fill its voxels.
+                node_commands.set_parameter(w, 9, 1.0)
+            node_commands.leave_group(w)
+        for background in [false, true]:
+            if background: w.enable_compute()
+            settle(w)
+            w.frame_cube()
+            w.view.distance *= 1.5
+            w.view.update_camera()
+            assert(w.network.selected == selected and w.picking_objects())
+            draw(editor, pixels)
+            assert(count(pixels) > 10, f"{kind}: missing contour, worker={background}")
+        editor.close()
+    pixels.close()
+    print("PASS object contour pixels: sphere silhouette, thick stroke, cache reuse, camera invalidation, hidden object, CAD/GSplats/Volumes and helper glyphs, local and worker")
