@@ -92,13 +92,12 @@ pub func child_context(kind: str) -> str:
     if kind in ["CAD", "SDF", "Volumes", "GSplats", "Materials"]: return kind.lower()
     return ""
 
-## The authoring menu and commands share these rules. Existing project graphs
-## retain their node kinds and wiring even if authored before contexts existed.
+## The authoring menu and commands share these rules.
 pub func allowed(kind: str, context: str) -> bool:
     if context == "scene": return kind in context_kinds() or kind in scene_kinds()
     if context == "shading": return is_shader(kind)
     if context == "materials": return kind in ["Material", "Group", "Input", "Merge", "Null", "Switch"]
-    if kind in ["Group", "Input", "Output", "Transform", "Merge", "Null", "Switch", "File", "Cache", "Export"]: return true
+    if kind in ["Group", "Input", "Output", "Import", "Transform", "Merge", "Null", "Switch", "File", "Cache", "Export"]: return true
     if context == "cad": return is_cad_only(kind) or kind == "Edit CAD"
     if kind in context_kinds(): return true
     if is_shader(kind) or is_cad_only(kind) or kind in scene_kinds() or kind == "Material": return false
@@ -146,7 +145,7 @@ pub func category_in(kind: str, context: str) -> str:
     if context in ["sdf", "volumes", "gsplats"]:
         if kind in context_kinds() and kind != "Group": return "Contexts"
         if kind in ["File", "Cache", "Export"]: return "File I/O"
-        if kind in ["Group", "Input", "Output", "Transform", "Merge", "Null", "Switch", code_cook.kind_name, script_cook.kind_name]: return "Utility"
+        if kind in ["Group", "Input", "Output", "Import", "Transform", "Merge", "Null", "Switch", code_cook.kind_name, script_cook.kind_name]: return "Utility"
         if context == "sdf": return "SDF"
     return cad_category(kind) if context == "cad" else category(kind)
 
@@ -168,7 +167,7 @@ pub func category(kind: str) -> str:
         return "Materials"
     if kind in context_kinds():
         return "Utility" if kind == "Group" else "Contexts"
-    if kind == "Input": return "Utility"
+    if kind in ["Input", "Import"]: return "Utility"
     if kind in sources():
         return "Primitives"
     if kind in ["Transform", "Mirror", "CopyTransform", "CopyToPoints", "MatchSize"]:
@@ -180,7 +179,7 @@ pub func category(kind: str) -> str:
     return "Modeling"
 
 pub func kinds() -> list[str]:
-    let all = sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Output", "Switch", code_cook.kind_name, script_cook.kind_name] + scene_kinds() + material_kinds() + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Name", "Normal", "Measure", "UVProject", "Color"] + [sketch_node.kind_name, "Extrude", "Revolve", "Boolean", "Fillet", "Chamfer", "Mirror Body", "Pattern"] + shader_kinds()
+    let all = sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Output", "Import", "Switch", code_cook.kind_name, script_cook.kind_name] + scene_kinds() + material_kinds() + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Name", "Normal", "Measure", "UVProject", "Color"] + [sketch_node.kind_name, "Extrude", "Revolve", "Boolean", "Fillet", "Chamfer", "Mirror Body", "Pattern"] + shader_kinds()
     let result: list[str] = []
     for kind in all:
         if not (kind in result): result.append(kind)
@@ -188,8 +187,9 @@ pub func kinds() -> list[str]:
 
 pub func input_count(kind: str) -> int:
     if collects_children(kind): return 2
-    # Render renders the root's flagged objects, not an input.
-    if kind == "Render": return 0
+    # Render renders the root's flagged objects, Import reads a node by path,
+    # and a Camera or Light is just its object: none has an input.
+    if kind in ["Render", "Import", "Camera", "Light"]: return 0
     if cad_nodes.two_inputs(kind):
         return 2
     if is_shader(kind):
@@ -208,10 +208,10 @@ pub func material_kinds() -> list[str]:
     return ["Material", "Assign Material"]
 
 ## Nodes that cook from nothing when their input is unconnected: an Edit
-## node creates, a Camera, Light or Material makes just its own, a Sketch
-## draws on an origin plane (its input is a body to sketch on a face of).
+## node creates, a Material makes just its own, a Sketch draws on an origin
+## plane (its input is a body to sketch on a face of).
 pub func optional_input(kind: str) -> bool:
-    return is_edit(kind) or kind in ["Camera", "Light", "Material", "Volume", sketch_node.kind_name, code_cook.kind_name, script_cook.kind_name]
+    return is_edit(kind) or kind in ["Material", "Volume", sketch_node.kind_name, code_cook.kind_name, script_cook.kind_name]
 
 pub func has_group(kind: str) -> bool:
     let verb = VerbCatalog.index_of(kind)
@@ -276,6 +276,10 @@ pub func fields(kind: str, path: str = "", stage: Composition? = none) -> list[P
         if is_fbx_path(source):
             for row in fbx_fields():
                 rows.append(row)
+    if kind == "Import":
+        let object = entry("Object", 0, "The node to read, by path: /Geo 2, or a node inside one, /Geo 2/Sphere 4. The button lists the scene's objects.", "path")
+        object.key = "object"
+        rows.append(object)
     if kind == "Cache":
         rows.append(entry("File", 0, "The .prism file the cooked geometry is saved to (and loaded from).", "path"))
     if kind == "Export":
@@ -466,6 +470,8 @@ func value_fields(kind: str) -> list[Parameter]:
         return result
     if kind == "Input":
         return [menu("Input", 0, "First|Second", 0.0, "Read this input of the containing network node.")]
+    if kind == "Import":
+        return [menu("Transform", 0, "Into this object|None", 0.0, "Into this object: where the object sits in the scene, seen from this one. None: in its own frame, without its container's transform.")]
     if kind in transforming_kinds():
         return [vector("Translate", 1, [0.0, 0.0, 0.0], "Moves the geometry, after rotating and scaling."),
                 vector("Rotate", 4, [0.0, 0.0, 0.0], "Rotation about X, then Y, then Z, in degrees, about the pivot.", suffix = "°"),
@@ -718,9 +724,11 @@ pub func description(kind: str) -> str:
     if kind == "Assign Material":
         return "Input 1: geometry / Input 2: materials; binds the group's faces"
     if kind == "Camera":
-        return "A camera in the scene / adds to its input when connected"
+        return "A camera in the scene"
     if kind == "Light":
-        return "A light in the scene / adds to its input when connected"
+        return "A light in the scene"
+    if kind == "Import":
+        return "Another object's result, by path, with no wire (Houdini's Object Merge)"
     if kind == "Render":
         return "Render the scene (every displayed object at the root) through its camera"
     if kind == "Output":

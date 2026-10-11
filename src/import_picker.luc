@@ -1,0 +1,59 @@
+## The Import node's object picker: its Object row's button opens a menu of
+## the scene's nodes by path (import_node.choices), and choosing one sets
+## the row. The menu is a ContextMenu anchored on an empty label in the
+## footer, rebuilt each time it opens, as the scene changes.
+from luce_ui.ui import Text, Font, Command, ContextMenu
+from interop import Connection
+from workspace import Workspace
+import import_node
+import node_commands
+
+pub class ImportPicker:
+    let workspace: Workspace
+    let anchor: Text
+    pub let menu: ContextMenu
+    let commands: list[Command]
+    let connections: list[Connection]
+    ## After a choice: the panels show the new path.
+    pub var chosen: func() -> unit!? = none
+
+    pub func init(self, workspace: Workspace, font: Font) -> unit!:
+        self.workspace = workspace
+        self.anchor = Text("", font = font)
+        # A menu holds at least one entry: a placeholder until it opens.
+        self.commands = [Command("No other objects", id = "import_object_none")]
+        self.connections = []
+        self.menu = ContextMenu(self.anchor, self.commands, font = font)
+
+    ## Open the menu for the selected Import node at (`x`, `y`) in window
+    ## points: every node it may read, the one it reads checked.
+    pub func open(self, x: float, y: float) -> unit!:
+        let node = self.workspace.selected() else return
+        if node.kind != import_node.kind_name:
+            return
+        self.clear()
+        let paths = import_node.choices(self.workspace.network.nodes, node)
+        for at in 0..<paths.length:
+            let path = paths[at]
+            let command = Command(path, id = f"import_object_{at}")
+            command.set_checked(path == node.texts[0].trim())
+            self.connections.append(command.on_trigger(func () -> unit!:
+                node_commands.set_text(self.workspace, 0, path)
+                if let after = self.chosen:
+                    after()))
+            self.commands.append(command)
+        if self.commands.length == 0:
+            self.commands.append(Command("No other objects", id = "import_object_none"))
+        self.menu.set_commands(self.commands)
+        let origin = self.anchor.layout().bounds()
+        self.menu.open_at(x - origin.x, y - origin.y)
+
+    func clear(self):
+        for connection in self.connections:
+            connection.disconnect()
+        self.connections.clear()
+        self.commands.clear()
+
+    pub func close(self):
+        self.clear()
+        self.chosen = none

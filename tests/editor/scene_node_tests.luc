@@ -1,7 +1,7 @@
-## Camera, Light and Render nodes: objects added to their input or made
-## alone, placed by Transform, kept by Group, checked by Render, and drawn
-## as viewport helpers.
+## Camera, Light and Render nodes: objects at the root, never wired, placed
+## by a Group, checked by Render, and drawn as viewport helpers.
 from network import Network
+from data_network import data_network
 from luce_3d.graphics import Vector3
 from overlay_lines import OverlayLines
 from geometry_tests import near
@@ -17,21 +17,23 @@ func failure_of(graph: Network, id: int) -> str!:
     return ""
 
 pub func scene_node_tests() -> unit!:
+    # A Geo, a Camera and a Light at the root: objects, none wired. Render
+    # takes no input: it renders the root's flagged objects.
     let graph = Network(false)
-    let cube = graph.add("Cube", 0.0, 0.0)
+    let geo = graph.add("Geo", 0.0, 0.0)
+    graph.scope = geo.id
+    _ = graph.add("Cube", 0.0, 0.0)
+    graph.scope = -1
     let camera = graph.add("Camera", 0.0, 100.0)
-    graph.connect(cube.id, camera.id, 0)
     let light = graph.add("Light", 0.0, 200.0)
-    graph.connect(camera.id, light.id, 0)
-    # Render takes no input: it renders the root's flagged objects, here the
-    # chain's end (wiring turned the cube's and camera's flags off).
     let render = graph.add("Render", 0.0, 300.0)
-    assert(render.inputs.length == 0 and not cube.visible and not camera.visible)
+    assert(render.inputs.length == 0 and camera.inputs.length == 0 and light.inputs.length == 0)
     assert(camera.texts[0] == f"camera{camera.id}" and light.texts[0] == f"light{light.id}")
-    assert(node_catalog.category("Light") == "Render" and node_catalog.optional_input("Camera") and not node_catalog.optional_input("Render"))
-    # The chain keeps the cube and gains both objects.
+    assert(node_catalog.category("Light") == "Render" and node_catalog.input_count("Camera") == 0 and not node_catalog.optional_input("Light"))
+    # The render holds the Geo's cube and both objects.
     let data = graph.evaluate_data(render.id)
-    assert(data.mesh != none and data.warning == "")
+    assert(data.mesh != none or data.geometry.instance_count() > 0)
+    assert(data.warning == "")
     let scene = data.geometry.scene()
     assert(scene.count() == 2 and scene.is_camera(0) and scene.path(1) == light.texts[0])
     let lens = scene.object(0).camera
@@ -41,8 +43,11 @@ pub func scene_node_tests() -> unit!:
     let key = scene.object(1)
     near(key.matrix.translation.y, 4.0)
     near(key.matrix.transform_direction(Vector3(0.0, 0.0, -1.0)).y, -1.0)
-    # Render's output wires nowhere.
+    # Nothing is wired at the root: not into a Light, not out of Render.
     var wired = true
+    graph.connect(camera.id, light.id, 0) catch failure:
+        wired = false
+    assert(not wired)
     graph.connect(render.id, light.id, 0) catch failure:
         wired = false
     assert(not wired)
@@ -60,12 +65,17 @@ pub func scene_node_tests() -> unit!:
     lit_off.texts[0] = "/nowhere"
     cameras.invalidate(lit_off.id)
     assert(failure_of(cameras, lit_off.id).contains("No camera at /nowhere"))
-    # Transform and Group place cameras like geometry.
-    let move = graph.add("Transform", 0.0, 400.0)
-    graph.connect(light.id, move.id, 0)
-    move.values[1] = 10.0
-    let moved = graph.evaluate_data(move.id).geometry.scene()
-    near(moved.object(0).matrix.translation.x, 10.0)
+    # A Group at the root places its cameras like geometry.
+    let group = graph.add("Group", 200.0, 0.0)
+    group.values[1] = 10.0
+    graph.scope = group.id
+    _ = graph.add("Camera", 0.0, 0.0)
+    graph.scope = -1
+    let moved = graph.evaluate_data(group.id)
+    assert(moved.instance_count() == 1)
+    let placed = moved.instance(0).geometry.scene()
+    assert(placed.count() == 1)
+    near(moved.instance_matrix(0).transform_point(placed.object(0).matrix.translation).x, 10.0)
     # Helpers: a perspective frustum is 4 + 4 + 3 segments, an area light 4 + 2 + 1.
     let lines = OverlayLines.make()
     lines.add_scene(data.geometry)
@@ -79,7 +89,7 @@ pub func scene_node_tests() -> unit!:
     outliner.refresh()
     # Materials: a chain of Material nodes is a library; Assign Material binds
     # the group's faces and passes the library on.
-    let shapes = Network(false)
+    let shapes = data_network()
     let box = shapes.add("Cube", 0.0, 0.0)
     let red = shapes.add("Material", 200.0, 0.0)
     red.texts[0] = "materials/red"
@@ -103,4 +113,4 @@ pub func scene_node_tests() -> unit!:
     assign.texts[1] = "materials/missing"
     shapes.invalidate(assign.id)
     assert(shapes.evaluate_data(assign.id).warning.contains("default material"))
-    print("PASS Camera, Light, Render, Material and Assign Material nodes: chained and alone, Transform, render checks, viewport helpers, material binding")
+    print("PASS Camera, Light, Render, Material and Assign Material nodes: objects with no inputs, Group placement, render checks, viewport helpers, material binding")

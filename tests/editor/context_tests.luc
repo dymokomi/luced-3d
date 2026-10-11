@@ -1,16 +1,17 @@
-## Context authoring, cross-network data, history, worker caches and old projects.
+## Context authoring, cross-network data through Import nodes, history and worker caches.
 from app import Luce3D
 from workspace import Workspace
 from network import Network
 from node_menu import NodeMenu
 from luce_ui.ui import Event
 from luce_window.input import EventKind, Key
-from luce_prism.prism import Document, Value
+from luce_prism.prism import Document
 from project_graph import write_graph, read_graph
 from stamps import stamp_graph
 import node_catalog
 import node_commands
 import project_file
+import import_node
 import time
 
 func add(w: Workspace, kind: str) -> int!:
@@ -52,7 +53,7 @@ pub func context_tests() -> unit!:
     menu.event(Event(kind = EventKind.key_down, key = Key.escape))
     for (container, context, primitive) in [("Geo", "geometry", "Cube"), ("CAD", "cad", "Sketch"), ("SDF", "sdf", "SDF Sphere"), ("Volumes", "volumes", "Volume"), ("GSplats", "gsplats", "Edit GSplats"), ("Materials", "materials", "Material")]:
         let id = add(w, container)
-        assert(w.network.require(id).inputs == [-1, -1]) # Creating a container consumes no existing object.
+        assert(w.network.require(id).inputs.length == 0) # An object has no inputs.
         node_commands.enter_group(w, id)
         assert(w.network.context() == context)
         let group = add(w, "Group")
@@ -71,8 +72,7 @@ pub func context_tests() -> unit!:
     root_tab_menus()
     connected_contexts()
     typed_outputs()
-    legacy_graphs()
-    print("PASS context menus and commands, inherited Groups, typed outputs, material inputs, worker invalidation, history and project compatibility")
+    print("PASS context menus and commands, inherited Groups, typed outputs, material inputs, worker invalidation, history")
 
 func settle(w: Workspace) -> unit!:
     let worker = w.compute else trap("worker")
@@ -92,10 +92,12 @@ func connected_contexts() -> unit!:
     assert(w.network.context() == "shading" and w.network.local_nodes()[0].kind == "OpenPBR Surface")
     node_commands.leave_group(w)
     node_commands.leave_group(w)
+    # The Geo reads the library through an Import node: objects are not wired.
     node_commands.connect(w, library, geo, 1)
+    assert(w.notice.contains("Import") and w.network.require(geo).inputs.length == 0, w.notice)
     node_commands.enter_group(w, geo)
-    let input = add(w, "Input")
-    node_commands.set_parameter(w, 0, 1.0)
+    let input = add(w, "Import")
+    node_commands.set_text(w, 0, import_node.path_of(w.network.nodes, w.network.require(library)))
     node_commands.select_node(w, 1)
     let assign = add(w, "Assign Material")
     node_commands.connect(w, input, assign, 1)
@@ -106,10 +108,11 @@ func connected_contexts() -> unit!:
     assert(mesh.face_count() == 6 and mesh.attribute_text(mesh.find_attribute("material", 2), 0) == "materials/red")
     stamp_graph(w.network)
     let before = w.network.require(assign).stamp
-    # Grouping a consumer preserves its boundary Input and its material binding.
+    # Grouping a consumer takes the Import along (it is a source, read by
+    # path) and keeps the material binding.
     node_commands.group_selected(w)
     let group = w.network.selected
-    assert(w.network.require(group).kind == "Group" and w.network.require(input).parent == geo)
+    assert(w.network.require(group).kind == "Group" and w.network.require(input).parent == group)
     assert(w.network.evaluate_data(group).geometry.material_paths() == "materials/red")
     w.undo()
     assert(w.network.require(assign).inputs[1] == input)
@@ -133,9 +136,9 @@ func connected_contexts() -> unit!:
     assert(project_file.same_graph(w.network, restored))
     restored.background = false
     assert(restored.evaluate_data(geo).geometry.material_paths() == "materials/red")
-    # External container connections still reject indirect cycles.
+    # Objects stay unwired after a round trip too.
     var rejected = false
-    restored.connect(geo, library, 0) catch failure: rejected = failure.message.contains("cycle")
+    restored.connect(geo, library, 0) catch failure: rejected = failure.message.contains("Import")
     assert(rejected)
     (w.compute else trap("worker")).close()
 
@@ -148,9 +151,9 @@ func typed_outputs() -> unit!:
     _ = graph.add("SDF Sphere", 0.0, 0.0)
     graph.scope = -1
     let geo = graph.add("Geo", 200.0, 0.0)
-    graph.connect(sdf.id, geo.id, 0)
     graph.scope = geo.id
-    let input = graph.add("Input", 0.0, 0.0)
+    let input = graph.add("Import", 0.0, 0.0)
+    input.texts[0] = "/" + sdf.name
     let mesh = graph.add("Convert to Mesh", 0.0, 100.0)
     graph.connect(input.id, mesh.id, 0)
     assert(graph.evaluate(geo.id).face_count() > 100)
@@ -161,23 +164,6 @@ func typed_outputs() -> unit!:
     group.visible = false
     graph.visibility_changed(group)
     assert(graph.evaluate_data(sdf.id).field_preview() == none)
-
-func legacy_graphs() -> unit!:
-    let graph = Network(false)
-    let cube = graph.add("Cube", 0.0, 0.0)
-    let group = graph.add("Group", 100.0, 0.0)
-    graph.scope = group.id
-    _ = graph.add("Sphere", 0.0, 0.0)
-    graph.scope = -1
-    let doc = Document()
-    write_graph(doc, graph)
-    # The old v1 representation had zero ports on Group/CAD.
-    doc.set(f"/scene/nodes/n{group.id}", "inputs", Value.numbers([0], []))
-    doc.set(f"/scene/nodes/n{group.id}", "sources", Value.numbers([0], []))
-    let restored = read_graph(doc)
-    assert(restored.require(group.id).inputs == [-1, -1])
-    assert(restored.require(cube.id).parent == -1 and restored.evaluate(cube.id).face_count() == 6)
-    assert(restored.evaluate(group.id).face_count() > 6)
 
 ## Exercise real panel entry points, including All, search and a root Group.
 func root_tab_menus() -> unit!:

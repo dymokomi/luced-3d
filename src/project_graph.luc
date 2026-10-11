@@ -16,6 +16,7 @@ import takes
 import node_catalog
 import code_cook
 import script_cook
+import levels
 
 pub func write_graph(doc: Document, graph: Network) -> unit!:
     write_scene(doc, graph)
@@ -136,19 +137,12 @@ pub func read_header(doc: Document, path: str, trusted: bool = false) -> Node!:
     node.name = name if trusted else values.line(name)
     node.parent = values.integer(doc, path, "parent", -1, 2147483646)
     node.visible = values.flag(doc, path, "visible")
+    # Its kind's inputs, or none on an object level (read_graph checks which).
     let inputs = values.ids(doc, path, "inputs", node.inputs.length)
-    # Older Group/CAD nodes had no external inputs.
-    let legacy_container = node.kind in ["Group", "CAD"] and inputs.length == 0
-    if legacy_container:
-        inputs.append(-1)
-        inputs.append(-1)
-    if inputs.length != node.inputs.length: error(ui.invalid, "Invalid input port count")
+    if inputs.length != node.inputs.length and inputs.length != 0: error(ui.invalid, "Invalid input port count")
     node.inputs = inputs
     let sources = values.ids(doc, path, "sources", node.sources.length)
-    if legacy_container and sources.length == 0:
-        sources.append(0)
-        sources.append(0)
-    if sources.length != node.sources.length: error(ui.invalid, "Invalid input source count")
+    if sources.length != inputs.length: error(ui.invalid, "Invalid input source count")
     node.sources = sources
     return node
 
@@ -181,16 +175,16 @@ pub func read_body(doc: Document, path: str, node: Node, shared: map[int, str]?)
     for at in 0..<texts.count():
         let text = texts.text_at(at)
         node.texts[at] = text if shared != none else checked_text(node.kind, at, text)
-    node.guard = values.stamp(doc, path, "guard") if doc.has_property(path, "guard") else 0
+    node.guard = values.stamp(doc, path, "guard")
     let hidden = doc.get(path, "hidden")
     if hidden.rank() != 1 or hidden.count() > 4096: error(ui.invalid, "Invalid hidden object paths")
     node.hidden = []
     for at in 0..<hidden.count():
         let text = hidden.text_at(at)
         node.hidden.append(text if shared != none else values.line(text))
-    let frozen = values.text(doc, path, "frozen") if doc.has_property(path, "frozen") else ""
+    let frozen = values.text(doc, path, "frozen")
     node.frozen = frozen if shared != none else values.line(frozen)
-    node.time_dependent = values.flag(doc, path, "time_dependent") if doc.has_property(path, "time_dependent") else false
+    node.time_dependent = values.flag(doc, path, "time_dependent")
     let count = values.integer(doc, path, "edit_count", 0, 100000)
     if count != doc.child_count(path + "/edits") or (not is_edit(node.kind) and count != 0):
         error(ui.invalid, "Invalid Edit recipe collection")
@@ -239,10 +233,18 @@ pub func read_graph(doc: Document) -> Network!:
             let group = graph.require(parent)
             if not node_catalog.holds_nodes(group.kind): error(ui.invalid, "A node parent must be a context node")
             parent = group.parent
+        # Each node sits in a network that may hold it, as authoring allows.
+        let context = graph.context_at(node.parent)
+        if not node_catalog.allowed(node.kind, context): error(ui.invalid, f"{node.kind} can't be in a {node_catalog.context_label(context)} network")
+        if node.inputs.length != graph.input_count(node.kind, node.parent): error(ui.invalid, "Invalid input port count")
         for input in node.inputs:
             if input == -1: continue
             if graph.require(input).parent != node.parent or graph.depends_on(input, node.id):
                 error(ui.invalid, "Invalid or cyclic project connection")
+    # A data level's display flag is a radio button.
+    for node in graph.nodes:
+        if node_catalog.holds_nodes(node.kind) and graph.level_of(node.id) == levels.data_level and graph.display_count(node.id) > 1:
+            error(ui.invalid, "Several display flags in one network")
     read_scene(doc, graph)
     read_takes(doc, graph)
     if graph.scope != -1 and not node_catalog.holds_nodes(graph.require(graph.scope).kind): error(ui.invalid, "Invalid network scope")
@@ -254,14 +256,12 @@ pub func read_scene(doc: Document, graph: Network) -> unit!:
     graph.selected = values.integer(doc, "/scene", "selected", -1, 2147483646)
     graph.display = values.integer(doc, "/scene", "display", -1, 2147483646)
     graph.scope = values.integer(doc, "/scene", "scope", -1, 2147483646)
-    let units = values.text(doc, "/scene", "units") catch failure:
-        recover "mm"
-    graph.units = units if units in ["mm", "in"] else "mm"
-    # A project without a timeline opens at frame 1 of 1–240, 24 fps.
-    if doc.has_property("/scene", "time"):
-        let time = values.numbers(doc, "/scene", "time", 4, 4)
-        if not (time[3] > 0.0 and time[3] <= 1000.0 and time[2] >= time[1]): error(ui.invalid, "Invalid project timeline")
-        graph.frame = time[0]
-        graph.start = time[1]
-        graph.end = time[2]
-        graph.fps = time[3]
+    let units = values.text(doc, "/scene", "units")
+    if not (units in ["mm", "in"]): error(ui.invalid, "Invalid project units")
+    graph.units = units
+    let time = values.numbers(doc, "/scene", "time", 4, 4)
+    if not (time[3] > 0.0 and time[3] <= 1000.0 and time[2] >= time[1]): error(ui.invalid, "Invalid project timeline")
+    graph.frame = time[0]
+    graph.start = time[1]
+    graph.end = time[2]
+    graph.fps = time[3]

@@ -1,0 +1,104 @@
+## The Import node, Houdini's Object Merge: inside a data network, the result
+## of another node, named by its path (/Geo 2, /Group 1/CAD 3, /Geo 2/Sphere 4),
+## with no wire. Objects are not wired together at the object level
+## (docs/NETWORK-LEVELS.md); this is how one object reads another.
+##
+## Transform "Into this object" places what it reads where it sits in the
+## world, seen from the Import's own frame: the placements of the source's
+## containers up to the containers the two share, then the inverses of the
+## Import's containers below them. "None" reads it in its own object's
+## frame: a container's own placement is undone, as Houdini leaves out the
+## object transform.
+##
+## Network resolves the path and orders the containers (Network.import_source,
+## Network.import_steps); this module names them and applies the steps. The
+## local cook and the worker's cook both read through here, and a stamp lists
+## the source's stamp and the steps.
+from luce_3d.graphics import Vector3
+from geometry_data import GeometryData
+from node import Node
+import node_catalog
+
+pub let kind_name = "Import"
+
+## Value slot of the Transform menu, and its choices.
+pub let transform_slot = 0
+pub let into_this_object = 0.0
+pub let no_transform = 1.0
+
+## A node's path from the root: each container's name, then its own, after
+## a "/" each (/Geo 2/Sphere 4).
+pub func path_of(nodes: list[Node], node: Node) -> str:
+    var path = "/" + node.name
+    var parent = node.parent
+    for _ in 0..<17:
+        let container = find(nodes, parent) else return path
+        path = "/" + container.name + path
+        parent = container.parent
+    return path
+
+## The node at `path` ("/Geo 2/Sphere 4"; the leading "/" may be left out),
+## the first of a level's nodes with each name; none when nothing is there.
+pub func resolve(nodes: list[Node], path: str) -> Node?:
+    let trimmed = path.trim()
+    if trimmed == "" or trimmed == "/":
+        return none
+    var parent = -1
+    var found: Node? = none
+    for name in (trimmed[1..<trimmed.length] if trimmed.starts_with("/") else trimmed).split("/"):
+        var next: Node? = none
+        for node in nodes:
+            if node.parent == parent and node.name == name and next == none:
+                next = node
+        let node = next else return none
+        found = node
+        parent = node.id
+    return found
+
+## Every node an Import may name, by path: each object and what lies inside
+## it, in authoring order, depth first; never shader nodes or the Import
+## itself.
+pub func choices(nodes: list[Node], importer: Node) -> list[str]:
+    let result: list[str] = []
+    gather(nodes, -1, importer, result)
+    return result
+
+func gather(nodes: list[Node], parent: int, importer: Node, result: list[str]):
+    for node in nodes:
+        if node.parent != parent or node.id == importer.id or node.kind in node_catalog.scene_kinds():
+            continue
+        result.append(path_of(nodes, node))
+        if node_catalog.collects_children(node.kind):
+            gather(nodes, node.id, importer, result)
+
+## The steps that place a container's yield, one (translation, rotation,
+## scale) each, as numbers: nine a step.
+pub func placement_step(container: Node) -> list[float]:
+    let (t, r, s) = container.placement_parts()
+    return [t.x, t.y, t.z, r.x, r.y, r.z, s.x, s.y, s.z]
+
+## The steps that undo a container's placement: its translation, then its
+## rotation about X, Y and Z in turn (Euler XYZ undone), then its scale.
+pub func inverse_steps(container: Node) -> list[float]!:
+    let (t, r, s) = container.placement_parts()
+    return [-t.x, -t.y, -t.z, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0,
+            0.0, 0.0, 0.0, -r.x, 0.0, 0.0, 1.0, 1.0, 1.0,
+            0.0, 0.0, 0.0, 0.0, -r.y, 0.0, 1.0, 1.0, 1.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, -r.z, 1.0, 1.0, 1.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0 / s.x, 1.0 / s.y, 1.0 / s.z]
+
+## `data` placed by `steps` in turn (identity steps cost nothing).
+pub func placed(data: GeometryData, steps: list[float]) -> GeometryData!:
+    var result = data
+    var at = 0
+    while at + 9 <= steps.length:
+        result = result.transformed(Vector3(steps[at], steps[at + 1], steps[at + 2]), Vector3(steps[at + 3], steps[at + 4], steps[at + 5]),
+                                    Vector3(steps[at + 6], steps[at + 7], steps[at + 8]))
+        at += 9
+    return result
+
+func find(nodes: list[Node], id: int) -> Node?:
+    for node in nodes:
+        if node.id == id:
+            return node
+    return none

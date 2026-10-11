@@ -32,21 +32,23 @@ Light and Render. Search and category browsing use the same context rules:
 
 Typed data networks also offer nested context containers and relevant utilities.
 The grid generator remains named Volume; its container is Volumes. Enterable
-nodes have a thicker outline. The rules apply to new authoring; old projects
-retain their existing nodes, wiring and results.
+nodes have a thicker outline. Projects are held to the same rules when they
+load.
 
-Every spatial container and Materials has two external input ports. Connect a
-source at the parent level, create Input inside the container and choose First
-or Second. Wires remain local to one network. Material libraries can feed Geo
-this way; Assign Material takes the imported library on its second input.
-Creating a container does not automatically consume the previously selected node.
+Objects (the nodes at the root and in a root Group) are not wired: they have no
+input ports and no output port to drag from. One object reads another through
+an **Import** node inside it (Houdini's Object Merge), which names the other by
+path; a Material library reaches a Geo this way, and Assign Material takes the
+imported library on its second input. A container nested in a data network
+has two input ports: connect a source beside it, create Input inside it and
+choose First or Second. Wires remain local to one network. Creating a container
+does not automatically consume the previously selected node.
 
 ## Groups and navigation
 
 `Group` owns a nested network and has translation, XYZ rotation in degrees,
 scale and visibility. Double-click it in either Network or Outliner to enter;
 the Network's Up button returns to its parent. The breadcrumb shows the scope.
-The old attribute-mask Group operator is now named `Selection Group`.
 
 Beneath a container the Outliner lists what it yields. Rows outside the
 container the network view is in are greyed. Collapse arrows only affect tree
@@ -80,10 +82,12 @@ not remove geometry from that realization. CAD is never silently tessellated.
 ## Current boundaries
 
 - 128 total graph nodes; up to 16 containment levels.
-- Wires cannot cross network boundaries. Containers have two inputs and one
-  aggregate output; arbitrary named interface ports are not implemented yet.
+- Wires cannot cross network boundaries. Containers in data networks have two
+  inputs and one output; objects have none; arbitrary named interface ports are
+  not implemented yet.
 - Cmd/Ctrl+G groups selected nodes and their dependencies. Boundary Input nodes
-  stay outside and feed the new Group through its ports. Drag-reparenting in the
+  stay outside and feed the new Group through its ports; an Import moves in
+  with what it feeds (it reads by path). Drag-reparenting in the
   Outliner is not implemented yet.
 - No dedicated Instance/reference authoring node, render visibility flag or
   object-level viewport picking yet. Select objects in the Outliner.

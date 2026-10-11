@@ -19,6 +19,7 @@ from overlay_lines import OverlayLines
 from luce_3d.graphics import Matrix4, FogVolume, GaussianSplats
 import node_catalog
 import script_cook
+import import_node
 from luce_ui import ui
 from edit_kinds import is_edit, edit_kind, context_kind
 from shader_nodes import is_shader
@@ -157,10 +158,15 @@ class Computation:
             input = GeometryData()
             for child in graph.outputs(-1):
                 input = input.merged(self.upstream(node, child, depth))
-        elif not (node.kind in node_catalog.sources()) and not reads_file(node.kind, node.enabled, node.values):
+        elif node.kind == import_node.kind_name:
+            # Another node's result, by path, placed into this one's frame.
+            if node.enabled:
+                let source = graph.import_read(node) catch failure:
+                    return self.own(node, failure.code, failure.message)
+                input = import_node.placed(self.upstream(node, source, depth), graph.import_steps(node, source))
+        elif not (node.kind in node_catalog.sources()) and node.inputs.length > 0 and not reads_file(node.kind, node.enabled, node.values):
             let port = int(node.values[0]) if node.kind == "Switch" and node.enabled else 0
-            # An Edit node starts from nothing when unconnected (it can create);
-            # a Camera or Light makes just its object.
+            # An Edit node starts from nothing when unconnected (it can create).
             let unconnected = node_catalog.optional_input(node.kind) and node.inputs[0] < 0
             if not unconnected and (port < 0 or port >= node.inputs.length or node.inputs[port] < 0):
                 return self.own(node, ui.invalid, "Connect a geometry input")
@@ -263,6 +269,8 @@ class Computation:
             if node.kind == "Render":
                 for child in self.graph.outputs(-1):
                     pending.append(child.id)
+            if let source = self.graph.import_source(node):
+                pending.append(source.id)
         return result
 
     func outcomes(self) -> list[Outcome]:

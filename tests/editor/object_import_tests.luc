@@ -1,0 +1,303 @@
+## The object level and the Import node (docs/NETWORK-LEVELS.md): objects
+## at the root are never wired (no inputs, no Input nodes inside them, and
+## a project that wires them is refused); an Import node reads another
+## object by path, placed into its own frame or not, recooks when its
+## source or a container's placement changes, refuses to read itself, and
+## cooks the same on the worker. Nested containers draw the rest of the
+## enclosing container around the context, in each display mode.
+from network import Network
+from node import Node
+from workspace import Workspace
+from context_view import view_items
+from stamps import stamp_graph
+from project_graph import write_graph, read_graph
+from luce_prism.prism import Document, Value
+from luce_std import math
+import context_display
+import import_node
+import node_commands
+import time
+
+pub func object_import_tests() -> unit!:
+    object_wiring_rules()
+    import_paths()
+    import_placement()
+    import_invalidation()
+    import_refusals()
+    import_on_worker()
+    nested_context_modes()
+    print("PASS object level and Import: objects unwired (no inputs, no Input nodes, wired projects refused), Import paths, placement into this object or none, invalidation and stamps, self-reads refused, the worker, nested containers in All/Greyed/Hidden")
+
+## Two Geos, a Camera and a Light at the root: none has an input, wiring is
+## refused with a pointer to Import, and every flag stays as it was. A Geo
+## nested in a Geo keeps its inputs (a data level wires).
+func object_wiring_rules() -> unit!:
+    let graph = Network()
+    let first = graph.require(graph.scope)
+    graph.scope = -1
+    let second = graph.add("Geo", 200.0, 0.0)
+    let camera = graph.add("Camera", 0.0, 100.0)
+    let light = graph.add("Light", 200.0, 100.0)
+    for node in [first, second, camera, light]:
+        assert(node.inputs.length == 0 and node.sources.length == 0, node.name)
+    for (source, target) in [(first.id, second.id), (second.id, light.id), (first.id, camera.id)]:
+        var refused = ""
+        graph.connect(source, target, 0) catch failure:
+            refused = failure.message
+        assert(refused.contains("Import"), refused)
+    assert(first.visible and second.visible and light.visible)
+    # An object has no inputs, so no Input node inside it.
+    graph.scope = second.id
+    var refused = ""
+    _ = graph.add("Input", 0.0, 0.0) catch failure:
+        refused = failure.message
+        recover graph.require(first.id)
+    assert(refused.contains("Import") and not graph.has_inputs(second.id))
+    # Inside a Geo, a nested Geo is a data node: it has inputs, and an
+    # Input node inside it reads them.
+    let nested = graph.add("Geo", 0.0, 0.0)
+    assert(nested.inputs.length == 2 and graph.has_inputs(nested.id))
+    graph.scope = nested.id
+    _ = graph.add("Input", 0.0, 0.0)
+    graph.scope = -1
+    graph.selected = first.id
+    graph.display = first.id
+    # A project round trip keeps objects unwired; one that gives an object
+    # inputs is refused.
+    let doc = Document()
+    write_graph(doc, graph)
+    let restored = read_graph(doc)
+    assert(restored.require(second.id).inputs.length == 0 and restored.require(nested.id).inputs.length == 2)
+    doc.set(f"/scene/nodes/n{second.id}", "inputs", Value.numbers([2], [-1.0, -1.0]))
+    doc.set(f"/scene/nodes/n{second.id}", "sources", Value.numbers([2], [0.0, 0.0]))
+    var loaded = true
+    _ = read_graph(doc) catch failure:
+        loaded = false
+        recover graph
+    assert(not loaded)
+
+## Paths name a node from the root by its containers' names; the picker
+## lists every object and what lies inside, never shader nodes, cameras,
+## lights or the Import itself.
+func import_paths() -> unit!:
+    let (graph, source, _, sphere, importer) = scene()
+    assert(import_node.path_of(graph.nodes, sphere) == f"/{source.name}/{sphere.name}")
+    assert(import_node.resolve(graph.nodes, f"/{source.name}/{sphere.name}") != none)
+    assert(import_node.resolve(graph.nodes, f"{source.name}") != none)
+    assert(import_node.resolve(graph.nodes, "/nowhere") == none and import_node.resolve(graph.nodes, "") == none)
+    let choices = import_node.choices(graph.nodes, importer)
+    assert(f"/{source.name}" in choices and f"/{source.name}/{sphere.name}" in choices)
+    for path in choices:
+        assert(not path.contains("Import") and not path.contains("Light"), path)
+
+## The cube's Geo moved 5 along X, the importing Geo 3 up Y: into this
+## object, the cube (standing on its origin, its middle 0.5 up) sits at
+## (5, -2.5, 0) in the importer's frame; with None on the origin; read
+## inside its Geo, the same as the Geo.
+func import_placement() -> unit!:
+    let (graph, source, target, sphere, importer) = scene()
+    importer.texts[0] = "/" + source.name
+    let placed = graph.evaluate(importer.id).bounds()
+    close((placed.minimum.x + placed.maximum.x) * 0.5, 5.0, "1")
+    close((placed.minimum.y + placed.maximum.y) * 0.5, -2.5, "2")
+    importer.values[import_node.transform_slot] = import_node.no_transform
+    graph.invalidate(importer.id)
+    let local = graph.evaluate(importer.id).bounds()
+    close((local.minimum.x + local.maximum.x) * 0.5, 0.0, "3")
+    close((local.minimum.y + local.maximum.y) * 0.5, 0.5, "4")
+    # A node inside the Geo, into this object: the Geo's placement applies.
+    importer.values[import_node.transform_slot] = import_node.into_this_object
+    importer.texts[0] = import_node.path_of(graph.nodes, sphere)
+    graph.invalidate(importer.id)
+    let inner = graph.evaluate(importer.id).bounds()
+    close((inner.minimum.x + inner.maximum.x) * 0.5, 5.0, "5")
+    close((inner.minimum.y + inner.maximum.y) * 0.5, -2.5, "6")
+    # Rotated and scaled containers: the placement steps undo the importer's
+    # (rotation about Z by 90 degrees, scale 2) exactly.
+    target.values[6] = 90.0
+    target.values[7] = 2.0
+    target.values[8] = 2.0
+    target.values[9] = 2.0
+    graph.invalidate(target.id)
+    let turned = graph.evaluate(importer.id).bounds()
+    # World (5, 0.5, 0), less the importer's (0, 3, 0), is (5, -2.5, 0);
+    # turned back by -90 degrees about Z, (-2.5, -5, 0); halved,
+    # (-1.25, -2.5, 0).
+    close((turned.minimum.x + turned.maximum.x) * 0.5, -1.25, "7")
+    close((turned.minimum.y + turned.maximum.y) * 0.5, -2.5, "8")
+    close(turned.maximum.z - turned.minimum.z, 0.5, "9")
+    # The importing Geo, placed by its own transform, puts it back at the
+    # source's place in the world.
+    let world = graph.evaluate_data(target.id).require_mesh().bounds()
+    close((world.minimum.x + world.maximum.x) * 0.5, 5.0, "10")
+    close((world.minimum.y + world.maximum.y) * 0.5, 0.5, "11")
+
+## Changing the source, the source's container or the importer's container
+## dirties the Import; its stamp follows each.
+func import_invalidation() -> unit!:
+    let (graph, source, target, sphere, importer) = scene()
+    importer.texts[0] = "/" + source.name
+    let before = graph.evaluate(importer.id).bounds()
+    stamp_graph(graph)
+    let first = importer.stamp
+    # The cube grows.
+    sphere.values[0] = 2.0
+    graph.invalidate(sphere.id)
+    assert(importer.dirty)
+    let grown = graph.evaluate(importer.id).bounds()
+    close(before.maximum.y - before.minimum.y, 1.0, "12")
+    close(grown.maximum.y - grown.minimum.y, 2.0, "13")
+    stamp_graph(graph)
+    let second = importer.stamp
+    assert(second != first)
+    # The source's Geo moves.
+    source.values[1] = 7.0
+    graph.invalidate(source.id)
+    assert(importer.dirty)
+    close(graph.evaluate(importer.id).bounds().minimum.x, 6.0, "14")
+    stamp_graph(graph)
+    let third = importer.stamp
+    assert(third != second)
+    # The importer's Geo moves: what it imports is placed again.
+    target.values[1] = 1.0
+    graph.invalidate(target.id)
+    assert(importer.dirty)
+    close(graph.evaluate(importer.id).bounds().minimum.x, 5.0, "15")
+    stamp_graph(graph)
+    assert(importer.stamp != third)
+    # Names are not content: renaming the source and its path together
+    # keeps the stamp.
+    let kept = importer.stamp
+    source.name = "Rock"
+    importer.texts[0] = "/Rock"
+    stamp_graph(graph)
+    assert(importer.stamp == kept)
+
+## No path, a path to nothing, and a source that reads the Import fail with
+## a reason; stamping such a graph ends.
+func import_refusals() -> unit!:
+    let (graph, source, target, _, importer) = scene()
+    assert(failure_of(graph, importer.id).contains("Choose the object"))
+    importer.texts[0] = "/nowhere"
+    graph.invalidate(importer.id)
+    assert(failure_of(graph, importer.id).contains("Nothing at /nowhere"))
+    # The Import feeds its own Geo's output: reading that Geo reads itself.
+    importer.texts[0] = "/" + target.name
+    graph.invalidate(importer.id)
+    assert(failure_of(graph, importer.id).contains("part of"))
+    stamp_graph(graph)
+    # Two Geos importing each other's output: refused, and stamping ends.
+    graph.scope = source.id
+    let back = graph.add("Import", 0.0, 200.0)
+    back.texts[0] = "/" + target.name
+    importer.texts[0] = "/" + source.name
+    graph.invalidate(importer.id)
+    graph.invalidate(back.id)
+    stamp_graph(graph)
+    assert(failure_of(graph, back.id).contains("part of"))
+
+## The worker cooks an Import as the local cook does, and recooks it when
+## the source changes.
+func import_on_worker() -> unit!:
+    let w = Workspace()
+    let geo = w.network.scope
+    node_commands.leave_group(w)
+    node_commands.select_node(w, geo)
+    node_commands.set_parameter(w, 1, 5.0)
+    node_commands.add_node(w, "Geo", 300.0, 0.0)
+    let other = w.network.selected
+    node_commands.enter_group(w, other)
+    node_commands.add_node(w, "Import", 0.0, 0.0)
+    let importer = w.network.selected
+    node_commands.set_text(w, 0, "/" + w.network.require(geo).name)
+    w.enable_compute()
+    settle(w)
+    let mesh = w.geometry else trap("worker mesh")
+    close((mesh.bounds().minimum.x + mesh.bounds().maximum.x) * 0.5, 5.0, "16")
+    assert(w.network.require(importer).failure == "")
+    # The source's Geo moves: the worker recooks the Import.
+    node_commands.reveal_node(w, geo)
+    node_commands.set_parameter(w, 1, 8.0)
+    node_commands.reveal_node(w, importer)
+    settle(w)
+    let moved = w.geometry else trap("worker mesh")
+    close((moved.bounds().minimum.x + moved.bounds().maximum.x) * 0.5, 8.0, "17")
+    (w.compute else trap("worker")).close()
+
+## A Group inside a Geo, a sphere beside it holding the Geo's output: from
+## inside the Group the viewport draws the Group's flagged cube as the
+## context and the Geo's sphere as the rest, in each mode, with and
+## without the worker. When the Group is the Geo's output, it is the
+## branch the context lies in and is not drawn twice.
+func nested_context_modes() -> unit!:
+    let w = Workspace()
+    let geo = w.network.scope
+    node_commands.add_node(w, "Sphere", 300.0, 0.0)
+    let sphere = w.network.selected
+    node_commands.add_node(w, "Group", 0.0, 200.0)
+    let group = w.network.selected
+    node_commands.select_node(w, sphere)
+    node_commands.display_selected(w)
+    assert(w.network.outputs(geo)[0].id == sphere)
+    node_commands.enter_group(w, group)
+    node_commands.add_node(w, "Torus", 0.0, 0.0)
+    let torus = w.network.selected
+    let items = view_items(w.network)
+    assert(items.length == 2 and items[0].node.id == torus and not items[0].outside)
+    assert(items[1].node.id == sphere and items[1].outside)
+    # Greyed (the default) and Hidden: the sphere hides nothing; All: it does.
+    assert(w.drawn().length == 1)
+    w.set_context_mode(context_display.all)
+    assert(w.drawn().length == 2)
+    w.set_context_mode(context_display.hidden)
+    assert(w.drawn().length == 1)
+    w.set_context_mode(context_display.all)
+    w.enable_compute()
+    settle(w)
+    assert(w.drawn().length == 2)
+    w.set_context_mode(context_display.greyed)
+    assert(w.drawn().length == 1)
+    # The Group as the Geo's output: only the context draws.
+    node_commands.leave_group(w)
+    node_commands.select_node(w, group)
+    node_commands.display_selected(w)
+    node_commands.enter_group(w, group)
+    let alone = view_items(w.network)
+    assert(alone.length == 1 and alone[0].node.id == torus)
+    (w.compute else trap("worker")).close()
+
+## Root: a Geo moved 5 along X holding a unit cube (`sphere`), a Light, and
+## a Geo
+## moved 3 up Y holding an Import (its output) and a cube beside it.
+func scene() -> (Network, Node, Node, Node, Node)!:
+    let graph = Network(false)
+    let source = graph.add("Geo", 0.0, 0.0)
+    source.values[1] = 5.0
+    graph.scope = source.id
+    let sphere = graph.add("Cube", 0.0, 0.0)
+    sphere.values[0] = 1.0
+    graph.scope = -1
+    _ = graph.add("Light", 200.0, 0.0)
+    let target = graph.add("Geo", 400.0, 0.0)
+    target.values[2] = 3.0
+    graph.scope = target.id
+    _ = graph.add("Cube", 0.0, 0.0)
+    let importer = graph.add("Import", 200.0, 0.0)
+    graph.scope = -1
+    return (graph, source, target, sphere, importer)
+
+## Why node `id` fails to cook ("" when it cooks).
+func failure_of(graph: Network, id: int) -> str!:
+    _ = graph.evaluate_data(id) catch failure:
+        return failure.message
+    return ""
+
+func settle(w: Workspace) -> unit!:
+    let worker = w.compute else return
+    let deadline = time.now() + 20000000000
+    while worker.busy and time.now() < deadline: _ = w.poll_compute()
+    assert(not worker.busy, w.notice)
+
+## `a` within a millionth of `b`; `what` names the check when it is not.
+func close(a: float, b: float, what: str):
+    assert(math.abs(a - b) < 0.000001, f"check {what}: {a}, expected {b}")

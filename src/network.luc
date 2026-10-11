@@ -1,6 +1,7 @@
 ## Editor-owned geometry DAG. IDs survive history restores; meshes are immutable.
 ## What each level yields (the root's flagged objects, a container's output
-## node, a Materials library) is decided here: docs/NETWORK-LEVELS.md.
+## node, a Materials library) is decided here: docs/NETWORK-LEVELS.md. Wires
+## stay inside data levels; an object reads another through an Import node.
 from luce_geocore.geocore import Mesh
 from geometry_data import GeometryData
 from node import Node
@@ -13,6 +14,7 @@ from take import Take
 import shader_nodes
 import cad_nodes
 import levels
+import import_node
 
 pub func kinds() -> list[str]:
     return node_catalog.kinds()
@@ -109,10 +111,18 @@ pub class Network:
             if context == "cad":
                 error(ui.invalid, "Inside a CAD node, only CAD nodes (sketches, features, solids)")
             error(ui.invalid, "Shader nodes go inside a Material" if is_shader(kind) else f"{kind} goes inside a CAD node")
+        # An object has no inputs (below), so an Input node in one has
+        # nothing to read.
+        if kind == "Input" and not self.has_inputs(self.scope):
+            error(ui.invalid, "Nothing is wired into an object; bring another one in with an Import node")
         let node = Node(self.next_id, kind, x, y)
         node.parent = self.scope
         self.next_id += 1
         self.nodes.append(node)
+        # Nothing is wired on an object level: its nodes have no inputs.
+        if self.level_of(self.scope) == levels.object_level:
+            node.inputs = []
+            node.sources = []
         # A new Material starts with the surface its nodes feed.
         if kind == "Material":
             let surface = Node(self.next_id, "OpenPBR Surface", 300.0, 60.0)
@@ -150,6 +160,14 @@ pub class Network:
                 return node.id
         return -1
 
+    ## How many of data level `parent`'s nodes have the display flag.
+    pub func display_count(self, parent: int) -> int:
+        var count = 0
+        for node in self.children(parent):
+            if node.visible:
+                count += 1
+        return count
+
     func flag_alone(self, node: Node):
         for sibling in self.children(node.parent):
             sibling.visible = sibling.id == node.id
@@ -166,6 +184,17 @@ pub class Network:
         if context == "materials" or container.kind == "Material":
             return levels.library_level
         return levels.data_level
+
+    ## Whether container `parent`'s Input nodes have inputs to read: it sits
+    ## on a data level (an object has none).
+    pub func has_inputs(self, parent: int) -> bool:
+        let container = self.find(parent) else return false
+        return container.inputs.length > 0
+
+    ## The inputs a node on level `parent` has: none on an object level,
+    ## otherwise its kind's.
+    pub func input_count(self, kind: str, parent: int) -> int:
+        return 0 if self.level_of(parent) == levels.object_level else node_catalog.input_count(kind)
 
     ## Whether `id` sits on an object level (the root or a scene Group).
     pub func on_object_level(self, id: int) -> bool!:
@@ -340,6 +369,8 @@ pub class Network:
                 for child in self.outputs(node.id): pending.append(child.id)
             if node.kind == "Render":
                 for child in self.outputs(-1): pending.append(child.id)
+            if let imported = self.import_source(node):
+                pending.append(imported.id)
         return false
 
     ## Connect `source`'s output `output` (shader nodes have several) to
@@ -349,6 +380,8 @@ pub class Network:
         let node = self.require(target)
         if upstream.parent != node.parent:
             error(ui.invalid, "Connections must stay inside one network; connect the container and use an Input node inside")
+        if self.level_of(node.parent) == levels.object_level:
+            error(ui.invalid, "Objects are not wired together; bring one into another with an Import node")
         if upstream.kind == "Render":
             error(ui.invalid, "Render renders the scene; it has no output to connect")
         if port < 0 or port >= node.inputs.length:
@@ -359,11 +392,6 @@ pub class Network:
             error(ui.invalid, "Connection rejected: it would create a cycle")
         node.inputs[port] = source
         node.sources[port] = output
-        # On an object level every flagged node draws: the source now draws
-        # inside its reader, so it stops drawing alone.
-        if self.level_of(node.parent) == levels.object_level and upstream.visible:
-            upstream.visible = false
-            self.visibility_changed(upstream)
         self.invalidate(target)
 
     pub func disconnect(self, target: int, port: int) -> unit!:
@@ -445,6 +473,8 @@ pub class Network:
                     pending.append(node.id)
                 if node.kind == "Input" and node.parent == next:
                     pending.append(node.id)
+                if node.kind == import_node.kind_name and self.import_reads(node, next):
+                    pending.append(node.id)
 
     pub func evaluate(self, id: int) -> Mesh!:
         return self.evaluate_data(id).require_mesh()
@@ -502,6 +532,11 @@ pub class Network:
         if node.kind == "Input":
             let source = self.context_input(node)
             return self.evaluate_node(source, visiting) if source >= 0 else GeometryData()
+        if node.kind == import_node.kind_name:
+            if not node.enabled:
+                return GeometryData()
+            let source = self.import_read(node)
+            return import_node.placed(self.evaluate_node(source.id, visiting), self.import_steps(node, source))
         if node_catalog.collects_children(node.kind):
             var children = GeometryData()
             if node.enabled:
@@ -516,11 +551,11 @@ pub class Network:
             for child in self.outputs(-1):
                 scene = scene.merged(self.evaluate_node(child.id, visiting))
             return node.compute(scene)
-        if node.kind in node_catalog.sources() or reads_file(node.kind, node.enabled, node.values):
+        # Sources, and nodes with no inputs (a Camera, a Light), cook from nothing.
+        if node.kind in node_catalog.sources() or node.inputs.length == 0 or reads_file(node.kind, node.enabled, node.values):
             return node.compute(GeometryData())
         let port = int(node.values[0]) if node.kind == "Switch" and node.enabled else 0
-        # An Edit node starts from nothing when unconnected (it can create);
-        # a Camera or Light makes just its object.
+        # An Edit node starts from nothing when unconnected (it can create).
         if node_catalog.optional_input(node.kind) and node.inputs[0] < 0:
             # A Code or Script node from nothing still reads the clock, and a
             # Script its project's files.
@@ -555,6 +590,72 @@ pub class Network:
             else:
                 keys.append(0)
         return keys
+
+    # -- Import nodes (import_node.luc)
+
+    ## The node Import node `node` names, else none (not an Import, no path,
+    ## or nothing there). A source that reads the Import is still returned:
+    ## import_read refuses it.
+    pub func import_source(self, node: Node) -> Node?:
+        if node.kind != import_node.kind_name:
+            return none
+        return import_node.resolve(self.nodes, node.texts[0])
+
+    ## The source Import node `node` cooks from, or why it can't.
+    pub func import_read(self, node: Node) -> Node!:
+        if node.texts[0].trim() == "":
+            error(ui.invalid, "Choose the object to import")
+        let source = self.import_source(node) else error(ui.invalid, f"Nothing at {node.texts[0].trim()}")
+        if self.depends_on(source.id, node.id):
+            error(ui.invalid, "An Import can't read what it is part of")
+        return source
+
+    ## The placement steps Import node `node` applies to `source`'s result
+    ## (import_node.luc): into its own frame, or with the source's own
+    ## placement undone.
+    pub func import_steps(self, node: Node, source: Node) -> list[float]!:
+        let steps: list[float] = []
+        if node.values[import_node.transform_slot] == import_node.no_transform:
+            if node_catalog.places_children(source.kind):
+                steps.extend(import_node.inverse_steps(source))
+            return steps
+        # The containers above each, innermost first, down to the ones they share.
+        let rising = self.ancestors(source.parent)
+        let falling = self.ancestors(node.parent)
+        let shared: list[int] = []
+        for container in rising:
+            for other in falling:
+                if other.id == container.id:
+                    shared.append(container.id)
+        for container in rising:
+            if not (container.id in shared) and node_catalog.places_children(container.kind):
+                steps.extend(import_node.placement_step(container))
+        for container in falling.reversed():
+            if not (container.id in shared) and node_catalog.places_children(container.kind):
+                steps.extend(import_node.inverse_steps(container))
+        return steps
+
+    ## Whether invalidating `id` changes what Import node `node` reads: its
+    ## source, or a container above the source or above the Import (their
+    ## placements place what it reads).
+    func import_reads(self, node: Node, id: int) -> bool:
+        let source = self.import_source(node) else return false
+        if source.id == id:
+            return true
+        for container in self.ancestors(source.parent) + self.ancestors(node.parent):
+            if container.id == id:
+                return true
+        return false
+
+    ## Container `parent` and the containers above it, innermost first.
+    pub func ancestors(self, parent: int) -> list[Node]:
+        let result: list[Node] = []
+        var id = parent
+        for _ in 0..<17:
+            let container = self.find(id) else return result
+            result.append(container)
+            id = container.parent
+        return result
 
 ## `result` with `warning` when it has none of its own.
 pub func warned(result: GeometryData, warning: str) -> GeometryData:

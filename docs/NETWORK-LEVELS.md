@@ -2,8 +2,8 @@
 
 luced-3d's networks follow Houdini's split between the object level (`/obj`)
 and the data networks inside objects (SOPs). This note says what each level
-produces, how the flags work, what the viewport, the Outliner and Render show,
-and how scenes from before this change were converted.
+produces, how the flags work, why objects are not wired and how one reads
+another (the Import node), and what the viewport, the Outliner and Render show.
 
 ## Two kinds of level
 
@@ -28,9 +28,6 @@ display flag.
 - **At an object level** the flag is per node, as in Houdini's `/obj`: every
   node with its flag on is active and renders, and any number can be on.
   Render nodes never render as objects; they are render settings (below).
-  Wiring one object-level node into another turns the source's flag off, so
-  its result is not drawn twice, once alone and once inside its reader. Turn
-  it back on if you want both.
 - **In a data level** the flag is a radio button, as in a SOP network: one
   node holds it. Setting it on a node clears it on that node's siblings. A new
   node takes it. Deleting the node that holds it passes it to that node's
@@ -54,8 +51,8 @@ network's:
    pass-through node, offered in every data context. With several Output
    nodes the first one made is used, and the container warns: "Several
    Output nodes; Output 12 is used".
-2. Otherwise the node with the display flag. A project from before the radio
-   rule can have several flagged nodes; the first one is used, with a warning.
+2. Otherwise the node with the display flag (there is at most one; a
+   project with two in one data network does not load).
 3. With neither, the container yields nothing and warns: "No Output node or
    display flag inside".
 
@@ -70,12 +67,66 @@ Hidden children no longer leave a container's aggregate: a data container
 yields exactly one node, and an object-level Group yields its flagged
 children.
 
+## Objects are not wired
+
+In Houdini, wires at `/obj` make a parenting hierarchy. luced-3d has no
+object parenting (a Group places what it holds), so a wire between two
+objects would mean nothing: a Geo feeding a Light, or a Geo feeding another
+Geo. Nothing is wired at an object level:
+
+- Object-level nodes have **no inputs** (a project that gives one inputs does
+  not load), and the Network panel draws no ports there. Connecting two is
+  refused: "Objects are not wired together; bring one into another with an
+  Import node".
+- Camera and Light have no input anywhere: each makes just its object.
+- An object's network has no Input node (there is nothing for it to read);
+  the node menu leaves it out there.
+- Containers nested in a data network (a Geo inside a Geo, a Group inside an
+  SDF) keep their two inputs and Input nodes, as Houdini's subnets do: that
+  is wiring within one object.
+
+When you edit inside a Geo, you see that Geo as the context: nothing at the
+object level reads it, so it is never drawn as part of another object.
+
+What could make sense later is an object-level node that acts on another
+object (a deformer over a Geo). None exists; when one does, it is designed
+then, not wired through generic object inputs.
+
+## The Import node
+
+**Import** (Houdini's Object Merge) is how one object reads another. It sits
+in any data network (Geo, CAD, SDF, Volumes, GSplats, and Groups in them) and
+has no inputs:
+
+- **Object**: the node to read, by path from the root through the containers'
+  names: `/Geo 2` (what the Geo yields), `/Group 1/CAD 3`, or a node inside an
+  object, `/Geo 2/Sphere 4`. The row's button lists the scene's nodes.
+- **Transform**: *Into this object* (the default) places the result where it
+  sits in the scene, seen from the Import's frame: the placements of the
+  source's containers up to the containers the two share, then the inverse
+  placements of the Import's own containers (`Network.import_steps`). *None*
+  reads it in its own object's frame: a container's own placement is undone,
+  as Houdini leaves out the object transform.
+
+It recooks when its source changes, or a container's placement above the
+source or above the Import changes (`Network.invalidate`); its stamp lists
+the source's stamp and the placement steps, not the path, so a rename that
+keeps the path pointing at the same node recooks nothing. Both the local cook
+and the worker read through `Network.import_read`, which refuses an empty
+path, a path to nothing, and a source that reads the Import ("An Import can't
+read what it is part of"): importing the container the Import feeds.
+
+A Materials library reaches a Geo this way (Import `/Materials 3` into Assign
+Material's second input). A future mesh light would name its geometry the
+same way, by an object path parameter, not a wire.
+
 ## What changes in evaluation
 
 `Network.outputs(parent)` applies the table above, and every reader of a
 level uses it: the local cook and the worker's cook of containers, stamps
 (a container's stamp lists the stamps of what it yields), pinned results in
-the worker's store, invalidation, the Outliner and grouping. A container's
+the worker's store, invalidation, the Outliner and grouping. An Import node's
+source joins the same readers (`Network.import_source`). A container's
 instance is always visible: whether it is drawn is decided by its own flag at
 its parent level, not by a visibility bit inside its result.
 
@@ -93,9 +144,13 @@ The viewport always shows the root scene, however deep the network view is.
   - **The context**: what you are editing, drawn normally. In a data level,
     that is the node with the display flag. In an object-level Group, it is
     the Group's flagged children.
-  - **Everything else**: the flagged objects of each object level above,
-    except the branch you are in. They draw as the **context display mode**
-    says.
+  - **Everything else**: what each level above yields, except the branch
+    you are in: the flagged objects of each object level, and the output of
+    each data container you are nested in. Inside a Group in a Geo, the
+    Geo's output draws around the Group's flagged node, as the root's other
+    objects do (unless the Group is that output: then it is the branch). A
+    Materials library draws nothing. All of it draws as the **context
+    display mode** says.
 - **Coordinates.** The viewport works in the context's local frame (the
   transforms of the containers you are inside), as before, so modeling tools,
   picking and gizmos are unchanged. The rest of the scene is placed by the
@@ -132,15 +187,6 @@ object-level Group its flagged children.
 - The eye toggles an object-level node's display flag. Rows inside data
   containers have no eye: a data container's output is chosen in its network.
 
-## Conversion
-
-There are no users, so there is no migration code. The example projects under
-`examples/` are written by the tests (`tests/examples`), which build them with
-the editor's own commands; they were regenerated under these rules. Projects
-written before this change still open, but the `output` property is no longer
-read or written, so a container whose output was chosen by the old rules
-yields its flagged node instead.
-
 ## Tests
 
 `tests/editor/level_tests.luc` covers each rule: the root renders every
@@ -148,4 +194,8 @@ flagged object, a container yields only its output node (and warns with
 several or none), a Materials container yields every material, the viewport
 keeps showing the root while the network view is deep, All, Greyed and Hidden
 change what is drawn, the Outliner's greying and navigation, and Render
-rendering the root.
+rendering the root. `tests/editor/object_import_tests.luc` covers the
+object level (no inputs, no Input nodes, refused wires and projects), the
+Import node (paths, both transforms with rotated and scaled containers,
+invalidation and stamps, refusals, the worker) and nested containers in All,
+Greyed and Hidden.

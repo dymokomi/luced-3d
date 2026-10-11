@@ -53,9 +53,9 @@ lights and renders. Their parameters follow USD (UsdGeomCamera; UsdLux's rect, d
 sphere and distant lights), and each looks or shines down its local -Z.
 `GeometrySet.scene()` flattens a result and its instances to world space.
 
-- **Camera** and **Light** (`scene_nodes.luc`) add their object to their input,
-  or make just the object when unconnected, as an Edit node creates. Their
-  Translate and Rotate use Transform's slots. Light's Type starts at Area
+- **Camera** and **Light** (`scene_nodes.luc`) are objects at the root with no
+  input: each makes just its object (a data network reads one through an
+  Import node). Their Translate and Rotate use Transform's slots. Light's Type starts at Area
   (USD's RectLight).
 - **Render** takes the root's flagged objects (it has no input) once they hold
   the camera its Camera text names (or any camera), and warns when they have
@@ -70,8 +70,8 @@ library of definitions (path, shader, named parameters) carried with the
 geometry, and a face's material is its `material` text attribute, the binding
 luce-usd reads and writes as `material:binding`.
 
-- **Material** defines an OpenPBR material at a path; like Camera it adds to its
-  input when connected, so a chain of Material nodes (or a Merge, or a Group of
+- **Material** defines an OpenPBR material at a path; it adds to its input when
+  connected, so a chain of Material nodes (or a Merge, or a Group of
   them) is a library.
   - **Inside it, shader nodes** (shader_nodes.luc). Double-click to enter: the
     menu offers shader nodes alone, and only a Material holds them.

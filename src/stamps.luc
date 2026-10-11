@@ -4,6 +4,7 @@
 ## positions, display flags, selection or the Edit tool amount. Flags affect
 ## only what a level yields: a container's stamp lists the stamps of what it
 ## yields (Network.outputs), and a Render node's those of the root's objects.
+## An Import node's lists its source's stamp and the steps that place it.
 from network import Network
 from node import Node
 from cache_node import reads_file, cache_stamp, frozen_stamp
@@ -43,6 +44,12 @@ func stamp_of(graph: Network, node: Node, done: map[int, int], depth: int) -> in
     if node.kind == "Render":
         for child in graph.outputs(-1):
             children.append(stamp_of(graph, child, done, depth + 1))
+    # An Import reads its source, placed (a source that reads the Import
+    # fails its cook; it is not followed, so stamping ends).
+    if let source = graph.import_source(node):
+        if not graph.depends_on(source.id, node.id):
+            children.append(stamp_of(graph, source, done, depth + 1))
+            children.append(nonzero(graph.import_steps(node, source).hash()))
     # A Material reads every node inside it.
     if node.kind == "Material":
         for child in graph.children(node.id):
@@ -58,7 +65,9 @@ func stamp_of(graph: Network, node: Node, done: map[int, int], depth: int) -> in
     elif node.kind == "Cache":
         stamp = stamp_cache(node, inputs)
     else:
-        stamp = nonzero((node.kind, node.enabled, node.values, node.texts, inputs, node.sources, children, node.source_revision, node.guard, graph.direct_children(node)).hash())
+        # An Import's path is a name: what it reads is in `children`.
+        let texts: list[str] = [] if node.kind == "Import" else node.texts
+        stamp = nonzero((node.kind, node.enabled, node.values, texts, inputs, node.sources, children, node.source_revision, node.guard, graph.direct_children(node)).hash())
     # A Script node reads its file parameters' files: an edited file recooks it.
     if node.kind == script_cook.kind_name and node.frozen == "":
         stamp = nonzero((stamp, script_cook.file_stamps(node.texts, graph.folder)).hash())

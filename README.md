@@ -142,9 +142,11 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   node, groups the picked nodes, sets the Output and frames the nodes. Group inherits its enclosing context. The **Outliner**
   shows the root's objects and what each container yields, greying what lies
   outside the container the network view is in; its search field filters them.
-- To feed data between networks, wire a container's first or second input, then
-  create **Input** inside it and choose First or Second. For example, connect a
-  Materials library to Geo, then wire Input into Assign Material's second port.
+- Objects at the root are not wired together. To bring one object into another,
+  add an **Import** node inside it and pick the object (Houdini's Object Merge):
+  for example, Import a Materials library into a Geo and wire the Import into
+  Assign Material's second port. A container nested in a data network takes
+  wires on its two inputs, read inside by **Input** nodes.
   See [context rules](docs/OUTLINER.md) and [network levels](docs/NETWORK-LEVELS.md).
 - Disabling Transform, an Edit node or Merge passes its first input through.
   Disabling Cube produces empty geometry. Delete/Backspace in Network deletes
