@@ -12,6 +12,7 @@ from luce_std import math
 import node_commands
 import selection_commands
 import modeling_commands
+import time
 from snapping import grid_step
 
 func drag(gizmo: NodeGizmos, at: list[float], dx: float, dy: float, snap: bool = false) -> unit!:
@@ -98,6 +99,7 @@ pub func gizmo_tests() -> unit!:
         painter.close()
         frame.close()
     components()
+    scene_objects()
     print("PASS Cube corner resizing, plane constraints, snapped move/rotate/scale, compensated pivot, sizing and undo, component rotate and scale")
 
 ## The gizmo on a selected face of an Edit Mesh: Rotate turns its points
@@ -132,3 +134,57 @@ func components() -> unit!:
     let grown = w.geometry else trap("grown")
     let corner = grown.face_point(2, 0)
     assert(math.abs(grown.point(corner).x - center.x) > math.abs(before.point(corner).x - center.x))
+
+## Camera/Light own translation and rotation, but have no scale or pivot slots.
+func scene_objects() -> unit!:
+    for kind in ["Light", "Camera"]:
+        let w = Workspace()
+        node_commands.leave_group(w)
+        node_commands.add_node(w, kind, 200.0, 0.0)
+        for slot in [1, 2, 3]: node_commands.set_parameter(w, slot, 0.0)
+        let gizmo = NodeGizmos(w)
+        # A pivot setting left over from Geo must not reinterpret light intensity.
+        gizmo.pivot = true
+        w.snaps.flags[1] = false
+        for background in [false, true]:
+            if background: w.enable_compute()
+            modeling_commands.choose_tool(w, "Move")
+            assert(gizmo.available() and gizmo.mode() == "Move")
+            let before = (w.selected() else trap(kind)).values.copy()
+            near(gizmo.origin().subtract(Vector3(before[1], before[2], before[3])).length(), 0.0)
+            let origin = gm.project(w, gizmo.origin(), 1000.0, 600.0)
+            let cursor = w.history.cursor
+            drag(gizmo, origin, 37.0, -23.0)
+            let after = (w.selected() else trap(kind)).values.copy()
+            assert(after[1] != before[1] or after[2] != before[2] or after[3] != before[3])
+            for slot in 0..<after.length:
+                if slot < 1 or slot > 3: near(after[slot], before[slot])
+            assert(w.history.cursor == cursor + 1)
+            if let worker = w.compute:
+                let deadline = time.now() + 20000000000
+                while worker.busy and time.now() < deadline: _ = w.poll_compute()
+                assert(not worker.busy and w.notice == "", w.notice)
+            var seen = false
+            for data in w.batches.scenes:
+                let scene = data.scene()
+                for at in 0..<scene.count():
+                    if scene.is_camera(at) == (kind == "Camera"):
+                        near(scene.object(at).matrix.translation.subtract(Vector3(after[1], after[2], after[3])).length(), 0.0)
+                        seen = true
+            assert(seen)
+            w.undo()
+            assert((w.selected() else trap(kind)).values == before)
+            w.redo()
+            assert((w.selected() else trap(kind)).values == after)
+            modeling_commands.choose_tool(w, "Rotate")
+            assert(gizmo.available() and gizmo.mode() == "Rotate")
+            let length = w.view.distance * 0.14
+            let ring = gm.project(w, gizmo.origin().add(Vector3(length * 0.707106781, length * 0.707106781, 0.0)), 1000.0, 600.0)
+            drag(gizmo, ring, 50.0, -70.0)
+            let turned = (w.selected() else trap(kind)).values
+            assert(turned[4] != after[4] or turned[5] != after[5] or turned[6] != after[6])
+            for slot in 7..<turned.length: near(turned[slot], after[slot])
+            modeling_commands.choose_tool(w, "Scale")
+            assert(not gizmo.available())
+        if let worker = w.compute: worker.close()
+    print("PASS root Light/Camera Move and Rotate gestures, preserved settings, stale pivot flag, undo/redo and worker transforms")
