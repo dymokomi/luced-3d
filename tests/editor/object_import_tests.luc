@@ -82,9 +82,16 @@ func object_wiring_rules() -> unit!:
 func import_paths() -> unit!:
     let (graph, source, _, sphere, importer) = scene()
     assert(import_node.path_of(graph.nodes, sphere) == f"/{source.name}/{sphere.name}")
-    assert(import_node.resolve(graph.nodes, f"/{source.name}/{sphere.name}") != none)
-    assert(import_node.resolve(graph.nodes, f"{source.name}") != none)
-    assert(import_node.resolve(graph.nodes, "/nowhere") == none and import_node.resolve(graph.nodes, "") == none)
+    assert(import_node.resolve(graph.nodes, importer, f"/{source.name}/{sphere.name}") != none)
+    assert(import_node.resolve(graph.nodes, importer, "/nowhere") == none and import_node.resolve(graph.nodes, importer, "") == none)
+    # Relative paths start at the Import, as Houdini's: .. is its network.
+    assert(import_node.resolve(graph.nodes, importer, source.name) == none)
+    let beside = import_node.resolve(graph.nodes, importer, f"../../{source.name}/./{sphere.name}") else trap("relative")
+    assert(beside.id == sphere.id)
+    assert(import_node.relative_path(graph.nodes, importer, sphere) == f"../../{source.name}/{sphere.name}")
+    assert(import_node.relative_path(graph.nodes, importer, graph.require(importer.parent)) == "..")
+    assert(import_node.relative_path(graph.nodes, importer, importer) == ".")
+    assert(import_node.resolve(graph.nodes, importer, "../../../..") == none)
     let choices = import_node.choices(graph.nodes, importer)
     assert(f"/{source.name}" in choices and f"/{source.name}/{sphere.name}" in choices)
     for path in choices:
@@ -97,6 +104,7 @@ func import_paths() -> unit!:
 func import_placement() -> unit!:
     let (graph, source, target, sphere, importer) = scene()
     importer.texts[0] = "/" + source.name
+    importer.values[import_node.transform_slot] = import_node.into_this_object
     let placed = graph.evaluate(importer.id).bounds()
     close((placed.minimum.x + placed.maximum.x) * 0.5, 5.0, "1")
     close((placed.minimum.y + placed.maximum.y) * 0.5, -2.5, "2")
@@ -137,6 +145,7 @@ func import_placement() -> unit!:
 func import_invalidation() -> unit!:
     let (graph, source, target, sphere, importer) = scene()
     importer.texts[0] = "/" + source.name
+    importer.values[import_node.transform_slot] = import_node.into_this_object
     let before = graph.evaluate(importer.id).bounds()
     stamp_graph(graph)
     let first = importer.stamp
@@ -165,11 +174,12 @@ func import_invalidation() -> unit!:
     close(graph.evaluate(importer.id).bounds().minimum.x, 5.0, "15")
     stamp_graph(graph)
     assert(importer.stamp != third)
-    # Names are not content: renaming the source and its path together
-    # keeps the stamp.
+    # Names are not content: renaming the source rewrites the path and
+    # keeps the stamp, and nothing recooks.
     let kept = importer.stamp
-    source.name = "Rock"
-    importer.texts[0] = "/Rock"
+    _ = graph.evaluate(importer.id)
+    graph.rename(source.id, "Rock")
+    assert(importer.texts[0] == "/Rock" and not importer.dirty)
     stamp_graph(graph)
     assert(importer.stamp == kept)
 
@@ -210,6 +220,7 @@ func import_on_worker() -> unit!:
     node_commands.add_node(w, "Import", 0.0, 0.0)
     let importer = w.network.selected
     node_commands.set_text(w, 0, "/" + w.network.require(geo).name)
+    node_commands.set_parameter(w, import_node.transform_slot, import_node.into_this_object)
     w.enable_compute()
     settle(w)
     let mesh = w.geometry else trap("worker mesh")
@@ -267,9 +278,8 @@ func nested_context_modes() -> unit!:
     (w.compute else trap("worker")).close()
 
 ## Root: a Geo moved 5 along X holding a unit cube (`sphere`), a Light, and
-## a Geo
-## moved 3 up Y holding an Import (its output) and a cube beside it.
-func scene() -> (Network, Node, Node, Node, Node)!:
+## a Geo moved 3 up Y holding an Import (its output) and a cube beside it.
+pub func scene() -> (Network, Node, Node, Node, Node)!:
     let graph = Network(false)
     let source = graph.add("Geo", 0.0, 0.0)
     source.values[1] = 5.0
@@ -287,17 +297,17 @@ func scene() -> (Network, Node, Node, Node, Node)!:
     return (graph, source, target, sphere, importer)
 
 ## Why node `id` fails to cook ("" when it cooks).
-func failure_of(graph: Network, id: int) -> str!:
+pub func failure_of(graph: Network, id: int) -> str!:
     _ = graph.evaluate_data(id) catch failure:
         return failure.message
     return ""
 
-func settle(w: Workspace) -> unit!:
+pub func settle(w: Workspace) -> unit!:
     let worker = w.compute else return
     let deadline = time.now() + 20000000000
     while worker.busy and time.now() < deadline: _ = w.poll_compute()
     assert(not worker.busy, w.notice)
 
 ## `a` within a millionth of `b`; `what` names the check when it is not.
-func close(a: float, b: float, what: str):
+pub func close(a: float, b: float, what: str):
     assert(math.abs(a - b) < 0.000001, f"check {what}: {a}, expected {b}")

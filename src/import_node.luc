@@ -1,33 +1,46 @@
 ## The Import node, Houdini's Object Merge: inside a data network, the result
-## of another node, named by its path (/Geo 2, /Group 1/CAD 3, /Geo 2/Sphere 4),
-## with no wire. Objects are not wired together at the object level
-## (docs/NETWORK-LEVELS.md); this is how one object reads another.
+## of other nodes, named by path, with no wire. Objects are not wired
+## together at the object level (docs/NETWORK-LEVELS.md); this is how one
+## object reads another.
 ##
-## Transform "Into this object" places what it reads where it sits in the
-## world, seen from the Import's own frame: the placements of the source's
-## containers up to the containers the two share, then the inverses of the
-## Import's containers below them. "None" reads it in its own object's
-## frame: a container's own placement is undone, as Houdini leaves out the
-## object transform.
+## Paths are Houdini's operator paths. An absolute path starts at the root
+## and names each container down to the node: /Geo 2, /Geo 2/Sphere 4. A
+## relative one starts at the Import itself: `..` is the network it sits
+## in, so ../Sphere 4 is a sibling and ../../Geo 2 an object beside its
+## own. In the Object path, `*` (any run of characters) and `?` (one) in a
+## name read every node that matches, merged in authoring order.
 ##
-## Network resolves the path and orders the containers (Network.import_source,
-## Network.import_steps); this module names them and applies the steps. The
-## local cook and the worker's cook both read through here, and a stamp lists
-## the source's stamp and the steps.
+## Transform (Houdini's menu, with its Transform Object and Invert
+## Transform): each source's geometry starts in its own frame, the frame
+## Houdini calls its object's (`frame`); None leaves it there, Into This
+## Object carries it into the Import's frame, Into Specified Object into the
+## Transform Object's (blank: the world; ".": the source's own, as None).
+## Invert carries it the other way. `carry` writes the carry as placement
+## steps; Network.import_steps chooses the frames.
+##
+## Renaming or regrouping nodes rewrites every exact path that names them
+## (`references`, then `retarget`), keeping each path absolute or relative.
 from luce_3d.graphics import Vector3
 from geometry_data import GeometryData
 from node import Node
+from shader_nodes import is_shader
 import node_catalog
 
 pub let kind_name = "Import"
 
-## Value slot of the Transform menu, and its choices.
-pub let transform_slot = 0
-pub let into_this_object = 0.0
-pub let no_transform = 1.0
+## Text slots: the Object path and the Transform Object path.
+pub let object_slot = 0
+pub let transform_object_slot = 1
 
-## A node's path from the root: each container's name, then its own, after
-## a "/" each (/Geo 2/Sphere 4).
+## Value slots: the Transform menu and its choices, and Invert Transform.
+pub let transform_slot = 0
+pub let no_transform = 0.0
+pub let into_this_object = 1.0
+pub let into_specified_object = 2.0
+pub let invert_slot = 1
+
+## A node's absolute path: each container's name, then its own, after a
+## "/" each (/Geo 2/Sphere 4).
 pub func path_of(nodes: list[Node], node: Node) -> str:
     var path = "/" + node.name
     var parent = node.parent
@@ -37,27 +50,112 @@ pub func path_of(nodes: list[Node], node: Node) -> str:
         parent = container.parent
     return path
 
-## The node at `path` ("/Geo 2/Sphere 4"; the leading "/" may be left out),
-## the first of a level's nodes with each name; none when nothing is there.
-pub func resolve(nodes: list[Node], path: str) -> Node?:
+## `target`'s path relative to `start` (Houdini's: `..` climbs from the
+## node itself to its network): ../Sphere 4 for a sibling, ../.. for the
+## container `start` sits in, "." for itself.
+pub func relative_path(nodes: list[Node], start: Node, target: Node) -> str:
+    let above = chain(nodes, start.id)
+    let below = chain(nodes, target.id)
+    # The innermost level both lie in (-1, the root, at worst).
+    var shared = 0
+    while shared < above.length and not (above[shared] in below):
+        shared += 1
+    let meet = above[shared] if shared < above.length else -1
+    let parts: list[str] = []
+    for _ in 0..<shared:
+        parts.append("..")
+    let names: list[str] = []
+    for id in below:
+        if id == meet:
+            break
+        if let node = find(nodes, id):
+            names.append(node.name)
+    for name in names.reversed():
+        parts.append(name)
+    return parts.join("/") if parts.length > 0 else "."
+
+## Whether `path` holds a wildcard: it names a set of nodes, not one.
+pub func is_pattern(path: str) -> bool:
+    return path.contains("*") or path.contains("?")
+
+## The nodes `path` names, seen from Import node `start` (relative paths
+## begin there): one node for an exact path, every match in authoring
+## order for a pattern, none when nothing is there. A wildcard never
+## matches the Import, the containers it sits in, cameras, lights, Render
+## nodes or shader nodes.
+pub func resolve_all(nodes: list[Node], start: Node, path: str) -> list[Node]:
     let trimmed = path.trim()
-    if trimmed == "" or trimmed == "/":
-        return none
-    var parent = -1
-    var found: Node? = none
-    for name in (trimmed[1..<trimmed.length] if trimmed.starts_with("/") else trimmed).split("/"):
-        var next: Node? = none
-        for node in nodes:
-            if node.parent == parent and node.name == name and next == none:
-                next = node
-        let node = next else return none
-        found = node
-        parent = node.id
+    let found: list[Node] = []
+    if trimmed == "":
+        return found
+    # Levels reached so far: node ids, -1 the root.
+    var at: list[int] = [-1] if trimmed.starts_with("/") else [start.id]
+    let parts = trimmed.split("/")
+    for index in 0..<parts.length:
+        let part = parts[index]
+        if part == "" or part == ".":
+            continue
+        let next: list[int] = []
+        if part == "..":
+            for id in at:
+                if id >= 0:
+                    next.append(parent_of(nodes, id))
+        else:
+            # A wildcard's exclusions apply to what the path ends at.
+            let wild = is_pattern(part) and index == parts.length - 1
+            for node in nodes:
+                if node.parent in at and matches(part, node.name) and not (node.id in next) and not (wild and excluded(nodes, start, node)):
+                    next.append(node.id)
+        at = next
+    for node in nodes:
+        if node.id in at:
+            found.append(node)
+    if not is_pattern(trimmed) and found.length > 1:
+        return [found[0]]
     return found
 
-## Every node an Import may name, by path: each object and what lies inside
-## it, in authoring order, depth first; never shader nodes or the Import
-## itself.
+## The one node exact path `path` names from `start`, else none (nothing
+## there, or a pattern).
+pub func resolve(nodes: list[Node], start: Node, path: str) -> Node?:
+    if is_pattern(path):
+        return none
+    let found = resolve_all(nodes, start, path)
+    return found[0] if found.length > 0 else none
+
+## Whether `name` matches `pattern`: `*` stands for any run of characters,
+## `?` for one, anything else for itself.
+pub func matches(pattern: str, name: str) -> bool:
+    var p = 0
+    var n = 0
+    var star = -1
+    var mark = 0
+    while n < name.length:
+        let symbol = pattern[p..<p + 1] if p < pattern.length else ""
+        if symbol == "*":
+            star = p
+            mark = n
+            p += 1
+        elif symbol != "" and (symbol == "?" or symbol == name[n..<n + 1]):
+            p += 1
+            n += 1
+        elif star >= 0:
+            p = star + 1
+            mark += 1
+            n = mark
+        else:
+            return false
+    while p < pattern.length and pattern[p..<p + 1] == "*":
+        p += 1
+    return p == pattern.length
+
+## What a wildcard leaves out: the Import, the containers it sits in (they
+## read it), cameras, lights, Render nodes and shader nodes.
+func excluded(nodes: list[Node], importer: Node, node: Node) -> bool:
+    return node.kind in node_catalog.scene_kinds() or is_shader(node.kind) or node.id in chain(nodes, importer.id)
+
+## Every node an Import may name, by absolute path: each object and what
+## lies inside it, in authoring order, depth first; never shader nodes,
+## cameras, lights, Render nodes or the Import itself.
 pub func choices(nodes: list[Node], importer: Node) -> list[str]:
     let result: list[str] = []
     gather(nodes, -1, importer, result)
@@ -71,8 +169,95 @@ func gather(nodes: list[Node], parent: int, importer: Node, result: list[str]):
         if node_catalog.collects_children(node.kind):
             gather(nodes, node.id, importer, result)
 
-## The steps that place a container's yield, one (translation, rotation,
-## scale) each, as numbers: nine a step.
+# -- Paths kept through renames and regrouping
+
+## An exact path an Import names (Object or Transform Object, by text
+## slot) and the node it reaches.
+pub class Reference:
+    pub let importer: int
+    pub let slot: int
+    pub let target: int
+
+    pub func init(self, importer: int, slot: int, target: int):
+        self.importer = importer
+        self.slot = slot
+        self.target = target
+
+## Every exact path each Import names, with the node it reaches now: taken
+## before an edit renames or moves nodes, and handed to `retarget` after.
+## Patterns are left as typed, as Houdini leaves them.
+pub func references(nodes: list[Node]) -> list[Reference]:
+    let result: list[Reference] = []
+    for node in nodes:
+        if node.kind != kind_name:
+            continue
+        for slot in [object_slot, transform_object_slot]:
+            let path = node.texts[slot].trim()
+            if path == "" or path == ".":
+                continue
+            if let target = resolve(nodes, node, path):
+                result.append(Reference(node.id, slot, target.id))
+    return result
+
+## After an edit, point each of `taken` (from `references`) at its node
+## again: a path that no longer reaches it is rewritten, absolute as
+## absolute and relative as relative. A node that is gone leaves its path
+## as it was (the Import then says nothing is there). The ids of the
+## Imports whose paths changed.
+pub func retarget(nodes: list[Node], taken: list[Reference]) -> list[int]:
+    let changed: list[int] = []
+    for reference in taken:
+        let importer = find(nodes, reference.importer) else continue
+        let target = find(nodes, reference.target) else continue
+        let path = importer.texts[reference.slot].trim()
+        if let reached = resolve(nodes, importer, path):
+            if reached.id == target.id:
+                continue
+        importer.texts[reference.slot] = path_of(nodes, target) if path.starts_with("/") else relative_path(nodes, importer, target)
+        if not (importer.id in changed):
+            changed.append(importer.id)
+    return changed
+
+# -- Frames and placement steps
+
+## The containers whose placements carry a node's own frame into the
+## world, innermost first: a container that places what it yields starts
+## with itself (Houdini's object, whose geometry lies in its frame), any
+## other node with the containers it sits in.
+pub func frame(nodes: list[Node], node: Node) -> list[Node]:
+    let result: list[Node] = []
+    for id in chain(nodes, node.id if node_catalog.places_children(node.kind) else node.parent):
+        if let container = find(nodes, id):
+            if node_catalog.places_children(container.kind):
+                result.append(container)
+    return result
+
+## The placement steps that carry `source`'s result from frame `out_of`
+## into frame `into` (each from `frame`). The result arrives already placed
+## by its own container when `source` places what it yields, so that
+## placement is undone first, unless `out_of` begins with it. Containers
+## both frames share from the world down cancel.
+pub func carry(source: Node, out_of: list[Node], into: list[Node]) -> list[float]!:
+    var out = out_of.length
+    var back = into.length
+    while out > 0 and back > 0 and out_of[out - 1].id == into[back - 1].id:
+        out -= 1
+        back -= 1
+    let result: list[float] = []
+    var first = 0
+    if node_catalog.places_children(source.kind):
+        if out > 0 and out_of[0].id == source.id:
+            first = 1
+        else:
+            result.extend(inverse_steps(source))
+    for at in first..<out:
+        result.extend(placement_step(out_of[at]))
+    for at in 0..<back:
+        result.extend(inverse_steps(into[back - 1 - at]))
+    return result
+
+## The step that places a container's yield (translation, rotation, scale),
+## as nine numbers.
 pub func placement_step(container: Node) -> list[float]:
     let (t, r, s) = container.placement_parts()
     return [t.x, t.y, t.z, r.x, r.y, r.z, s.x, s.y, s.z]
@@ -96,6 +281,23 @@ pub func placed(data: GeometryData, steps: list[float]) -> GeometryData!:
                                     Vector3(steps[at + 6], steps[at + 7], steps[at + 8]))
         at += 9
     return result
+
+## Node `id` and the containers above it, innermost first, ending with -1
+## (the root).
+func chain(nodes: list[Node], id: int) -> list[int]:
+    let result: list[int] = []
+    var at = id
+    for _ in 0..<18:
+        result.append(at)
+        if at < 0:
+            return result
+        at = parent_of(nodes, at)
+    return result
+
+func parent_of(nodes: list[Node], id: int) -> int:
+    if let node = find(nodes, id):
+        return node.parent
+    return -1
 
 func find(nodes: list[Node], id: int) -> Node?:
     for node in nodes:

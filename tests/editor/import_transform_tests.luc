@@ -1,0 +1,200 @@
+## The Import node's Transform menu, Houdini's Object Merge's
+## (docs/NETWORK-LEVELS.md): None keeps the source's own frame, Into This
+## Object carries it into the Import's, Into Specified Object into the
+## Transform Object's (blank: the world, ".": the source's own), and Invert
+## Transform carries it the other way. Every container here is turned about
+## several axes and scaled unevenly, so a wrong step order shows.
+from network import Network
+from node import Node
+from workspace import Workspace
+from object_import_tests import scene, close, failure_of, settle
+from luce_geocore.geocore import Mesh
+from geometry_data import GeometryData
+import import_node
+import node_commands
+
+pub func import_transform_tests() -> unit!:
+    transform_modes()
+    inverted_modes()
+    nested_frames()
+    patterns()
+    transforms_on_worker()
+    print("PASS Import transforms: None, Into this object, Into specified object (a path, blank, .), Invert Transform, nested rotated and scaled containers, wildcard paths, the worker")
+
+## The source Geo, the importing Geo and a third Geo (Frame) turned and
+## scaled unevenly; the Import reads the source Geo.
+func turned() -> (Network, Node, Node, Node, Node)!:
+    let (graph, source, target, sphere, importer) = scene()
+    place(source, [5.0, 0.0, 0.0], [10.0, 20.0, 30.0], [1.0, 2.0, 3.0])
+    place(target, [0.0, 3.0, 0.0], [30.0, 45.0, 60.0], [2.0, 1.0, 0.5])
+    graph.scope = -1
+    let frame = graph.add("Geo", 600.0, 0.0)
+    graph.rename(frame.id, "Frame")
+    place(frame, [1.0, 2.0, 3.0], [40.0, -20.0, 70.0], [0.5, 2.0, 1.5])
+    importer.texts[import_node.object_slot] = "/" + source.name
+    for node in [source, target, frame]:
+        graph.invalidate(node.id)
+    _ = sphere
+    return (graph, source, target, frame, importer)
+
+## Each mode, checked against where the cube sits in the world (the source
+## Geo's result) and in its own frame (the cube node's).
+func transform_modes() -> unit!:
+    let (graph, source, target, frame, importer) = turned()
+    let world = graph.evaluate_data(source.id).require_mesh()
+    let own = graph.evaluate(graph.children(source.id)[0].id)
+    # None, the default: the cube in its own frame.
+    assert(importer.values[import_node.transform_slot] == import_node.no_transform)
+    same(graph.evaluate(importer.id), own, "none")
+    # Into this object: placed by the importing Geo, it is back in the world.
+    set_mode(graph, importer, import_node.into_this_object, "")
+    let into = graph.evaluate(importer.id)
+    same(placed_by(into, [target]), world, "into this object")
+    same(graph.evaluate_data(target.id).require_mesh(), world, "the importing Geo")
+    # Into specified object: the Frame's frame.
+    set_mode(graph, importer, import_node.into_specified_object, "/Frame")
+    same(placed_by(graph.evaluate(importer.id), [frame]), world, "into the Frame")
+    # The importing Geo, by a relative path, is Into this object.
+    set_mode(graph, importer, import_node.into_specified_object, "..")
+    same(graph.evaluate(importer.id), into, "into ..")
+    # Blank is the world; "." the source's own frame, as None.
+    set_mode(graph, importer, import_node.into_specified_object, "")
+    same(graph.evaluate(importer.id), world, "into the world")
+    set_mode(graph, importer, import_node.into_specified_object, ".")
+    same(graph.evaluate(importer.id), own, "into .")
+    # A Transform Object that is not there fails with a reason.
+    set_mode(graph, importer, import_node.into_specified_object, "/Nowhere")
+    assert(failure_of(graph, importer.id).contains("No object at /Nowhere"))
+
+## Invert Transform: the cube carried from the destination frame into the
+## source's. Placed back by the source Geo, it is the cube placed by the
+## destination.
+func inverted_modes() -> unit!:
+    let (graph, source, target, frame, importer) = turned()
+    let own = graph.evaluate(graph.children(source.id)[0].id)
+    importer.values[import_node.invert_slot] = 1.0
+    # With None there is nothing to invert.
+    set_mode(graph, importer, import_node.no_transform, "")
+    same(graph.evaluate(importer.id), own, "none inverted")
+    set_mode(graph, importer, import_node.into_this_object, "")
+    same(placed_by(graph.evaluate(importer.id), [source]), placed_by(own, [target]), "into this object inverted")
+    set_mode(graph, importer, import_node.into_specified_object, "/Frame")
+    same(placed_by(graph.evaluate(importer.id), [source]), placed_by(own, [frame]), "into the Frame inverted")
+    set_mode(graph, importer, import_node.into_specified_object, "")
+    same(placed_by(graph.evaluate(importer.id), [source]), own, "into the world inverted")
+
+## The Import inside a turned Group inside the importing Geo, reading a
+## node inside the source Geo: both containers above it count.
+func nested_frames() -> unit!:
+    let (graph, source, target, _, importer) = turned()
+    graph.scope = target.id
+    let group = graph.add("Group", 0.0, 300.0)
+    place(group, [0.5, -1.0, 2.0], [-25.0, 15.0, 80.0], [1.5, 0.75, 1.25])
+    graph.scope = group.id
+    let inner = graph.add("Import", 0.0, 0.0)
+    graph.scope = -1
+    let cube = graph.children(source.id)[0]
+    inner.texts[import_node.object_slot] = f"../../../{source.name}/{cube.name}"
+    set_mode(graph, inner, import_node.into_this_object, "")
+    let world = graph.evaluate_data(source.id).require_mesh()
+    same(placed_by(graph.evaluate(inner.id), [group, target]), world, "nested into this object")
+    # Into the Group's Geo, by a path: the Group's placement stays to apply.
+    set_mode(graph, inner, import_node.into_specified_object, "../..")
+    same(placed_by(graph.evaluate(inner.id), [target]), world, "nested into the Geo")
+    _ = importer
+
+## A wildcard reads every match, merged in authoring order, and never the
+## Import's own containers: /Geo* from inside the second Geo reads the first.
+func patterns() -> unit!:
+    let (graph, source, target, _, importer) = scene()
+    importer.texts[import_node.object_slot] = "/Geo*"
+    graph.invalidate(importer.id)
+    assert(graph.evaluate(importer.id).face_count() == 6)
+    assert(graph.import_sources(importer).length == 1 and graph.import_sources(importer)[0].id == source.id)
+    # Both cubes, one in each Geo.
+    importer.texts[import_node.object_slot] = "/Geo ?/Cube*"
+    graph.invalidate(importer.id)
+    assert(graph.import_sources(importer).length == 2)
+    assert(graph.evaluate(importer.id).face_count() == 12)
+    # A match changing recooks the Import.
+    let cube = graph.children(source.id)[0]
+    cube.values[0] = 2.0
+    graph.invalidate(cube.id)
+    assert(importer.dirty)
+    # Nothing matching fails with a reason; the matcher's rules.
+    importer.texts[import_node.object_slot] = "/Sphere*"
+    graph.invalidate(importer.id)
+    assert(failure_of(graph, importer.id).contains("Nothing at /Sphere*"))
+    assert(import_node.matches("G*o ?", "Geo 4") and import_node.matches("*", "") and import_node.matches("a*b*c", "aXbYbc"))
+    assert(not import_node.matches("Geo ?", "Geo 12") and not import_node.matches("a*c", "abd"))
+    _ = target
+
+## The worker cooks each mode as the local cook does: Into specified
+## object with Invert, and a Transform Object that moves.
+func transforms_on_worker() -> unit!:
+    let w = Workspace()
+    let geo = w.network.scope
+    node_commands.leave_group(w)
+    node_commands.select_node(w, geo)
+    node_commands.set_parameter(w, 1, 5.0)
+    node_commands.add_node(w, "Geo", 300.0, 0.0)
+    let frame = w.network.selected
+    node_commands.set_parameter(w, 2, 2.0)
+    node_commands.add_node(w, "Geo", 600.0, 0.0)
+    let other = w.network.selected
+    node_commands.enter_group(w, other)
+    node_commands.add_node(w, "Import", 0.0, 0.0)
+    node_commands.set_text(w, import_node.object_slot, "/" + w.network.require(geo).name)
+    node_commands.set_parameter(w, import_node.transform_slot, import_node.into_specified_object)
+    node_commands.set_text(w, import_node.transform_object_slot, "/" + w.network.require(frame).name)
+    w.enable_compute()
+    settle(w)
+    # The cube (size 2, its middle 1 up) at (5, 1, 0), seen from (0, 2, 0).
+    center(w, 5.0, -1.0, "worker into the Frame")
+    # Inverted: from the Frame's frame into the source's, (-5, 3, 0).
+    node_commands.set_parameter(w, import_node.invert_slot, 1.0)
+    settle(w)
+    center(w, -5.0, 3.0, "worker inverted")
+    # The Frame moves: the Import recooks.
+    let importer = w.network.selected
+    node_commands.reveal_node(w, frame)
+    node_commands.set_parameter(w, 2, 4.0)
+    node_commands.reveal_node(w, importer)
+    settle(w)
+    center(w, -5.0, 5.0, "worker, the Frame moved")
+    (w.compute else trap("worker")).close()
+
+func center(w: Workspace, x: float, y: float, what: str) -> unit!:
+    let mesh = w.geometry else trap("worker mesh")
+    let bounds = mesh.bounds()
+    close((bounds.minimum.x + bounds.maximum.x) * 0.5, x, what + " x")
+    close((bounds.minimum.y + bounds.maximum.y) * 0.5, y, what + " y")
+
+func place(node: Node, translate: list[float], rotate: list[float], scale: list[float]):
+    for k in 0..<3:
+        node.values[1 + k] = translate[k]
+        node.values[4 + k] = rotate[k]
+        node.values[7 + k] = scale[k]
+
+func set_mode(graph: Network, importer: Node, mode: float, target: str):
+    importer.values[import_node.transform_slot] = mode
+    importer.texts[import_node.transform_object_slot] = target
+    graph.invalidate(importer.id)
+
+## `mesh` placed by each container in turn, innermost first.
+func placed_by(mesh: Mesh, containers: list[Node]) -> Mesh!:
+    let steps: list[float] = []
+    for container in containers:
+        steps.extend(import_node.placement_step(container))
+    return import_node.placed(GeometryData(mesh), steps).require_mesh()
+
+## Whether `a` and `b` have the same bounds, to a millionth.
+func same(a: Mesh, b: Mesh, what: str) -> unit!:
+    let first = a.bounds()
+    let second = b.bounds()
+    close(first.minimum.x, second.minimum.x, what + " min x")
+    close(first.minimum.y, second.minimum.y, what + " min y")
+    close(first.minimum.z, second.minimum.z, what + " min z")
+    close(first.maximum.x, second.maximum.x, what + " max x")
+    close(first.maximum.y, second.maximum.y, what + " max y")
+    close(first.maximum.z, second.maximum.z, what + " max z")

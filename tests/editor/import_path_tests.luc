@@ -1,0 +1,154 @@
+## Import paths follow the nodes they name (docs/NETWORK-LEVELS.md):
+## renaming a node or a container on the path, and grouping a named node,
+## an ancestor or the Import itself, rewrite every exact path, absolute as
+## absolute and relative as relative, in the same undo step. Patterns stay
+## as typed; a deleted node leaves the path and its error; names that would
+## break a path are refused. The worker cooks the rewritten paths.
+from workspace import Workspace
+from object_import_tests import failure_of, settle
+import import_node
+import node_commands
+
+pub func import_path_tests() -> unit!:
+    renames()
+    regrouping()
+    deleted_and_refused()
+    paths_on_worker()
+    print("PASS Import paths: renames of a node and of its containers, grouping a source, an ancestor or the Import, undo and redo, patterns kept, deleted sources, refused names, the worker")
+
+## Root: the starting Geo (holding Cube 1) and a second Geo holding three
+## Imports: `absolute` reads /Geo 2/Cube 1 into the Geo 2 frame named
+## relatively, `relative` reads ../../Geo 2, `pattern` reads /Geo 2*.
+## Returns the ids: (source Geo, cube, reading Geo, absolute, relative,
+## pattern).
+func setup(w: Workspace) -> (int, int, int, int, int, int)!:
+    let geo = w.network.scope
+    let cube = w.network.children(geo)[0].id
+    node_commands.leave_group(w)
+    node_commands.add_node(w, "Geo", 300.0, 0.0)
+    let reader = w.network.selected
+    node_commands.enter_group(w, reader)
+    let absolute = add_import(w, "/Geo 2/Cube 1")
+    node_commands.set_parameter(w, import_node.transform_slot, import_node.into_specified_object)
+    node_commands.set_text(w, import_node.transform_object_slot, "../../Geo 2")
+    let relative = add_import(w, "../../Geo 2")
+    let pattern = add_import(w, "/Geo 2*")
+    assert(w.network.require(geo).name == "Geo 2" and w.network.require(cube).name == "Cube 1")
+    return (geo, cube, reader, absolute, relative, pattern)
+
+func add_import(w: Workspace, path: str) -> int!:
+    node_commands.add_node(w, "Import", 0.0, 0.0)
+    node_commands.set_text(w, import_node.object_slot, path)
+    return w.network.selected
+
+func text(w: Workspace, id: int, slot: int) -> str!:
+    return w.network.require(id).texts[slot]
+
+## Renaming the source Geo, the cube inside it, and the reading Geo.
+func renames() -> unit!:
+    let w = Workspace()
+    let (geo, cube, reader, absolute, relative, pattern) = setup(w)
+    for id in [absolute, relative, pattern]:
+        assert(failure_of(w.network, id) == "", w.network.require(id).name)
+    node_commands.reveal_node(w, geo)
+    node_commands.rename(w, "Rock")
+    assert(text(w, absolute, 0) == "/Rock/Cube 1" and text(w, absolute, 1) == "../../Rock")
+    assert(text(w, relative, 0) == "../../Rock")
+    # A pattern is left as typed (it now matches nothing).
+    assert(text(w, pattern, 0) == "/Geo 2*")
+    assert(failure_of(w.network, pattern).contains("Nothing at /Geo 2*"))
+    assert(failure_of(w.network, absolute) == "" and failure_of(w.network, relative) == "")
+    # One undo step: the name and every path go back, and come again.
+    w.undo()
+    assert(w.network.require(geo).name == "Geo 2" and text(w, absolute, 0) == "/Geo 2/Cube 1" and text(w, absolute, 1) == "../../Geo 2" and text(w, relative, 0) == "../../Geo 2")
+    assert(failure_of(w.network, pattern) == "")
+    w.redo()
+    assert(w.network.require(geo).name == "Rock" and text(w, absolute, 0) == "/Rock/Cube 1" and text(w, relative, 0) == "../../Rock")
+    # The node itself.
+    node_commands.reveal_node(w, cube)
+    node_commands.rename(w, "Stone")
+    assert(text(w, absolute, 0) == "/Rock/Stone" and text(w, absolute, 1) == "../../Rock" and text(w, relative, 0) == "../../Rock")
+    # The reading Geo: no path passes through it by name.
+    node_commands.reveal_node(w, reader)
+    node_commands.rename(w, "Reader")
+    assert(text(w, absolute, 0) == "/Rock/Stone" and text(w, relative, 0) == "../../Rock")
+    # A path to nothing that a rename makes good recooks.
+    node_commands.reveal_node(w, pattern)
+    node_commands.set_text(w, import_node.object_slot, "/Later")
+    assert(failure_of(w.network, pattern).contains("Nothing at /Later"))
+    node_commands.reveal_node(w, geo)
+    node_commands.rename(w, "Later")
+    assert(text(w, pattern, 0) == "/Later" and failure_of(w.network, pattern) == "")
+    assert(text(w, absolute, 0) == "/Later/Stone" and text(w, relative, 0) == "../../Later")
+
+## Grouping moves nodes into a new Group: the source Geo, the reading Geo
+## (relative paths climb one more level) and an Import itself.
+func regrouping() -> unit!:
+    let w = Workspace()
+    let (geo, _, reader, absolute, relative, _) = setup(w)
+    node_commands.reveal_node(w, geo)
+    node_commands.group_selected(w)
+    let group = w.network.require(geo).parent
+    assert(group >= 0 and w.network.require(group).name == "Geo 2 group")
+    assert(text(w, absolute, 0) == "/Geo 2 group/Geo 2/Cube 1" and text(w, absolute, 1) == "../../Geo 2 group/Geo 2")
+    assert(text(w, relative, 0) == "../../Geo 2 group/Geo 2")
+    assert(failure_of(w.network, absolute) == "" and failure_of(w.network, relative) == "")
+    w.undo()
+    assert(w.network.require(geo).parent == -1 and text(w, absolute, 0) == "/Geo 2/Cube 1" and text(w, relative, 0) == "../../Geo 2")
+    w.redo()
+    assert(text(w, relative, 0) == "../../Geo 2 group/Geo 2")
+    w.undo()
+    # The reading Geo grouped: absolute paths stay, relative ones climb.
+    node_commands.reveal_node(w, reader)
+    node_commands.group_selected(w)
+    assert(w.network.require(reader).parent >= 0)
+    assert(text(w, absolute, 0) == "/Geo 2/Cube 1" and text(w, absolute, 1) == "../../../Geo 2" and text(w, relative, 0) == "../../../Geo 2")
+    assert(failure_of(w.network, relative) == "")
+    w.undo()
+    # The relative Import grouped inside its Geo.
+    node_commands.reveal_node(w, relative)
+    node_commands.group_selected(w)
+    assert(w.network.require(w.network.require(relative).parent).kind == "Group")
+    assert(text(w, relative, 0) == "../../../Geo 2" and text(w, absolute, 1) == "../../Geo 2")
+    assert(failure_of(w.network, relative) == "")
+    w.undo()
+    assert(w.network.require(relative).parent == reader and text(w, relative, 0) == "../../Geo 2")
+
+## Deleting the source leaves the path and the Import's error; undo brings
+## both back. Names with "/", wildcards, path steps, or a sibling's name
+## are refused and change nothing.
+func deleted_and_refused() -> unit!:
+    let w = Workspace()
+    let (geo, cube, _, absolute, relative, _) = setup(w)
+    node_commands.reveal_node(w, cube)
+    node_commands.delete_selected(w)
+    assert(text(w, absolute, 0) == "/Geo 2/Cube 1" and failure_of(w.network, absolute).contains("Nothing at /Geo 2/Cube 1"))
+    w.undo()
+    assert(failure_of(w.network, absolute) == "")
+    node_commands.reveal_node(w, geo)
+    for name in ["Rock/Stone", "Rock*", "Ro?k", "..", "Geo 3", "  "]:
+        w.notice = ""
+        node_commands.rename(w, name)
+        assert(w.network.require(geo).name == "Geo 2", name)
+        assert(w.notice != "", name)
+    assert(text(w, relative, 0) == "../../Geo 2")
+
+## With the worker, a rename and a regroup leave every Import cooking.
+func paths_on_worker() -> unit!:
+    let w = Workspace()
+    let (geo, _, _, absolute, relative, _) = setup(w)
+    w.enable_compute()
+    settle(w)
+    node_commands.reveal_node(w, geo)
+    node_commands.rename(w, "Rock")
+    node_commands.group_selected(w)
+    settle(w)
+    for id in [absolute, relative]:
+        node_commands.reveal_node(w, id)
+        node_commands.display_selected(w)
+        settle(w)
+        assert(w.network.require(id).failure == "", w.network.require(id).failure)
+        let mesh = w.geometry else trap("worker mesh")
+        assert(mesh.face_count() == 6)
+    assert(text(w, relative, 0) == "../../Rock group/Rock")
+    (w.compute else trap("worker")).close()

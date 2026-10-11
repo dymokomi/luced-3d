@@ -143,8 +143,9 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   shows the root's objects and what each container yields, greying what lies
   outside the container the network view is in; its search field filters them.
 - Objects at the root are not wired together. To bring one object into another,
-  add an **Import** node inside it and pick the object (Houdini's Object Merge):
-  for example, Import a Materials library into a Geo and wire the Import into
+  add an **Import** node inside it and pick the object (Houdini's Object Merge,
+  with its Transform, Transform Object and Invert Transform; paths may be
+  relative or hold wildcards, and follow renames and grouping): for example, Import a Materials library into a Geo and wire the Import into
   Assign Material's second port. A container nested in a data network takes
   wires on its two inputs, read inside by **Input** nodes.
   See [context rules](docs/OUTLINER.md) and [network levels](docs/NETWORK-LEVELS.md).

@@ -96,29 +96,109 @@ then, not wired through generic object inputs.
 
 **Import** (Houdini's Object Merge) is how one object reads another. It sits
 in any data network (Geo, CAD, SDF, Volumes, GSplats, and Groups in them) and
-has no inputs:
+has no inputs. Its rows are Object Merge's, for one object line:
 
-- **Object**: the node to read, by path from the root through the containers'
-  names: `/Geo 2` (what the Geo yields), `/Group 1/CAD 3`, or a node inside an
-  object, `/Geo 2/Sphere 4`. The row's button lists the scene's nodes.
-- **Transform**: *Into this object* (the default) places the result where it
-  sits in the scene, seen from the Import's frame: the placements of the
-  source's containers up to the containers the two share, then the inverse
-  placements of the Import's own containers (`Network.import_steps`). *None*
-  reads it in its own object's frame: a container's own placement is undone,
-  as Houdini leaves out the object transform.
+| Object Merge | Import | Notes |
+| --- | --- | --- |
+| Object 1 | **Object** | A path, absolute or relative, with wildcards |
+| Transform | **Transform** | None (the default), Into This Object, Into Specified Object |
+| Transform Object | **Transform Object** | Shown with Into Specified Object |
+| Invert Transform | **Invert Transform** | Off with None |
 
-It recooks when its source changes, or a container's placement above the
-source or above the Import changes (`Network.invalidate`); its stamp lists
-the source's stamp and the placement steps, not the path, so a rename that
-keeps the path pointing at the same node recooks nothing. Both the local cook
-and the worker read through `Network.import_read`, which refuses an empty
-path, a path to nothing, and a source that reads the Import ("An Import can't
-read what it is part of"): importing the container the Import feeds.
+### Paths
+
+Paths are Houdini's operator paths. An absolute path starts at the root and
+names each container down to the node: `/Geo 2` (what the Geo yields),
+`/Group 1/CAD 3`, or a node inside an object, `/Geo 2/Sphere 4`. A relative
+path starts at the Import node itself, as in Houdini: `..` is the network it
+sits in, so `../Sphere 4` is a sibling, `../..` the container above, and
+`../../Geo 2` an object beside the Import's own. `.` is the node itself. The
+row's button lists the scene's nodes by absolute path.
+
+A name in the Object path may hold `*` (any run of characters) and `?` (one),
+like Houdini's `/obj/ball*`: the Import reads every match, each placed by
+the Transform menu, merged in authoring order. A wildcard never matches the
+Import, the containers it sits in (so `/Geo*` from inside Geo 4 reads the
+other Geos), cameras, lights, Render nodes or shader nodes.
+
+Since a name is one step of a path, renaming refuses a name that holds `/`,
+`*` or `?`, is `.` or `..`, or is already a sibling's. (Should two siblings
+share a name anyway, a path reads the first.)
+
+### Transform
+
+Houdini's object is a container here: Geo, CAD, SDF, Volumes, GSplats or a
+Group, each placing what it yields by its Translate, Rotate, Scale and
+Pivot. A source's **own frame** is that of its object: for a container, its
+own placement and those of the containers above it; for a node inside one,
+the containers it sits in. Its geometry starts there (a container's result
+has its own placement undone first, as Houdini leaves out the object
+transform). Then:
+
+- **None**: it stays in its own frame. A Geo moved 5 along X imports at the
+  origin.
+- **Into This Object**: it is carried into the Import's frame (the placements
+  of the containers it sits in): it lands where it sits in the scene, seen
+  from this object. The source's placements apply, then the Import's
+  containers' are undone; containers both share cancel.
+- **Into Specified Object**: it is carried into the **Transform Object**'s
+  frame, a path like Object's (a container: its own frame; a node inside
+  one: that container's). Blank is the world, so the geometry arrives in
+  world coordinates; `.` is the source's own frame, the same as None.
+- **Invert Transform** carries it the other way, from the destination frame
+  into the source's: with Into This Object, the geometry placed as if it
+  sat in this object, seen from the source. With None it changes nothing.
+
+`Network.import_steps` chooses the frames and `import_node.carry` writes the
+carry as placement steps (each a translation, an XYZ rotation and a scale, so
+uneven scale under rotation stays exact); an Euler rotation is undone axis by
+axis, X then Y then Z.
+
+### Paths follow their nodes
+
+Renaming a node, or a container on a path, and grouping (which moves nodes
+into a new Group: a source, a container above it, or the Import itself)
+rewrite every exact Object and Transform Object path that named the moved or
+renamed node, in the same undo step (`Network.keeping_import_paths`). An
+absolute path stays absolute; a relative one stays relative, recomputed from
+the Import (grouping the Import adds a `..`). A wildcard path is left as
+typed, as Houdini leaves it. Deleting a source leaves the path and the
+Import's error ("Nothing at /Geo 2/Cube 1"); undo brings both back.
+
+Nodes move between containers only by grouping today; there is no ungroup,
+copy and paste, or duplicate of nodes. When those come, they follow Houdini:
+paths are copied as typed, so a relative path inside copied nodes names the
+copy of its sibling, and an absolute one still names the original.
+
+Takes record visibility, transforms, lights and the Render camera, never an
+Import's paths, so there is nothing in a take to rewrite.
+
+### Cooking
+
+It recooks when a source changes, or a container's placement above a source,
+above the Import or at or above its Transform Object changes
+(`Network.invalidate`); its stamp lists each source's stamp and placement
+steps, not the paths, so a rename recooks nothing. A rename that makes a path
+reach a different node (a path to nothing that now finds one) recooks it.
+The worker is sent an Import's paths with every request, since its stamp
+does not carry them. Both the local cook and the worker read through
+`Network.import_read`, which refuses an empty path, a path to nothing, and a
+source that reads the Import ("An Import can't read what it is part of"):
+importing the container the Import feeds.
 
 A Materials library reaches a Geo this way (Import `/Materials 3` into Assign
 Material's second input). A future mesh light would name its geometry the
 same way, by an object path parameter, not a wire.
+
+### Not carried over from Object Merge
+
+Object Merge's Number of Objects (a list of Object, Group and Enable lines)
+is not offered: a node's parameter rows are fixed by its kind, so a variable
+list of path rows has no place yet; wildcards cover reading several objects,
+and several Import nodes into a Merge cover the rest. Its Group, Expand
+Group, per-object groups and path attributes, packing, bundles (`@props`),
+`__display_sop__` and `__render_sop__`, and DOP paths are not offered either:
+a container's result is already what its display flag or Output node yields.
 
 ## What changes in evaluation
 
@@ -196,6 +276,12 @@ keeps showing the root while the network view is deep, All, Greyed and Hidden
 change what is drawn, the Outliner's greying and navigation, and Render
 rendering the root. `tests/editor/object_import_tests.luc` covers the
 object level (no inputs, no Input nodes, refused wires and projects), the
-Import node (paths, both transforms with rotated and scaled containers,
-invalidation and stamps, refusals, the worker) and nested containers in All,
-Greyed and Hidden.
+Import node (absolute and relative paths, placement with rotated and scaled
+containers, invalidation and stamps, refusals, the worker) and nested
+containers in All, Greyed and Hidden. `tests/editor/import_transform_tests.luc`
+checks each Transform mode and Invert Transform against the world with
+containers turned about several axes and scaled unevenly, nested
+containers, wildcards and the worker; `tests/editor/import_path_tests.luc`
+renames sources and their containers, groups a source, an ancestor and the
+Import, undoes and redoes each, and checks patterns, deleted sources,
+refused names and the worker.
