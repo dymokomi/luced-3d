@@ -17,7 +17,7 @@ from luce_cad.modeling import CadModeling
 import cad_nodes
 from geometry_data import GeometryData
 from edit_operations import EditStep
-from edit_types import EditKind, EditLevel, EditTool, object_level, point_level, edge_level, face_level
+from edit_types import EditKind, EditLevel, EditTool, object_level, point_level, edge_level, face_level, patch_level, missing
 from tools import tool_run
 from luce_ui import ui
 
@@ -40,14 +40,15 @@ func levels() -> list[EditLevel]:
     return [EditLevel("Object", "cube", Domain.face, GroupType.faces, model_piece),
             EditLevel("CVs", "vertex-select", Domain.point, GroupType.points),
             EditLevel("Edges", "edge-select", Domain.edge, GroupType.edges, edge_piece),
-            EditLevel("Faces", "face-select", Domain.face, GroupType.faces, face_piece)]
+            EditLevel("Faces", "face-select", Domain.face, GroupType.faces, face_piece), missing("Smart"),
+            EditLevel("Patch", "face-select", Domain.face, GroupType.faces, patch_piece)]
 
 ## Delete models or faces; noise, flatten and snap CVs; Fillet and
 ## Chamfer picked edges (the CAD nodes, run on the model the edges are on).
 ## The gizmo moves, rotates and scales models and CVs.
 func tool_list() -> list[EditTool]:
     let result: list[EditTool] = []
-    for (name, offered) in [("Delete", [object_level, face_level]), ("Noise", [cv_level]), ("Flatten", [cv_level]), ("Snap", [cv_level])]:
+    for (name, offered) in [("Delete", [object_level, face_level, patch_level]), ("Noise", [cv_level]), ("Flatten", [cv_level]), ("Snap", [cv_level])]:
         let made = tool_run(name) else continue
         result.append(EditTool(name, made.verb, offered, made.numbers))
     for feature in edge_features():
@@ -71,7 +72,20 @@ func face_piece(mesh: Mesh, face: int) -> str!:
 ## The whole B-rep edge under a picked mesh edge (nothing inside a face).
 func edge_piece(mesh: Mesh, edge: int) -> str!:
     let owner = int(mesh.attribute_value(mesh.find_attribute("cad_edge", 4), edge))
-    return f"@cad_edge={owner}" if owner >= 0 else "!*"
+    let model = int(mesh.attribute_value(mesh.find_attribute("cad_edge_model", 4), edge))
+    return f"@cad_edge_model={model} &@cad_edge={owner}" if owner >= 0 else "!*"
+
+## Every trimmed region on the picked underlying surface of this model.
+func patch_piece(mesh: Mesh, face: int) -> str!:
+    let model = int(mesh.attribute_value(mesh.find_attribute("cad_model", 2), face))
+    let surface = int(mesh.attribute_value(mesh.find_attribute("cad_surface", 2), face))
+    return f"@cad_model={model} &@cad_surface={surface}"
+
+## A separate gesture expands an edge along its unambiguous tangent chain.
+pub func edge_chain(mesh: Mesh, edge: int) -> str!:
+    let chain = int(mesh.attribute_value(mesh.find_attribute("cad_edge_chain", 4), edge))
+    let model = int(mesh.attribute_value(mesh.find_attribute("cad_edge_model", 4), edge))
+    return f"@cad_edge_model={model} &@cad_edge_chain={chain}" if chain >= 0 else "!*"
 
 ## The input's CAD models; other components pass through (with a warning
 ## when there are no models yet: create one, or connect CAD).

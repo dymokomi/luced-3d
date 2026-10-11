@@ -1,0 +1,87 @@
+## Whole CAD entities, model-local selection, patches and tangent chains.
+from workspace import Workspace
+from geometry_data import GeometryData
+from luce_geocore.geocore import Vector3
+from luce_cad.solids import CadSolids
+from luce_cad.cad_edits import CadEdits
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadModel, BrepModel
+from luce_3d.graphics import EditOverlay
+from component_pick import ComponentPicker
+import edit_cad
+import node_commands
+import selection_commands
+import view_projection
+
+pub func cad_selection_tests() -> unit!:
+    let w = Workspace()
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    let cylinder = CadSolids.cylinder(1.0, 2.0)
+    let other = cylinder.transformed(Vector3(4.0, 0.0, 0.0), Vector3(), Vector3(1.0, 1.0, 1.0))
+    let models = CadEdits.with_model(CadGeometry.of_model(cylinder), other)
+    let mesh = CadEdits.pick_mesh(models)
+    selection_commands.set_mode(w, 2)
+    w.geometry = mesh
+    let owners = mesh.find_attribute("cad_edge_model", 4)
+    let edges = mesh.find_attribute("cad_edge", 4)
+    var picked = -1
+    for edge in 0..<mesh.edge_count():
+        if mesh.attribute_value(owners, edge) == 0.0 and mesh.attribute_value(edges, edge) >= 0.0: picked = edge
+    assert(picked >= 0)
+    selection_commands.choose_component(w, picked, false)
+    let selection = w.selection else trap("edge")
+    assert(selection.count() > 1) # The complete curve, not one display segment.
+    for edge in 0..<mesh.edge_count():
+        if selection.contains(edge):
+            assert(mesh.attribute_value(owners, edge) == 0.0)
+            assert(mesh.attribute_value(edges, edge) == mesh.attribute_value(edges, picked))
+    selection_commands.choose_component(w, picked, true)
+    assert(w.selected_count() == 0)
+    patch_and_chain(w)
+    print("PASS CAD selection: complete curved edges, per-model isolation, Shift toggle, Faces versus Patch, tangent chains and boundary-only screen picking")
+
+func patch_and_chain(w: Workspace) -> unit!:
+    let b = BrepModel()
+    for p in [Vector3(), Vector3(1.0, 0.0, 0.0), Vector3(2.0, 0.0, 0.0), Vector3(2.0, 2.0, 0.0), Vector3(0.0, 2.0, 0.0),
+              Vector3(3.0, 0.0, 0.0), Vector3(4.0, 0.0, 0.0), Vector3(4.0, 1.0, 0.0), Vector3(3.0, 1.0, 0.0)]: _ = b.add_vertex(p)
+    for at in 0..<5: _ = b.add_line(at, (at + 1) % 5)
+    for at in 0..<4: _ = b.add_line(5 + at, 5 + (at + 1) % 4)
+    _ = b.add_surface(0, Vector3(), Vector3(0.0, 0.0, 1.0), Vector3(1.0, 0.0, 0.0))
+    _ = b.add_face(0, [1, 2, 3, 4, 5], [5])
+    _ = b.add_face(0, [6, 7, 8, 9], [4])
+    let model = CadModel()
+    model.attach_brep(b)
+    let data = GeometryData(geometry = CadGeometry.of_model(model))
+    let mesh = edit_cad.kind().pick(data, 3) else trap("patches")
+    selection_commands.set_mode(w, 3)
+    w.geometry = mesh
+    selection_commands.choose_component(w, 0, false)
+    assert(w.selected_count() > 0 and w.selected_count() < mesh.face_count())
+    selection_commands.set_mode(w, 5)
+    w.geometry = mesh
+    selection_commands.choose_component(w, 0, false)
+    assert(w.selected_count() == mesh.face_count())
+    selection_commands.set_mode(w, 2)
+    w.geometry = mesh
+    let owner = mesh.find_attribute("cad_edge", 4)
+    var edge = -1
+    for at in 0..<mesh.edge_count():
+        if mesh.attribute_value(owner, at) == 0.0: edge = at
+    selection_commands.choose_component(w, edge, false)
+    let single = w.selected_count()
+    selection_commands.choose_component(w, edge, false, chain = true)
+    assert(w.selected_count() > single)
+    let chosen = w.selection else trap("chain")
+    for at in 0..<mesh.edge_count():
+        if chosen.contains(at): assert(mesh.attribute_value(owner, at) in [0.0, 1.0])
+    w.view.camera.set_position(Vector3(1.0, 1.0, 8.0))
+    w.view.camera.look_at(Vector3(1.0, 1.0, 0.0))
+    let overlay = EditOverlay()
+    let picker = ComponentPicker(w, overlay)
+    let boundary = view_projection.project(w, Vector3(0.5, 0.0, 0.0), 800.0, 600.0)
+    let hit = picker.pick(boundary[0], boundary[1], 800.0, 600.0, -1)
+    assert(hit >= 0 and mesh.attribute_value(owner, hit) == 0.0)
+    let center = view_projection.project(w, Vector3(1.0, 1.0, 0.0), 800.0, 600.0)
+    assert(picker.pick(center[0], center[1], 800.0, 600.0, -1) == -1)

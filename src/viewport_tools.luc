@@ -18,7 +18,9 @@ from knife_stroke import KnifeStroke
 from object_box import ObjectBox
 from splat_select import SplatSelect
 import selection_commands
-from edit_types import smart_level
+from edit_types import smart_level, edge_level
+from luce_std import math
+import time
 
 pub class ViewportTools:
     let workspace: Workspace
@@ -41,6 +43,11 @@ pub class ViewportTools:
     ## Faces and corners placed by clicking (Plane from Face, PolyDraw).
     pub let placing: ViewportPlacing
     pub var hover_changed: bool = false
+    var last_click: int = 0
+    var last_x: float = 0.0
+    var last_y: float = 0.0
+    var last_node: int = -1
+    var last_level: int = -1
 
     pub func init(self, workspace: Workspace, actions: Actions):
         self.workspace = workspace
@@ -71,14 +78,18 @@ pub class ViewportTools:
             # Smart's hover on another level than the selection's is drawn
             # here (one component), not by the overlay.
             let own = self.hover_level < 0 or self.hover_level == w.level_index()
-            self.overlay.show(mesh, w.overlay_mode(), w.selection, self.hovered if own else -1)
+            let cad_hover = w.picking_brep() and self.hovered >= 0
+            self.overlay.set_fill(w.picking_brep())
+            self.overlay.show(mesh, w.overlay_mode(), w.selection, self.hovered if own and not cad_hover else -1)
             # A kind whose pick geometry the viewport does not draw (Edit
             # SDF's proxies) shows its selection through surfaces, dimmed.
             let kind = w.selection_kind()
             let through = kind != none and (kind else trap("kind")).see_through
             self.overlay.draw(w.view.camera, painter.target(), theme.grey(90.0), theme.accent(), theme.text(), wires = false, hidden = theme.grey(150.0) if through else none)
             self.placing.draw(painter)
-            if not own and self.hovered >= 0:
+            if cad_hover:
+                self.picker.draw_cad_hover(painter, w.level_index() if own else self.hover_level, self.hovered)
+            elif not own and self.hovered >= 0:
                 draw_hover(painter, w, mesh, self.hover_level, self.hovered, width, height)
         if w.picking_objects():
             self.objects.draw(painter, width, height)
@@ -149,10 +160,20 @@ pub class ViewportTools:
             self.splats.start(event, width, height)
             return true
         if w.selecting():
+            let now = time.now()
+            let chain = w.network.context() == "cad" and self.last_node == w.network.selected and self.last_level == edge_level and now - self.last_click < 400000000 and math.hypot(event.x - self.last_x, event.y - self.last_y) < 5.0
             if w.component_mode == smart_level:
                 let found = self.picker.smart_pick(event.x, event.y, width, height)
-                selection_commands.choose_smart(w, found[0], found[1], event.shift)
+                if chain and found[0] == edge_level:
+                    selection_commands.choose_component(w, found[1], event.shift, chain = true)
+                else:
+                    selection_commands.choose_smart(w, found[0], found[1], event.shift)
             else:
-                selection_commands.choose_component(w, self.pick(event.x, event.y, width, height), event.shift)
+                selection_commands.choose_component(w, self.pick(event.x, event.y, width, height), event.shift, chain = chain)
+            self.last_click = 0 if chain else now
+            self.last_x = event.x
+            self.last_y = event.y
+            self.last_node = w.network.selected
+            self.last_level = w.level_index()
             return true
         return false
