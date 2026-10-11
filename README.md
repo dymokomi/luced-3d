@@ -125,7 +125,9 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   refinement limit. **Show normals** adds face-center normal guides.
 - Clicking a node selects its properties. **O** and the right-hand strip toggle
   Out; multiple results can be exposed. **D** toggles isolated preview without
-  changing outputs. The left-hand strip toggles bypass (**B**).
+  changing outputs. The two left-hand strips toggle bypass (**B**) and
+  freeze (**Shift+B**). Freeze turns red while the node keeps its cooked result;
+  click it again to resume cooking from its inputs.
 - **Tab** follows the current network. At `/ scene` it offers **Geo, CAD, SDF,
   Volumes, GSplats, Materials, Group, Camera, Light, Render**. Startup and File →
   New open at Scene with one Geo container; double-click Geo to reach its Cube.

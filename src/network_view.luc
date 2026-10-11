@@ -182,7 +182,7 @@ pub class NetworkView: Widget:
             let radius = 10.0 * self.zoom if node.kind in ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus"] else 3.0 * self.zoom
             let outline = 3.5 if node_catalog.holds_nodes(node.kind) else 1.5
             p.rounded_rectangle(Rect(at.x - outline, at.y - outline, w + outline * 2.0, h + outline * 2.0), theme.accent() if selected else (theme.text_muted() if self.hovered == node.id else theme.grey(78.0)), radius + outline)
-            p.rounded_rectangle(Rect(at.x, at.y, w, h), theme.frozen() if node.frozen != "" else (theme.grey(64.0) if node.enabled else theme.tab_strip()), radius)
+            p.rounded_rectangle(Rect(at.x, at.y, w, h), theme.grey(64.0) if node.enabled else theme.tab_strip(), radius)
             if node.computing:
                 p.rectangle(Rect(at.x, at.y + h - 3.0, w * math.max(0.02, math.min(1.0, node.progress)), 3.0), theme.accent())
             draw_icon(p, node.kind, at.x + 36.0 * self.zoom, at.y + 8.0 * self.zoom, 24.0 * self.zoom, theme.text() if node.enabled else theme.text_muted())
@@ -190,14 +190,15 @@ pub class NetworkView: Widget:
             p.text(caption, at.x + 109.0 * self.zoom, at.y + (1.0 if self.zoom >= 0.65 else 10.0) * self.zoom, theme.text() if node.enabled else theme.text_muted(), self.font)
             let detail = (f"{node.phase} {int(node.progress * 100.0)}%" if node.progress > 0.0 else node.phase) if node.computing else ("ERROR" if node.failure != "" else ("WARNING" if node.warning != "" else ("bypassed" if not node.enabled else ("frozen" if node.frozen != "" else (f"{node.edits.length} edits" if is_edit(node.kind) else "geometry")))))
             if self.zoom >= 0.65:
-                let shown = node.computing or node.failure != "" or node.warning != "" or not node.enabled or is_edit(node.kind)
+                let shown = node.computing or node.failure != "" or node.warning != "" or not node.enabled or node.frozen != "" or is_edit(node.kind)
                 let ink = theme.accent() if node.failure != "" or node.computing else (theme.warning() if node.warning != "" else theme.text_muted())
                 p.text(detail if shown else node.kind, at.x + 109.0 * self.zoom, at.y + 22.0 * self.zoom, ink, self.font)
-            # Two distinct flags, with matching commands in the inspector.
+            # Bypass and Freeze on the left; Out on the right.
             p.rectangle(Rect(at.x + 84.0 * self.zoom, at.y + 5.0 * self.zoom, 9.0 * self.zoom, 30.0 * self.zoom), theme.accent() if node.id in exposed else theme.border())
             p.rectangle(Rect(at.x + 3.0 * self.zoom, at.y + 5.0 * self.zoom, 9.0 * self.zoom, 30.0 * self.zoom), theme.accent() if not node.enabled else theme.border())
+            p.rectangle(Rect(at.x + 15.0 * self.zoom, at.y + 5.0 * self.zoom, 9.0 * self.zoom, 30.0 * self.zoom), theme.frozen() if node.frozen != "" else theme.border())
             if not node.enabled:
-                p.line(Point(at.x + 18.0 * self.zoom, at.y + 31.0 * self.zoom), Point(at.x + 78.0 * self.zoom, at.y + 9.0 * self.zoom), 1.0, theme.text_muted())
+                p.line(Point(at.x + 28.0 * self.zoom, at.y + 31.0 * self.zoom), Point(at.x + 78.0 * self.zoom, at.y + 9.0 * self.zoom), 1.0, theme.text_muted())
             for port in 0..<node.inputs.length:
                 self.draw_port(p, self.port_point(node, false, port), node.inputs[port] >= 0)
             self.draw_port(p, self.port_point(node, true), true)
@@ -216,7 +217,11 @@ pub class NetworkView: Widget:
         if self.hovered >= 0 and self.mode == "" and not shading:
             if let node = graph.find(self.hovered):
                 let at = self.to_graph(self.pointer_x, self.pointer_y)
-                let hint = "Bypass (B), Freeze (Shift+B)" if at.x < node.x + 15.0 else ("Out (O)" if at.x > node.x + 81.0 else node.kind + " / geometry")
+                var hint = "Bypass (B)" if at.x < node.x + 13.5 else ("Freeze / unfreeze (Shift+B)" if at.x < node.x + 27.0 else ("Out (O)" if at.x > node.x + 81.0 else node.kind + " / geometry"))
+                for flag in 0..<4:
+                    let (flag_x, flag_y) = self.flag_at(node, flag)
+                    if self.pointer_x >= flag_x and self.pointer_x <= flag_x + 20.0 and self.pointer_y >= flag_y and self.pointer_y <= flag_y + 20.0:
+                        hint = ["Bypass (B)", "Out (O)", "Node information", "Freeze / unfreeze (Shift+B)"][flag]
                 p.text(hint, 12.0, size.height - 24.0, theme.text_muted())
                 # Fixed screen-size hover controls keep flags usable zoomed out.
                 for flag in 0..<4:
@@ -278,18 +283,18 @@ pub class NetworkView: Widget:
             p.text(inputs[port].label, point.x + 10.0 * self.zoom, point.y - 8.0 * self.zoom, ink if node.inputs[port] >= 0 else theme.text_muted(), self.font)
             self.draw_socket(p, point, inputs[port].width, node.inputs[port] >= 0)
 
-    ## A socket: grey for a value, accent for a color or vector.
     ## Hover flag `flag`'s top left on screen, a fixed size whatever the
-    ## zoom: Bypass left, Out right, info above, Freeze below.
+    ## zoom: Bypass and Freeze left, Out right, info above.
     func flag_at(self, node: Node, flag: int) -> (float, float):
         let screen = self.to_screen(node.x, node.y)
-        if flag == 0:
-            return (screen.x - 26.0, screen.y + node_height * self.zoom * 0.5 - 10.0)
+        if flag == 0 or flag == 3:
+            return (screen.x - (50.0 if flag == 0 else 26.0), screen.y + node_height * self.zoom * 0.5 - 10.0)
         if flag == 1:
             return (screen.x + node_width * self.zoom + 6.0, screen.y + node_height * self.zoom * 0.5 - 10.0)
         let middle = screen.x + node_width * self.zoom * 0.5 - 10.0
-        return (middle, screen.y - 27.0) if flag == 2 else (middle, screen.y + node_height * self.zoom + 7.0)
+        return (middle, screen.y - 27.0)
 
+    ## A socket: grey for a value, accent for a color or vector.
     func draw_socket(self, p: Painter, at: Point, width: int, filled: bool) -> unit!:
         let r = math.max(3.0, 4.5 * self.zoom)
         p.rounded_rectangle(Rect(at.x - r, at.y - r, 2.0 * r, 2.0 * r), theme.accent() if width == 3 else theme.grey(170.0), r)
@@ -320,7 +325,12 @@ pub class NetworkView: Widget:
 
     ## [node ID, port index, output flag]. Port hit radius stays usable zoomed out.
     pub func hit_port(self, x: float, y: float) -> list[int]:
+        let at = self.to_graph(x, y)
         for node in self.workspace.network.local_nodes().reversed():
+            # On the body, the flag strips win over a nearby port's enlarged
+            # hit radius, including when the network is zoomed right out.
+            if not self.shading() and self.inside_node(node, at) and (at.x < node.x + 27.0 or at.x >= node.x + 81.0):
+                return []
             let outputs = shader_nodes.outputs(node.kind).length if self.shading() else 1
             for port in 0..<outputs:
                 let output = self.port_point(node, true, port)
@@ -429,8 +439,11 @@ pub class NetworkView: Widget:
                                 node_commands.select_node(self.workspace, node.id)
                             if self.shading():
                                 self.start_move(node)
-                            elif at.x <= node.x + 15.0:
+                            elif at.x < node.x + 13.5:
                                 self.actions.enabled.trigger()
+                                self.mode = ""
+                            elif at.x < node.x + 27.0:
+                                self.actions.freeze.trigger()
                                 self.mode = ""
                             elif at.x >= node.x + 81.0:
                                 self.actions.output.trigger()
@@ -450,7 +463,7 @@ pub class NetworkView: Widget:
             var retained = -1
             if let node = self.workspace.network.find(self.hovered):
                 let screen = self.to_screen(node.x, node.y)
-                if event.inside and event.x >= screen.x - 30.0 and event.x <= screen.x + node_width * self.zoom + 30.0 and event.y >= screen.y - 30.0 and event.y <= screen.y + node_height * self.zoom + 12.0:
+                if event.inside and event.x >= screen.x - 54.0 and event.x <= screen.x + node_width * self.zoom + 30.0 and event.y >= screen.y - 30.0 and event.y <= screen.y + node_height * self.zoom + 12.0:
                     retained = node.id
             self.hovered = retained
             if event.inside:
