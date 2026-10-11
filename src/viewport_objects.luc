@@ -3,6 +3,7 @@
 ## box casts a bounded grid of them, so it picks what is visible inside, not
 ## everything whose bounds overlap.
 from luce_3d.graphics import Vector3
+from luce_geocore.geocore import Bounds
 from luce_gpu.gpu import Rect
 from workspace import Workspace
 from luce_std import math
@@ -20,7 +21,52 @@ pub func object_at(w: Workspace, x: float, y: float, width: float, height: float
         if distance >= 0.0 and (nearest < 0.0 or distance < nearest):
             nearest = distance
             found = nodes[at]
+    for at in 0..<w.batches.scenes.length:
+        let geometry = w.batches.scenes[at]
+        let node = w.batches.scene_nodes[at]
+        let scene = geometry.scene()
+        let helpers = w.batches.helpers(at)
+        if w.view.hulls_visible:
+            for index in 0..<helpers.length:
+                let distance = helpers[index].pick(w.view.camera, x, y, width, height)
+                if distance >= 0.0 and (nearest < 0.0 or distance < nearest):
+                    nearest = distance
+                    found = helper_node(w, scene.path(index), "Camera" if scene.is_camera(index) else "Light", node)
+        # Volumes and clouds are objects without polygon surfaces.
+        if not (node in nodes) and helpers.length == 0 and geometry.has_bounds():
+            let distance = box_distance(geometry.bounds(), origin, direction)
+            if distance >= 0.0 and (nearest < 0.0 or distance < nearest):
+                nearest = distance
+                found = node
     return found
+
+## Resolve a helper to its authoring node (or enclosing context). A Render
+## output may carry a Camera, but clicking that helper selects the Camera.
+func helper_node(w: Workspace, path: str, kind: str, fallback: int) -> int!:
+    for node in w.network.nodes:
+        if node.kind != kind: continue
+        let authored = node.texts[0].trim() if node.texts.length > 0 else ""
+        let name = authored if authored != "" else kind.lower() + str(node.id)
+        if name != path or not w.network.depends_on(fallback, node.id): continue
+        var ancestor = node
+        while ancestor.parent != w.network.scope:
+            ancestor = w.network.find(ancestor.parent) else return fallback
+        return ancestor.id
+    return fallback
+
+func box_distance(box: Bounds, origin: Vector3, direction: Vector3) -> float:
+    var near = 0.0
+    var far = 1.0e30
+    for (low, high, start, along) in [(box.minimum.x, box.maximum.x, origin.x, direction.x), (box.minimum.y, box.maximum.y, origin.y, direction.y), (box.minimum.z, box.maximum.z, origin.z, direction.z)]:
+        if math.abs(along) < 1e-12:
+            if start < low or start > high: return -1.0
+            continue
+        let a = (low - start) / along
+        let b = (high - start) / along
+        near = math.max(near, math.min(a, b))
+        far = math.min(far, math.max(a, b))
+        if far < near: return -1.0
+    return near
 
 ## The nodes seen inside the box from (x0, y0) to (x1, y1): the first object
 ## along rays at most every 6 pixels, at most 48 a side.
@@ -45,10 +91,20 @@ pub func screen_bounds(w: Workspace, id: int, width: float, height: float) -> Re
     var top = 1.0e30
     var right = -1.0e30
     var bottom = -1.0e30
+    let boxes: list[Bounds] = []
     for at in 0..<meshes.length:
-        if nodes[at] != id:
-            continue
-        let box = meshes[at].bounds()
+        if nodes[at] == id: boxes.append(meshes[at].bounds())
+    for at in 0..<w.batches.scenes.length:
+        let geometry = w.batches.scenes[at]
+        let node = w.batches.scene_nodes[at]
+        let scene = geometry.scene()
+        let helpers = w.batches.helpers(at)
+        if w.view.hulls_visible:
+            for index in 0..<helpers.length:
+                if helper_node(w, scene.path(index), "Camera" if scene.is_camera(index) else "Light", node) == id:
+                    boxes.append(helpers[index].bounds())
+        if node == id and not (id in nodes) and helpers.length == 0 and geometry.has_bounds(): boxes.append(geometry.bounds())
+    for box in boxes:
         for corner in 0..<8:
             let point = Vector3(box.maximum.x if corner % 2 == 1 else box.minimum.x, box.maximum.y if (corner // 2) % 2 == 1 else box.minimum.y, box.maximum.z if corner >= 4 else box.minimum.z)
             let screen = view_projection.project(w, point, width, height)

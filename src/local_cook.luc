@@ -40,6 +40,7 @@ pub func cook_outputs(graph: Network, objects: Group, batches: ViewportBatches, 
     batches.held_clouds = {}
     batches.scenes = []
     batches.scene_keys = []
+    batches.scene_nodes = []
     var outputs = graph.outputs(graph.scope)
     if graph.preview:
         if let node = graph.find(graph.display):
@@ -60,6 +61,7 @@ pub func cook_outputs(graph: Network, objects: Group, batches: ViewportBatches, 
             result.data = data
         # The whole set, for the render mode; a node's evaluations count its
         # cooks, so the key changes with its result.
+        batches.scene_nodes.append(node.id)
         batches.scenes.append(render_geometry(data, graph.gesture, graph.cad_quality))
         batches.scene_keys.append((node.id, node.evaluations, graph.gesture, graph.cad_quality).hash())
         let branch = Group()
@@ -67,14 +69,7 @@ pub func cook_outputs(graph: Network, objects: Group, batches: ViewportBatches, 
             result.notice = failure.message
             continue
         objects.add(branch)
-        if data.instance_count() > 0 or data.mesh != none:
-            # CAD without a tessellation is not pickable.
-            var mesh: Mesh? = none
-            mesh = data.require_mesh() catch failure:
-                recover none
-            if let shown = mesh:
-                result.nodes.append(node.id)
-                result.meshes.append(shown)
+        append_pick_meshes(data, Matrix4(), node.id, result)
         # Overlays are display only: one that cannot be drawn says so and
         # leaves the cook (and the edit that made it) standing.
         append_overlays(data, Matrix4(), wires, normals) catch failure:
@@ -105,3 +100,18 @@ pub func cook_outputs(graph: Network, objects: Group, batches: ViewportBatches, 
         result.notice = f"CAD preview: {analytic} patches could not be meshed; boundaries remain visible"
     batches.publish(wires, normals, patches, hulls)
     return result
+
+## Match the worker's world-space picking meshes, including CAD and SDF.
+func append_pick_meshes(data: GeometryData, matrix: Matrix4, node: int, result: LocalCook) -> unit!:
+    let meshes: list[Mesh] = []
+    if let mesh = data.mesh: meshes.append(mesh)
+    if let field = data.field_preview(): meshes.append(field)
+    if data.has_cad():
+        for mesh in data.preview().meshes: meshes.append(mesh)
+    for mesh in meshes:
+        if mesh.face_count() == 0: continue
+        result.nodes.append(node)
+        result.meshes.append(mesh.placed(matrix))
+    for at in 0..<data.instance_count():
+        if data.instance_visible(at):
+            append_pick_meshes(data.instance(at), matrix.multiply(data.instance_matrix(at)), node, result)

@@ -9,7 +9,7 @@ import memory
 from luce_std import math
 from luce_geocore.geocore import Vector3, Matrix4, Bounds, Mesh, invalid, mesh_overlay_points
 from luce_geocore.core.growing import Growing
-from luce_3d.graphics import WireBatch, wire_batch_type
+from luce_3d.graphics import WireBatch, wire_batch_type, PerspectiveCamera
 from luce_cad.model import CadOverlay, CadPreviewSet
 from luce_cad.sketch import CadSketch, CadProjection, sketch_samples, projection_samples, projection_per_edge, sketch_trim_piece, sketch_offset_preview
 from luce_geocore.geocore import GeometrySet, SceneKind, LightShape, Projection, Camera, Light
@@ -205,6 +205,41 @@ pub struct OverlayLines:
             let item = objects.object(index)
             if item.kind == SceneKind.camera: try self.add_camera(item.camera, item.matrix)
             else: try self.add_light(item.light, item.matrix)
+
+    ## A single camera/light helper, for object picking and selection bounds.
+    pub func add_scene_object(set: interop.Reference[GeometrySet], index: i64) -> !:
+        var objects = SceneObjects()
+        defer objects.close()
+        try scene_flattened(try set.get(), Matrix4(), &objects)
+        if index < 0 or (usize)index >= objects.count(): error(invalid, "scene object out of range")
+        let item = objects.object((usize)index)
+        if item.kind == SceneKind.camera: try self.add_camera(item.camera, item.matrix)
+        else: try self.add_light(item.light, item.matrix)
+
+    ## Distance to a helper stroke within eight screen pixels, or -1.
+    pub func pick(camera: interop.Reference[PerspectiveCamera], x: f64, y: f64, width: f64, height: f64) -> f64!:
+        let p = try camera.value().projection(width / math.max(1.0, height))
+        var best = 8.0
+        var depth = -1.0
+        for at in 0..<self.points.count // 2:
+            let a = self.points.items[at * 2].subtract(p.position)
+            let b = self.points.items[at * 2 + 1].subtract(p.position)
+            let az = -a.dot(p.backward)
+            let bz = -b.dot(p.backward)
+            if az <= p.near or bz <= p.near: continue
+            let ax = (a.dot(p.right) * p.focal / p.aspect / az + 1.0) * width * 0.5
+            let ay = (1.0 - a.dot(p.up) * p.focal / az) * height * 0.5
+            let bx = (b.dot(p.right) * p.focal / p.aspect / bz + 1.0) * width * 0.5
+            let by = (1.0 - b.dot(p.up) * p.focal / bz) * height * 0.5
+            let dx = bx - ax
+            let dy = by - ay
+            let t = math.clamp(((x - ax) * dx + (y - ay) * dy) / math.max(1e-12, dx * dx + dy * dy), 0.0, 1.0)
+            let distance = math.hypot(x - ax - t * dx, y - ay - t * dy)
+            if distance >= best: continue
+            best = distance
+            let fraction = (t / bz) / ((1.0 - t) / az + t / bz)
+            depth = a.add(b.subtract(a).multiply_scalar(fraction)).length()
+        return depth
 
     func segment(matrix: Matrix4, a: Vector3, b: Vector3) -> !:
         try self.points.push(matrix.transform_point(a))

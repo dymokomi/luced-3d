@@ -1,0 +1,47 @@
+## Scene objects and helper glyphs are pickable in local and worker cooks.
+from workspace import Workspace
+from luce_3d.graphics import Vector3
+import node_commands
+import viewport_objects
+import view_projection
+import time
+
+pub func object_selection_tests() -> unit!:
+    for kind in ["Camera", "Light", "CAD", "GSplats", "Volumes"]:
+        let w = Workspace()
+        node_commands.leave_group(w)
+        node_commands.delete_selected(w)
+        node_commands.add_node(w, kind, 0.0, 0.0)
+        let object = w.network.selected
+        var point = Vector3()
+        if kind in ["Camera", "Light"]:
+            for slot in [1, 2, 3]: node_commands.set_parameter(w, slot, 0.0)
+            point = Vector3(0.0, 0.0, -1.0) if kind == "Camera" else Vector3()
+            if kind == "Camera": node_commands.add_node(w, "Render", 0.0, 100.0)
+        else:
+            node_commands.enter_group(w, object)
+            if kind == "CAD":
+                node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+            elif kind == "GSplats":
+                node_commands.add_node(w, "File", 0.0, 0.0)
+                node_commands.set_text(w, 0, "tests/fixtures/splats.ply")
+            else:
+                node_commands.add_node(w, "Volume", 0.0, 0.0)
+            node_commands.leave_group(w)
+        w.view.camera.set_position(Vector3(0.0, 0.0, 10.0))
+        w.view.camera.look_at(Vector3())
+        let at = view_projection.project(w, point, 800.0, 600.0)
+        assert(w.picking_objects() and not w.selecting())
+        let local = viewport_objects.object_at(w, at[0], at[1], 800.0, 600.0)
+        assert(local == object, f"{kind}: local {local}, expected {object}")
+        assert(viewport_objects.screen_bounds(w, object, 800.0, 600.0) != none)
+        w.enable_compute()
+        let worker = w.compute else trap("worker")
+        let deadline = time.now() + 20000000000
+        while worker.busy and time.now() < deadline: _ = w.poll_compute()
+        assert(not worker.busy, w.notice)
+        let background = viewport_objects.object_at(w, at[0], at[1], 800.0, 600.0)
+        assert(background == object, f"{kind}: worker {background}, expected {object}; {w.notice}")
+        assert(viewport_objects.screen_bounds(w, object, 800.0, 600.0) != none)
+        worker.close()
+    print("PASS root object picking: Camera through Render, Light, CAD, GSplats and Volumes; local and worker cooks")
