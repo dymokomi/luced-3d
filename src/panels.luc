@@ -30,6 +30,7 @@ from viewport_chrome import shading_button
 from icon_shelf import IconShelf
 from import_picker import ImportPicker
 import take_commands
+from top_menus import TopMenus
 
 pub class Panels:
     pub let body: VStack
@@ -63,6 +64,8 @@ pub class Panels:
     ## What the sketch's Text tool says.
     pub let sketch_text: TextPrompt
     pub let actions: Actions
+    ## The menu bar's Create and Modify menus.
+    pub let menus: TopMenus
     pub let dock: DStack
     pub let dock_layout: DockLayout
     pub let projects: ProjectSession
@@ -76,6 +79,9 @@ pub class Panels:
     ## The node menu was opened over the viewport: its Group groups the
     ## objects picked there, even one.
     var from_viewport: bool = false
+    ## The menu adding a node (Tab, a marking menu) placed it at add_x/add_y;
+    ## otherwise (the Create menu) it goes where place_added says.
+    var placed: bool = false
 
     pub func init(self, workspace: Workspace, font: Font) -> unit!:
         self.workspace = workspace
@@ -117,6 +123,9 @@ pub class Panels:
             self.connections.append(self.actions.add[index].on_trigger(func () -> unit!:
                 # Group with nodes picked (two, or any over the viewport)
                 # groups them; otherwise it adds an empty Group.
+                if not self.placed:
+                    self.place_added()
+                self.placed = false
                 let picked = workspace.network.selection().length
                 if kind == "Group" and (picked >= 2 or (self.from_viewport and picked >= 1)):
                     node_commands.group_selected(workspace)
@@ -125,9 +134,10 @@ pub class Panels:
                 self.refresh()))
         self.connections.append(self.actions.add_node.on_trigger(self.open_search))
         self.connections.append(self.actions.frame_nodes.on_trigger(self.graph.frame_all))
+        self.menus = TopMenus(workspace, self.actions, font)
         let header = HStack([
-            Text("LUCED 3D", font = font),
             Menu("File", [self.actions.new_project, self.actions.open_project, self.actions.save, self.actions.save_as], font = font),
+            self.menus.create, self.menus.modify,
             Menu("Window", [self.actions.project_settings, self.actions.reset_layout], font = font),
             Button(action = self.actions.undo, font = font), Button(action = self.actions.redo, font = font), Spacer(), self.projects.caption
         ], spacing = 4.0, padding = 4.0)
@@ -204,6 +214,7 @@ pub class Panels:
     ## below the network's selected node.
     pub func open_viewport_search(self) -> unit!:
         self.from_viewport = true
+        self.placed = true
         if let node = self.workspace.selected():
             self.add_x = node.x
             self.add_y = node.y + 110.0
@@ -215,6 +226,7 @@ pub class Panels:
     ## to it), as the viewport's Tab menu adds.
     pub func add_from_viewport(self, kind: str) -> unit!:
         self.from_viewport = true
+        self.placed = true
         if let node = self.workspace.selected():
             self.add_x = node.x
             self.add_y = node.y + 110.0
@@ -223,17 +235,34 @@ pub class Panels:
 
     pub func open_search(self) -> unit!:
         self.from_viewport = false
-        let at = self.graph.to_graph(self.graph.pointer_x, self.graph.pointer_y)
+        self.placed = true
+        self.add_at(self.graph.pointer_x, self.graph.pointer_y)
+        let graph_bounds = self.graph.layout().bounds()
+        let body_bounds = self.body.layout().bounds()
+        self.search.open(graph_bounds.x - body_bounds.x + self.graph.pointer_x, graph_bounds.y - body_bounds.y + self.graph.pointer_y, self.workspace.network.context(), self.workspace.network.has_inputs(self.workspace.network.scope))
+
+    ## A node added at (`x`, `y`) of the network view; repeated additions at
+    ## an unchanged point do not bury a node.
+    func add_at(self, x: float, y: float):
+        let at = self.graph.to_graph(x, y)
         self.add_x = at.x
         self.add_y = at.y
-        # Repeated additions at an unchanged cursor should not bury a node.
         for node in self.workspace.network.local_nodes():
             if self.add_x >= node.x - 96.0 and self.add_x <= node.x + 260.0 and self.add_y >= node.y - 40.0 and self.add_y <= node.y + 60.0:
                 self.add_x = node.x
                 self.add_y = node.y + 110.0
-        let graph_bounds = self.graph.layout().bounds()
-        let body_bounds = self.body.layout().bounds()
-        self.search.open(graph_bounds.x - body_bounds.x + self.graph.pointer_x, graph_bounds.y - body_bounds.y + self.graph.pointer_y, self.workspace.network.context(), self.workspace.network.has_inputs(self.workspace.network.scope))
+
+    ## Where a node added from the menu bar goes: below the selected node
+    ## (which it is wired to), as the viewport's Tab menu adds; with nothing
+    ## selected, in the middle of the network view.
+    func place_added(self):
+        self.from_viewport = false
+        if let node = self.workspace.selected():
+            self.add_x = node.x
+            self.add_y = node.y + 110.0
+            return
+        let bounds = self.graph.layout().bounds()
+        self.add_at(bounds.width * 0.5, bounds.height * 0.5)
 
     ## A sketch tool asks for a length: the value box opens at the pointer.
     func ask_sketch_value(self, label: str, value: float, answer: func(float) -> unit!) -> unit!:
@@ -299,6 +328,7 @@ pub class Panels:
             self.graph.reset_scope()
             self.shown_scope = self.workspace.network.scope
         self.actions.refresh()
+        self.menus.refresh()
         self.spreadsheet.refresh()
         self.inspector.refresh()
         self.tool_bar.refresh()
@@ -313,6 +343,9 @@ pub class Panels:
         self.timeline.poll()
         self.network_tools.poll()
         self.up.layout().set_enabled(self.actions.parent.is_enabled())
+        # Tab closed without a choice: its placement is spent.
+        if self.placed and not self.search.is_open():
+            self.placed = false
         self.inspector.poll()
         self.place_tool_bar()
         if self.workspace.poll_compute():

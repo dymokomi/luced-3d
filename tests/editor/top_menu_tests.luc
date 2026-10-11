@@ -1,0 +1,213 @@
+## The menu bar's Create and Modify menus (top_menus.luc): Create offers the
+## Tab menu's nodes for the network shown, one submenu per category, rebuilt
+## when the level changes; choosing there is choosing in Tab (placement,
+## wiring, display flag, undo); Modify's items are disabled when they do not
+## apply. New nodes never take a sibling's name.
+from app import Luce3D
+from workspace import Workspace
+from luce_ui.ui import Event, Command
+from luce_window.input import EventKind, Key
+import node_catalog
+import node_commands
+
+pub func top_menu_tests() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1200.0, 800.0)
+    let menus = editor.panels.menus
+    # Every level offers what Tab offers there, in Tab's categories.
+    let geo = w.network.scope
+    assert(w.network.context() == "geometry")
+    offers_tab(editor)
+    node_commands.leave_group(w)
+    editor.panels.refresh()
+    assert(w.network.context() == "scene" and titles(menus.create_entries) == ["Contexts", "Render"])
+    offers_tab(editor)
+    for (container, context) in [("CAD", "cad"), ("SDF", "sdf"), ("Volumes", "volumes"), ("GSplats", "gsplats"), ("Materials", "materials")]:
+        to_root(w)
+        node_commands.add_node(w, container, 300.0, 70.0)
+        node_commands.enter_group(w, w.network.selected)
+        editor.panels.refresh()
+        assert(w.network.context() == context)
+        offers_tab(editor)
+        if container == "Materials":
+            node_commands.add_node(w, "Material", 40.0, 70.0)
+            node_commands.enter_group(w, w.network.selected)
+            editor.panels.refresh()
+            assert(w.network.context() == "shading")
+            offers_tab(editor)
+        # A Group inside offers its container's nodes, Input among them.
+        to_root(w)
+    node_commands.enter_group(w, geo)
+    node_commands.add_node(w, "Group", 300.0, 300.0)
+    node_commands.enter_group(w, w.network.selected)
+    editor.panels.refresh()
+    offers_tab(editor)
+    assert(offered_kinds(menus.create_entries).contains("Input"))
+    node_commands.leave_group(w)
+    editor.panels.refresh()
+    assert(not offered_kinds(menus.create_entries).contains("Input"))
+
+    # Choosing in Create is choosing in Tab: below the selected node, wired
+    # to it, with the display flag, one undo step.
+    let cube = w.network.nodes[0].id
+    assert(w.network.require(cube).kind == "Cube" and w.network.require(cube).parent == geo)
+    node_commands.select_node(w, cube)
+    editor.panels.refresh()
+    let by_menu = choose_in_create(editor, "Transform")
+    let made = w.network.require(by_menu)
+    let source = w.network.require(cube)
+    assert(made.kind == "Transform" and made.inputs[0] == cube and made.visible and w.network.display == made.id)
+    assert(made.x == source.x and made.y == source.y + 110.0 and w.history.undo_label() == "Undo Add Transform")
+    let count = w.network.nodes.length
+    w.undo()
+    assert(w.network.nodes.length == count - 1 and w.network.find(by_menu) == none)
+    node_commands.select_node(w, cube)
+    editor.panels.open_viewport_search()
+    for scalar in [84, 114, 97, 110, 115, 102, 111, 114, 109]:
+        editor.app.dispatch(Event(kind = EventKind.text_input, codepoint = scalar))
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    let by_tab = w.network.require(w.network.selected)
+    assert(by_tab.kind == "Transform" and by_tab.inputs[0] == cube and by_tab.visible and w.network.display == by_tab.id)
+    assert(by_tab.x == made.x and by_tab.y == made.y and w.history.undo_label() == "Undo Add Transform")
+    w.undo()
+    # With nothing selected it lands in the middle of the network view.
+    deselect(w)
+    editor.panels.refresh()
+    let alone = w.network.require(choose_in_create(editor, "Null"))
+    assert(alone.inputs[0] < 0 and w.network.display == alone.id)
+    w.undo()
+
+    # Modify: nothing selected, nothing to flag, group or delete; a submenu is
+    # enabled while any of its items is.
+    deselect(w)
+    editor.panels.refresh()
+    let a = editor.panels.actions
+    for command in [a.display, a.enabled, a.freeze, a.set_output, a.group, a.delete, a.clear_edits]:
+        assert(not command.is_enabled(), command.text())
+    assert(menus.transform.is_enabled() and not menus.selecting.is_enabled())
+    # The keyboard skips them: Enter on the first enabled row opens the
+    # transform tools; Enter there chooses Select.
+    menus.modify.open()
+    editor.app.layout(1200.0, 800.0)
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    editor.app.layout(1200.0, 800.0)
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.down))
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    assert(not menus.modify.is_open() and w.edit_tool == "Move")
+    a.tools[0].trigger()
+    # A node selected in a Geo: its flags, Output, Group and Delete apply.
+    node_commands.select_node(w, cube)
+    editor.panels.refresh()
+    for command in [a.display, a.enabled, a.freeze, a.set_output, a.group, a.delete]:
+        assert(command.is_enabled(), command.text())
+    # At the root there is no Output to set.
+    to_root(w)
+    editor.panels.refresh()
+    assert(a.delete.is_enabled() and not a.set_output.is_enabled())
+    # Delete from the menu, then undo.
+    let before = w.network.nodes.length
+    let chosen = w.network.selected
+    menus.modify.open()
+    editor.app.layout(1200.0, 800.0)
+    for _ in 0..<4:
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.down))
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    assert(w.network.find(chosen) == none and w.network.nodes.length < before)
+    w.undo()
+    assert(w.network.find(chosen) != none)
+    names_tests()
+    print("PASS top menus: Create mirrors Tab per level and adds as Tab does; Modify's items follow the selection; new names never repeat a sibling's")
+
+## A renamed node does not lend its name to the next new one, nor a Group's.
+func names_tests() -> unit!:
+    let w = Workspace()
+    let cube = w.network.nodes[0].id
+    node_commands.select_node(w, cube)
+    let next = w.network.next_id
+    node_commands.rename(w, f"Sphere {next}")
+    node_commands.add_node(w, "Sphere", 200.0, 70.0)
+    let sphere = w.network.require(w.network.selected)
+    assert(sphere.name != f"Sphere {next}" and sphere.name.starts_with("Sphere "))
+    node_commands.select_node(w, sphere.id)
+    node_commands.rename(w, "Ball")
+    node_commands.add_node(w, "Null", 200.0, 170.0)
+    node_commands.rename(w, "Ball group")
+    node_commands.select_node(w, sphere.id)
+    node_commands.group_selected(w)
+    let group = w.network.require(w.network.selected)
+    assert(group.kind == "Group" and group.name != "Ball group" and group.name.starts_with("Ball group"))
+    let names: list[str] = []
+    for node in w.network.local_nodes():
+        assert(not (node.name in names), node.name)
+        names.append(node.name)
+
+## The Create menu's entries are Tab's, category by category.
+func offers_tab(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    let context = w.network.context()
+    let inputs = w.network.has_inputs(w.network.scope)
+    let entries = editor.panels.menus.create_entries
+    var at = 0
+    for category in node_catalog.categories(context):
+        if category == "All": continue
+        let places = node_catalog.offered(context, inputs, category)
+        if places.length == 0: continue
+        let entry = entries[at]
+        assert(entry.text() == category and entry.has_items(), category)
+        assert(entry.item_count() == places.length)
+        for index in 0..<places.length:
+            assert(entry.item(index) is editor.panels.actions.add[places[index]])
+            assert(entry.item(index).icon() != "")
+        at += 1
+    assert(at == entries.length)
+    # Together they are Tab's All.
+    assert(offered_kinds(entries).length == node_catalog.offered(context, inputs).length)
+
+func offered_kinds(entries: list[Command]) -> list[str]!:
+    let result: list[str] = []
+    for entry in entries:
+        for index in 0..<entry.item_count():
+            result.append(entry.item(index).text())
+    return result
+
+func titles(entries: list[Command]) -> list[str]:
+    let result: list[str] = []
+    for entry in entries:
+        result.append(entry.text())
+    return result
+
+func to_root(w: Workspace) -> unit!:
+    while w.network.scope >= 0:
+        node_commands.leave_group(w)
+
+func deselect(w: Workspace):
+    w.network.selected = -1
+    w.network.picked = []
+    w.revision += 1
+
+## Open Create, go into the submenu holding `kind` and choose it, all by
+## keyboard as a person would; the new node's id.
+func choose_in_create(editor: Luce3D, kind: str) -> int!:
+    let entries = editor.panels.menus.create_entries
+    let menu = editor.panels.menus.create
+    menu.open()
+    editor.app.layout(1200.0, 800.0)
+    for row in 0..<entries.length:
+        var place = -1
+        for index in 0..<entries[row].item_count():
+            if entries[row].item(index).text() == kind: place = index
+        if place < 0:
+            editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.down))
+            continue
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.right))
+        editor.app.layout(1200.0, 800.0)
+        for _ in 0..<place:
+            editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.down))
+        let before = editor.workspace.network.next_id
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+        assert(not menu.is_open())
+        let node = editor.workspace.network.require(editor.workspace.network.selected)
+        assert(node.kind == kind and node.id == before)
+        return node.id
+    trap(kind + " is not in the Create menu")

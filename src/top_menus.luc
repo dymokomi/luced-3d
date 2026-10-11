@@ -1,0 +1,111 @@
+## The menu bar's Create and Modify menus, for those who prefer menus to Tab
+## and the marking menus.
+##   Create: the Tab menu's nodes for the network shown, in its categories
+##     (node_catalog.offered, one submenu each), and inside a displayed Edit
+##     node its primitives first. Rebuilt when the network level changes.
+##   Modify: what applies to the selection: the node's flags, Output, grouping
+##     and deletion; the transform tools; the active Edit kind's modeling tools
+##     (each a new node outside an Edit node); the selection's edits.
+## Every item is one of Actions' commands, so choosing one is choosing it in
+## Tab or a marking menu, its shortcut shows, and it is disabled when it
+## does not apply (Actions.refresh).
+from luce_ui.ui import Menu, Command, Font
+from actions import Actions
+from workspace import Workspace
+import node_catalog
+
+pub class TopMenus:
+    pub let create: Menu
+    pub let modify: Menu
+    let actions: Actions
+    let workspace: Workspace
+    ## Submenu titles: the displayed Edit node's primitives, the transform
+    ## tools, the modeling tools and the selection's edits.
+    let primitives: Command
+    pub let transform: Command
+    pub let modeling: Command
+    pub let selecting: Command
+    ## Create's entries, as last built.
+    pub var create_entries: list[Command]
+    ## What the menus were last built for: they are rebuilt when it changes.
+    var create_key: str = ""
+    var modeling_key: str = ""
+
+    pub func init(self, workspace: Workspace, actions: Actions, font: Font) -> unit!:
+        self.workspace = workspace
+        self.actions = actions
+        self.primitives = Command("Primitives")
+        self.transform = Command("Transform tool")
+        self.transform.set_items(actions.tools)
+        self.modeling = Command("Modeling tools")
+        self.selecting = Command("Selection")
+        self.selecting.set_items([actions.select_all] + actions.selection_tools)
+        self.create_key = self.network_key()
+        self.create_entries = self.create_items()
+        self.create = Menu("Create", self.create_entries, font = font)
+        self.update_modeling()
+        self.modify = Menu("Modify", [actions.display, actions.enabled, actions.freeze, Command("", divider = true),
+                                      actions.set_output, actions.group, actions.delete, Command("", divider = true),
+                                      self.transform, self.modeling, actions.clear_edits, Command("", divider = true),
+                                      self.selecting], font = font)
+        self.refresh()
+
+    ## Follow the network shown and the selection: rebuild what changed and
+    ## enable a submenu while any of its items applies. After Actions.refresh.
+    pub func refresh(self) -> unit!:
+        let key = self.network_key()
+        if key != self.create_key:
+            self.create_key = key
+            self.create_entries = self.create_items()
+            self.create.set_actions(self.create_entries)
+        self.update_modeling()
+        for title in [self.primitives, self.transform, self.modeling, self.selecting]:
+            var any = false
+            for index in 0..<title.item_count():
+                any = any or title.item(index).is_enabled()
+            title.set_enabled(any)
+
+    ## The network level and whether an Edit node is displayed (and its kind).
+    func network_key(self) -> str:
+        let w = self.workspace
+        let editing = w.strip_kind().name if w.editing() else ""
+        return f"{w.network.scope} {w.network.context()} {w.network.has_inputs(w.network.scope)} {editing}"
+
+    ## Create's entries: the Edit node's primitives, then a submenu for each
+    ## of the Tab menu's categories that offers something here.
+    func create_items(self) -> list[Command]!:
+        let w = self.workspace
+        let context = w.network.context()
+        let inputs = w.network.has_inputs(w.network.scope)
+        let result: list[Command] = []
+        if w.editing():
+            let made = self.actions.create_commands()
+            if made.length > 0:
+                self.primitives.set_text(w.strip_kind().name + " primitives")
+                self.primitives.set_items(made)
+                result.append(self.primitives)
+                result.append(Command("", divider = true))
+        for category in node_catalog.categories(context):
+            if category == "All":
+                continue
+            let items: list[Command] = []
+            for place in node_catalog.offered(context, inputs, category):
+                items.append(self.actions.add[place])
+            if items.length == 0:
+                continue
+            let title = Command(category)
+            title.set_items(items)
+            result.append(title)
+        return result
+
+    ## The modeling submenu holds the active Edit kind's tools.
+    func update_modeling(self) -> unit!:
+        let tools = self.actions.modify_commands()
+        var key = self.workspace.strip_kind().name
+        for tool in tools:
+            key += "/" + tool.text()
+        if key == self.modeling_key:
+            return
+        self.modeling_key = key
+        self.modeling.set_text(self.workspace.strip_kind().name + " tools")
+        self.modeling.set_items(tools)

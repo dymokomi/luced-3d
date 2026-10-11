@@ -254,6 +254,10 @@ counts before allocating and attaches attributes during mesh construction.
 The node menu (Tab or right-click) is cursor-anchored: empty queries browse
 categories, typing searches globally, arrows/Enter choose, Escape or an outside
 click dismisses.
+The menu bar's Create menu (`top_menus.luc`) lists the same kinds, from
+`node_catalog.offered`, the one list both menus read; its items are Actions'
+`add` commands, so they add exactly as Tab does. Modify lists Actions' commands
+for the selection, enabled by `Actions.refresh`.
 
 ## Interaction modules
 

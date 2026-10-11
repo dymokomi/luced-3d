@@ -89,6 +89,12 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   joining branches. Cycles are rejected. See [capabilities](docs/MODELING.md).
 - Tab or right-click opens a menu at the pointer, kept inside the window.
   Browse categories/submenus or type to filter; arrows and Enter choose.
+- The menu bar's **Create** menu offers the same nodes for the network shown,
+  one submenu per Tab category (inside a displayed Edit node, its primitives
+  first); a node chosen there goes below the selected node, wired to it.
+  **Modify** holds what applies to the selection: display flag, bypass,
+  freeze, Set Output, Group, Delete, the transform tools, the active Edit
+  kind's tools and the selection edits, greyed out when they do not apply.
 - File imports OBJ, FBX (scene hierarchy, transforms, layers and instances; see
   [FBX files](docs/MODELING.md#fbx-files)), USD (.usd, .usda, .usdc, .usdz; see
   [USD files](docs/MODELING.md#usd-files)), PLY (meshes, point clouds and
