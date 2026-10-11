@@ -1,0 +1,74 @@
+## A panel's bottom toolbar, as luced-2d's panels have them: luce-ui's Shelf
+## of plain icon buttons, each triggering a command, and the hovered button's
+## command and shortcut in a tooltip above it after a moment (as the
+## timeline's buttons show theirs). Used by the Network panel.
+from luce_ui.ui import Shelf, Button, ButtonStyle, Font, Tooltip, Command, Spacer, Widget
+from interop import Connection
+import time
+
+## Seconds the pointer rests on a button before its tooltip shows.
+let tooltip_delay: float = 0.5
+
+pub class IconShelf:
+    ## The shelf, the panel's footer.
+    pub let body: Shelf
+    pub let buttons: list[Button]
+    let commands: list[Command]
+    let tooltip: Tooltip
+    var hovered: int = -1
+    var hovered_at: int = 0
+    let connections: list[Connection]
+
+    ## Buttons for `left` (icon, command) pairs at the start and `right` ones
+    ## at the end.
+    pub func init(self, left: list[(str, Command)], right: list[(str, Command)], font: Font) -> unit!:
+        self.buttons = []
+        self.commands = []
+        self.connections = []
+        self.tooltip = Tooltip(font)
+        let children: list[Widget] = []
+        for (icon, command) in left + right:
+            let button = Button(icon = icon, font = font)
+            button.set_style(ButtonStyle.plain)
+            let chosen = command
+            self.connections.append(button.on_click(func () -> unit!: chosen.trigger()))
+            self.buttons.append(button)
+            self.commands.append(command)
+        for at in 0..<left.length:
+            children.append(self.buttons[at])
+        children.append(Spacer())
+        for at in left.length..<self.buttons.length:
+            children.append(self.buttons[at])
+        children.append(self.tooltip)
+        self.body = Shelf(children)
+
+    ## Each frame: buttons follow their commands' enabled state, and the
+    ## button the pointer rests on shows its tooltip.
+    pub func poll(self) -> unit!:
+        for at in 0..<self.buttons.length:
+            self.buttons[at].layout().set_enabled(self.commands[at].is_enabled())
+        var over = -1
+        for at in 0..<self.buttons.length:
+            if self.buttons[at].layout().contains_pointer(): over = at
+        let now = time.now()
+        if over != self.hovered:
+            self.hovered = over
+            self.hovered_at = now
+            self.tooltip.hide()
+            return
+        if over < 0 or self.tooltip.is_open() or float(now - self.hovered_at) / 1000000000.0 < tooltip_delay:
+            return
+        self.show_tooltip(over)
+
+    ## Button `index`'s tooltip: its command and shortcut, above it.
+    pub func show_tooltip(self, index: int) -> unit!:
+        let command = self.commands[index]
+        let shortcut = command.shortcut()
+        let bounds = self.buttons[index].layout().bounds()
+        let row = self.body.layout().bounds()
+        self.tooltip.show(command.text(), shortcut.text() if shortcut.is_bound() else "", bounds.x - row.x, bounds.y - row.y - 44.0)
+
+    pub func close(self):
+        for connection in self.connections:
+            connection.disconnect()
+        self.connections.clear()

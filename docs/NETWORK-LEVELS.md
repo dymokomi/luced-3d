@@ -59,6 +59,9 @@ network's:
 3. With neither, the container yields nothing and warns: "No Output node or
    display flag inside".
 
+**Set Output** on the Network panel's bottom toolbar makes the selected
+node feed the level's Output node, adding one after it when there is none.
+
 The display flag and the Output node can differ, as in Houdini: while you work
 upstream the viewport shows the flagged node, while the parent still reads the
 Output node.
@@ -124,6 +127,8 @@ object-level Group its flagged children.
   container is greyed. The container and the rows below it stay as they are.
 - Clicking any row, greyed or not, takes the network view to that node's
   network and selects it. Double-clicking a container enters it.
+- The search field at the top lists only the rows whose name holds what is
+  typed (any case), with the rows above them; collapsed branches are searched.
 - The eye toggles an object-level node's display flag. Rows inside data
   containers have no eye: a data container's output is chosen in its network.
 

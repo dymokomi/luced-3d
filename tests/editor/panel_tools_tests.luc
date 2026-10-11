@@ -1,0 +1,72 @@
+## The Network panel's bottom toolbar (Add node, Group, Set Output, Frame
+## nodes, with tooltips) and its Up button, and the Outliner's search field.
+from app import Luce3D
+from network import Network
+from outliner import object_rows, filtered
+from luce_ui.ui import Event, Rect
+from luce_window.input import EventKind
+import node_commands
+import levels
+
+pub func panel_tools_tests() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let geo = w.network.scope
+    let cube = w.network.selected
+    editor.panels.refresh()
+    editor.app.layout(1600.0, 1000.0)
+    let tools = editor.panels.network_tools
+    assert(tools.buttons.length == 4)
+    # Set Output on the Cube: an Output node after it, which the Geo yields.
+    click(editor, tools.buttons[2].layout().bounds())
+    let output = w.network.selected
+    assert(w.network.require(output).kind == levels.output_kind and w.network.require(output).inputs[0] == cube)
+    assert(w.network.outputs(geo)[0].id == output)
+    # Again from another node: the one Output is rewired, none is added.
+    node_commands.select_node(w, cube)
+    node_commands.add_node(w, "Transform", 200.0, 100.0)
+    let moved = w.network.selected
+    let count = w.network.nodes.length
+    click(editor, tools.buttons[2].layout().bounds())
+    assert(w.network.nodes.length == count and w.network.require(output).inputs[0] == moved)
+    # A tooltip names the command.
+    tools.show_tooltip(2)
+    # Up (an icon now) leaves the Geo; Set Output is off at the root.
+    editor.panels.poll(0.016)
+    editor.app.layout(1600.0, 1000.0)
+    w.network.selected = geo
+    node_commands.leave_group(w)
+    editor.panels.refresh()
+    assert(not editor.panels.actions.set_output.is_enabled())
+    w.undo()
+    # Add node opens the node menu.
+    click(editor, tools.buttons[0].layout().bounds())
+    assert(editor.panels.search.layout().is_visible())
+    editor.close()
+    outliner_search()
+    print("PASS panel tools: the Network toolbar's Set Output (made, then rewired), tooltips, Up and Add node; the Outliner's search keeps the parents of matches")
+
+## The Outliner's search: matches by name or object path, any case, with the
+## rows above them.
+func outliner_search() -> unit!:
+    let graph = Network()
+    let geo = graph.scope
+    graph.scope = -1
+    let group = graph.add("Group", 200.0, 0.0)
+    graph.scope = group.id
+    let lamp = graph.add("Light", 0.0, 0.0)
+    lamp.name = "Key Lamp"
+    graph.scope = -1
+    let rows = object_rows(graph, [], [])
+    let found = filtered(graph, rows, "lamp")
+    assert(found.length == 2 and found[0].id == group.id and found[1].id == lamp.id)
+    assert(filtered(graph, rows, "").length == rows.length)
+    assert(filtered(graph, rows, "CUBE").length == 2 and filtered(graph, rows, "CUBE")[0].id == geo)
+    assert(filtered(graph, rows, "nothing like it").length == 0)
+
+func click(editor: Luce3D, bounds: Rect) -> unit!:
+    let x = bounds.x + bounds.width * 0.5
+    let y = bounds.y + bounds.height * 0.5
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = x, y = y))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = x, y = y, button = 0))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = x, y = y, button = 0))

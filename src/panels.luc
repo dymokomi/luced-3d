@@ -2,7 +2,7 @@
 ## outliner, render view and takes docked together, with the status line,
 ## the node search, the shading menu, the sketch's value and text boxes
 ## and the tool bar; it routes refreshes and the frame's poll to them.
-from luce_ui.ui import VStack, HStack, Text, TextField, Font, Button, Spacer, DStack, Panel, DockPosition, Size, ScrollView, Menu, TextPrompt, ContextMenu
+from luce_ui.ui import VStack, HStack, Text, TextField, Font, Button, ButtonStyle, Spacer, DStack, Panel, DockPosition, Size, ScrollView, Menu, TextPrompt, ContextMenu
 from dock_layout import DockLayout
 from project_session import ProjectSession
 from node_menu import NodeMenu
@@ -27,6 +27,7 @@ from takes_pane import TakesList
 import node_commands
 import context_display
 from viewport_chrome import shading_button
+from icon_shelf import IconShelf
 import take_commands
 
 pub class Panels:
@@ -40,6 +41,11 @@ pub class Panels:
     pub let takes: TakesList
     let take_name: TextField
     let path: Text
+    ## The Network panel's Up button and bottom toolbar.
+    let up: Button
+    pub let network_tools: IconShelf
+    ## The Outliner's search field.
+    pub let outliner_search: TextField
     pub let search: NodeMenu
     pub let shading: ShadingMenu
     let context_anchor: Text
@@ -114,10 +120,8 @@ pub class Panels:
                 else:
                     node_commands.add_node(workspace, kind, self.add_x, self.add_y)
                 self.refresh()))
-        let add = Button("Add node / Tab", font = font)
-        let fit = Button("Frame nodes", font = font)
-        self.connections.append(add.on_click(self.open_search))
-        self.connections.append(fit.on_click(self.graph.frame_all))
+        self.connections.append(self.actions.add_node.on_trigger(self.open_search))
+        self.connections.append(self.actions.frame_nodes.on_trigger(self.graph.frame_all))
         let header = HStack([
             Text("LUCED 3D", font = font),
             Menu("File", [self.actions.new_project, self.actions.open_project, self.actions.save, self.actions.save_as], font = font),
@@ -126,11 +130,18 @@ pub class Panels:
         ], spacing = 4.0, padding = 4.0)
         let viewport = Panel("Viewport", self.view, minimum = Size(440.0, 270.0), closable = false, id = "viewport")
         let parameters = Panel("Parameters", ScrollView(self.inspector.body), minimum = Size(330.0, 180.0), closable = false, id = "parameters")
+        # The Network panel: where it is along the top (Up, the path), its
+        # tools along the bottom, as luced-2d's panels have them.
         self.path = Text("/ scene", font = font, muted = true)
-        let network_header = HStack([Button(action = self.actions.parent, font = font), Button(action = self.actions.group, font = font), self.path, Spacer(), add, fit], spacing = 4.0, padding = 4.0)
+        self.up = Button(icon = "arrow-up", font = font)
+        self.up.set_style(ButtonStyle.plain)
+        self.connections.append(self.up.on_click(func () -> unit!: self.actions.parent.trigger()))
+        let network_header = HStack([self.up, self.path, Spacer()], spacing = 4.0, padding = 4.0)
+        self.network_tools = IconShelf([("add-node", self.actions.add_node), ("group-nodes", self.actions.group), ("output-node", self.actions.set_output)],
+                                       [("frame-selection", self.actions.frame_nodes)], font)
         let network_body = VStack([network_header, self.graph], spacing = 0.0)
         network_body.layout().set_flex()
-        let network = Panel("Network", network_body, minimum = Size(460.0, 250.0), closable = false, id = "network")
+        let network = Panel("Network", network_body, minimum = Size(460.0, 250.0), closable = false, footer = self.network_tools.body, id = "network")
         self.dock = DStack([viewport], font = font)
         self.dock.add(parameters, viewport, DockPosition.right)
         self.dock.set_fraction(viewport, 0.75)
@@ -139,7 +150,17 @@ pub class Panels:
         self.dock.select(viewport)
         self.dock.add(network, viewport, DockPosition.bottom)
         self.dock.set_fraction(viewport, 0.63)
-        let outliner = Panel("Outliner", self.outliner, minimum = Size(260.0, 150.0), closable = false, id = "outliner")
+        # The Outliner, its search field at the top: matching rows and their
+        # parents list as you type.
+        self.outliner_search = TextField("", font = font, placeholder = "Search objects", cells = 12.0)
+        self.outliner_search.layout().set_flex()
+        self.connections.append(self.outliner_search.on_change(func (text: str) -> unit!: self.outliner.search(text)))
+        let search_icon = Button(icon = "search", font = font)
+        search_icon.set_style(ButtonStyle.plain)
+        self.connections.append(search_icon.on_click(func () -> unit!: self.outliner_search.layout().request_focus()))
+        let outliner_body = VStack([HStack([search_icon, self.outliner_search], spacing = 2.0, padding = 4.0), self.outliner], spacing = 0.0)
+        outliner_body.layout().set_flex()
+        let outliner = Panel("Outliner", outliner_body, minimum = Size(260.0, 150.0), closable = false, id = "outliner")
         self.dock.add(outliner, parameters, DockPosition.top)
         self.dock.set_fraction(outliner, 0.32)
         let new_take = Button("New", font = font)
@@ -285,6 +306,8 @@ pub class Panels:
     pub func poll(self, elapsed: float) -> unit!:
         self.view.poll_hold()
         self.timeline.poll()
+        self.network_tools.poll()
+        self.up.layout().set_enabled(self.actions.parent.is_enabled())
         self.inspector.poll()
         self.place_tool_bar()
         if self.workspace.poll_compute():
@@ -310,6 +333,7 @@ pub class Panels:
         self.view.tools.objects.silhouette.close()
         self.projects.close()
         self.timeline.close()
+        self.network_tools.close()
         self.project_settings.close()
         self.view.on_shading = none
         self.view.on_context_menu = none

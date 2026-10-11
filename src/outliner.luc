@@ -65,6 +65,39 @@ func append_scope(graph: Network, rows: list[OutlineRow], collapsed: list[int], 
                     paths.append(path)
             append_paths(rows, collapsed_paths, node.id, node.hidden, paths, "", depth + 1, shown)
 
+## The rows whose label holds `query` (any case) and the rows above them, so
+## each match keeps its place in the hierarchy; every row when it is empty.
+pub func filtered(graph: Network, rows: list[OutlineRow], query: str) -> list[OutlineRow]!:
+    let wanted = query.trim().lower()
+    if wanted == "":
+        return rows
+    let kept: list[bool] = []
+    for _ in rows:
+        kept.append(false)
+    for at in 0..<rows.length:
+        if not label_of(graph, rows[at]).lower().contains(wanted):
+            continue
+        kept[at] = true
+        # Its parents: each nearer row above it at a lower depth.
+        var depth = rows[at].depth
+        var up = at - 1
+        while up >= 0 and depth > 0:
+            if rows[up].depth < depth:
+                kept[up] = true
+                depth = rows[up].depth
+            up -= 1
+    let result: list[OutlineRow] = []
+    for at in 0..<rows.length:
+        if kept[at]:
+            result.append(rows[at])
+    return result
+
+## A row's label: its node's name, or the last part of its object path.
+pub func label_of(graph: Network, row: OutlineRow) -> str!:
+    if row.path != "":
+        return row.path.split("/")[-1]
+    return graph.require(row.id).name
+
 func append_paths(rows: list[OutlineRow], collapsed_paths: list[str], id: int, hidden: list[str], paths: list[str], parent: str, depth: int, visible: bool):
     let children: list[str] = []
     for path in paths:
@@ -101,6 +134,9 @@ pub class Outliner: Widget:
     var hovered: int = -1
     var last_node: int = -1
     var last_click: int = 0
+    ## The search field's text: only matching rows (and their parents) list,
+    ## collapsed branches searched too.
+    var query: str = ""
 
     pub func init(self, workspace: Workspace, font: Font? = none) -> unit!:
         self.workspace = workspace
@@ -116,6 +152,12 @@ pub class Outliner: Widget:
 
     pub func layout(self) -> Layout:
         return self.box
+
+    ## Show only the rows matching `text` (the search field's).
+    pub func search(self, text: str) -> unit!:
+        self.query = text
+        self.scroll = 0.0
+        self.refresh()
     pub func measure(self, available: Constraints) -> Size!:
         return Size(300.0, 210.0)
 
@@ -123,7 +165,9 @@ pub class Outliner: Widget:
         return self.font.line_height() + 6.0
 
     pub func refresh(self) -> unit!:
-        self.rows = object_rows(self.workspace.network, self.collapsed, self.collapsed_paths)
+        let searching = self.query.trim() != ""
+        let all = object_rows(self.workspace.network, [] if searching else self.collapsed, [] if searching else self.collapsed_paths)
+        self.rows = filtered(self.workspace.network, all, self.query)
         self.scroll = math.clamp(self.scroll, 0.0, math.max(0.0, float(self.rows.length) * self.row_height() - self.box.bounds().height))
         self.box.invalidate()
 
@@ -155,12 +199,12 @@ pub class Outliner: Widget:
                 p.text(">" if node.id in self.collapsed else "v", x, text_y, ink, self.font)
             draw_icon(p, ("Group" if row.branch else "Cube") if row.path != "" else node.kind, x + 17.0, y + (self.row_height() - self.font.height()) * 0.5, self.font.height(), ink)
             let limit = int(math.max(1.0, (size.width - x - 75.0) / self.font.advance()))
-            let label = row.path.split("/")[-1] if row.path != "" else node.name
+            let label = label_of(self.workspace.network, row)
             p.text(label if label.length <= limit else label[0..<limit] + "…", x + 40.0, text_y, ink, self.font)
             if row.path != "" or row.object:
                 p.text(("o" if node.visible else "-") if row.path == "" else ("-" if row.hidden else "o"), size.width - 23.0, text_y, ink, self.font)
         if self.rows.length == 0:
-            p.text("No objects", 12.0, 12.0, theme.text_muted(), self.font)
+            p.text("No matches" if self.query.trim() != "" else "No objects", 12.0, 12.0, theme.text_muted(), self.font)
         p.close()
 
     pub func event(self, event: Event) -> unit!:

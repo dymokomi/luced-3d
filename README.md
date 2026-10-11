@@ -137,10 +137,11 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   Mesh primitives live in Geo; CAD features, SDF operations,
   volume operations and splat operations live in their corresponding containers.
   Materials contains Material nodes; each Material contains its shader graph.
-- Containers have **thicker outlines**. Double-click one to enter; **U** or Up
-  returns to its parent. Group inherits its enclosing context. The **Outliner**
+- Containers have **thicker outlines**. Double-click one to enter; **U** or the
+  Up arrow returns to its parent. The Network panel's bottom toolbar adds a
+  node, groups the picked nodes, sets the Output and frames the nodes. Group inherits its enclosing context. The **Outliner**
   shows the root's objects and what each container yields, greying what lies
-  outside the container the network view is in.
+  outside the container the network view is in; its search field filters them.
 - To feed data between networks, wire a container's first or second input, then
   create **Input** inside it and choose First or Second. For example, connect a
   Materials library to Geo, then wire Input into Assign Material's second port.
