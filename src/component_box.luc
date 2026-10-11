@@ -1,0 +1,67 @@
+## A press at a component level: a drag draws a box that selects the points
+## inside it and the edges and faces it touches, only what shows unless the
+## kind's pick geometry hides inside surfaces (Edit SDF); a press without a
+## drag is a click (viewport_tools.luc picks under the pointer). Shift adds,
+## Ctrl or Cmd takes away, a plain box starts over; a box over nothing
+## leaves the selection alone. The box is luce-3d's (Renderer.select_box,
+## on the id pass the viewport draws for picking; BoxSelect's view rays
+## before a frame), so no loop here visits the mesh's elements.
+from luce_ui.ui import Painter, Event
+from luce_window.input import EventKind, Key
+from luce_geocore.geocore import Selection
+from luce_3d.graphics import Renderer, BoxSelect
+from workspace import Workspace
+from marquee import operation_of, dragged, draw_box
+import selection_commands
+
+pub class ComponentBox:
+    let workspace: Workspace
+    ## A press in progress: where it started (box[0], box[1]), the pointer
+    ## now, and what it does (0 replace, 1 add, 2 remove).
+    var active: bool = false
+    pub var box: list[float]
+    pub var operation: int = 0
+
+    pub func init(self, workspace: Workspace):
+        self.workspace = workspace
+        self.box = []
+
+    ## A press at the event's point starts a box or a click.
+    pub func start(self, event: Event):
+        self.active = true
+        self.box = [event.x, event.y, event.x, event.y]
+        self.operation = operation_of(event)
+
+    ## The press's events once started: 0 none of them, 1 one it used, 2 the
+    ## release of a click (the caller picks at box[0], box[1]). What shows
+    ## comes from `renderer`'s id pass, the viewport's.
+    pub func event(self, event: Event, width: float, height: float, renderer: Renderer?) -> int!:
+        if not self.active:
+            return 0
+        if event.cancelled or event.kind in [EventKind.pointer_left, EventKind.focus_lost] or (event.kind == EventKind.key_down and event.key == Key.escape):
+            self.active = false
+            return 1
+        if event.kind == EventKind.pointer_moved:
+            self.box = [self.box[0], self.box[1], event.x, event.y]
+            return 1
+        if event.kind != EventKind.pointer_up:
+            return 1
+        self.active = false
+        self.box = [self.box[0], self.box[1], event.x, event.y]
+        if not dragged(self.box):
+            return 2
+        let w = self.workspace
+        let box = self.box
+        let kind = w.selection_kind()
+        let visible = kind == none or not (kind else trap("kind")).see_through
+        selection_commands.choose_boxed(w, self.operation, func (current: Selection, operation: int) -> Selection!:
+            let mesh = w.geometry else trap("geometry")
+            if let drawn = renderer:
+                return drawn.select_box(mesh, w.view.camera, current, box[0], box[1], box[2], box[3], width, height, operation, visible)
+            return BoxSelect.select(mesh, w.view.camera, current, box[0], box[1], box[2], box[3], width, height, operation, visible))
+        return 1
+
+    ## The box while it is dragged.
+    pub func draw(self, painter: Painter) -> unit!:
+        if self.active and dragged(self.box):
+            draw_box(painter, self.box)

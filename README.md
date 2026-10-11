@@ -66,8 +66,11 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
 3. In Network, **Tab**, type `Edit Mesh`, Enter. The viewport gains the
    Object/Polygons/Edges/Vertices/Corners level buttons and a tool strip at the
    left, ending with primitives to create.
-4. Choose Polygons (**2**), then click a face. Shift-click adds/removes components.
-   At Object (**1**) a click selects a whole piece.
+4. Choose Polygons (**2**), then click a face. Shift-click adds/removes components,
+   Ctrl/Cmd-click takes one away, and a click on empty space clears them. Drag a
+   box to select the points inside it, or the edges and faces it touches (only
+   what shows); Shift adds, Ctrl/Cmd takes away. At Object (**1**) a click or a
+   box selects whole pieces.
    Press **E** or click Extrude. Repeat to keep extending the selected cap.
 5. Set **Next distance** before extrusion; **Last distance** changes the most
    recent extrusion. The Edit node lists the operations it owns.
@@ -78,8 +81,13 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
 
 ## Network
 
-- Drag empty space, middle-drag, or Space-drag to pan. Touchpad scrolling
-  pans; the mouse wheel, Cmd/Ctrl-scroll and pinch zoom around the pointer.
+- Middle-drag or Space-drag pans. Touchpad scrolling pans; the mouse wheel,
+  Cmd/Ctrl-scroll and pinch zoom around the pointer.
+- Drag on empty space to box the nodes and wires it touches; Shift adds,
+  Ctrl/Cmd takes away, and a click on empty space selects nothing (Parameters
+  then shows nothing). Click a wire to pick it (Shift adds); Delete/Backspace
+  removes the picked wires and nodes in one undo step. Hold **Y** and drag
+  across wires to cut them.
 - Drag node bodies to move them. Home or **Frame nodes** fits the network.
 - Nodes use compact Houdini-inspired bodies, top inputs and bottom outputs.
 - Drag or click-click from a geometry output to an input (or the reverse) to connect or replace
@@ -157,7 +165,7 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   See [context rules](docs/OUTLINER.md) and [network levels](docs/NETWORK-LEVELS.md).
 - Disabling Transform, an Edit node or Merge passes its first input through.
   Disabling Cube produces empty geometry. Delete/Backspace in Network deletes
-  the selected node and disconnects its consumers.
+  the picked nodes and wires and disconnects the nodes' consumers.
 - Edit tools appear when the selected Edit node (Edit Mesh, Edit CAD, Edit SDF) is enabled and displayed; a selected and displayed Sketch node (inside a CAD node) is drawn and constrained in the viewport.
   Display it with D before modeling. Incomplete nodes show an error instead of
   stale geometry; connect their inputs or undo the change.
@@ -167,7 +175,10 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
 Maya-style: **Alt-left-drag** orbits, **Alt-middle-drag** pans, and
 **Alt-right-drag** dollies (Option on macOS). On a touchpad, two fingers
 orbit, **Shift** with two fingers pans, and a pinch zooms; a mouse wheel zooms.
-Ordinary left-click is reserved for tools and selection.
+Ordinary left-click is reserved for tools and selection: at the Object level a
+click picks an object, a drag every object the box touches (hidden ones too, as
+Houdini does), and a click on empty space selects nothing. Navigation never
+changes the selection.
 **F** frames the displayed geometry; **G** toggles the grid. Component picking
 ignores occluded points, edges and faces, with orange hover previews before
 selection. Viewport tools use shared LuciaOS SVG icons with hover labels,

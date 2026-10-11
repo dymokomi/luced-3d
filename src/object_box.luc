@@ -1,23 +1,26 @@
-## Object picking in the viewport: a click picks the object under it, a
-## drag the ones seen in the box; Shift adds (a click on a picked one
-## removes it). Picked objects have a thick contour of their rendered shape.
+## Object picking in the viewport: a click picks the object under it (on
+## empty space, nothing), a drag every object the box touches, hidden or
+## not (Houdini's rule); Shift adds (a click on a picked one removes it),
+## Ctrl or Cmd takes away. Only the context's objects are picked, never the
+## rest of the scene drawn around it. Picked objects have a thick contour
+## of their rendered shape.
 from luce_ui.ui import Painter, Event
-from luce_gpu.gpu import Rect
 from luce_geocore.geocore import Mesh
 from luce_3d.graphics import Silhouette, GaussianSplats, FogVolume
 from luce_window.input import EventKind, Key
 from workspace import Workspace
-from luce_std import math
 import theme
 import node_commands
 from viewport_objects import object_at, objects_in, helper_node
-from viewport_chrome import outline
+from marquee import operation_of, dragged, draw_box
 
 pub class ObjectBox:
     let workspace: Workspace
-    ## A pick in progress: where it started and the pointer now.
+    ## A pick in progress: where it started, the pointer now, and what it
+    ## does (0 replace, 1 add, 2 remove).
     var boxing: bool = false
     var box: list[float]
+    var operation: int = 0
     pub let silhouette: Silhouette
 
     pub func init(self, workspace: Workspace):
@@ -25,10 +28,11 @@ pub class ObjectBox:
         self.box = []
         self.silhouette = Silhouette()
 
-    ## A press starts a pick at (`x`, `y`).
-    pub func start(self, x: float, y: float):
+    ## A press starts a pick at its point.
+    pub func start(self, event: Event):
         self.boxing = true
-        self.box = [x, y, x, y]
+        self.box = [event.x, event.y, event.x, event.y]
+        self.operation = operation_of(event)
 
     ## The pick's events once started; whether one was used.
     pub func event(self, event: Event, width: float, height: float) -> bool!:
@@ -44,17 +48,18 @@ pub class ObjectBox:
         if event.kind == EventKind.pointer_up:
             self.boxing = false
             self.box = [self.box[0], self.box[1], event.x, event.y]
-            if self.dragged():
+            if dragged(self.box):
                 let ids = objects_in(w, self.box[0], self.box[1], self.box[2], self.box[3], width, height)
                 if ids.length > 0:
-                    node_commands.pick_nodes(w, ids, event.shift)
-            else:
-                let id = object_at(w, event.x, event.y, width, height)
-                if id >= 0:
-                    node_commands.pick_node(w, id, event.shift)
-                elif not event.shift:
-                    w.network.picked = [w.network.selected]
-                    w.revision += 1
+                    node_commands.pick_nodes(w, ids, self.operation)
+                return true
+            let id = object_at(w, event.x, event.y, width, height)
+            if id >= 0 and self.operation == 2:
+                node_commands.pick_nodes(w, [id], 2)
+            elif id >= 0:
+                node_commands.pick_node(w, id, self.operation == 1)
+            elif self.operation == 0:
+                node_commands.select_nothing(w)
         return true
 
     ## Only the selection marquee is rectangular. Object highlights follow
@@ -81,8 +86,5 @@ pub class ObjectBox:
                 for index in 0..<helpers.length:
                     if helper_node(w, scene.path(index), "Camera" if scene.is_camera(index) else "Light", w.batches.scene_nodes[at]) in selected:
                         helpers[index].draw(w.view.camera, painter.target(), theme.accent())
-        if self.boxing and self.dragged():
-            outline(painter, Rect(math.min(self.box[0], self.box[2]), math.min(self.box[1], self.box[3]), math.abs(self.box[2] - self.box[0]), math.abs(self.box[3] - self.box[1])), theme.text())
-
-    func dragged(self) -> bool:
-        return math.abs(self.box[2] - self.box[0]) > 4.0 or math.abs(self.box[3] - self.box[1]) > 4.0
+        if self.boxing and dragged(self.box):
+            draw_box(painter, self.box)

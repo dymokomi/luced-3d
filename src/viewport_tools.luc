@@ -1,8 +1,9 @@
 ## The viewport's node tools over the scene: the chrome's buttons
 ## (viewport_chrome.luc), the edit overlay and component picking
 ## (component_pick.luc), click placing (viewport_placing.luc), the Knife
-## (knife_stroke.luc), object picking (object_box.luc), splat selection
-## (splat_select.luc) and the node gizmos
+## (knife_stroke.luc), object picking (object_box.luc), component boxes
+## (component_box.luc), splat selection (splat_select.luc) and the node
+## gizmos
 ## (node_gizmos.luc). Topology and intersections remain in luce-3d.
 from luce_ui.ui import Painter, Event
 from luce_3d.graphics import EditOverlay
@@ -16,6 +17,7 @@ from viewport_chrome import ViewportChrome
 from component_pick import ComponentPicker, draw_hover
 from knife_stroke import KnifeStroke
 from object_box import ObjectBox
+from component_box import ComponentBox
 from splat_select import SplatSelect
 import selection_commands
 from edit_types import smart_level, edge_level
@@ -30,6 +32,8 @@ pub class ViewportTools:
     pub let picker: ComponentPicker
     let knife: KnifeStroke
     pub let objects: ObjectBox
+    ## A press at a component level: a click, or a box when dragged.
+    pub let components: ComponentBox
     ## Box, lasso and brush selection of splats (Edit GSplats).
     pub let splats: SplatSelect
     ## The hovered component, and under Smart its level (-1: the
@@ -58,6 +62,7 @@ pub class ViewportTools:
         self.picker = ComponentPicker(workspace, self.overlay)
         self.knife = KnifeStroke(workspace)
         self.objects = ObjectBox(workspace)
+        self.components = ComponentBox(workspace)
         self.splats = SplatSelect(workspace)
         # The renderer tints selected faces (Renderer.set_face_selection).
         self.overlay.set_fill(false)
@@ -93,6 +98,7 @@ pub class ViewportTools:
                 draw_hover(painter, w, mesh, self.hover_level, self.hovered, width, height)
         if w.picking_objects():
             self.objects.draw(painter, width, height)
+        self.components.draw(painter)
         self.knife.draw(painter)
         self.gizmos.draw(painter, width, height)
         self.chrome.draw_snap(painter, width, height)
@@ -128,6 +134,12 @@ pub class ViewportTools:
             return true
         if self.objects.event(event, width, height):
             return true
+        let press = self.components.event(event, width, height, self.picker.renderer)
+        if press == 2:
+            let at = self.components.box
+            self.click(at[0], at[1], self.components.operation, width, height)
+        if press > 0:
+            return true
         if self.splats.event(event, width, height):
             return true
         let splats = self.splats.applies()
@@ -154,26 +166,35 @@ pub class ViewportTools:
             self.placing.click(placing, self.overlay, self.picker.renderer, event.x, event.y, width, height)
             return true
         if w.picking_objects():
-            self.objects.start(event.x, event.y)
+            self.objects.start(event)
             return true
         if splats:
             self.splats.start(event, width, height)
             return true
         if w.selecting():
-            let now = time.now()
-            let chain = w.network.context() == "cad" and self.last_node == w.network.selected and self.last_level == edge_level and now - self.last_click < 400000000 and math.hypot(event.x - self.last_x, event.y - self.last_y) < 5.0
-            if w.component_mode == smart_level:
-                let found = self.picker.smart_pick(event.x, event.y, width, height)
-                if chain and found[0] == edge_level:
-                    selection_commands.choose_component(w, found[1], event.shift, chain = true)
-                else:
-                    selection_commands.choose_smart(w, found[0], found[1], event.shift)
-            else:
-                selection_commands.choose_component(w, self.pick(event.x, event.y, width, height), event.shift, chain = chain)
-            self.last_click = 0 if chain else now
-            self.last_x = event.x
-            self.last_y = event.y
-            self.last_node = w.network.selected
-            self.last_level = w.level_index()
+            # The click (or the box, when it is dragged) comes on release.
+            self.components.start(event)
             return true
         return false
+
+    ## A press released where it started, at (x, y) of a component level:
+    ## the component under it (Smart's level's under Smart), alone (operation
+    ## 0), added (1, Shift) or taken away (2, Ctrl or Cmd); a second click on
+    ## a CAD edge takes its tangent chain.
+    func click(self, x: float, y: float, operation: int, width: float, height: float) -> unit!:
+        let w = self.workspace
+        let now = time.now()
+        let chain = w.network.context() == "cad" and self.last_node == w.network.selected and self.last_level == edge_level and now - self.last_click < 400000000 and math.hypot(x - self.last_x, y - self.last_y) < 5.0
+        if w.component_mode == smart_level:
+            let found = self.picker.smart_pick(x, y, width, height)
+            if chain and found[0] == edge_level:
+                selection_commands.choose_component(w, found[1], operation == 1, chain = true, remove = operation == 2)
+            else:
+                selection_commands.choose_smart(w, found[0], found[1], operation)
+        else:
+            selection_commands.choose_component(w, self.pick(x, y, width, height), operation == 1, chain = chain, remove = operation == 2)
+        self.last_click = 0 if chain else now
+        self.last_x = x
+        self.last_y = y
+        self.last_node = w.network.selected
+        self.last_level = w.level_index()

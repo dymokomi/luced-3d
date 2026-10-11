@@ -63,9 +63,10 @@ pub func set_mode(w: Workspace, mode: int) -> unit!:
     if w.selection_kind() != none:
         w.rebuild()
 
-## Click: select `id` alone, or toggle it with `extend`; -1 clears. At a
-## level of pieces (Object) the whole piece around `id`.
-pub func choose_component(w: Workspace, id: int, extend: bool, chain: bool = false) -> unit!:
+## Click: select `id` alone, or toggle it with `extend`, or take it out
+## with `remove` (Ctrl or Cmd); -1 clears, but not while extending or
+## removing. At a level of pieces (Object) the whole piece around `id`.
+pub func choose_component(w: Workspace, id: int, extend: bool, chain: bool = false, remove: bool = false) -> unit!:
     if not w.selecting():
         return
     let mesh = w.geometry else return
@@ -74,14 +75,46 @@ pub func choose_component(w: Workspace, id: int, extend: bool, chain: bool = fal
     let piece = (edit_cad.edge_chain(mesh, id) if tangent else w.level().whole(mesh, id)) if id >= 0 else ""
     w.perform("Select components", func () -> unit!:
         if id < 0:
-            if not extend: w.selection = none
+            if not extend and not remove: w.selection = none
             return
         if piece == "":
-            w.selection = chosen.changed(id, 2 if extend else 3)
+            w.selection = chosen.changed(id, 1 if remove else (2 if extend else 3))
+        elif remove:
+            w.selection = chosen.combined(mesh, piece, 1)
         elif not extend:
             w.selection = Selection.of(mesh, piece, w.domain())
         else:
             w.selection = chosen.combined(mesh, piece, 1 if chosen.contains(id) else 0))
+    follow_prompt(w)
+
+## A box over the components: `boxed(current, operation)` is the Base
+## selection of what the box touches (the points inside it, the edges and
+## faces it meets) changed from `current` (0 replaced, 1 added, 2 taken
+## away). At a level of pieces each touched element brings its whole
+## piece, one Base pass per piece; a CAD edge level counts B-rep edges only.
+pub func choose_boxed(w: Workspace, operation: int, boxed: func(Selection, int) -> Selection!) -> unit!:
+    if not w.selecting():
+        return
+    let mesh = w.geometry else return
+    let chosen = w.current_selection() else return
+    let level = w.level()
+    var made = chosen
+    if level.piece == none:
+        made = boxed(chosen, operation)
+    else:
+        var rest = boxed(Selection.empty(mesh, w.domain()), 0)
+        if w.network.context() == "cad" and w.level_index() == edge_level:
+            rest = rest.combined(mesh, "@cad_edge>=0", 2)
+        if operation == 0:
+            made = Selection.empty(mesh, w.domain())
+        var at = rest.next(-1)
+        while at >= 0:
+            let piece = level.whole(mesh, at)
+            made = made.combined(mesh, piece, 1 if operation == 2 else 0)
+            rest = rest.combined(mesh, piece, 1).changed(at, 1)
+            at = rest.next(-1)
+    w.perform("Select components", func () -> unit!:
+        w.selection = made if made.count() > 0 else none)
     follow_prompt(w)
 
 pub func select_all(w: Workspace) -> unit!:
@@ -94,10 +127,13 @@ pub func select_all(w: Workspace) -> unit!:
     follow_prompt(w)
 
 ## Smart's click: component `id` of level `level` (what was under the
-## pointer). Another level than the selection's starts a new selection on
-## it; Smart's levels share their pick geometry, so nothing is cooked.
-pub func choose_smart(w: Workspace, level: int, id: int, extend: bool) -> unit!:
+## pointer), alone, added or taken away (`operation` 0, 1, 2). Another level
+## than the selection's starts a new selection on it; Smart's levels share
+## their pick geometry, so nothing is cooked.
+pub func choose_smart(w: Workspace, level: int, id: int, operation: int) -> unit!:
     if id >= 0 and level != w.smart_pick:
+        if operation == 2:
+            return
         w.smart_pick = level
         w.selection = none
-    choose_component(w, id, extend and id >= 0)
+    choose_component(w, id, operation == 1 and id >= 0, remove = operation == 2)

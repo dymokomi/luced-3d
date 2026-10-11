@@ -212,9 +212,9 @@ Pressing a tool, as with Houdini's shelf tools:
   faces) becomes the viewport selection, switching the component type. The
   Move gizmo on a plain node makes a Transform Components node the same way.
 - with nothing selected, the new node waits (Tool → Select): the viewport picks
-  on its input, and each change of the selection (a click, Shift to add, Select
-  All, Grow) becomes the node's group at once, its result shown; with nothing
-  picked the input shows. Enter finishes, Esc removes the node.
+  on its input, and each change of the selection (a click, a box, Shift to
+  add, Select All, Grow) becomes the node's group at once, its result shown;
+  with nothing picked the input shows. Enter finishes, Esc removes the node.
 
 If the input's topology later changes, a guarded node fails with "Group was
 selected on different topology. Reselect, or Keep IDs." **Reselect** picks on the

@@ -1,11 +1,13 @@
-## Objects in the viewport: which displayed node's mesh is under a point, or
-## shows inside a box. Rays go to each mesh's shared query index (Base); a
-## box casts a bounded grid of them, so it picks what is visible inside, not
-## everything whose bounds overlap.
-from luce_3d.graphics import Vector3
+## Objects in the viewport: which displayed node's mesh is under a point
+## (rays to each mesh's shared query index, in Base), or which ones a box
+## touches: any face of a mesh meeting it, hidden or not (luce-3d's
+## BoxSelect.touches), a cloud's, volume's or camera's and light's glyph's
+## bounds overlapping it on screen.
+from luce_3d.graphics import Vector3, BoxSelect
 from luce_geocore.geocore import Bounds
 from luce_gpu.gpu import Rect
 from workspace import Workspace
+from context_view import is_outside
 from luce_std import math
 import view_projection
 
@@ -24,6 +26,8 @@ pub func object_at(w: Workspace, x: float, y: float, width: float, height: float
     for at in 0..<w.batches.scenes.length:
         let geometry = w.batches.scenes[at]
         let node = w.batches.scene_nodes[at]
+        # The rest of the scene around a context is drawn, not picked.
+        if is_outside(w.network, node): continue
         let scene = geometry.scene()
         let helpers = w.batches.helpers(at)
         if w.view.hulls_visible:
@@ -68,29 +72,38 @@ func box_distance(box: Bounds, origin: Vector3, direction: Vector3) -> float:
         if far < near: return -1.0
     return near
 
-## The nodes seen inside the box from (x0, y0) to (x1, y1): the first object
-## along rays at most every 6 pixels, at most 48 a side.
+## The nodes whose objects the box from (x0, y0) to (x1, y1) touches.
 pub func objects_in(w: Workspace, x0: float, y0: float, x1: float, y1: float, width: float, height: float) -> list[int]!:
     let found: list[int] = []
-    let columns = int(math.clamp(math.abs(x1 - x0) / 6.0, 1.0, 48.0))
-    let rows = int(math.clamp(math.abs(y1 - y0) / 6.0, 1.0, 48.0))
-    for row in 0..<rows + 1:
-        for column in 0..<columns + 1:
-            let x = x0 + (x1 - x0) * float(column) / float(columns)
-            let y = y0 + (y1 - y0) * float(row) / float(rows)
-            let id = object_at(w, x, y, width, height)
-            if id >= 0 and not (id in found):
-                found.append(id)
+    let (nodes, meshes) = w.on_screen()
+    for at in 0..<meshes.length:
+        if not (nodes[at] in found) and BoxSelect.touches(meshes[at], w.view.camera, x0, y0, x1, y1, width, height):
+            found.append(nodes[at])
+    let box = Rect(math.min(x0, x1), math.min(y0, y1), math.abs(x1 - x0), math.abs(y1 - y0))
+    for at in 0..<w.batches.scenes.length:
+        let geometry = w.batches.scenes[at]
+        let node = w.batches.scene_nodes[at]
+        if is_outside(w.network, node): continue
+        let scene = geometry.scene()
+        let helpers = w.batches.helpers(at)
+        if w.view.hulls_visible:
+            for index in 0..<helpers.length:
+                let id = helper_node(w, scene.path(index), "Camera" if scene.is_camera(index) else "Light", node)
+                if not (id in found) and overlaps(screen_rect(w, [helpers[index].bounds()], width, height), box):
+                    found.append(id)
+        if not (node in nodes) and not (node in found) and helpers.length == 0 and geometry.has_bounds() and overlaps(screen_rect(w, [geometry.bounds()], width, height), box):
+            found.append(node)
     return found
+
+## Whether screen rectangles `a` (none: not on screen) and `b` overlap.
+func overlaps(a: Rect?, b: Rect) -> bool:
+    let r = a else return false
+    return r.x <= b.x + b.width and r.x + r.width >= b.x and r.y <= b.y + b.height and r.y + r.height >= b.y
 
 ## Where node `id`'s meshes sit on screen (their bounds' corners in front of
 ## the camera), or none.
 pub func screen_bounds(w: Workspace, id: int, width: float, height: float) -> Rect?!:
     let (nodes, meshes) = w.on_screen()
-    var left = 1.0e30
-    var top = 1.0e30
-    var right = -1.0e30
-    var bottom = -1.0e30
     let boxes: list[Bounds] = []
     for at in 0..<meshes.length:
         if nodes[at] == id: boxes.append(meshes[at].bounds())
@@ -104,6 +117,15 @@ pub func screen_bounds(w: Workspace, id: int, width: float, height: float) -> Re
                 if helper_node(w, scene.path(index), "Camera" if scene.is_camera(index) else "Light", node) == id:
                     boxes.append(helpers[index].bounds())
         if node == id and not (id in nodes) and helpers.length == 0 and geometry.has_bounds(): boxes.append(geometry.bounds())
+    return screen_rect(w, boxes, width, height)
+
+## Where `boxes` sit on screen together (their corners in front of the
+## camera), or none.
+func screen_rect(w: Workspace, boxes: list[Bounds], width: float, height: float) -> Rect?!:
+    var left = 1.0e30
+    var top = 1.0e30
+    var right = -1.0e30
+    var bottom = -1.0e30
     for box in boxes:
         for corner in 0..<8:
             let point = Vector3(box.maximum.x if corner % 2 == 1 else box.minimum.x, box.maximum.y if (corner // 2) % 2 == 1 else box.minimum.y, box.maximum.z if corner >= 4 else box.minimum.z)

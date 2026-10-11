@@ -21,6 +21,7 @@ import time
 pub func select_node(w: Workspace, id: int) -> unit!:
     let node = w.network.require(id)
     w.network.picked = [id]
+    w.network.wires = []
     if node.id != w.network.selected:
         w.placing = none
     let shows = is_edit(node.kind) and w.network.display != id
@@ -84,33 +85,77 @@ pub func group_selected(w: Workspace) -> unit!:
         w.rebuild())
 
 ## Pick node `id` alone, or with `toggle` add it to the picked nodes (it
-## becomes the selected one) or take it out.
+## becomes the selected one) or take it out; picked wires stay picked.
 pub func pick_node(w: Workspace, id: int, toggle: bool) -> unit!:
     if not toggle:
         select_node(w, id)
         return
+    let wires = w.network.wires
     let picked = w.network.selection()
     if let at = picked.index_of(id):
         _ = picked.remove_at(at)
         if picked.length == 0:
+            select_nothing(w)
+            w.network.wires = wires
             return
         select_node(w, picked[picked.length - 1])
     else:
         picked.append(id)
         select_node(w, id)
     w.network.picked = picked
+    w.network.wires = wires
     w.revision += 1
 
-## Pick `ids` (a box), added to the picked nodes with `add`.
-pub func pick_nodes(w: Workspace, ids: list[int], add: bool) -> unit!:
-    let picked = w.network.selection() if add else []
+## Pick `ids` (a box): they alone (operation 0), added to the picked
+## nodes (1), or taken from them (2). Picking none of them alone leaves
+## the selection as it was.
+pub func pick_nodes(w: Workspace, ids: list[int], operation: int) -> unit!:
+    let picked = w.network.selection() if operation != 0 else []
     for id in ids:
-        if not (id in picked):
+        let at = picked.index_of(id)
+        if operation == 2:
+            if let found = at:
+                _ = picked.remove_at(found)
+        elif at == none:
             picked.append(id)
+    let wires = w.network.wires if operation != 0 else []
     if picked.length == 0:
+        if operation == 2:
+            select_nothing(w)
+            w.network.wires = wires
         return
-    select_node(w, picked[picked.length - 1])
+    let primary = w.network.selected if w.network.selected in picked else picked[picked.length - 1]
+    select_node(w, primary)
     w.network.picked = picked
+    w.network.wires = wires
+    w.revision += 1
+
+## A click on empty space, in the viewport or the network view: nothing is
+## selected, so the Parameters pane is empty and the viewport offers only
+## what applies without a node.
+pub func select_nothing(w: Workspace) -> unit!:
+    if w.selected() == none and w.network.wires.length == 0:
+        return
+    w.network.pick_nothing()
+    w.placing = none
+    w.selection = none
+    w.end_modal_tool()
+    w.revision += 1
+
+## Pick `wires` (each a node and its input port): they alone (operation
+## 0, with no node), added to what is picked (1), or taken from it (2).
+pub func pick_wires(w: Workspace, wires: list[(int, int)], operation: int) -> unit!:
+    if operation == 0:
+        w.network.pick_nothing()
+    let picked = w.network.wires.copy()
+    for wire in wires:
+        let at = picked.index_of(wire)
+        if operation == 2:
+            if let found = at:
+                _ = picked.remove_at(found)
+        elif at == none:
+            picked.append(wire)
+    w.network.wires = picked
     w.revision += 1
 
 pub func enter_group(w: Workspace, id: int) -> unit!:
@@ -209,14 +254,31 @@ pub func add_node(w: Workspace, kind: str, x: float, y: float) -> unit!:
         w.end_modal_tool()
         w.rebuild())
 
+## Delete the picked wires and nodes (one undo step).
 pub func delete_selected(w: Workspace) -> unit!:
     let ids = w.network.selection()
-    if ids.length == 0:
+    let wires = w.network.selected_wires()
+    if ids.length == 0 and wires.length == 0:
         return
-    w.perform("Delete node" if ids.length == 1 else "Delete nodes", func () -> unit!:
+    let label = ("Delete node" if ids.length == 1 else "Delete nodes") if ids.length > 0 else ("Delete wire" if wires.length == 1 else "Delete wires")
+    w.perform(label, func () -> unit!:
+        for (id, port) in wires:
+            w.network.disconnect(id, port)
+        w.network.wires = []
         for id in ids:
             if w.network.find(id) != none:
                 w.network.remove(id)
+        w.selection = none
+        w.rebuild())
+
+## Disconnect `wires` (each a node and its input port) in one undo step:
+## the network view's Y-drag cut.
+pub func cut_wires(w: Workspace, wires: list[(int, int)]) -> unit!:
+    if wires.length == 0:
+        return
+    w.perform("Cut wire" if wires.length == 1 else "Cut wires", func () -> unit!:
+        for (id, port) in wires:
+            w.network.disconnect(id, port)
         w.selection = none
         w.rebuild())
 

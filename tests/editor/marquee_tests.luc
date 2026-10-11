@@ -1,0 +1,269 @@
+## Marquees and empty clicks, driven through the app's events: in the
+## viewport a box picks every object it touches and the components it
+## touches (points inside it) at each level, Shift adds and Ctrl or Cmd
+## takes away; a click on empty space selects nothing and the Parameters
+## pane says so, while navigation never clears; in the network view a box
+## picks nodes and wires, a wire is picked by a click and Delete removes
+## the picked wires in one undo step, and a Y-drag cuts the wires it crosses.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key, ScrollUnit
+from luce_3d.graphics import Vector3, BoxSelect
+from luce_geocore.geocore import Selection
+from view_projection import project
+import node_commands
+import selection_commands
+import modeling_commands
+import network_wires
+from edit_types import object_level, point_level, edge_level, face_level
+
+pub func marquee_tests() -> unit!:
+    object_marquee()
+    component_marquee()
+    network_marquee()
+    wire_selection()
+    print("PASS marquees: objects the box touches, components at each level (Shift adds, Ctrl or Cmd takes away), empty clicks select nothing and empty the Parameters pane, navigation keeps the selection; network boxes over nodes and wires, wire clicks, Delete and Y-cut on wires, each one undo step")
+
+## A press, moves and release with the same modifiers.
+func drag(editor: Luce3D, x0: float, y0: float, x1: float, y1: float, shift: bool = false, control: bool = false, meta: bool = false, alt: bool = false) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = x0, y = y0, button = 0, shift = shift, control = control, meta = meta, alt = alt))
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = (x0 + x1) * 0.5, y = (y0 + y1) * 0.5, shift = shift, control = control, meta = meta, alt = alt))
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = x1, y = y1, shift = shift, control = control, meta = meta, alt = alt))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = x1, y = y1, button = 0, shift = shift, control = control, meta = meta, alt = alt))
+    editor.panels.refresh()
+
+func click(editor: Luce3D, x: float, y: float, shift: bool = false, control: bool = false) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = x, y = y, button = 0, shift = shift, control = control))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = x, y = y, button = 0, shift = shift, control = control))
+    editor.panels.refresh()
+
+## Two Geo objects at the root, a Cube each (the second 4 along X), seen
+## from the front at the Object level.
+func object_marquee() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.leave_group(w)
+    let first = w.network.selected
+    node_commands.add_node(w, "Geo", 200.0, 0.0)
+    let second = w.network.selected
+    node_commands.enter_group(w, second)
+    node_commands.add_node(w, "Cube", 0.0, 0.0)
+    node_commands.set_parameter(w, 1, 4.0)
+    node_commands.leave_group(w)
+    selection_commands.set_mode(w, object_level)
+    w.view.camera.set_position(Vector3(2.0, 0.0, 12.0))
+    w.view.camera.look_at(Vector3(2.0, 0.0, 0.0))
+    editor.app.layout(1400.0, 900.0)
+    editor.panels.refresh()
+    editor.app.focus(editor.panels.view.layout())
+    let area = editor.panels.view.layout().bounds()
+    let a = project(w, Vector3(), area.width, area.height)
+    let b = project(w, Vector3(4.0, 0.0, 0.0), area.width, area.height)
+    let ax = area.x + a[0]
+    let ay = area.y + a[1]
+    let bx = area.x + b[0]
+    let by = area.y + b[1]
+    assert(w.picking_objects() and bx - ax > 150.0)
+    # A click on an object picks it; on empty space (well above both), nothing.
+    click(editor, ax, ay)
+    assert(w.network.selection() == [first])
+    let empty_y = area.y + project(w, Vector3(2.0, 3.0, 0.0), area.width, area.height)[1]
+    let empty_x = (ax + bx) * 0.5
+    click(editor, empty_x, empty_y)
+    assert(w.selected() == none and w.network.selection().length == 0)
+    assert(editor.panels.inspector.nothing.layout().is_visible())
+    # The viewport offers what applies: no gizmo (even with Move chosen),
+    # no tool bar, nothing to delete, flag or group.
+    modeling_commands.choose_tool(w, "Move")
+    assert(not editor.panels.view.tools.gizmos.available() and not editor.panels.tool_bar.is_open())
+    assert(not editor.panels.actions.delete.is_enabled() and not editor.panels.actions.display.is_enabled() and not editor.panels.actions.group.is_enabled())
+    modeling_commands.choose_tool(w, "Select")
+    # Navigation is never a click: Alt-drags, a right drag and touchpad
+    # orbit, pan and zoom leave the selection alone.
+    click(editor, bx, by)
+    assert(w.network.selection() == [second])
+    assert(not editor.panels.inspector.nothing.layout().is_visible() and editor.panels.actions.delete.is_enabled())
+    drag(editor, empty_x, empty_y, empty_x + 40.0, empty_y + 30.0, alt = true)
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = empty_x, y = empty_y, button = 1))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = empty_x, y = empty_y, button = 1))
+    for shift in [false, true]:
+        editor.app.dispatch(Event(kind = EventKind.scroll, x = empty_x, y = empty_y, scroll_x = 5.0, scroll_y = 3.0, scroll_unit = ScrollUnit.points, shift = shift))
+    editor.app.dispatch(Event(kind = EventKind.magnify, x = empty_x, y = empty_y, scroll_y = 0.1, scroll_unit = ScrollUnit.points))
+    assert(w.network.selection() == [second])
+    w.view.camera.set_position(Vector3(2.0, 0.0, 12.0))
+    w.view.camera.look_at(Vector3(2.0, 0.0, 0.0))
+    # A box touching the first cube's right half picks it alone (touching is
+    # enough); one reaching both picks both; Ctrl takes the second away;
+    # Shift adds it back; a box over nothing changes nothing.
+    drag(editor, ax, ay - 10.0, empty_x - 5.0, ay + 10.0)
+    assert(w.network.selection() == [first])
+    drag(editor, ax, ay - 10.0, bx, by + 10.0)
+    assert(w.network.selection().length == 2)
+    drag(editor, bx - 10.0, by - 10.0, bx + 10.0, by + 10.0, control = true)
+    assert(w.network.selection() == [first])
+    drag(editor, bx - 10.0, by - 10.0, bx + 10.0, by + 10.0, shift = true)
+    assert(w.network.selection().length == 2)
+    drag(editor, empty_x - 10.0, empty_y - 10.0, empty_x + 10.0, empty_y + 10.0)
+    assert(w.network.selection().length == 2)
+    # Cmd takes away too; a Ctrl click on a picked object as well.
+    drag(editor, bx - 10.0, by - 10.0, bx + 10.0, by + 10.0, meta = true)
+    assert(w.network.selection() == [first])
+    click(editor, ax, ay, control = true)
+    assert(w.selected() == none)
+    # Inside the second Geo, the first one is the scene around the
+    # context: drawn, never picked.
+    node_commands.enter_group(w, second)
+    node_commands.select_nothing(w)
+    drag(editor, ax - 30.0, ay - 30.0, ax + 30.0, ay + 30.0)
+    assert(w.selected() == none)
+    drag(editor, bx - 30.0, by - 30.0, bx + 30.0, by + 30.0)
+    assert(w.selected() != none and w.network.selection().length == 1)
+    editor.close()
+
+## An Edit Mesh on the Cube, seen from a corner: 7 of its 8 points, 9 of
+## its 12 edges and 3 of its 6 faces show. A box over it all picks what
+## shows; boxes add and take away; Object picks whole pieces.
+func component_marquee() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.add_node(w, "Edit Mesh", 0.0, 100.0)
+    let edit = w.network.selected
+    w.view.camera.set_position(Vector3(4.0, 5.0, 6.0))
+    w.view.camera.look_at(Vector3())
+    editor.app.layout(1400.0, 900.0)
+    editor.panels.refresh()
+    editor.app.focus(editor.panels.view.layout())
+    let area = editor.panels.view.layout().bounds()
+    let x0 = area.x + 120.0
+    let y0 = area.y + 60.0
+    let x1 = area.x + area.width - 20.0
+    let y1 = area.y + area.height - 20.0
+    for (level, shown) in [(point_level, 7), (edge_level, 9), (face_level, 3)]:
+        selection_commands.set_mode(w, level)
+        # The last level's selection carried over: start from none.
+        w.selection = none
+        assert(w.selecting(), f"level {level}")
+        let before = w.history.cursor
+        drag(editor, x0, y0, x1, y1)
+        assert(w.selected_count() == shown, f"level {level}: {w.selected_count()} boxed")
+        assert(w.history.cursor == before + 1)
+        # The same box through luce-3d directly agrees.
+        let mesh = w.geometry else trap("mesh")
+        let direct = BoxSelect.select(mesh, w.view.camera, Selection.empty(mesh, w.domain()), x0 - area.x, y0 - area.y, x1 - area.x, y1 - area.y, area.width, area.height, 0)
+        assert(direct.count() == shown)
+        w.undo()
+        assert(w.selected_count() == 0)
+        w.redo()
+        assert(w.selected_count() == shown)
+    # Points: Ctrl takes the nearest corner away, Shift adds it back.
+    selection_commands.set_mode(w, point_level)
+    drag(editor, x0, y0, x1, y1)
+    let mesh = w.geometry else trap("mesh")
+    var corner = -1
+    for point in 0..<mesh.point_count():
+        if mesh.point(point).x > 0.5 and mesh.point(point).y > 0.5 and mesh.point(point).z > 0.5: corner = point
+    let at = project(w, mesh.point(corner), area.width, area.height)
+    let (cx, cy) = (area.x + at[0], area.y + at[1])
+    drag(editor, cx - 8.0, cy - 8.0, cx + 8.0, cy + 8.0, control = true)
+    assert(w.selected_count() == 6 and not (corner in w.selected_ids()))
+    drag(editor, cx - 8.0, cy - 8.0, cx + 8.0, cy + 8.0, shift = true)
+    assert(w.selected_count() == 7 and corner in w.selected_ids())
+    # A plain box replaces: just that corner.
+    drag(editor, cx - 8.0, cy - 8.0, cx + 8.0, cy + 8.0)
+    assert(w.selected_ids() == [corner])
+    # A click on empty space clears the components; the Edit node stays.
+    click(editor, x0, y0)
+    assert(w.selected_count() == 0 and w.network.selected == edit)
+    assert(not editor.panels.inspector.nothing.layout().is_visible())
+    # The Object level of an Edit node picks whole pieces: a box over one
+    # face takes the cube.
+    selection_commands.set_mode(w, object_level)
+    assert(w.selecting())
+    let top = project(w, Vector3(0.0, 1.0, 0.0), area.width, area.height)
+    drag(editor, area.x + top[0] - 6.0, area.y + top[1] - 6.0, area.x + top[0] + 6.0, area.y + top[1] + 6.0)
+    assert(w.selected_count() == 6, f"{w.selected_count()} faces of the piece")
+    editor.close()
+
+## Cube → Transform → Null in the Geo: boxes and modifiers in the network
+## view, and an empty click.
+func network_marquee() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let cube = w.network.selected
+    node_commands.add_node(w, "Transform", 40.0, 160.0)
+    let transform = w.network.selected
+    node_commands.add_node(w, "Null", 40.0, 250.0)
+    let null = w.network.selected
+    editor.app.layout(1400.0, 900.0)
+    let graph = editor.panels.graph
+    graph.frame_all()
+    editor.panels.refresh()
+    editor.app.focus(graph.layout())
+    let bounds = graph.layout().bounds()
+    let corner = graph.to_screen(w.network.require(transform).x - 20.0, w.network.require(transform).y - 20.0)
+    let end = graph.to_screen(w.network.require(null).x + 60.0, w.network.require(null).y + 50.0)
+    # An empty click: nothing selected, the Parameters pane empty.
+    click(editor, bounds.x + 12.0, bounds.y + 12.0)
+    assert(w.selected() == none and w.network.selection().length == 0)
+    assert(editor.panels.inspector.nothing.layout().is_visible())
+    # A box over the Transform and the Null picks both, and the wires it
+    # touches: the one between them and the end of the Cube's.
+    drag(editor, bounds.x + corner.x, bounds.y + corner.y, bounds.x + end.x, bounds.y + end.y)
+    let picked = w.network.selection()
+    assert(picked.length == 2 and transform in picked and null in picked)
+    let wires = w.network.selected_wires()
+    assert(wires.length == 2 and (null, 0) in wires and (transform, 0) in wires)
+    # Ctrl takes the Null away; Shift adds the Cube.
+    let null_at = graph.to_screen(w.network.require(null).x + 50.0, w.network.require(null).y + 20.0)
+    drag(editor, bounds.x + null_at.x - 60.0, bounds.y + null_at.y - 10.0, bounds.x + null_at.x + 60.0, bounds.y + null_at.y + 10.0, control = true)
+    assert(w.network.selection() == [transform])
+    let cube_at = graph.to_screen(w.network.require(cube).x + 50.0, w.network.require(cube).y + 20.0)
+    drag(editor, bounds.x + cube_at.x - 60.0, bounds.y + cube_at.y - 10.0, bounds.x + cube_at.x + 60.0, bounds.y + cube_at.y + 10.0, shift = true)
+    assert(w.network.selection().length == 2 and cube in w.network.selection())
+    # A Ctrl click on a picked node takes it out.
+    click(editor, bounds.x + cube_at.x, bounds.y + cube_at.y, control = true)
+    assert(w.network.selection() == [transform])
+    editor.close()
+
+## Wires: a click picks one, Shift adds another, Delete removes both (one
+## undo step); a Y-drag cuts the wire it crosses.
+func wire_selection() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let cube = w.network.selected
+    node_commands.add_node(w, "Transform", 40.0, 160.0)
+    let transform = w.network.selected
+    node_commands.add_node(w, "Null", 40.0, 250.0)
+    let null = w.network.selected
+    editor.app.layout(1400.0, 900.0)
+    let graph = editor.panels.graph
+    graph.frame_all()
+    editor.panels.refresh()
+    editor.app.focus(graph.layout())
+    let bounds = graph.layout().bounds()
+    let upper = network_wires.curve(graph.port_point(w.network.require(cube), true), graph.port_point(w.network.require(transform), false), false)[10]
+    let lower = network_wires.curve(graph.port_point(w.network.require(transform), true), graph.port_point(w.network.require(null), false), false)[10]
+    assert(graph.hit_wire(upper.x, upper.y) == [transform, 0])
+    click(editor, bounds.x + upper.x, bounds.y + upper.y)
+    assert(w.network.selected_wires() == [(transform, 0)] and w.selected() == none)
+    click(editor, bounds.x + lower.x, bounds.y + lower.y, shift = true)
+    assert(w.network.selected_wires().length == 2)
+    # Shift on a picked wire takes it out again; Ctrl too.
+    click(editor, bounds.x + lower.x, bounds.y + lower.y, shift = true)
+    assert(w.network.selected_wires() == [(transform, 0)])
+    click(editor, bounds.x + lower.x, bounds.y + lower.y, shift = true)
+    let before = w.history.cursor
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.delete))
+    assert(w.network.require(transform).inputs[0] == -1 and w.network.require(null).inputs[0] == -1)
+    assert(w.history.cursor == before + 1 and w.network.selected_wires().length == 0)
+    w.undo()
+    assert(w.network.require(transform).inputs[0] == cube and w.network.require(null).inputs[0] == transform)
+    editor.panels.refresh()
+    # Y held: a drag across the upper wire cuts it (and nothing else).
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.y))
+    drag(editor, bounds.x + upper.x - 40.0, bounds.y + upper.y, bounds.x + upper.x + 40.0, bounds.y + upper.y)
+    editor.app.dispatch(Event(kind = EventKind.key_up, key = Key.y))
+    assert(w.network.require(transform).inputs[0] == -1 and w.network.require(null).inputs[0] == transform)
+    w.undo()
+    assert(w.network.require(transform).inputs[0] == cube)
+    editor.close()

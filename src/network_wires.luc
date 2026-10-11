@@ -1,0 +1,64 @@
+## The network view's wires as curves on screen: the curve a wire is drawn
+## along (downward between geometry nodes, rightward between shader nodes),
+## and the hit tests on it: a point near it, a box touching it, a cut line
+## crossing it. A curve is 20 straight pieces, so each test is a few dozen
+## segment checks per wire.
+from luce_ui.ui import Point
+from luce_std import math
+
+## The curve from output `a` to input `b`, as 21 points; `across` runs it
+## rightward (shader nodes), else downward.
+pub func curve(a: Point, b: Point, across: bool) -> list[Point]:
+    let reach = math.max(35.0, math.abs(b.x - a.x if across else b.y - a.y) * 0.5)
+    let ax = a.x + reach if across else a.x
+    let ay = a.y if across else a.y + reach
+    let bx = b.x - reach if across else b.x
+    let by = b.y if across else b.y - reach
+    let points = [a]
+    for step in 1..<21:
+        let t = float(step) / 20.0
+        let u = 1.0 - t
+        points.append(Point(u * u * u * a.x + 3.0 * u * u * t * ax + 3.0 * u * t * t * bx + t * t * t * b.x,
+            u * u * u * a.y + 3.0 * u * u * t * ay + 3.0 * u * t * t * by + t * t * t * b.y))
+    return points
+
+## Whether (x, y) is within `reach` of the curve.
+pub func near(points: list[Point], x: float, y: float, reach: float) -> bool:
+    for at in 1..<points.length:
+        let a = points[at - 1]
+        let b = points[at]
+        let dx = b.x - a.x
+        let dy = b.y - a.y
+        let t = math.clamp(((x - a.x) * dx + (y - a.y) * dy) / math.max(1e-9, dx * dx + dy * dy), 0.0, 1.0)
+        if math.hypot(x - a.x - t * dx, y - a.y - t * dy) <= reach:
+            return true
+    return false
+
+## Whether the curve touches the box from (left, top) to (right, bottom):
+## a point of it inside, or a piece crossing a side.
+pub func touches(points: list[Point], left: float, top: float, right: float, bottom: float) -> bool:
+    for point in points:
+        if point.x >= left and point.x <= right and point.y >= top and point.y <= bottom:
+            return true
+    let sides = [(left, top, right, top), (right, top, right, bottom), (right, bottom, left, bottom), (left, bottom, left, top)]
+    for (x0, y0, x1, y1) in sides:
+        if crosses(points, Point(x0, y0), Point(x1, y1)):
+            return true
+    return false
+
+## Whether the line from `a` to `b` crosses the curve.
+pub func crosses(points: list[Point], a: Point, b: Point) -> bool:
+    for at in 1..<points.length:
+        if segments_cross(a, b, points[at - 1], points[at]):
+            return true
+    return false
+
+func segments_cross(a: Point, b: Point, c: Point, d: Point) -> bool:
+    let d1 = side(c, d, a)
+    let d2 = side(c, d, b)
+    let d3 = side(a, b, c)
+    let d4 = side(a, b, d)
+    return ((d1 > 0.0 and d2 < 0.0) or (d1 < 0.0 and d2 > 0.0)) and ((d3 > 0.0 and d4 < 0.0) or (d3 < 0.0 and d4 > 0.0))
+
+func side(a: Point, b: Point, p: Point) -> float:
+    return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
