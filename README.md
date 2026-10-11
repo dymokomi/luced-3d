@@ -111,7 +111,7 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
 - STEP product/occurrence and solid names become primitive group paths such as
   `Camera - 6/Lens:1/Phone Camera Lens v3:1/LensShell`. File, Transform, Merge,
   Tessellate and Blast preserve these paths. The Outliner shows their hierarchy
-  beneath exposed nodes, with collapsible assembly branches.
+  beneath each object, with collapsible assembly branches.
 - **Blast** deletes named groups; enable **Delete non-selected / isolate** to
   keep them instead. Exact parent paths include descendants. Use `*`/`?` globs,
   quotes around paths with spaces, and `^pattern` to subtract from a preceding
@@ -123,9 +123,11 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   traces the displayed scene through the viewport camera, including CAD's cached
   surface meshes. A default sky lights scenes without lights; Samples sets the
   refinement limit. **Show normals** adds face-center normal guides.
-- Clicking a node selects its properties. **O** and the right-hand strip toggle
-  Out; multiple results can be exposed. **D** toggles isolated preview without
-  changing outputs. The two left-hand strips toggle bypass (**B**) and
+- Clicking a node selects its properties. **D** and the right-hand strip set the
+  **display flag**: at the root every flagged object renders; inside a
+  container one node holds it, and the container yields that node (or its
+  **Output** node). The viewport always shows the root; see
+  [network levels](docs/NETWORK-LEVELS.md). The two left-hand strips toggle bypass (**B**) and
   freeze (**Shift+B**). Freeze turns red while the node keeps its cooked result;
   click it again to resume cooking from its inputs.
 - **Tab** follows the current network. At `/ scene` it offers **Geo, CAD, SDF,
@@ -137,11 +139,12 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   Materials contains Material nodes; each Material contains its shader graph.
 - Containers have **thicker outlines**. Double-click one to enter; **U** or Up
   returns to its parent. Group inherits its enclosing context. The **Outliner**
-  shows exposed results and nested containers with transforms and visibility.
+  shows the root's objects and what each container yields, greying what lies
+  outside the container the network view is in.
 - To feed data between networks, wire a container's first or second input, then
   create **Input** inside it and choose First or Second. For example, connect a
   Materials library to Geo, then wire Input into Assign Material's second port.
-  See [context and output rules](docs/OUTLINER.md).
+  See [context rules](docs/OUTLINER.md) and [network levels](docs/NETWORK-LEVELS.md).
 - Disabling Transform, an Edit node or Merge passes its first input through.
   Disabling Cube produces empty geometry. Delete/Backspace in Network deletes
   the selected node and disconnects its consumers.
@@ -185,11 +188,11 @@ follow a move (the viewport tints the points they reach by weight),
 carries the selection through topology tools. See [MODELING.md](docs/MODELING.md).
 
 The graph has stable node IDs, geometry ports, shared cached results, downstream
-invalidation and demand-driven evaluation of exposed outputs or preview. Edit nodes
+invalidation and demand-driven evaluation of what the root renders. Edit nodes
 store ordered operations against immutable mesh snapshots. A 64-bit topology
 hash guard rejects incompatible upstream changes instead of applying edits to
 wrong IDs. Results are cached by content stamp ([design](docs/DESIGN.md#background-computation)).
-Undo covers graph changes, nested deletion, parameters, Out/visibility/preview/bypass, selections and modeling;
+Undo covers graph changes, nested deletion, parameters, display flags/bypass, selections and modeling;
 history retains 64 transactions.
 
 Geometry storage, groups, modeling verbs, ray queries and the geometry codec

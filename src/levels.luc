@@ -1,0 +1,74 @@
+## What a network level yields to the level above it, after Houdini (see
+## docs/NETWORK-LEVELS.md). Pure rules over a level's nodes; Network.outputs
+## gathers the nodes and applies them.
+##
+## - An object level (the root, or a Group made there) yields every node with
+##   its display flag on, as Houdini's /obj renders each displayed object.
+##   Render nodes are settings, never objects.
+## - A data level (inside Geo, CAD, SDF, Volumes, GSplats) yields one node: its
+##   Output node, else the node with the display flag.
+## - A library level (inside Materials) yields every chain's end: all its
+##   materials are available.
+from node import Node
+
+## The kinds of level, by what their container makes of its children.
+pub let object_level = "object"
+pub let data_level = "data"
+pub let library_level = "library"
+
+## The node kind that names a data level's output, as Houdini's Output SOP.
+pub let output_kind = "Output"
+
+## What a level yields, in authoring order, and a warning when its output is
+## ambiguous or missing ("" when it is clear).
+pub class Yield:
+    pub let nodes: list[Node]
+    pub let warning: str
+    pub func init(self, nodes: list[Node], warning: str = ""):
+        self.nodes = nodes
+        self.warning = warning
+
+## What `children` (one level's nodes, in authoring order) yield on a level of
+## kind `level`.
+pub func yielded(level: str, children: list[Node]) -> Yield:
+    if level == object_level:
+        let shown: list[Node] = []
+        for node in children:
+            if node.visible and node.kind != "Render":
+                shown.append(node)
+        return Yield(shown)
+    if level == library_level:
+        return Yield(chain_ends(children))
+    return data_output(children)
+
+## A data level's one output: its first Output node, else its first node with
+## the display flag; a warning when there are several, or none.
+func data_output(children: list[Node]) -> Yield:
+    let outputs: list[Node] = []
+    let flagged: list[Node] = []
+    for node in children:
+        if node.kind == output_kind:
+            outputs.append(node)
+        elif node.visible:
+            flagged.append(node)
+    if outputs.length > 0:
+        let warning = f"Several Output nodes; {outputs[0].name} is used" if outputs.length > 1 else ""
+        return Yield([outputs[0]], warning)
+    if flagged.length > 0:
+        let warning = f"Several nodes have the display flag; {flagged[0].name} is used" if flagged.length > 1 else ""
+        return Yield([flagged[0]], warning)
+    if children.length == 0:
+        return Yield([])
+    return Yield([], "No Output node or display flag inside")
+
+## Every node no other node of `children` reads.
+func chain_ends(children: list[Node]) -> list[Node]:
+    let ends: list[Node] = []
+    for node in children:
+        var read = false
+        for other in children:
+            if node.id in other.inputs:
+                read = true
+        if not read:
+            ends.append(node)
+    return ends

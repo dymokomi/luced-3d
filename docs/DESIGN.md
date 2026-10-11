@@ -57,8 +57,9 @@ sphere and distant lights), and each looks or shines down its local -Z.
   or make just the object when unconnected, as an Edit node creates. Their
   Translate and Rotate use Transform's slots. Light's Type starts at Area
   (USD's RectLight).
-- **Render** passes its input on once the scene has the camera its Camera text
-  names (or any camera) and warns when it has no lights. Its Engine menu
+- **Render** takes the root's flagged objects (it has no input) once they hold
+  the camera its Camera text names (or any camera), and warns when they have
+  no lights. Its Engine menu
   chooses the renderer; the first is Luce Path, luce-render's spectral GPU path
   tracer (built on luce-gpu compute).
 - The viewport draws a camera's frustum one unit deep and a light's emitter
@@ -88,8 +89,9 @@ luce-usd reads and writes as `material:binding`.
 - **Assign Material** takes geometry and a library: the faces its Group names
   take the Material path (empty: the library's first), other faces keep theirs,
   and the library passes on with the geometry.
-- **Render** shows the input in the Render panel; faces with no material, or an
-  unknown one, take its Default material.
+- **Render** has no input: it renders the root, every flagged object there
+  ([NETWORK-LEVELS.md](NETWORK-LEVELS.md)), in the Render panel; faces with no
+  material, or an unknown one, take its Default material.
 
 ## Background computation
 

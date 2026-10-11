@@ -9,15 +9,17 @@
 import sketch_node
 from stamps import stamp_graph
 from luce_geocore.geocore import Mesh, Selection, Domain
-from luce_3d.graphics import Scene, Group, Vector3, Matrix4, AmbientLight, DirectionalLight, SurfaceHits, SurfaceHit
+from luce_3d.graphics import Scene, Group, Vector3, AmbientLight, DirectionalLight, SurfaceHits, SurfaceHit
 from place_prompt import PlacePrompt
 from tool_prompt import ToolPrompt
-from network import Network, Node
+from network import Network
+from node import Node
 from tools import tool_run, transform_tools
 from snapping import SnapSettings, SnapMark
 from history import History, Snapshot
 from scene_projection import append_bounds
 from local_cook import cook_outputs
+from context_view import view_items, is_outside
 from compute_session import ComputeSession
 from display_publisher import DisplayPublisher
 from node_evaluation import SourceCache
@@ -103,6 +105,7 @@ pub class Workspace:
     ## Without the worker: the meshes on screen and their nodes.
     var local_nodes: list[int]
     var local_meshes: list[Mesh]
+    var local_around: list[Mesh]
     let sources: SourceCache
     var pending_frame: bool = false
     var project_epoch: int = 0
@@ -122,6 +125,7 @@ pub class Workspace:
         self.publisher = DisplayPublisher(self.objects)
         self.local_nodes = []
         self.local_meshes = []
+        self.local_around = []
         self.scene.add(self.objects)
         self.scene.add(AmbientLight(intensity = 0.35))
         self.scene.add(DirectionalLight(direction = Vector3(3.0, 5.0, 2.0), intensity = 0.85))
@@ -194,18 +198,17 @@ pub class Workspace:
         if let node = self.selected():
             if node.kind in ["Camera", "Light"]:
                 points.append(Vector3(node.values[1], node.values[2], node.values[3]))
-        var candidates = self.network.outputs(self.network.scope)
-        if let node = self.network.find(self.network.display):
-            if self.network.preview or node_catalog.places_children(node.kind):
-                candidates = [node]
-        if self.compute != none:
-            candidates = []
-        for node in candidates:
-            if not node.visible:
+        # The context frames; the rest of the scene only when there is none.
+        let items = view_items(self.network)
+        var context = false
+        for item in items:
+            context = context or not item.outside
+        for item in items:
+            if self.compute != none or (item.outside and context):
                 continue
-            let data = self.network.evaluate_data(node.id) catch failure:
+            let data = self.network.evaluate_data(item.node.id) catch failure:
                 continue
-            append_bounds(data, Matrix4(), points)
+            append_bounds(data, item.matrix, points)
         self.frame_points(points)
 
     ## Frame `points`, from at least `least` away.
@@ -255,10 +258,31 @@ pub class Workspace:
             self.revision += 1
 
     ## The meshes on screen (world space) and the node each came from.
+    ## The meshes on screen the viewport picks on, and the node each came
+    ## from: the context's, never the rest of the scene around it.
     pub func on_screen(self) -> (list[int], list[Mesh]):
-        if self.compute != none:
-            return (self.publisher.nodes, self.publisher.meshes)
-        return (self.local_nodes, self.local_meshes)
+        if self.compute == none:
+            return (self.local_nodes, self.local_meshes)
+        let nodes: list[int] = []
+        let meshes: list[Mesh] = []
+        for at in 0..<self.publisher.nodes.length:
+            if not is_outside(self.network, self.publisher.nodes[at]):
+                nodes.append(self.publisher.nodes[at])
+                meshes.append(self.publisher.meshes[at])
+        return (nodes, meshes)
+
+    ## Every mesh drawn solid, the context's and the rest of the scene's:
+    ## what hides what lies behind it (Visible only).
+    pub func drawn(self) -> list[Mesh]:
+        let (_, meshes) = self.on_screen()
+        let result = meshes.copy()
+        if self.compute == none:
+            for mesh in self.local_around: result.append(mesh)
+            return result
+        for at in 0..<self.publisher.nodes.length:
+            if is_outside(self.network, self.publisher.nodes[at]):
+                result.append(self.publisher.meshes[at])
+        return result
 
     pub func selected(self) -> Node?:
         return self.network.find(self.network.selected)
@@ -561,6 +585,7 @@ pub class Workspace:
         self.notice = cooked.notice
         self.local_nodes = cooked.nodes
         self.local_meshes = cooked.meshes
+        self.local_around = cooked.around
         self.geometry = none
         if let node = cooked.node:
             self.geometry = self.picked(node, cooked.data else trap("display"))

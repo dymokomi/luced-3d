@@ -1,9 +1,11 @@
 ## Content stamps: a node's stamp names its cooked result. It covers what
 ## compute reads (kind, bypass, parameters, texts, Edit recipes, the file
-## epoch, every input's stamp and the object paths it hides), never names, positions, display, output or
-## visibility flags, selection or the Edit tool amount. Those affect only the
-## parent Group, whose stamp lists its exposed children and their visibility.
-from network import Network, Node
+## epoch, every input's stamp and the object paths it hides), never names,
+## positions, display flags, selection or the Edit tool amount. Flags affect
+## only what a level yields: a container's stamp lists the stamps of what it
+## yields (Network.outputs), and a Render node's those of the root's objects.
+from network import Network
+from node import Node
 from cache_node import reads_file, cache_stamp, frozen_stamp
 from edit_kinds import is_edit
 import node_catalog
@@ -27,7 +29,7 @@ func stamp_of(graph: Network, node: Node, done: map[int, int], depth: int) -> in
             inputs.append(stamp_of(graph, upstream, done, depth + 1))
         else:
             inputs.append(0)
-    let children: list[(int, bool)] = []
+    let children: list[int] = []
     if node.kind == "Input":
         let source = graph.find(graph.context_input(node))
         if let upstream = source:
@@ -36,11 +38,15 @@ func stamp_of(graph: Network, node: Node, done: map[int, int], depth: int) -> in
             inputs.append(0)
     if node_catalog.collects_children(node.kind):
         for child in graph.outputs(node.id):
-            children.append((stamp_of(graph, child, done, depth + 1), child.visible))
+            children.append(stamp_of(graph, child, done, depth + 1))
+    # Render renders the root's flagged objects.
+    if node.kind == "Render":
+        for child in graph.outputs(-1):
+            children.append(stamp_of(graph, child, done, depth + 1))
     # A Material reads every node inside it.
     if node.kind == "Material":
         for child in graph.children(node.id):
-            children.append((stamp_of(graph, child, done, depth + 1), child.enabled))
+            children.append(nonzero((stamp_of(graph, child, done, depth + 1), child.enabled).hash()))
     var stamp = 0
     if node.frozen != "":
         stamp = frozen_stamp(node.frozen)
@@ -59,9 +65,6 @@ func stamp_of(graph: Network, node: Node, done: map[int, int], depth: int) -> in
     # A result that follows the timeline is a new result each frame.
     if node.time_dependent and node.frozen == "":
         stamp = nonzero((stamp, graph.frame, graph.fps).hash())
-    # A Group's own visibility is in its result (its instance's).
-    if node_catalog.places_children(node.kind):
-        stamp = nonzero((stamp, node.visible).hash())
     # Hidden objects leave the result after the cook (an Edit node's recipe
     # prefixes keep the whole result).
     if node.hidden.length > 0:

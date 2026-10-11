@@ -1,4 +1,8 @@
-## Outliner projection: exposed nodes plus Group containment, never wire ancestry.
+## Outliner projection of the root scene (docs/NETWORK-LEVELS.md): every
+## object-level node, under each container what it yields, under a node the
+## object paths of its result; never wire ancestry. While the network view
+## is inside a container, the rows outside it are greyed; a click on any row
+## takes the network view to that node's network.
 from luce_ui.ui import Widget, Layout, Constraints, Size, Painter, Event, Font
 from luce_gpu.gpu import RenderTarget, Rect
 from luce_window.input import EventKind, Key
@@ -11,6 +15,8 @@ import node_commands
 import take_commands
 from network import Network
 import node_catalog
+import levels
+from context_view import is_outside
 
 pub class OutlineRow:
     pub let id: int
@@ -18,6 +24,8 @@ pub class OutlineRow:
     pub let visible: bool
     pub let path: str
     pub let branch: bool
+    ## On an object level: the row's eye toggles the node's display flag.
+    pub var object: bool = false
     ## A path row hidden itself (not by an ancestor).
     pub let hidden: bool
     pub func init(self, id: int, depth: int, visible: bool, path: str = "", branch: bool = false, hidden: bool = false):
@@ -28,18 +36,26 @@ pub class OutlineRow:
         self.branch = branch
         self.hidden = hidden
 
-## The objects: exposed nodes and, inside Groups, theirs; under each node the
-## object paths of its result, hidden ones too (they left the result). A
-## collapsed Group or path (`node id:path`) hides its rows.
+## The objects: every node of an object level (the root, a scene Group),
+## flagged or not; under a container what it yields (a data container's
+## output node, a library's materials); under each other node the object
+## paths of its result, hidden ones too (they left the result). A collapsed
+## container or path (`node id:path`) hides its rows.
 pub func object_rows(graph: Network, collapsed: list[int], collapsed_paths: list[str]) -> list[OutlineRow]!:
     let rows: list[OutlineRow] = []
     append_scope(graph, rows, collapsed, collapsed_paths, -1, 0, true)
     return rows
 
 func append_scope(graph: Network, rows: list[OutlineRow], collapsed: list[int], collapsed_paths: list[str], parent: int, depth: int, visible: bool) -> unit!:
-    for node in graph.outputs(parent):
-        let shown = visible and node.visible
-        rows.append(OutlineRow(node.id, depth, shown))
+    let object = graph.level_of(parent) == levels.object_level
+    let nodes = graph.children(parent) if object else graph.outputs(parent)
+    for node in nodes:
+        if object and node.kind == "Render":
+            continue
+        let shown = visible and (node.visible or not object)
+        let row = OutlineRow(node.id, depth, shown)
+        row.object = object
+        rows.append(row)
         if node_catalog.collects_children(node.kind) and not (node.id in collapsed):
             append_scope(graph, rows, collapsed, collapsed_paths, node.id, depth + 1, shown and node.enabled)
         elif not node_catalog.collects_children(node.kind):
@@ -129,7 +145,10 @@ pub class Outliner: Widget:
                 p.rectangle(Rect(0.0, y, 3.0, self.row_height() - 1.0), theme.accent())
             let x = 10.0 + float(row.depth) * 18.0
             let text_y = y + (self.row_height() - self.font.height()) * 0.5
-            let ink = theme.text() if row.visible else theme.text_muted()
+            # Rows outside the container the network view is in are greyed,
+            # below even a hidden row's muted ink.
+            let greyed = is_outside(self.workspace.network, row.id)
+            let ink = theme.grey(92.0) if greyed else (theme.text() if row.visible else theme.text_muted())
             if row.path != "" and row.branch:
                 p.text(">" if f"{node.id}:{row.path}" in self.collapsed_paths else "v", x, text_y, ink, self.font)
             elif row.path == "" and node_catalog.collects_children(node.kind):
@@ -138,9 +157,10 @@ pub class Outliner: Widget:
             let limit = int(math.max(1.0, (size.width - x - 75.0) / self.font.advance()))
             let label = row.path.split("/")[-1] if row.path != "" else node.name
             p.text(label if label.length <= limit else label[0..<limit] + "…", x + 40.0, text_y, ink, self.font)
-            p.text(("o" if node.visible else "-") if row.path == "" else ("-" if row.hidden else "o"), size.width - 23.0, text_y, ink, self.font)
+            if row.path != "" or row.object:
+                p.text(("o" if node.visible else "-") if row.path == "" else ("-" if row.hidden else "o"), size.width - 23.0, text_y, ink, self.font)
         if self.rows.length == 0:
-            p.text("No exposed outputs", 12.0, 12.0, theme.text_muted(), self.font)
+            p.text("No objects", 12.0, 12.0, theme.text_muted(), self.font)
         p.close()
 
     pub func event(self, event: Event) -> unit!:
@@ -173,9 +193,8 @@ pub class Outliner: Widget:
                         _ = self.collapsed.remove_at(at)
                     else:
                         self.collapsed.append(node.id)
-                elif event.x > self.box.bounds().width - 32.0:
-                    node_commands.select_node(self.workspace, node.id)
-                    node_commands.toggle_visible(self.workspace)
+                elif event.x > self.box.bounds().width - 32.0 and row.object:
+                    node_commands.toggle_display(self.workspace, node.id)
                 else:
                     let now = time.now()
                     let double = self.last_node == node.id and now - self.last_click < 400000000

@@ -23,8 +23,10 @@ pub func scene_node_tests() -> unit!:
     graph.connect(cube.id, camera.id, 0)
     let light = graph.add("Light", 0.0, 200.0)
     graph.connect(camera.id, light.id, 0)
+    # Render takes no input: it renders the root's flagged objects, here the
+    # chain's end (wiring turned the cube's and camera's flags off).
     let render = graph.add("Render", 0.0, 300.0)
-    graph.connect(light.id, render.id, 0)
+    assert(render.inputs.length == 0 and not cube.visible and not camera.visible)
     assert(camera.texts[0] == f"camera{camera.id}" and light.texts[0] == f"light{light.id}")
     assert(node_catalog.category("Light") == "Render" and node_catalog.optional_input("Camera") and not node_catalog.optional_input("Render"))
     # The chain keeps the cube and gains both objects.
@@ -39,19 +41,25 @@ pub func scene_node_tests() -> unit!:
     let key = scene.object(1)
     near(key.matrix.translation.y, 4.0)
     near(key.matrix.transform_direction(Vector3(0.0, 0.0, -1.0)).y, -1.0)
+    # Render's output wires nowhere.
+    var wired = true
+    graph.connect(render.id, light.id, 0) catch failure:
+        wired = false
+    assert(not wired)
     # Unconnected, a Light is just its light; Render needs a camera.
-    let alone = graph.add("Light", 200.0, 0.0)
-    let lonely = graph.add("Render", 200.0, 100.0)
-    graph.connect(alone.id, lonely.id, 0)
-    assert(graph.evaluate_data(alone.id).geometry.scene().count() == 1)
-    assert(failure_of(graph, lonely.id).contains("Add a Camera node"))
+    let lights = Network(false)
+    let alone = lights.add("Light", 200.0, 0.0)
+    let lonely = lights.add("Render", 200.0, 100.0)
+    assert(lights.evaluate_data(alone.id).geometry.scene().count() == 1)
+    assert(failure_of(lights, lonely.id).contains("Add a Camera node"))
     # A named camera that is missing is an error; no lights is a warning.
-    let lit_off = graph.add("Render", 400.0, 0.0)
-    graph.connect(camera.id, lit_off.id, 0)
-    assert(graph.evaluate_data(lit_off.id).warning.contains("no lights"))
+    let cameras = Network(false)
+    _ = cameras.add("Camera", 0.0, 0.0)
+    let lit_off = cameras.add("Render", 400.0, 0.0)
+    assert(cameras.evaluate_data(lit_off.id).warning.contains("no lights"))
     lit_off.texts[0] = "/nowhere"
-    graph.invalidate(lit_off.id)
-    assert(failure_of(graph, lit_off.id).contains("No camera at /nowhere"))
+    cameras.invalidate(lit_off.id)
+    assert(failure_of(cameras, lit_off.id).contains("No camera at /nowhere"))
     # Transform and Group place cameras like geometry.
     let move = graph.add("Transform", 0.0, 400.0)
     graph.connect(light.id, move.id, 0)

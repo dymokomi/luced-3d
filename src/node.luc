@@ -1,0 +1,305 @@
+## A node of the editor's geometry DAG: its identity, wiring, flags and
+## parameters, and its pure cook (Node.compute) over resolved inputs. The
+## graph that wires nodes together and decides what each level yields is
+## network.luc's Network.
+from luce_3d.graphics import Vector3, Matrix4
+from geometry_data import GeometryData
+from edit_operations import EditStep
+import node_catalog
+from node_evaluation import source_geometry, evaluate_verb, load_geometry, SourceCache
+from geometry_nodes import evaluate_set_verb, is_placement, evaluate_placement, evaluate_attributes, points_deleted
+from cache_node import reads_file, cook_cache, load_frozen
+from usd_nodes import is_usd_path, load_usd, cook_export
+from fbx_nodes import is_fbx_path, load_fbx, export_fbx
+from ply_nodes import is_ply_path, export_ply
+from spz_nodes import is_spz_path, export_spz
+from luce_ui import ui
+from edit_kinds import edit_kind
+from scene_nodes import add_camera, add_light, check_render, add_material, assign_material
+import cad_nodes
+import code_cook
+import script_cook
+from script_hosts import ScriptHosts
+from angles import radians
+
+pub class Node:
+    pub let id: int
+    pub let kind: str
+    pub var name: str
+    pub var enabled: bool = true
+    pub var parent: int = -1
+    ## The display flag (docs/NETWORK-LEVELS.md): on an object level the node
+    ## renders; on a data level it is the one node shown, and the level's
+    ## output when it has no Output node.
+    pub var visible: bool = true
+    pub var x: float
+    pub var y: float
+    pub var inputs: list[int]
+    ## Which output of each input's node it takes (shader nodes have several).
+    pub var sources: list[int]
+    # Size, translate XYZ, rotate XYZ in degrees, scale XYZ.
+    pub var values: list[float]
+    pub var texts: list[str]
+    pub var edits: list[EditStep]
+    ## Verb nodes made from a viewport selection: the connectivity hash of the
+    ## input the Group was selected on (0: typed, unguarded).
+    pub var guard: int = 0
+    pub var cache: GeometryData? = none
+    ## A feature's worker-side memo (cad_nodes.BlendMemo), kept while the
+    ## node keeps its kind.
+    pub var memo: cad_nodes.BlendMemo
+    pub var dirty: bool = true
+    pub var failure: str = ""
+    ## A warning of the last cook (see GeometryData.warning).
+    pub var warning: str = ""
+    ## A Code node's printf output from its last cook.
+    pub var console: str = ""
+    pub var evaluations: int = 0
+    pub var source_revision: int = 0
+    pub var computing: bool = false
+    pub var progress: float = 0.0
+    pub var phase: str = ""
+    pub var summary: str = ""
+    pub var group_paths: list[str]
+    ## Content stamp of the recipe (stamps.luc) and of the last result reported.
+    pub var stamp: int = 0
+    pub var cooked: int = 0
+    ## A Material's shader, resolved from its nodes before it cooks
+    ## (Network.resolve_material): its OpenPBR Surface's values and the
+    ## renderer's graph text.
+    pub var surface_values: list[float]
+    pub var shader_graph: str = ""
+    ## Object paths taken out of its result (the outliner's and takes'
+    ## visibility for objects inside it); a path hides what is under it too.
+    pub var hidden: list[str]
+    ## A frozen node's result file (cache_node.freeze_to), "" when it
+    ## cooks: frozen, it reads the file and never its inputs.
+    pub var frozen: str = ""
+    ## Whether its result follows the timeline (a Code node reading the
+    ## frame or time): its stamp then includes the frame.
+    pub var time_dependent: bool = false
+
+    pub func init(self, id: int, kind: str, x: float, y: float) -> unit!:
+        if not (kind in node_catalog.kinds()):
+            error(ui.invalid, "Unknown node type")
+        self.id = id
+        self.kind = kind
+        self.name = f"{kind} {id}"
+        self.x = x
+        self.y = y
+        self.inputs = []
+        self.sources = []
+        self.memo = cad_nodes.BlendMemo()
+        for port in 0..<node_catalog.input_count(kind):
+            self.inputs.append(-1)
+            self.sources.append(0)
+        self.surface_values = []
+        self.values = []
+        for _ in 0..<(code_cook.value_count if kind in [code_cook.kind_name, script_cook.kind_name] else node_catalog.value_slots):
+            self.values.append(0.0)
+        for parameter in node_catalog.parameters(kind):
+            self.values[parameter.slot] = parameter.initial
+        self.texts = ["0" if kind == "PolyExtrude" else "", "group" if kind == "Selection Group" else ("geo" if kind == "Export" else "weight"), "renamed"]
+        if kind == "Camera" or kind == "Light":
+            self.texts = [f"{kind.lower()}{id}", "", ""]
+        if kind in ["Render", "Assign Material", "Fillet", "Chamfer"]:
+            self.texts = ["", "", ""]
+        if kind == "Name":
+            self.texts = ["", "piece", ""]
+        if kind == "Material":
+            self.texts = [f"materials/material{id}", "", ""]
+        if kind == code_cook.kind_name:
+            self.texts = ["", code_cook.starter(), "", "", ""]
+        if kind == script_cook.kind_name:
+            self.texts = []
+            for _ in 0..<script_cook.text_count:
+                self.texts.append("")
+            self.texts[script_cook.code_slot] = script_cook.starter()
+        if kind == "File":
+            # USD's Variants and Load payloads, empty: the stage as authored.
+            self.texts = ["", "", ""]
+        # A verb's text rows (Volume Visualization's group, fields and ramp)
+        # read the texts from slot 0, all empty at first.
+        let rows = node_catalog.text_row_count(kind)
+        if rows > 0:
+            self.texts = []
+            for _ in 0..<(rows if rows > 3 else 3):
+                self.texts.append("")
+        self.edits = []
+        self.group_paths = []
+        self.hidden = []
+
+    pub func copy(self) -> Node!:
+        let result = Node(self.id, self.kind, self.x, self.y)
+        result.name = self.name
+        result.enabled = self.enabled
+        result.parent = self.parent
+        result.visible = self.visible
+        result.inputs = self.inputs.copy()
+        result.sources = self.sources.copy()
+        result.surface_values = self.surface_values.copy()
+        result.shader_graph = self.shader_graph
+        result.values = self.values.copy()
+        result.texts = self.texts.copy()
+        result.edits = self.edits.copy()
+        result.guard = self.guard
+        result.cache = self.cache
+        result.memo = self.memo
+        result.dirty = self.dirty
+        result.failure = self.failure
+        result.warning = self.warning
+        result.console = self.console
+        result.evaluations = self.evaluations
+        result.source_revision = self.source_revision
+        result.summary = self.summary
+        result.group_paths = self.group_paths.copy()
+        result.hidden = self.hidden.copy()
+        result.frozen = self.frozen
+        result.time_dependent = self.time_dependent
+        result.stamp = self.stamp
+        result.cooked = self.cooked
+        return result
+
+    ## A transforming node's translation (its pivot folded in), rotation in
+    ## radians and scale, from its Translate, Rotate, Scale and Pivot rows.
+    pub func placement_parts(self) -> (Vector3, Vector3, Vector3):
+        let v = self.values
+        let rotation = Vector3(radians(v[4]), radians(v[5]), radians(v[6]))
+        let scale = Vector3(v[7], v[8], v[9])
+        let pivot = Vector3(v[10], v[11], v[12])
+        let translation = Vector3(v[1], v[2], v[3]).add(pivot).subtract(Matrix4.compose(Vector3(), rotation, scale).transform_point(pivot))
+        return (translation, rotation, scale)
+
+    ## The matrix a container places what it yields by.
+    pub func placement(self) -> Matrix4:
+        let (translation, rotation, scale) = self.placement_parts()
+        return Matrix4.compose(translation, rotation, scale)
+
+    ## `result` without the objects at its hidden paths.
+    pub func shown(self, result: GeometryData) -> GeometryData!:
+        if self.hidden.length == 0:
+            return result
+        let patterns: list[str] = []
+        for path in self.hidden:
+            patterns.append("\"" + path + "\"")
+        let kept = result.blasted(patterns.join(" "), false)
+        kept.warning = result.warning
+        return kept
+
+    ## Pure node computation over resolved immutable inputs. Runtime invokes this
+    ## only on the compute worker; synchronous callers use the same contract.
+    ## `keys` are the inputs' content keys (their nodes' stamps) when the caller
+    ## knows them: a Script node keeps an unchanged input's file.
+    pub func compute(self, data: GeometryData, second: GeometryData? = none, progress: func(float) -> unit!? = none, sources: SourceCache? = none, clock: list[float] = [], keys: list[int] = [], direct_children: bool = false) -> GeometryData!:
+        if self.frozen != "":
+            return load_frozen(self.frozen)
+        let v = self.values
+        let (translation, rotation, scale) = self.placement_parts()
+        # A Group places what it yields as one instance; whether that draws
+        # is its own display flag's business, at its parent's level.
+        if self.kind in ["Materials", "Input"]:
+            return data
+        if node_catalog.places_children(self.kind):
+            if direct_children:
+                return data.transformed(translation, rotation, scale)
+            return GeometryData().with_instance(data, translation, rotation, scale)
+        if node_catalog.is_set_verb(self.kind):
+            if not self.enabled:
+                return data
+            return evaluate_set_verb(self.kind, v, self.texts, data, second)
+        if cad_nodes.is_cad_only(self.kind):
+            if not self.enabled:
+                return data
+            return cad_nodes.evaluate_cad(self.kind, v, data, cad_nodes.tag_of(self.id), second, self.texts, self.memo)
+        if self.kind in node_catalog.sources():
+            if not self.enabled:
+                return GeometryData()
+            if self.kind == "File":
+                if is_usd_path(self.texts[0]):
+                    if let cache = sources:
+                        return cache.load_usd(self.texts[0].trim(), v, self.texts)
+                    return load_usd(self.texts[0].trim(), v, self.texts)
+                if is_fbx_path(self.texts[0]):
+                    if let cache = sources:
+                        return cache.load_fbx(self.texts[0].trim(), v)
+                    return load_fbx(self.texts[0].trim(), v)
+                if let cache = sources:
+                    return cache.load(self.texts[0].trim(), v[0])
+                return load_geometry(self.texts[0].trim(), v[0])
+            return GeometryData(source_geometry(self.kind, v))
+        if not self.enabled or self.kind in ["Switch", "Null", "Output"]:
+            return data
+        if self.kind == "Camera":
+            return add_camera(self.id, v, self.texts, data)
+        if self.kind == "Light":
+            return add_light(self.id, v, self.texts, data)
+        if self.kind == "Render":
+            return check_render(self.texts, data)
+        if self.kind == "Material":
+            return add_material(self.id, self.surface_values, self.texts, data, self.shader_graph)
+        if self.kind == "Assign Material":
+            return assign_material(self.texts, data, second else error(ui.invalid, "Connect the materials input"))
+        if self.kind == code_cook.kind_name:
+            return code_cook.cook(self.values, self.texts, data, clock, second)
+        if self.kind == script_cook.kind_name:
+            let wired = [self.inputs[0] >= 0, self.inputs[1] >= 0]
+            if let cache = sources:
+                return script_cook.cook(self.id, self.values, self.texts, data, clock, second, wired, progress, cache.scripts, cache.folder, keys)
+            let hosts = ScriptHosts()
+            let result = script_cook.cook(self.id, self.values, self.texts, data, clock, second, wired, progress, hosts) catch failure:
+                hosts.close()
+                error(failure.code, failure.message)
+            hosts.close()
+            return result
+        if self.kind == "Cache":
+            return cook_cache(reads_file(self.kind, self.enabled, self.values), self.texts[0], self.stamp, data)
+        if self.kind == "Export":
+            if is_fbx_path(self.texts[0]) and self.texts[0].trim() != "":
+                return export_fbx(self.texts[0].trim(), data)
+            if is_ply_path(self.texts[0]):
+                return export_ply(self.texts[0].trim(), data)
+            if is_spz_path(self.texts[0]):
+                return export_spz(self.texts[0].trim(), data)
+            return cook_export(self.texts[0], self.texts[1], v, data)
+        if self.kind == "Blast":
+            # Object paths (they have a /) go by path; anything else is a
+            # group expression on the mesh, as Houdini's Blast takes:
+            # @name=wheel, 0-5, @P.y>0.
+            if self.texts[0].contains("/") or self.texts[0].trim() == "":
+                return data.blasted(self.texts[0], v[0] != 0.0)
+            # A point cloud without a mesh: the expression names its points.
+            if data.operand() == none and data.geometry.has("points"):
+                return points_deleted(data, self.texts[0], v[0] != 0.0)
+            let delete_values: list[float] = [v[0]]
+            for _ in 1..<node_catalog.value_slots:
+                delete_values.append(0.0)
+            return evaluate_verb("Delete", delete_values, self.texts, data.require_mesh())
+        if self.kind == "Tessellate":
+            if let cache = sources:
+                return cache.tessellated(data, int(v[0]), v[1], progress)
+            return data.tessellated(int(v[0]), v[1], progress)
+        if self.kind == "Transform":
+            return data.transformed(translation, rotation, scale)
+        if self.kind == "Merge":
+            return data.merged(second else error(ui.invalid, "Connect the second geometry input"))
+        if let kind = edit_kind(self.kind):
+            var result = kind.start(data)
+            for edit in self.edits:
+                result = kind.run(edit, result)
+            return result
+        # Mesh operators work on the mesh component; the other components
+        # (curves, points, volumes, SDFs, CAD beside a mesh) pass through.
+        if is_placement(self.kind):
+            return evaluate_placement(self.kind, v, data, second)
+        let operand = data.operand()
+        if self.kind == "Delete" and operand == none and data.geometry.has("points"):
+            return points_deleted(data, self.texts[0], v[0] != 0.0)
+        if node_catalog.is_mesh_verb(self.kind):
+            let mesh = operand else return data.passed("The input has no polygons; it passes through")
+            if self.guard != 0 and self.guard != mesh.topology_hash():
+                error(ui.invalid, "Group was selected on different topology. Reselect, or Keep IDs.")
+            let result = evaluate_verb(self.kind, v, self.texts, mesh)
+            let kept = data.with_operand(result.mesh else mesh)
+            kept.warning = result.warning
+            return kept
+        return evaluate_attributes(self.kind, v, self.texts, data, operand)

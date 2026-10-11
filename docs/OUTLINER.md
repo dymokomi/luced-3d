@@ -1,27 +1,18 @@
 # Outliner and nested scene networks
 
-The Outliner is a projection of exposed graph nodes, not a second editable copy
-of scene ownership. Wires express data dependencies; container ownership gives
+The Outliner is a projection of the root scene, not a second editable copy of
+scene ownership. Wires express data dependencies; container ownership gives
 each node one parent. IDs remain stable through renaming, navigation and undo.
 
 ## Output rules
 
-Each node has an Out setting: Auto (default), On or Off. For each connected
-island at a network level:
-
-- If any nodes are explicitly On, those nodes are its exposed outputs.
-- Otherwise, terminal nodes with Auto are exposed. A terminal has no consumers
-  at that level. A branching island can have several terminals.
-- Off always excludes that node. An upstream node can be explicitly On while
-  also feeding an exposed downstream node; both results are then displayed.
-
-The orange right-hand node strip and `O` toggle exposure. `Auto Out` restores
-automatic behavior. Visibility is independent: hidden results stay in the
-Outliner and can still feed consumers. Bypass changes evaluation, not exposure.
-`D` toggles an isolated preview without changing Out flags or Outliner membership.
-There is no dedicated Output operator. New projects open at Scene with a Geo
-containing a Cube, automatically exposed as a terminal. Double-click Geo to model.
-Null remains an optional pass-through.
+What each level yields, and so what the Outliner lists, is set by display
+flags and Output nodes, after Houdini: see [NETWORK-LEVELS.md](NETWORK-LEVELS.md).
+In short, the root (and a Group made there) renders every flagged node; Geo,
+CAD, SDF, Volumes, GSplats and Groups inside them yield one output node (an
+Output node, else the node with the display flag); Materials yields every
+material. New projects open at Scene with a Geo containing a Cube, which holds
+the Geo's display flag. Double-click Geo to model.
 
 ## Contexts and navigation
 
@@ -57,8 +48,8 @@ scale and visibility. Double-click it in either Network or Outliner to enter;
 the Network's Up button returns to its parent. The breadcrumb shows the scope.
 The old attribute-mask Group operator is now named `Selection Group`.
 
-Only exposed children appear beneath an exposed Group. Visibility is inherited
-for scene display, but does not remove rows. Collapse arrows only affect tree
+Beneath a container the Outliner lists what it yields. Rows outside the
+container the network view is in are greyed. Collapse arrows only affect tree
 presentation. Clicking a name reveals its containing graph and selects it;
 clicking the right-hand visibility control hides/shows the result.
 
@@ -77,11 +68,9 @@ Groups with transforms; moving a Group does not regenerate child meshes.
 Invalidation ascends containing Groups and then follows their data consumers.
 Framing uses transformed bounding-box corners rather than merged geometry.
 
-Geo, SDF, Volumes, GSplats and Materials combine their visible exposed children
-directly so downstream nodes can read their typed payloads. Groups inside SDF,
-Volumes, GSplats and Materials use the same aggregation. Hidden children remain
-in the Outliner but leave this aggregate; entering a hidden container still
-allows local editing.
+Geo, SDF, Volumes, GSplats and Materials pass what they yield on directly so
+downstream nodes can read their typed payloads. Groups inside SDF,
+Volumes, GSplats and Materials use the same rules.
 
 Merge, Transform, Tessellate and pass-through nodes preserve instance branches.
 Polygon-only operators explicitly realize the branches when requesting a mesh;
@@ -97,12 +86,12 @@ not remove geometry from that realization. CAD is never silently tessellated.
   stay outside and feed the new Group through its ports. Drag-reparenting in the
   Outliner is not implemented yet.
 - No dedicated Instance/reference authoring node, render visibility flag or
-  object-level viewport picking yet. Select exposed objects in the Outliner.
+  object-level viewport picking yet. Select objects in the Outliner.
 - The spreadsheet reports Group branches; it does not silently flatten them.
 - A failed child causes its Group result to fail. Other top-level outputs still
   render. Parent transforms preserve child evaluation caches.
 
-Tests cover island terminal rules, multiple explicit outputs, hidden rows,
+Tests cover display flags and output nodes (level_tests.luc), hidden rows,
 nested evaluation, transform cache reuse, cross-scope rejection, deletion/undo,
 preview independence, graph/Outliner double-click navigation and collapse.
 `tools/preview.py --scene outliner` captures the native multi-output scene:

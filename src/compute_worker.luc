@@ -5,7 +5,9 @@
 from compute_bridge import ComputeChannel, ComputeHandler, memory_budget
 import compute_bridge
 from compute_request import read_request, write_report, Outcome
-from network import Network, Node
+from network import Network, warned
+from node import Node
+from context_view import view_items
 from node_evaluation import SourceCache
 from result_store import ResultStore
 from stamps import prefix_stamp
@@ -66,10 +68,6 @@ class Computation:
         self.recipes = 0
         self.failures.clear()
         var notice = ""
-        var outputs = graph.outputs(graph.scope)
-        if graph.preview:
-            if let node = graph.find(graph.display):
-                outputs = [node]
         let meshes: list[Mesh] = []
         let keys: list[int] = []
         for at in 0..<self.keys.length:
@@ -78,16 +76,24 @@ class Computation:
                 keys.append(self.keys[at])
         self.meshes = meshes
         self.keys = keys
-        for node in outputs:
-            if not node.visible:
-                continue
+        # The root's objects, whole, for the viewport's render mode.
+        for node in graph.outputs(-1):
             let data = self.evaluate(node) catch failure:
                 if failure.message == "Computation superseded":
                     error(failure.code, failure.message)
                 notice = failure.message
                 continue
-            self.channel.progress(node.id, 0.95, "Preparing viewport")
-            self.publish(node, data)
+            self.publish_scene(node, data)
+        # What the viewport draws: the context, then the rest of the root.
+        for item in view_items(graph):
+            let data = self.evaluate(item.node) catch failure:
+                if failure.message == "Computation superseded":
+                    error(failure.code, failure.message)
+                if not item.outside:
+                    notice = failure.message
+                continue
+            self.channel.progress(item.node.id, 0.95, "Preparing viewport")
+            self.publish(item.node, data, item.matrix)
         if let node = graph.find(graph.selected):
             let data = self.evaluate(node) catch failure:
                 if failure.message == "Computation superseded":
@@ -145,10 +151,12 @@ class Computation:
             if node.enabled:
                 for child in graph.outputs(node.id):
                     let data = self.upstream(node, child, depth)
-                    if graph.direct_children(node):
-                        if child.visible: input = input.merged(data)
-                    else:
-                        input = input.with_instance(data, visible = child.visible)
+                    input = input.merged(data) if graph.direct_children(node) else input.with_instance(data)
+        elif node.kind == "Render":
+            # Render renders the root: every flagged object there.
+            input = GeometryData()
+            for child in graph.outputs(-1):
+                input = input.merged(self.upstream(node, child, depth))
         elif not (node.kind in node_catalog.sources()) and not reads_file(node.kind, node.enabled, node.values):
             let port = int(node.values[0]) if node.kind == "Switch" and node.enabled else 0
             # An Edit node starts from nothing when unconnected (it can create);
@@ -174,6 +182,8 @@ class Computation:
                 self.channel.progress(node.id, fraction, "Tessellating" if node.kind == "Tessellate" else (script_cook.phase(fraction) if node.kind == script_cook.kind_name else "Computing"))
             result = node.compute(input, second, progress, self.sources, [graph.frame, graph.time(), graph.fps], input_keys(graph, node), graph.direct_children(node)) catch failure:
                 return self.own(node, failure.code, failure.message)
+            if node_catalog.collects_children(node.kind):
+                result = warned(result, graph.output_warning(node.id))
         result = node.shown(result) catch failure:
             return self.own(node, failure.code, failure.message)
         _ = self.store.put(node.stamp, result)
@@ -229,8 +239,10 @@ class Computation:
     func pinned(self) -> set[int]!:
         let result: set[int] = {}
         let pending: list[int] = [self.graph.display, self.graph.selected]
-        for node in self.graph.outputs(self.graph.scope):
+        for node in self.graph.outputs(-1):
             pending.append(node.id)
+        for item in view_items(self.graph):
+            pending.append(item.node.id)
         while pending.length > 0:
             let node = self.graph.find(pending.pop()) else continue
             if node.stamp in result:
@@ -247,6 +259,9 @@ class Computation:
                 pending.append(self.graph.context_input(node))
             if node_catalog.collects_children(node.kind):
                 for child in self.graph.outputs(node.id):
+                    pending.append(child.id)
+            if node.kind == "Render":
+                for child in self.graph.outputs(-1):
                     pending.append(child.id)
         return result
 
@@ -275,36 +290,43 @@ class Computation:
             result.append(outcome)
         return result
 
-    ## Publish a displayed node's meshes and overlays by content key; keys the
-    ## UI still holds cost nothing. CAD previews build under the node's stamp,
-    ## so a newer request that still wants it lets the preview finish.
-    func publish(self, node: Node, data: GeometryData) -> unit!:
+    ## A root object's whole set, for the viewport's render mode: shared, not
+    ## copied.
+    func publish_scene(self, node: Node, data: GeometryData) -> unit!:
+        let scene_key = (node.stamp, "scene", self.graph.gesture, self.graph.cad_quality).hash()
+        let scene = data.geometry if self.channel.holds(scene_key) else render_geometry(data, self.graph.gesture, self.graph.cad_quality)
+        self.channel.scene(scene_key, node.id, scene)
+
+    ## Publish a drawn node's meshes and overlays, placed by `matrix`, by
+    ## content key; keys the UI still holds cost nothing. CAD previews build
+    ## under the node's stamp, so a newer request that still wants it lets
+    ## the preview finish.
+    func publish(self, node: Node, data: GeometryData, matrix: Matrix4) -> unit!:
         self.channel.begin(node.stamp)
         self.prepare(data, node) catch failure:
             self.channel.end()
             error(failure.code, failure.message)
         self.channel.end()
         self.store.refresh(node.stamp)
-        _ = self.display(data, Matrix4(), node, 0)
-        # The whole set, for the viewport's render mode: shared, not copied.
-        let scene_key = (node.stamp, "scene", self.graph.gesture, self.graph.cad_quality).hash()
-        let scene = data.geometry if self.channel.holds(scene_key) else render_geometry(data, self.graph.gesture, self.graph.cad_quality)
-        self.channel.scene(scene_key, node.id, scene)
+        # A placed copy (the rest of the scene around a context) keys by its
+        # placement too.
+        let placement = 0 if matrix.is_identity() else matrix_key(matrix)
+        _ = self.display(data, matrix, node, 0, placement)
         # CAD edges are keyed by what they are drawn from, so a CV drag keeps
         # them held; normal guides follow the result.
         let edges = data.edges_key()
         if edges != 0:
-            self.publish_lines((edges, "cad-edges").hash(), node, data, true, false)
+            self.publish_lines((edges, "cad-edges", placement).hash(), node, data, matrix, true, false)
             if self.graph.show_normals:
-                self.publish_lines((node.stamp, "guides").hash(), node, data, false, true)
+                self.publish_lines((node.stamp, "guides", placement).hash(), node, data, matrix, false, true)
         else:
-            self.publish_lines((node.stamp, "overlays", self.graph.show_normals).hash(), node, data, true, self.graph.show_normals)
-        self.publish_curves(node, data)
-        self.publish_cad_hulls(node, data)
+            self.publish_lines((node.stamp, "overlays", self.graph.show_normals, placement).hash(), node, data, matrix, true, self.graph.show_normals)
+        self.publish_curves(node, data, matrix, placement)
+        self.publish_cad_hulls(node, data, matrix, placement)
 
     ## Overlay lines under `key`: the CAD edges (as wires and patch borders)
     ## with `edges`, the normal guides with `normals`.
-    func publish_lines(self, key: int, node: Node, data: GeometryData, edges: bool, normals: bool) -> unit!:
+    func publish_lines(self, key: int, node: Node, data: GeometryData, matrix: Matrix4, edges: bool, normals: bool) -> unit!:
         if self.channel.holds(key):
             self.channel.reuse(key, node.id, false, false)
             return
@@ -313,35 +335,35 @@ class Computation:
         let patches = OverlayLines.make()
         # Display only: lines that cannot be drawn are left out, the result
         # stands.
-        append_overlays(data, Matrix4(), wires if edges else OverlayLines.make(), guides if normals else OverlayLines.make(), polygons = false) catch failure:
+        append_overlays(data, matrix, wires if edges else OverlayLines.make(), guides if normals else OverlayLines.make(), polygons = false) catch failure:
             _ = failure
         if edges:
-            append_patch_boundaries(data, Matrix4(), patches) catch failure:
+            append_patch_boundaries(data, matrix, patches) catch failure:
                 _ = failure
         if wires.count() + guides.count() + patches.count() > 0:
             self.channel.overlay(key, node.id, wires, guides, patches)
 
     ## CAD control nets, and camera and light helpers, go to the shared hull
     ## product, under their own key.
-    func publish_cad_hulls(self, node: Node, data: GeometryData) -> unit!:
-        let key = (node.stamp, "cad-hull").hash()
+    func publish_cad_hulls(self, node: Node, data: GeometryData, matrix: Matrix4, placement: int) -> unit!:
+        let key = (node.stamp, "cad-hull", placement).hash()
         if self.channel.holds(key):
             self.channel.reuse(key, node.id, false, false)
             return
         let lines = OverlayLines.make()
-        append_cad_hulls(data, Matrix4(), lines)
+        append_cad_hulls(data, matrix, lines)
         if data.geometry.has_scene():
-            lines.add_scene(data.geometry)
+            lines.add_scene(data.geometry, matrix)
         if lines.count() > 0:
             self.channel.hull(key, node.id, lines)
 
     ## Curves are drawn as lines, published under their own content key.
-    func publish_curves(self, node: Node, data: GeometryData) -> unit!:
-        let key = (node.stamp, "curves").hash()
+    func publish_curves(self, node: Node, data: GeometryData, matrix: Matrix4, placement: int) -> unit!:
+        let key = (node.stamp, "curves", placement).hash()
         if self.channel.holds(key):
             self.channel.reuse(key, node.id, false, false)
             return
-        self.channel.curves(key, node.id, data.geometry)
+        self.channel.curves(key, node.id, data.geometry, matrix)
 
     func prepare(self, data: GeometryData, node: Node) -> unit!:
         if data.has_cad():
@@ -359,15 +381,15 @@ class Computation:
                 self.prepare(data.instance(index), node)
 
     ## Deterministic traversal: a stamp always yields the same ordinals.
-    func display(self, data: GeometryData, matrix: Matrix4, node: Node, ordinal: int) -> int!:
+    func display(self, data: GeometryData, matrix: Matrix4, node: Node, ordinal: int, placement: int) -> int!:
         self.channel.check()
         var next = ordinal
         if let mesh = data.mesh:
-            self.show(mesh, matrix, node, next, true)
+            self.show(mesh, matrix, node, next, true, placement)
             next += 1
         # A drag's frames show a coarse SDF surface; the release, the full one.
         if let preview = data.field_preview(self.graph.gesture):
-            self.show(preview, matrix, node, next, false)
+            self.show(preview, matrix, node, next, false, placement)
             next += 1
         # Fog grids are ray-marched: their texels are made here, once per
         # content key (a new look keeps it).
@@ -380,16 +402,16 @@ class Computation:
             self.channel.cloud(GaussianSplats.key(data.geometry, matrix), node.id, data.geometry, matrix)
         if data.has_cad():
             for mesh in data.preview().meshes:
-                self.show(mesh, matrix, node, next, false)
+                self.show(mesh, matrix, node, next, false, placement)
                 next += 1
         for index in 0..<data.instance_count():
             if data.instance_visible(index):
-                next = self.display(data.instance(index), matrix.multiply(data.instance_matrix(index)), node, next)
+                next = self.display(data.instance(index), matrix.multiply(data.instance_matrix(index)), node, next, placement)
         return next
 
-    func show(self, mesh: Mesh, matrix: Matrix4, node: Node, ordinal: int, overlays: bool) -> unit!:
+    func show(self, mesh: Mesh, matrix: Matrix4, node: Node, ordinal: int, overlays: bool, placement: int) -> unit!:
         let identity = matrix.is_identity()
-        let key = self.key_of(mesh, (node.stamp, ordinal).hash()) if identity else (node.stamp, ordinal).hash()
+        let key = self.key_of(mesh, (node.stamp, ordinal).hash()) if identity else (node.stamp, ordinal, placement).hash()
         # Picking runs on the GPU; a query index is built by its first query.
         var shown: Mesh? = none
         if self.channel.holds(key):
@@ -432,6 +454,14 @@ class Computation:
 
     func listed(self, key: int) -> bool:
         return key in self.keys
+
+## A key of `matrix`'s values (a placed copy's products key by it).
+func matrix_key(matrix: Matrix4) -> int:
+    let columns = [matrix.x, matrix.y, matrix.z, matrix.translation]
+    var key = 7
+    for column in columns:
+        key = (key, column.x, column.y, column.z).hash()
+    return key if key != 0 else 1
 
 ## The content keys of `node`'s inputs: their nodes' stamps, the keys their
 ## results are stored under (0 for an unwired input).

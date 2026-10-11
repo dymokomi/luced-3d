@@ -15,56 +15,44 @@ from cache_node import freeze_to
 from luce_std import files, paths
 import time
 
-## Selecting an Edit node also displays it: its tools edit the geometry
-## the viewport shows, however the node was reached.
+## Selecting an Edit node also gives it the display flag: its tools edit
+## the geometry the viewport shows, however the node was reached.
 pub func select_node(w: Workspace, id: int) -> unit!:
     let node = w.network.require(id)
     w.network.picked = [id]
     if node.id != w.network.selected:
         w.placing = none
-    let shows = is_edit(node.kind) and (w.network.display != id or w.network.preview)
+    let shows = is_edit(node.kind) and w.network.display != id
     if w.network.selected != id or shows:
         w.network.selected = id
         if shows:
-            w.network.display = id
-            w.network.preview = false
+            w.network.set_display(id)
         w.selection = none
         w.end_modal_tool()
         w.revision += 1
         if w.compute != none or shows:
             w.rebuild()
 
+## D: the selected node's display flag (docs/NETWORK-LEVELS.md). On an
+## object level it toggles (the node renders or not); on a data level it
+## moves to the node, which the viewport then shows.
 pub func display_selected(w: Workspace) -> unit!:
     let node = w.selected() else return
-    w.perform("Preview node", func () -> unit!:
-        w.network.preview = not (w.network.preview and w.network.display == node.id)
-        w.network.display = node.id
-        w.selection = none
-        w.rebuild())
+    toggle_display(w, node.id)
 
-pub func toggle_output(w: Workspace) -> unit!:
-    let node = w.selected() else return
-    let output = not w.network.is_output(node.id)
-    set_output(w, node.id, 1 if output else -1)
-
-pub func auto_output(w: Workspace) -> unit!:
-    let node = w.selected() else return
-    set_output(w, node.id, 0)
-
-pub func set_output(w: Workspace, id: int, state: int) -> unit!:
-    if state < -1 or state > 1:
+pub func toggle_display(w: Workspace, id: int) -> unit!:
+    let node = w.network.require(id)
+    if w.network.on_object_level(id):
+        w.perform("Display " + node.name if not node.visible else "Hide " + node.name, func () -> unit!:
+            node.visible = not node.visible
+            w.network.visibility_changed(node)
+            w.rebuild())
         return
-    w.perform("Change Out flag", func () -> unit!:
-        let node = w.network.require(id)
-        node.output = state
-        w.network.invalidate(id)
-        w.rebuild())
-
-pub func toggle_visible(w: Workspace) -> unit!:
-    let node = w.selected() else return
-    w.perform("Toggle visibility", func () -> unit!:
-        node.visible = not node.visible
-        w.network.visibility_changed(node)
+    if node.visible and w.network.display == id:
+        return
+    w.perform("Display " + node.name, func () -> unit!:
+        w.network.set_display(id)
+        w.selection = none
         w.rebuild())
 
 ## Put the picked nodes, and the nodes feeding them, in a new Group.
@@ -115,9 +103,9 @@ pub func enter_group(w: Workspace, id: int) -> unit!:
         w.commit()
     w.network.scope = id
     let children = w.network.local_nodes()
-    w.network.selected = children[0].id if children.length > 0 else -1
+    let shown = w.network.display_in(id)
+    w.network.selected = shown if shown >= 0 else (children[0].id if children.length > 0 else -1)
     w.network.display = w.network.selected
-    w.network.preview = false
     w.selection = none
     w.rebuild()
 
@@ -130,15 +118,16 @@ pub func leave_group(w: Workspace) -> unit!:
     w.network.scope = node.parent
     w.network.selected = node.id
     w.network.display = node.id
-    w.network.preview = false
     w.selection = none
     w.rebuild()
 
+## Take the network view to node `id`'s network and select it (the
+## Outliner's click). The display flag stays where it is.
 pub func reveal_node(w: Workspace, id: int) -> unit!:
     let node = w.network.require(id)
     w.network.scope = node.parent
-    w.network.preview = false
-    w.network.display = id
+    let shown = w.network.display_in(node.parent)
+    w.network.display = shown if shown >= 0 else id
     w.network.selected = -1
     select_node(w, id)
     w.rebuild()
@@ -197,8 +186,7 @@ pub func add_node(w: Workspace, kind: str, x: float, y: float) -> unit!:
         if context != "scene" and node.inputs.length > 0 and not node_catalog.holds_nodes(kind) and not is_shader(kind) and source >= 0 and w.network.require(source).parent == node.parent:
             w.network.connect(source, node.id, 0)
         w.network.selected = node.id
-        w.network.display = node.id
-        w.network.preview = false
+        w.network.set_display(node.id)
         w.selection = none
         w.end_modal_tool()
         w.rebuild())

@@ -1,0 +1,174 @@
+## Network levels (docs/NETWORK-LEVELS.md): the root renders every flagged
+## object, a data container yields its one output node (an Output node, else
+## the display flag; warnings with several or none), a Materials container
+## yields every material, Render renders the root, and the viewport and the
+## Outliner keep showing the root while the network view is deep.
+from network import Network
+from workspace import Workspace
+from context_view import view_items, is_outside
+from outliner import object_rows
+import node_commands
+import levels
+
+pub func level_tests() -> unit!:
+    root_renders_flagged()
+    container_yields_output()
+    materials_yield_all()
+    viewport_shows_root()
+    outliner_greys_outside()
+    print("PASS network levels: the root renders flagged objects, containers yield one output (Output node, display flag, warnings), Materials yields every material, Render renders the root, the viewport and the Outliner show the root from deep inside")
+
+## Two Geo objects and a light at the root: each flagged one renders, and
+## Render renders exactly them.
+func root_renders_flagged() -> unit!:
+    let graph = Network()
+    let first = graph.require(graph.scope)
+    graph.scope = -1
+    let second = graph.add("Geo", 200.0, 0.0)
+    graph.scope = second.id
+    _ = graph.add("Sphere", 0.0, 0.0)
+    graph.scope = -1
+    _ = graph.add("Camera", 0.0, 100.0)
+    let light = graph.add("Light", 200.0, 100.0)
+    let render = graph.add("Render", 0.0, 200.0)
+    assert(graph.outputs(-1).length == 4)
+    let all = graph.evaluate_data(render.id)
+    assert(all.geometry.scene().count() == 2 and all.require_mesh().face_count() > 6)
+    # A hidden object leaves the render; the Render node recooks.
+    second.visible = false
+    graph.visibility_changed(second)
+    assert(graph.outputs(-1).length == 3 and render.dirty)
+    assert(graph.evaluate_data(render.id).require_mesh().face_count() == 6)
+    first.visible = false
+    light.visible = false
+    graph.visibility_changed(first)
+    assert(graph.evaluate_data(render.id).geometry.scene().count() == 1)
+
+## Inside a Geo: Cube → Transform → Null, a Sphere beside them. The Geo yields
+## the flagged node alone; an Output node overrides the flag; two warn; none
+## warns.
+func container_yields_output() -> unit!:
+    let w = Workspace()
+    let geo = w.network.scope
+    let cube = w.network.selected
+    node_commands.add_node(w, "Transform", 0.0, 100.0)
+    let moved = w.network.selected
+    node_commands.set_parameter(w, 1, 5.0)
+    node_commands.add_node(w, "Sphere", 200.0, 0.0)
+    let sphere = w.network.selected
+    # The newest node holds the flag; the Geo yields the sphere only.
+    assert(w.network.outputs(geo).length == 1 and w.network.outputs(geo)[0].id == sphere)
+    assert(not w.network.require(cube).visible and not w.network.require(moved).visible)
+    let faces = w.network.evaluate(geo).face_count()
+    assert(faces == w.network.evaluate(sphere).face_count())
+    # D moves the flag (a radio button): the Geo yields the moved cube.
+    node_commands.select_node(w, moved)
+    node_commands.display_selected(w)
+    assert(w.network.require(moved).visible and not w.network.require(sphere).visible)
+    assert(w.network.evaluate(geo).bounds().minimum.x > 3.0)
+    # An Output node wins over the flag, as in Houdini.
+    node_commands.select_node(w, sphere)
+    node_commands.add_node(w, "Output", 200.0, 100.0)
+    let output = w.network.selected
+    assert(w.network.require(output).inputs[0] == sphere)
+    node_commands.select_node(w, moved)
+    node_commands.display_selected(w)
+    assert(w.network.outputs(geo)[0].id == output and w.network.evaluate(geo).face_count() == faces)
+    assert(w.network.output_warning(geo) == "")
+    # Two Output nodes: the first is used, with a warning on the Geo.
+    node_commands.select_node(w, cube)
+    node_commands.add_node(w, "Output", 0.0, 200.0)
+    assert(w.network.outputs(geo)[0].id == output and w.network.output_warning(geo).contains("Several Output nodes"))
+    assert(w.network.evaluate_data(geo).warning.contains("Several Output nodes"))
+    w.undo()
+    w.undo()
+    w.undo()
+    assert(w.network.find(output) == none)
+    # No Output node and no flag: nothing, and a warning.
+    for node in w.network.children(geo):
+        node.visible = false
+    w.network.invalidate(geo)
+    assert(w.network.outputs(geo).length == 0 and w.network.output_warning(geo).contains("No Output node"))
+    assert(w.network.evaluate_data(geo).warning.contains("No Output node"))
+    # Deleting the flagged node hands the flag to its input.
+    w.network.require(moved).visible = true
+    w.network.remove(moved)
+    assert(w.network.require(cube).visible and w.network.outputs(geo)[0].id == cube)
+    assert(levels.yielded(levels.data_level, []).warning == "")
+
+## A Materials container: a chain of two Materials and a third alone; all
+## three materials are available, with no flag needed.
+func materials_yield_all() -> unit!:
+    let graph = Network(false)
+    let library = graph.add("Materials", 0.0, 0.0)
+    graph.scope = library.id
+    let red = graph.add("Material", 0.0, 0.0)
+    red.texts[0] = "materials/red"
+    let glass = graph.add("Material", 0.0, 100.0)
+    glass.texts[0] = "materials/glass"
+    graph.connect(red.id, glass.id, 0)
+    let gold = graph.add("Material", 200.0, 0.0)
+    gold.texts[0] = "materials/gold"
+    red.visible = false
+    gold.visible = false
+    graph.scope = -1
+    assert(graph.level_of(library.id) == levels.library_level and graph.outputs(library.id).length == 2)
+    let data = graph.evaluate_data(library.id)
+    assert(data.geometry.material_paths().split("\n").length == 3)
+
+## The viewport shows the root while the network view is two levels deep:
+## the context's flagged node, then the root's other objects, placed by the
+## inverse of the context's frame.
+func viewport_shows_root() -> unit!:
+    let graph = Network()
+    let first = graph.scope
+    graph.scope = -1
+    let group = graph.add("Group", 200.0, 0.0)
+    group.values[1] = 10.0
+    graph.scope = group.id
+    let inner = graph.add("Geo", 0.0, 0.0)
+    graph.scope = inner.id
+    let sphere = graph.add("Sphere", 0.0, 0.0)
+    graph.display = sphere.id
+    let items = view_items(graph)
+    assert(items.length == 2 and items[0].node.id == sphere.id and not items[0].outside)
+    assert(items[1].node.id == first and items[1].outside)
+    # The first Geo sits at the origin, so from inside the Group (moved 10
+    # along X) it is drawn 10 to the left.
+    assert(items[1].matrix.translation.x == -10.0)
+    assert(is_outside(graph, first) and not is_outside(graph, sphere.id) and not is_outside(graph, inner.id))
+    # At the root nothing is outside: both objects draw as they are.
+    graph.scope = -1
+    let rooted = view_items(graph)
+    assert(rooted.length == 2 and not rooted[0].outside and not rooted[1].outside and not is_outside(graph, first))
+    # The workspace keeps drawing both while deep inside.
+    let w = Workspace()
+    let geo = w.network.scope
+    node_commands.leave_group(w)
+    node_commands.add_node(w, "Geo", 300.0, 0.0)
+    let other = w.network.selected
+    node_commands.enter_group(w, other)
+    node_commands.add_node(w, "Sphere", 0.0, 0.0)
+    node_commands.enter_group(w, geo)
+    assert(w.drawn().length == 2)
+    let (nodes, _) = w.on_screen()
+    assert(nodes.length == 1 and nodes[0] == 1)
+
+## The Outliner lists the root's objects; inside a Geo the rows outside it
+## are greyed; a click on a greyed row takes the network view there.
+func outliner_greys_outside() -> unit!:
+    let w = Workspace()
+    let geo = w.network.scope
+    node_commands.leave_group(w)
+    node_commands.add_node(w, "Geo", 300.0, 0.0)
+    let other = w.network.selected
+    node_commands.enter_group(w, other)
+    node_commands.add_node(w, "Sphere", 0.0, 0.0)
+    let sphere = w.network.selected
+    let rows = object_rows(w.network, [], [])
+    assert(rows.length == 4 and rows[0].id == geo and rows[2].id == other and rows[3].id == sphere)
+    assert(is_outside(w.network, geo) and is_outside(w.network, 1))
+    assert(not is_outside(w.network, other) and not is_outside(w.network, sphere))
+    node_commands.reveal_node(w, 1)
+    assert(w.network.scope == geo and w.network.selected == 1)
+    assert(not is_outside(w.network, 1) and is_outside(w.network, sphere))

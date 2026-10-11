@@ -1,15 +1,18 @@
-## Cooking the displayed outputs on the UI thread, as tests and scripts do
-## before a worker runs (the worker's path is compute_worker.luc): each
-## visible output's scene objects go into `objects` and its lines into the
-## viewport batches; the displayed node's result comes back for picking.
+## Cooking what the viewport draws on the UI thread, as tests and scripts do
+## before a worker runs (the worker's path is compute_worker.luc): each view
+## item's scene objects (context_view.luc) go into `objects` and its lines
+## into the viewport batches; the displayed node's result comes back for
+## picking.
 from luce_3d.graphics import Group, Matrix4, CurveLines
 from luce_geocore.geocore import Mesh
-from network import Network, Node
+from network import Network
+from node import Node
 from geometry_data import GeometryData
 from overlay_lines import OverlayLines
-from scene_projection import append_scene, append_overlays, append_patch_boundaries, append_cad_hulls, append_fog, append_clouds
+from scene_projection import append_scene, append_placed, append_overlays, append_patch_boundaries, append_cad_hulls, append_fog, append_clouds
 from viewport_batches import ViewportBatches
 from render_geometry import render_geometry
+from context_view import view_items
 
 pub class LocalCook:
     ## The node picked on (Network.pick_node) and its result, when it cooked.
@@ -20,13 +23,18 @@ pub class LocalCook:
     ## The meshes on screen and the node each came from (object picking).
     pub var nodes: list[int]
     pub var meshes: list[Mesh]
+    ## The meshes of the rest of the scene around the context, placed: they
+    ## hide what lies behind them, but are not picked on.
+    pub var around: list[Mesh]
 
     pub func init(self):
         self.nodes = []
         self.meshes = []
+        self.around = []
 
-## Cook `graph`'s visible outputs (the displayed node alone when previewing)
-## into `objects` and `batches`, meshes prepared for display `mode`.
+## Cook what `graph`'s viewport draws (the context, then the rest of the
+## root) into `objects` and `batches`, meshes prepared for display `mode`.
+## The render mode's sets are the root's objects, whatever the context.
 pub func cook_outputs(graph: Network, objects: Group, batches: ViewportBatches, mode: int) -> LocalCook!:
     let result = LocalCook()
     objects.clear()
@@ -42,50 +50,61 @@ pub func cook_outputs(graph: Network, objects: Group, batches: ViewportBatches, 
     batches.scenes = []
     batches.scene_keys = []
     batches.scene_nodes = []
-    var outputs = graph.outputs(graph.scope)
-    if graph.preview:
-        if let node = graph.find(graph.display):
-            outputs = [node]
+    for node in graph.outputs(-1):
+        let data = graph.evaluate_data(node.id) catch failure:
+            result.notice = failure.message
+            continue
+        # A node's evaluations count its cooks, so the key changes with its
+        # result.
+        batches.scene_nodes.append(node.id)
+        batches.scenes.append(render_geometry(data, graph.gesture, graph.cad_quality))
+        batches.scene_keys.append((node.id, node.evaluations, graph.gesture, graph.cad_quality).hash())
     var analytic = 0
     let wires = OverlayLines.make()
     let normals = OverlayLines.make()
     let patches = OverlayLines.make()
     let hulls = OverlayLines.make()
-    for node in outputs:
-        if not node.visible:
-            continue
+    for item in view_items(graph):
+        let node = item.node
+        let matrix = item.matrix
         let data = graph.evaluate_data(node.id) catch failure:
-            result.notice = failure.message
+            if not item.outside:
+                result.notice = failure.message
             continue
-        if node.id == graph.pick_node():
+        if node.id == graph.pick_node() and not item.outside:
             result.node = node
             result.data = data
-        # The whole set, for the render mode; a node's evaluations count its
-        # cooks, so the key changes with its result.
-        batches.scene_nodes.append(node.id)
-        batches.scenes.append(render_geometry(data, graph.gesture, graph.cad_quality))
-        batches.scene_keys.append((node.id, node.evaluations, graph.gesture, graph.cad_quality).hash())
         let branch = Group()
-        analytic += append_scene(data, branch, mode = mode) catch failure:
-            result.notice = failure.message
-            continue
+        if item.outside:
+            analytic += append_placed(data, matrix, branch) catch failure:
+                continue
+        else:
+            analytic += append_scene(data, branch, mode = mode) catch failure:
+                result.notice = failure.message
+                continue
         objects.add(branch)
-        append_pick_meshes(data, Matrix4(), node.id, result)
+        # The rest of the scene is not picked on: tools act on the context.
+        if not item.outside:
+            append_pick_meshes(data, Matrix4(), node.id, result)
+        else:
+            let placed = LocalCook()
+            append_pick_meshes(data, matrix, node.id, placed)
+            for mesh in placed.meshes: result.around.append(mesh)
         # Overlays are display only: one that cannot be drawn says so and
         # leaves the cook (and the edit that made it) standing.
-        append_overlays(data, Matrix4(), wires, normals) catch failure:
+        append_overlays(data, matrix, wires, normals) catch failure:
             result.notice = f"{node.name}: guides not drawn: {failure.message}"
-        append_cad_hulls(data, Matrix4(), hulls) catch failure:
+        append_cad_hulls(data, matrix, hulls) catch failure:
             result.notice = f"{node.name}: hulls not drawn: {failure.message}"
         if data.geometry.has_scene():
-            hulls.add_scene(data.geometry)
+            hulls.add_scene(data.geometry, matrix)
         if CurveLines.count(data.geometry) > 0:
-            batches.curve_batches.append(CurveLines.batch(data.geometry))
-            batches.hull_batches.append(CurveLines.batch(data.geometry, true))
-        append_patch_boundaries(data, Matrix4(), patches)
-        append_fog(data, Matrix4(), batches.volumes, held, batches.held_volumes) catch failure:
+            batches.curve_batches.append(CurveLines.batch(data.geometry, matrix = matrix))
+            batches.hull_batches.append(CurveLines.batch(data.geometry, true, matrix))
+        append_patch_boundaries(data, matrix, patches)
+        append_fog(data, matrix, batches.volumes, held, batches.held_volumes) catch failure:
             result.notice = f"{node.name}: fog not drawn: {failure.message}"
-        append_clouds(data, Matrix4(), batches.clouds, held_clouds, batches.held_clouds) catch failure:
+        append_clouds(data, matrix, batches.clouds, held_clouds, batches.held_clouds) catch failure:
             result.notice = f"{node.name}: points not drawn: {failure.message}"
         while batches.volume_nodes.length < batches.volumes.length:
             batches.volume_nodes.append(node.id)

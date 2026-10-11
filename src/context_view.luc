@@ -1,0 +1,84 @@
+## What the viewport draws while the network view is at some level
+## (docs/NETWORK-LEVELS.md): always the root scene, split into the context
+## being edited and the rest. The worker (compute_worker.luc) and the local
+## cook (local_cook.luc) both draw these items; the UI chooses how the rest
+## draws (ContextDisplay: all, greyed or hidden).
+##
+## The viewport works in the context's local frame, so modeling, picking and
+## gizmos need no change: the context draws as it cooks, and the rest is
+## placed by the inverse of the context's frame.
+from luce_3d.graphics import Matrix4
+from network import Network
+from node import Node
+import node_catalog
+import levels
+
+## A node whose result the viewport draws, placed by `matrix` (the viewport's
+## frame from the node's level), and whether it lies outside the context.
+pub class ViewItem:
+    pub let node: Node
+    pub let matrix: Matrix4
+    pub let outside: bool
+    pub func init(self, node: Node, matrix: Matrix4, outside: bool):
+        self.node = node
+        self.matrix = matrix
+        self.outside = outside
+
+## The context first, then the rest of the scene.
+##
+## - The context: on an object level (the root, a scene Group) its flagged
+##   nodes; on a data level the node with the display flag.
+## - The rest: the flagged nodes of every object level above the scope,
+##   except the branch that holds the scope.
+pub func view_items(graph: Network) -> list[ViewItem]!:
+    let items: list[ViewItem] = []
+    let scope = graph.scope
+    let level = graph.level_of(scope)
+    if level == levels.object_level:
+        for node in graph.outputs(scope):
+            items.append(ViewItem(node, Matrix4(), false))
+    elif level == levels.data_level:
+        if let shown = graph.find(graph.display):
+            if shown.parent == scope:
+                items.append(ViewItem(shown, Matrix4(), false))
+    if scope < 0:
+        return items
+    let local = frame(graph, scope).inverse()
+    var branch = scope
+    var parent = graph.require(scope).parent
+    for _ in 0..<17:
+        if graph.level_of(parent) == levels.object_level:
+            let placed = local.multiply(frame(graph, parent))
+            for node in graph.outputs(parent):
+                if node.id != branch:
+                    items.append(ViewItem(node, placed, true))
+        if parent < 0:
+            break
+        branch = parent
+        parent = graph.require(parent).parent
+    return items
+
+## The matrix from `parent`'s local frame (what its children cook in) to the
+## world: the placements of the containers from the root down to it.
+pub func frame(graph: Network, parent: int) -> Matrix4!:
+    var matrix = Matrix4()
+    var id = parent
+    for _ in 0..<17:
+        let node = graph.find(id) else return matrix
+        if node_catalog.places_children(node.kind):
+            matrix = node.placement().multiply(matrix)
+        id = node.parent
+    return matrix
+
+## Whether node `id` is drawn as the rest of the scene: the network view is
+## inside a container and `id` is not that container or inside it.
+pub func is_outside(graph: Network, id: int) -> bool:
+    if graph.scope < 0:
+        return false
+    var at = id
+    for _ in 0..<18:
+        if at == graph.scope:
+            return false
+        let node = graph.find(at) else return true
+        at = node.parent
+    return true
