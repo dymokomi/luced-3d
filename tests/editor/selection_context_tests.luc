@@ -1,0 +1,61 @@
+## Selection filters and picking follow the context, including plain features.
+from app import Luce3D
+from workspace import Workspace
+import node_commands
+import selection_commands
+import time
+
+pub func selection_context_tests() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let geo = w.network.scope
+    assert(w.shown_levels() == [0, 1, 2, 3, 4])
+    selection_commands.set_mode(w, 2)
+    node_commands.leave_group(w)
+    assert(w.component_mode == 0 and w.shown_levels() == [0] and w.picking_objects() and not w.selecting())
+    editor.panels.refresh()
+    let chrome = editor.panels.view.tools.chrome
+    assert(chrome.button_at(24.0, 20.0, 900.0, 600.0) == 200)
+    assert(chrome.button_at(62.0, 20.0, 900.0, 600.0) == -1)
+    editor.panels.actions.modes[2].trigger()
+    assert(w.component_mode == 0)
+    for (kind, shown) in [("CAD", [0, 1, 2, 3, 4]), ("SDF", [0]), ("Volumes", [0]), ("GSplats", [0, 1]), ("Materials", [0])]:
+        node_commands.add_node(w, kind, 0.0, 0.0)
+        let id = w.network.selected
+        node_commands.enter_group(w, id)
+        assert(w.shown_levels() == shown, kind)
+        # Empty contexts and ordinary Groups have the same filters.
+        node_commands.add_node(w, "Group", 0.0, 0.0)
+        node_commands.enter_group(w, w.network.selected)
+        assert(w.shown_levels() == shown)
+        node_commands.leave_group(w)
+        if kind == "CAD":
+            node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+            assert(w.active_kind() == none and w.levels()[1].name == "CVs")
+            selection_commands.set_mode(w, 2)
+            let local = w.geometry else trap(w.notice)
+            assert(local.find_attribute("cad_edge", 4) >= 0)
+            selection_commands.choose_component(w, 0, false)
+            assert(w.selected_count() > 0)
+            w.enable_compute()
+            settle(w)
+            let worker = w.geometry else trap("worker CAD pick geometry")
+            assert(worker.face_count() == local.face_count() and worker.find_attribute("cad_edge", 4) >= 0)
+            selection_commands.set_mode(w, 1)
+            settle(w)
+            assert((w.geometry else trap("CVs")).face_count() == 0)
+        node_commands.leave_group(w)
+        assert(w.component_mode == 0 and w.shown_levels() == [0])
+    node_commands.enter_group(w, geo)
+    assert(w.shown_levels() == [0, 1, 2, 3, 4])
+    selection_commands.set_mode(w, 3)
+    settle(w)
+    assert(w.selecting() and w.level().name == "Polygons")
+    editor.close()
+    print("PASS context selection: root objects, compact buttons, disabled shortcuts, inherited Groups, plain CAD features and worker CV/edge picking")
+
+func settle(w: Workspace) -> unit!:
+    let worker = w.compute else return
+    let deadline = time.now() + 20000000000
+    while worker.busy and time.now() < deadline: _ = w.poll_compute()
+    assert(not worker.busy and w.notice == "", w.notice)

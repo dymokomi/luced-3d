@@ -23,7 +23,7 @@ from display_publisher import DisplayPublisher
 from node_evaluation import SourceCache
 from view_state import ViewState
 from viewport_batches import ViewportBatches
-from edit_kinds import is_edit, edit_kind
+from edit_kinds import is_edit, edit_kind, context_kind
 from geometry_data import GeometryData
 from edit_types import EditKind, EditLevel, smart_level, face_level, soft_radius_slot, falloff_slot, symmetry_slot
 import edit_mesh
@@ -258,12 +258,13 @@ pub class Workspace:
     pub func picking_objects(self) -> bool:
         if self.component_mode != 0 or self.prompt != none or self.placing != none:
             return false
+        if self.selection_kind() == none: return true
         let node = self.network.find(self.network.display) else return true
         return not (node.enabled and is_edit(node.kind))
 
     ## Components can be picked whenever the viewport shows a node's mesh.
     pub func selecting(self) -> bool:
-        return self.geometry != none
+        return self.geometry != none and self.selection_kind() != none and not self.picking_objects()
 
     ## The Edit kind of node kind `name` (kept once made), or none.
     pub func kind_of(self, name: str) -> EditKind?:
@@ -280,12 +281,15 @@ pub class Workspace:
             return none
         return self.kind_of(node.kind)
 
-    ## The selection levels: the selected Edit node's kind's, else Edit
-    ## Mesh's (any displayed mesh selects on them).
+    ## Selection is defined by the authoring context, even without an Edit node.
+    pub func selection_kind(self) -> EditKind?:
+        return self.kind_of(context_kind(self.network.context()))
+
+    ## Scene, volume and material contexts expose only object selection.
     pub func levels(self) -> list[EditLevel]:
-        if let kind = self.active_kind():
+        if let kind = self.selection_kind():
             return kind.levels
-        return self.mesh_levels
+        return [self.mesh_levels[0]]
 
     pub func level(self) -> EditLevel:
         return self.levels()[self.level_index()]
@@ -298,7 +302,8 @@ pub class Workspace:
 
     ## The levels Smart picks among (none: it is not offered).
     pub func smart_levels(self) -> list[int]:
-        return self.strip_kind().smart
+        let kind = self.selection_kind() else return []
+        return kind.smart
 
     ## Whether level `index` (Smart too) can be chosen.
     pub func level_available(self, index: int) -> bool:
@@ -306,6 +311,14 @@ pub class Workspace:
             return self.smart_levels().length > 0
         let all = self.levels()
         return index >= 0 and index < all.length and all[index].available
+
+    ## The compact switcher order, retaining stable numeric shortcuts.
+    pub func shown_levels(self) -> list[int]:
+        if self.sketching(): return [1, 2, 3, 4]
+        let result: list[int] = []
+        for index in 0..<5:
+            if self.level_available(index): result.append(index)
+        return result
 
     ## Make level `index` the one picked on, staying in Smart when it is one
     ## of Smart's levels (a tool's output, a reselection's type).
@@ -318,12 +331,13 @@ pub class Workspace:
     ## The kind whose tools the viewport offers: the active Edit node's,
     ## else Edit Mesh's (tools on any displayed mesh make verb nodes).
     pub func strip_kind(self) -> EditKind:
-        return self.active_kind() else (self.kind_of(edit_mesh.kind_name) else trap("Edit Mesh"))
+        return self.selection_kind() else (self.kind_of(edit_mesh.kind_name) else trap("Edit Mesh"))
 
     ## Whether viewport tool `name` applies at the current level: the Edit
     ## node's kind offers it there (Edit Mesh's tools on another node's mesh).
     pub func tool_available(self, name: str) -> bool!:
-        let kind = self.active_kind() else return tool_run(name) != none
+        if self.selection_kind() == none: return false
+        let kind = self.active_kind() else return self.network.context() == "geometry" and tool_run(name) != none
         if name in kind.primitives or name in kind.draw_tools:
             return true
         let tool = kind.tool(name) else return false
@@ -507,6 +521,10 @@ pub class Workspace:
             self.commit()
 
     pub func rebuild(self) -> unit!:
+        # Normalize before cooking, including empty contexts and the worker.
+        if not self.level_available(self.component_mode):
+            self.component_mode = 0
+            self.selection = none
         if let session = self.compute:
             self.network.level = self.component_mode
             self.network.gesture = self.dragging
@@ -538,10 +556,9 @@ pub class Workspace:
     ## What the viewport picks on for displayed `node`: its Edit kind's
     ## geometry for the level, else its mesh.
     func picked(self, node: Node, data: GeometryData) -> Mesh?!:
-        if node.enabled:
-            if let kind = self.kind_of(node.kind):
-                return kind.pick(data, self.level_index()) catch failure:
-                    recover none
+        if let kind = self.selection_kind():
+            return kind.pick(data, self.level_index()) catch failure:
+                recover none
         if data.mesh == none and self.network.picking_cad and data.has_cad():
             # A CAD body picks on its tagged tessellation (B-rep faces and edges).
             return CadEdits.pick_mesh(data.geometry)
