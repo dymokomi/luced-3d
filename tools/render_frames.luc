@@ -1,0 +1,152 @@
+## The viewport's Render mode as a user meets it, in a real window: a sphere
+## on a floor under an area light, rendered, then a light dragged and the
+## camera orbited a frame at a time. Prints frame intervals and the time from
+## a change to the first whole image of it; with an output folder, saves every
+## frame of the drag (frame_NN.ppm) to look at. tools/render_frames.py runs it.
+import probe
+from app import Luce3D
+from workspace import Workspace
+import node_commands
+from luce_std import math
+import time
+
+## Sphere, floor, camera, light (its id) and a Render node of 64 samples.
+func lit_scene(w: Workspace) -> int!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Sphere", 0.0, 0.0)
+    node_commands.set_parameter(w, 1, 64.0)
+    let ball = w.network.selected
+    node_commands.add_node(w, "Grid", 200.0, 0.0)
+    node_commands.set_parameter(w, 0, 12.0)
+    let floor = w.network.selected
+    node_commands.select_node(w, ball)
+    node_commands.add_node(w, "Merge", 0.0, 100.0)
+    node_commands.connect(w, floor, w.network.selected, 1)
+    node_commands.leave_group(w)
+    let geometry = w.network.selected
+    node_commands.add_node(w, "Camera", 0.0, 200.0)
+    let camera = w.network.selected
+    node_commands.connect(w, geometry, camera, 0)
+    for (slot, value) in [(1, 0.0), (2, 2.5), (3, 6.0), (4, -18.0), (5, 0.0)]:
+        node_commands.set_parameter(w, slot, value)
+    node_commands.add_node(w, "Light", 0.0, 300.0)
+    node_commands.connect(w, camera, w.network.selected, 0)
+    for (slot, value) in [(1, 1.0), (2, 4.0), (3, 1.0), (10, 30.0), (14, 3.0), (15, 3.0)]:
+        node_commands.set_parameter(w, slot, value)
+    let light = w.network.selected
+    node_commands.add_node(w, "Render", 0.0, 400.0)
+    node_commands.connect(w, light, w.network.selected, 0)
+    for (slot, value) in [(3, 64.0), (4, 1.0), (5, 4.0)]:
+        node_commands.set_parameter(w, slot, value)
+    node_commands.display_selected(w)
+    return light
+
+pub func main(arguments: list[str]) -> int!:
+    let folder = arguments[0] if arguments.length > 0 else ""
+    let project = arguments[1] if arguments.length > 1 else ""
+    let drag_frames = 40
+    let orbit_frames = 120
+    let editor = Luce3D(width = 1400, height = 900)
+    let w = editor.workspace
+    var light = -1
+    if project != "":
+        # A project's first light (an example scene: splats are the slowest).
+        editor.panels.projects.load_from(project)
+        for node in w.network.nodes:
+            if node.kind == "Light" and light < 0: light = node.id
+        for node in w.network.nodes:
+            if node.kind == "Render": w.network.selected = node.id
+        node_commands.display_selected(w)
+    else:
+        light = lit_scene(w)
+    w.frame_cube()
+    let start_x = w.network.require(light).values[1]
+    w.view.render_samples = 64
+    w.set_display_mode(5)
+    let render = editor.panels.view.render
+    var phase = "settle"
+    var frame = 0
+    var last = time.now()
+    var started = time.now()
+    var intervals: list[float] = []
+    var waits: list[float] = []
+    var change_at = 0
+    var capturing = false
+    var x = start_x
+    let observed = editor.app.on_frame(func (elapsed: float) -> unit!:
+        _ = elapsed
+        let now = time.now()
+        let interval = float(now - last) / 1000000.0
+        last = now
+        editor.panels.view.layout().invalidate()
+        if capturing:
+            probe.save(f"{folder}/frame_{frame:02}.ppm")
+            probe.end()
+            capturing = false
+        if phase == "settle":
+            if (not render.running() and render.samples_done() > 0) or now - started > 20000000000:
+                print(f"settled: {render.label()}")
+                phase = "drag"
+                frame = 0
+            return
+        if phase == "drag":
+            if frame > 0: intervals.append(interval)
+            if frame >= drag_frames:
+                report(f"light drag (preview at 1/{render.divisor})", intervals)
+                intervals = []
+                phase = "orbit"
+                frame = 0
+                return
+            # The light slides along x, a step a frame, as a Move drag does.
+            x -= 0.05
+            w.network.selected = light
+            node_commands.set_parameter(w, 1, x)
+            if folder != "":
+                probe.begin("Luced 3D")
+                capturing = true
+            frame += 1
+            return
+        if phase == "orbit":
+            if frame > 0: intervals.append(interval)
+            if frame >= orbit_frames:
+                report("orbit", intervals)
+                phase = "first"
+                frame = 0
+                return
+            w.view.orbit(1.5, 0.0)
+            frame += 1
+            return
+        if phase == "first":
+            # Still for half a second, then one change: how long until the
+            # first whole image of it shows.
+            if change_at == 0:
+                frame += 1
+                if frame < 30: return
+                w.network.selected = light
+                x += 0.5
+                node_commands.set_parameter(w, 1, x)
+                change_at = now
+                return
+            if now - change_at > 10000000000: trap("no image of the change within 10 s")
+            if render.samples_done() >= 1 and not render.preparing():
+                waits.append(float(now - change_at) / 1000000.0)
+                change_at = 0
+                frame = 0
+                if waits.length >= 5:
+                    var line = "first image after a light change (ms):"
+                    for took in waits: line = line + f" {took:.1f}"
+                    print(line)
+                    editor.app.stop())
+    editor.app.run()
+    observed.disconnect()
+    editor.close()
+    return 0
+
+func report(what: str, intervals: list[float]) -> unit:
+    var total = 0.0
+    var worst = 0.0
+    for value in intervals:
+        total += value
+        worst = math.max(worst, value)
+    let mean = total / float(intervals.length if intervals.length > 0 else 1)
+    print(f"{what}: {intervals.length} frames, mean {mean:.1f} ms ({1000.0 / mean:.0f} fps), worst {worst:.1f} ms")
