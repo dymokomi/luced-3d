@@ -9,6 +9,9 @@
 ##   draw over the image.
 ## - Through the scene camera's view, the image matches the Render panel's
 ##   within noise.
+## - Until the image suits the viewport (the mode just entered, the viewport
+##   resized larger or smaller), the viewport shows the shaded scene, never a
+##   blank nor an image of the old size; then the image, without going back.
 from app import Luce3D
 from workspace import Workspace
 from offscreen_pixels import OffscreenPixels
@@ -56,13 +59,13 @@ func draw(w: Luce3D, view: OffscreenPixels) -> unit!:
     w.panels.view.draw(target)
     view.end()
 
-## Draw until the render has `samples` at full size (or 60 s pass).
+## Draw until the render shows `samples` at full size (or 60 s pass).
 func refine(editor: Luce3D, view: OffscreenPixels, samples: int) -> unit!:
     let render = editor.panels.view.render
     let deadline = time.now() + 60000000000
-    while (render.preparing() or render.samples_done() < samples or render.divisor > 1) and time.now() < deadline:
+    while (render.preparing() or render.samples_done() < samples or render.divisor > 1 or not render.shown) and time.now() < deadline:
         draw(editor, view)
-    assert(not render.preparing() and render.samples_done() >= samples and render.divisor == 1)
+    assert(not render.preparing() and render.samples_done() >= samples and render.divisor == 1 and render.shown)
 
 ## The mean luminance of a block of pixels.
 func block(view: OffscreenPixels, x: int, y: int, size: int) -> float:
@@ -204,6 +207,7 @@ pub func render_mode_tests() -> unit!:
     editor.close()
     print(f"ok    render mode: switches, restarts on camera moves and recooks (reloading lights over the same geometry), keeps overlays, matches the Render panel within {worst * 100.0:.2f}% ({compared} blocks)")
     cad_render_mode()
+    resized_render_mode()
 
 ## Analytic CAD renders through the same cached surface as the shaded view,
 ## locally and across the worker boundary, without inserting Tessellate nodes.
@@ -261,3 +265,64 @@ func settle_worker(w: Workspace) -> unit!:
     while session.busy and time.now() < deadline:
         _ = w.poll_compute()
     assert(not session.busy and w.notice == "")
+
+## Pixels of `a` and `b` (as the rows `rows` read them) that differ by more
+## than a little, between the top and bottom chrome rows.
+func differing(a: list[int], b: list[int]) -> int:
+    return changed(a, b, 6)
+
+## Render mode while the viewport resizes: the shaded scene, exactly as
+## Shaded mode draws it (but the corner label), until the first whole image at
+## the new size, then the image from that frame on.
+func resized_render_mode() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    _ = lit_scene(w)
+    w.frame_cube()
+    let render = editor.panels.view.render
+    let view = OffscreenPixels(320, 200)
+    # The shaded references, at both sizes.
+    draw(editor, view)
+    draw(editor, view)
+    let shaded_small = rows(view, 320, 40, 160)
+    view.resize(400, 250)
+    draw(editor, view)
+    draw(editor, view)
+    let shaded_large = rows(view, 400, 40, 210)
+    view.resize(320, 200)
+    w.view.render_samples = 16
+    w.set_display_mode(5)
+    # Entering the mode: shaded until the first image.
+    draw(editor, view)
+    let entered = differing(rows(view, 320, 40, 160), shaded_small)
+    if render.shown or entered >= 40:
+        print(f"render mode entered: shown {render.shown}, {entered} pixels differ from Shaded")
+        assert(false)
+    refine(editor, view, 16)
+    let rendered_small = rows(view, 320, 40, 160)
+    assert(differing(rendered_small, shaded_small) > 2000)
+    # Larger, then smaller (no new buffers): each time shaded at once, then
+    # the image of the new size, never back to shaded.
+    var shaded_frames = 0
+    for (width, height, shaded) in [(400, 250, shaded_large), (320, 200, shaded_small)]:
+        view.resize(width, height)
+        var shown = false
+        var frames = 0
+        let deadline = time.now() + 60000000000
+        while not (shown and render.samples_done() >= 4) and time.now() < deadline:
+            draw(editor, view)
+            frames += 1
+            let now_shown = render.shown
+            assert(now_shown or not shown)
+            if frames == 1:
+                assert(not now_shown)
+            if not now_shown:
+                shaded_frames += 1
+                assert(differing(rows(view, width, 40, height - 40), shaded) < 40)
+            else:
+                assert(render.samples_done() >= 1)
+                assert(differing(rows(view, width, 40, height - 40), shaded) > 2000)
+            shown = now_shown
+        assert(shown)
+    editor.close()
+    print(f"PASS render mode resized: shaded until the image of the new size ({shaded_frames} shaded frames), never blank or stretched, no flicker")

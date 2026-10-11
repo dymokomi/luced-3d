@@ -225,6 +225,13 @@ and picking live in `node_gizmos`/`gizmo_math`, independent of evaluation.
     grid, guides, hulls, Edit wires (drawn again without surfaces), gizmos and
     tools draw over it, depth-tested against the raster. The display transform
     (exposure, neutral or standard) is the Render panel's (`ViewState`).
+  - **Never blank:** the image shows only once it suits the viewport: rendered
+    at the viewport's size (at full size or a preview's divisor) and the size
+    unchanged for 0.15 s. Until then (the mode entered, a scene's first
+    compile, a resize larger or smaller) the viewport draws exactly as Shaded
+    does, splats and fog included; a resize being dragged stays shaded rather
+    than flickering, and an image of the old size is never stretched over the
+    new one. A camera move keeps the last image (same size) until the next.
 
 ## Imports
 

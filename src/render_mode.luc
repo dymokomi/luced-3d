@@ -19,6 +19,13 @@
 ## sample is the renderer's: unbiased at any size. What shows is always a
 ## whole image of one view and scene (luce-render's display images): the last
 ## one stays until the next is whole, never part of one over another.
+##
+## The image shows only once it suits the viewport: rendered at its size (at
+## any preview divisor), and the size unchanged for a moment. Until then (the
+## mode just entered, a scene still compiling, the viewport resized) the
+## viewport shows its realtime shaded scene, never a blank, nor an image of
+## another size stretched over it; while a resize drags on it stays shaded,
+## rather than flickering between the two.
 from luce_gpu.gpu import RenderTarget
 from luce_render.render import RenderSession
 from luce_geocore.geocore import GeometrySet, Vector3
@@ -46,6 +53,12 @@ pub class RenderMode:
     ## When the camera last moved (ns), and the divisor of the viewport's
     ## size the image renders at (1 once still).
     var moved_at: int = 0
+    ## Whether the viewport shows the image this frame (else its shaded scene).
+    pub var shown: bool = false
+    ## The viewport's size, and when it last changed (ns).
+    var size_width: int = 0
+    var size_height: int = 0
+    var sized_at: int = 0
     pub var divisor: int = 1
     ## Scenes the session has taken (made or reloaded renderers): a new one
     ## restarts the settling wait.
@@ -64,19 +77,45 @@ pub class RenderMode:
         self.session = RenderSession.make()
         self.scene_keys = []
 
-    ## Render `w`'s displayed scene into (0, 0, width, height) of `target`;
-    ## whether more frames are wanted.
-    pub func draw(self, w: Workspace, target: RenderTarget, width: float, height: float) -> bool!:
+    ## Advance the render of `w`'s displayed scene in a viewport of `width` ×
+    ## `height`; whether its image suits the viewport (`shown`): if so, `show`
+    ## draws it, else the viewport draws its shaded scene.
+    pub func advance(self, w: Workspace, target: RenderTarget, width: float, height: float) -> bool!:
         let full_width = math.max(1, int(width))
         let full_height = math.max(1, int(height))
         self.follow_display(w)
+        self.shown = false
         if not self.follow_scene(w, full_width, full_height):
             return false
         self.follow_view(w, full_width, full_height)
         self.measure()
-        let busy = self.session.draw(target, 0.0, 0.0, width, height)
-        # A preview while moving goes on refining until the full size takes over.
-        return busy or self.divisor > 1
+        _ = self.session.advance(target)
+        self.shown = self.suits()
+        return self.shown
+
+    ## Draw the image into (0, 0, width, height) of `target`.
+    pub func show(self, target: RenderTarget, width: float, height: float) -> unit!:
+        self.session.show(target, 0.0, 0.0, width, height)
+
+    ## Whether the image suits the viewport: rendered at its size, at full
+    ## size or a preview's divisor, and the size settled.
+    func suits(self) -> bool:
+        if not self.active or self.resizing():
+            return false
+        let shown_width = self.session.shown_width()
+        let shown_height = self.session.shown_height()
+        if shown_width == 0:
+            return false
+        var divisor = 1
+        while divisor <= 8:
+            if shown_width == math.max(1, self.size_width // divisor) and shown_height == math.max(1, self.size_height // divisor):
+                return true
+            divisor *= 2
+        return false
+
+    ## Whether the viewport's size changed within the settling time.
+    func resizing(self) -> bool:
+        return float(time.now() - self.sized_at) / 1000000000.0 < settle_seconds
 
     ## The scene and its settings: start again when either changed. False
     ## when there is nothing to render.
@@ -137,6 +176,10 @@ pub class RenderMode:
         let p = w.view.camera.projection(float(width) / float(height))
         let key = f"{p.position.x},{p.position.y},{p.position.z},{p.backward.x},{p.backward.y},{p.backward.z},{p.focal},{width},{height}"
         let now = time.now()
+        if width != self.size_width or height != self.size_height:
+            self.size_width = width
+            self.size_height = height
+            self.sized_at = now
         let (_, uploads, reloads) = self.counts()
         if uploads + reloads != self.taken:
             self.taken = uploads + reloads
@@ -184,9 +227,10 @@ pub class RenderMode:
             self.neutral = w.view.render_neutral
             self.session.set_display(self.exposure, 1 if self.neutral else 0)
 
-    ## Whether frames are still wanted: compiling, refining or previewing.
+    ## Whether frames are still wanted: compiling, refining, previewing or
+    ## waiting for a resize to settle.
     pub func running(self) -> bool:
-        return self.active and (self.session.running() or self.divisor > 1)
+        return self.active and (self.session.running() or self.divisor > 1 or self.resizing())
 
     ## The corner label: what the image is at.
     pub func label(self) -> str!:
@@ -220,6 +264,9 @@ pub class RenderMode:
         self.settings_key = ""
         self.view_key = ""
         self.divisor = 1
+        self.size_width = 0
+        self.size_height = 0
+        self.shown = false
 
 ## The Render node whose settings the viewport renders with: the selected
 ## one, else the first in the network (none: the defaults).
