@@ -22,6 +22,9 @@ import sketch_node
 from parameter_rows import Parameter, number, whole, vector, toggle, menu, entry, heading, node_path
 from cad_nodes import solid_kinds, cad_only_kinds, is_cad_only, cad_categories, cad_category
 import cad_nodes
+import cad_modify
+import cad_moves
+import edit_cad_faces
 import cad_features
 import cad_blends
 import code_cook
@@ -63,7 +66,7 @@ pub func requires_second(kind: str) -> bool:
     let index = VerbCatalog.index_of(kind)
     if index >= 0:
         return VerbCatalog.second_required(index)
-    return not (kind in ["Switch", "Null", "Output", "Extrude", "Revolve", code_cook.kind_name, script_cook.kind_name])
+    return not (kind in ["Switch", "Null", "Output", "Extrude", "Revolve", "Combine", code_cook.kind_name, script_cook.kind_name])
 
 pub func sources() -> list[str]:
     return ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus", "File", "Input"] + context_kinds() + generators() + solid_kinds()
@@ -128,7 +131,7 @@ pub func refusal(kind: str, context: str, inputs: bool) -> str:
     if not allowed(kind, context):
         if context == "cad": return "Inside a CAD node, only CAD nodes and network utilities"
         if context == "shading": return "Inside a Material, only shader nodes"
-        if kind in ["Sketch", "Extrude", "Revolve", "Offset Face", "Boolean", "Fillet", "Chamfer"]: return f"{kind} goes inside a CAD node"
+        if is_cad_only(kind): return f"{kind} goes inside a CAD node"
         return f"{kind} is not available in the {context} context"
     if kind == "Input" and not inputs:
         return "Nothing is wired into an object; bring another one in with an Import node"
@@ -214,7 +217,7 @@ pub func category(kind: str) -> str:
     return "Modeling"
 
 pub func kinds() -> list[str]:
-    let all = sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Output", "Import", "Switch", code_cook.kind_name, script_cook.kind_name] + scene_kinds() + material_kinds() + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Name", "Normal", "Measure", "UVProject", "Color"] + [sketch_node.kind_name, "Extrude", "Revolve", "Offset Face", "Boolean", "Fillet", "Chamfer", "Mirror Body", "Pattern"] + shader_kinds()
+    let all = sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Output", "Import", "Switch", code_cook.kind_name, script_cook.kind_name] + scene_kinds() + material_kinds() + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Name", "Normal", "Measure", "UVProject", "Color"] + cad_only_kinds() + shader_kinds()
     let result: list[str] = []
     for kind in all:
         if not (kind in result): result.append(kind)
@@ -535,7 +538,7 @@ func value_fields(kind: str) -> list[Parameter]:
                 vector("Rotate", 4, [0.0, 0.0, 0.0], "Rotation about X, then Y, then Z, in degrees, about the pivot.", suffix = "°"),
                 vector("Scale", 7, [1.0, 1.0, 1.0], "Scale along each axis about the pivot; never zero."),
                 vector("Pivot", 10, [0.0, 0.0, 0.0], "The point rotation and scale happen about.")]
-    if kind in cad_only_kinds() or kind in cad_nodes.direct_step_kinds():
+    if kind in cad_only_kinds():
         return cad_fields(kind)
     if kind == "Camera":
         return camera_fields()
@@ -846,19 +849,29 @@ func cad_fields(kind: str) -> list[Parameter]:
                 toggle("Separate bodies", 5, 0.0, "Keep the copies bodies of their own instead of joining them.")]
     if kind in ["Fillet", "Chamfer"]:
         return blend_fields(kind)
-    if kind == "Boolean":
-        return [menu("Operation", 0, "Union|Subtract|Intersect", 0.0, "Union: both bodies as one. Subtract: the first without the second. Intersect: what both hold.")]
     if kind == "Shell":
-        let thickness = number("Thickness", 0, 1.0, 0.0001, 100000.0, 0.1, "The wall's thickness.", soft = 10.0)
-        thickness.length = true
-        return [thickness, menu("Direction", 1, "Inside|Outside|Both", 0.0, "Inside: the wall inside the body's faces. Outside: outside them. Both: half each way.")]
+        let inside = number("Inside thickness", edit_cad_faces.thickness_slot, 1.0, 0.0001, 100000.0, 0.1, "The wall's thickness inside the body's faces.", soft = 10.0)
+        inside.length = true
+        inside.hide_when = "{ direction == 1 }"
+        let outside = number("Outside thickness", edit_cad_faces.outside_slot, 1.0, 0.0001, 100000.0, 0.1, "The wall's thickness outside the body's faces.", soft = 10.0)
+        outside.length = true
+        outside.hide_when = "{ direction == 0 }"
+        return [toggle("Tangent chain", edit_cad_faces.shell_chain_slot, 1.0, "Each face removed brings the faces meeting it smoothly: a rounded rim opens whole."),
+                inside, outside,
+                menu("Direction", edit_cad_faces.shell_side_slot, "Inside|Outside|Both", 0.0, "Inside: the wall inside the body's faces. Outside: outside them. Both: Inside thickness in, Outside thickness out.")]
+    if kind == "Move":
+        let object = menu("Move object", cad_modify.object_slot, "Bodies|Faces", 0.0, "Bodies: whole bodies move. Faces: the faces move, the faces round them following.")
+        object.in_steps = false
+        return [object] + cad_moves.rows()
     if kind == "Combine":
-        return [menu("Operation", 0, "Join|Cut|Intersect", 0.0, "Join: the tool bodies added to the target. Cut: taken out of it. Intersect: only what the target shares with them."),
-                toggle("Keep tools", 1, 0.0, "Keep the tool bodies after combining.")]
-    if kind == "Split Body":
-        let offset = number("Offset", 1, 0.0, -100000.0, 100000.0, 0.5, "An origin plane moved along its normal.", soft = 100.0)
+        return [menu("Operation", edit_cad_faces.combine_slot, "Join|Cut|Intersect", 0.0, "Join: the tool bodies added to the target. Cut: taken out of it. Intersect: only what the target shares with them."),
+                toggle("Keep tools", edit_cad_faces.keep_tools_slot, 0.0, "Keep the tool bodies after combining.")]
+    if kind in ["Split Body", "Split Face"]:
+        let offset = number("Offset", edit_cad_faces.split_offset_slot, 0.0, -100000.0, 100000.0, 0.5, "An origin plane moved along its normal.", soft = 100.0)
         offset.hide_when = "{ splitting_tool == 0 }"
-        return [menu("Splitting tool", 0, "Picked face|XY plane|XZ plane|YZ plane", 0.0, "The face picked (its surface extended), or an origin plane."), offset]
+        return [menu("Splitting tool", edit_cad_faces.split_tool_slot, "Picked face|XY plane|XZ plane|YZ plane", 0.0, "The face picked (its surface extended), or an origin plane."), offset]
+    if kind == "Replace Face":
+        return [toggle("Tangent chain", edit_cad_faces.replace_chain_slot, 1.0, "Each face replaced brings the faces meeting it smoothly.")]
     return []
 
 ## Extrude's rows, Fusion 360's dialog (cad_features.luc reads the slots).

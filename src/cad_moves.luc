@@ -1,0 +1,231 @@
+## Fusion 360's Move/Copy on CAD bodies and faces, for Edit CAD's Move/Copy
+## step (the gizmo's moves merge into it) and the Move node. Its numbers are
+## Transform Components' fifteen (translation, turn about X, Y, Z in
+## degrees, scale, the pivot: the selection's middle, the origin or a point)
+## and then Fusion's dialog:
+##   Create copy: the originals stay and moved copies are added (a body's
+##     copy, or the faces copied as a surface body of their own);
+##   Move type: Free move (the gizmo: translation and turns), Translate
+##     (X, Y, Z only), Rotate (an angle about an origin axis or a picked
+##     edge's line), Point to Point (from a picked point to another), Point
+##     to Position (from a picked point to typed coordinates).
+## Models named whole are placed; faces of a model named in part move and
+## turn with the faces around following (luce-cad's CadEdits).
+from luce_cad.cad_edits import CadEdits
+from luce_cad.modeling import CadModeling, CadDirect, AxisLine
+from luce_cad.model import CadModel
+from luce_geocore.geocore import Mesh
+from luce_3d.graphics import Vector3
+from geometry_data import GeometryData
+from edit_operations import EditStep
+from edit_cad_sketches import with_models
+from angles import radians
+from parameter_rows import Parameter, vector, toggle, menu, number
+import cad_names
+import handle_lines
+from handle_lines import HandleLine
+from luce_std import math
+from luce_ui import ui
+
+## Transform Components' numbers before Move/Copy's own.
+pub let transform_count = 15
+pub let pivot_slot = 9
+pub let pivot_point_slot = 10
+pub let copy_slot = 15
+pub let type_slot = 16
+pub let from_slot = 17
+pub let to_slot = 20
+pub let axis_slot = 23
+pub let angle_slot = 24
+## How many numbers a Move/Copy step or Move node holds.
+pub let move_count = 25
+## The text holding a picked rotate axis (an edge reference).
+pub let axis_text = 1
+
+pub func type_names() -> str:
+    return "Free move|Translate|Rotate|Point to point|Point to position"
+
+pub func axis_names() -> str:
+    return "X axis|Y axis|Z axis|Picked edge"
+
+## Move/Copy's starting numbers: nothing moved, about the selection's
+## middle, no copy, Free move, rotating about Y.
+pub func starting() -> list[float]:
+    let result = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0]
+    for _ in transform_count..<move_count:
+        result.append(0.0)
+    result[axis_slot] = 1.0
+    return result
+
+## Move/Copy's rows, Fusion's dialog, for Edit CAD's tool bar and the Move
+## node (whose Move object row comes first, cad_modify.luc).
+pub func rows() -> list[Parameter]:
+    let kind = menu("Move type", type_slot, type_names(), 0.0, "Free move: the gizmo's moves and turns. Translate: along X, Y and Z. Rotate: an angle about an axis. Point to point: from a picked point to another. Point to position: from a picked point to the coordinates typed.")
+    let translate = vector("Translate", 0, [0.0, 0.0, 0.0], "How far along X, Y and Z.", -100000.0, 100000.0)
+    translate.hide_when = "{ move_type > 1 }"
+    let turn = vector("Rotate", 3, [0.0, 0.0, 0.0], "Free move: the turn about X, then Y, then Z, in degrees, about the pivot.", -360.0, 360.0, suffix = "°")
+    turn.hide_when = "{ move_type != 0 }"
+    let axis = menu("Axis", axis_slot, axis_names(), 1.0, "Rotate: about the X, Y or Z axis through the pivot, or the line of an edge picked (Pick axis).")
+    axis.hide_when = "{ move_type != 2 }"
+    let angle = number("Angle", angle_slot, 0.0, -360.0, 360.0, 5.0, "Rotate: how far it turns.", suffix = "°")
+    angle.hide_when = "{ move_type != 2 }"
+    let pivot = menu("Pivot", pivot_slot, "Selection middle|Origin|Point", 0.0, "What Free move and Rotate turn about: the middle of what moves, the origin, or a point (Set pivot picks one).")
+    pivot.hide_when = "{ move_type == 1 } { move_type > 2 }"
+    let pivot_point = vector("Pivot point", pivot_point_slot, [0.0, 0.0, 0.0], "The point turned about.", -100000.0, 100000.0)
+    pivot_point.hide_when = "{ move_type == 1 } { move_type > 2 } { pivot != 2 }"
+    pivot_point.length = true
+    let origin = vector("From point", from_slot, [0.0, 0.0, 0.0], "The point that moves (Pick from point: a corner or an edge's end; a round edge's middle).", -100000.0, 100000.0)
+    origin.hide_when = "{ move_type < 3 }"
+    origin.length = true
+    let target = vector("To point", to_slot, [0.0, 0.0, 0.0], "Point to point: where it goes (Pick to point). Point to position: the coordinates it goes to.", -100000.0, 100000.0)
+    target.hide_when = "{ move_type < 3 }"
+    target.length = true
+    let copy = toggle("Create copy", copy_slot, 0.0, "Leave what is picked where it is and move a copy: of a body, or of faces as a surface body.")
+    return [kind, translate, turn, axis, angle, pivot, pivot_point, origin, target, copy]
+
+func at(numbers: list[float], slot: int) -> float:
+    return numbers[slot] if numbers.length > slot else 0.0
+
+func point(numbers: list[float], slot: int) -> Vector3:
+    return Vector3(at(numbers, slot), at(numbers, slot + 1), at(numbers, slot + 2))
+
+## The fifteen Transform Components numbers the step's Move type means.
+pub func effective(numbers: list[float]) -> list[float]!:
+    let result = numbers[..<transform_count] if numbers.length > transform_count else numbers.copy()
+    while result.length < transform_count:
+        result.append(0.0)
+    # CAD moves never scale.
+    for slot in 6..<9:
+        result[slot] = 1.0
+    let kind = int(at(numbers, type_slot))
+    if kind == 0:
+        return result
+    for slot in 0..<6:
+        result[slot] = 0.0
+    if kind == 1:
+        for slot in 0..<3:
+            result[slot] = numbers[slot]
+    elif kind == 2:
+        let axis = int(at(numbers, axis_slot))
+        if axis < 3:
+            result[3 + axis] = at(numbers, angle_slot)
+    else:
+        let by = point(numbers, to_slot).subtract(point(numbers, from_slot))
+        result[0] = by.x
+        result[1] = by.y
+        result[2] = by.z
+    return result
+
+## Whether the step turns about a picked edge's line.
+func about_edge(numbers: list[float]) -> bool:
+    return int(at(numbers, type_slot)) == 2 and int(at(numbers, axis_slot)) == 3
+
+## Move/Copy on `data`: what the step's group names on `shown`, moved as
+## its type says; with Create copy the originals stay and the copies are
+## added, named apart (`<tag>.copy<k>:`). Its handles: arrows along X, Y
+## and Z and rings about them at the pivot (Free move), the arrows
+## (Translate), or the ring about its axis (Rotate).
+pub func moved(step: EditStep, tag: str, data: GeometryData, shown: Mesh) -> GeometryData!:
+    let result = moved_models(step, tag, data, shown)
+    result.handles = handle_lines.encode(handles(step, shown, data.models()))
+    return result
+
+func moved_models(step: EditStep, tag: str, data: GeometryData, shown: Mesh) -> GeometryData!:
+    let numbers = effective(step.numbers)
+    let copying = at(step.numbers, copy_slot) != 0.0
+    let before = data.models()
+    let edge = step.text(axis_text).trim()
+    if about_edge(step.numbers) and edge == "":
+        error(ui.invalid, "Pick the edge to rotate about")
+    var after = before
+    if about_edge(step.numbers):
+        after = turned(step, before, shown, edge)
+    elif not copying:
+        return GeometryData(geometry = CadEdits.transformed_faces(data.geometry, shown, step.group, numbers))
+    if not copying:
+        return with_models(data, after)
+    # Copies: whole bodies as they were moved, faces copied as a surface
+    # body and placed by the same move.
+    let middle = cad_names.group_middle(shown, step.group)
+    let copies: list[CadModel] = []
+    var placed_after = after
+    if not about_edge(step.numbers):
+        placed_after = GeometryData(geometry = CadEdits.transformed_faces(data.geometry, shown, step.group, numbers)).models()
+    for index in 0..<before.length:
+        let share = CadEdits.model_share(shown, step.group, index)
+        let prefix = f"{tag}.copy{copies.length + 1}:"
+        if share == 2:
+            copies.append(CadModeling.prefixed(placed_after[index], prefix))
+        elif share == 1:
+            let faces = CadDirect.copied_faces(before[index], CadEdits.model_faces(shown, step.group, index), prefix)
+            if about_edge(step.numbers):
+                let line = edge_line(before, edge)
+                copies.append(CadModeling.moved_body(faces, Vector3(), line.origin, line.direction, radians(at(step.numbers, angle_slot))))
+            else:
+                copies.append(cad_names.placed_by(faces, numbers, middle))
+    if copies.length == 0:
+        error(ui.invalid, "Pick the bodies or faces to copy")
+    return with_models(data, before + copies)
+
+## The pivot the step turns about: the middle of what moves, the origin,
+## or its point.
+func pivot_of(numbers: list[float], shown: Mesh, group: str) -> Vector3!:
+    let mode = int(at(numbers, pivot_slot))
+    if mode == 1:
+        return Vector3()
+    if mode == 2:
+        return point(numbers, pivot_point_slot)
+    return cad_names.group_middle(shown, group)
+
+## The step's handles, where the move starts (cad_moves' slots).
+func handles(step: EditStep, shown: Mesh, models: list[CadModel]) -> list[HandleLine]!:
+    let numbers = step.numbers
+    let kind = int(at(numbers, type_slot))
+    if kind > 2:
+        return []
+    let pivot = pivot_of(numbers, shown, step.group)
+    let size = math.max(cad_names.group_radius(shown, step.group), 1.0)
+    let axes = [Vector3(1.0, 0.0, 0.0), Vector3(0.0, 1.0, 0.0), Vector3(0.0, 0.0, 1.0)]
+    let sides = [Vector3(0.0, 1.0, 0.0), Vector3(0.0, 0.0, 1.0), Vector3(1.0, 0.0, 0.0)]
+    let result: list[HandleLine] = []
+    if kind < 2:
+        for axis in 0..<3:
+            result.append(HandleLine("arrow", axis, 1.0, pivot, axes[axis], -1, Vector3()))
+    if kind == 0:
+        for axis in 0..<3:
+            result.append(HandleLine("angle", 3 + axis, 1.0, pivot, axes[axis], -1, sides[axis].multiply_scalar(size)))
+    if kind == 2:
+        let axis = int(at(numbers, axis_slot))
+        if axis < 3:
+            result.append(HandleLine("angle", angle_slot, 1.0, pivot, axes[axis], -1, sides[axis].multiply_scalar(size)))
+        elif step.text(axis_text).trim() != "":
+            let line = edge_line(models, step.text(axis_text).trim())
+            let across = line.direction.cross(Vector3(0.0, 1.0, 0.0) if math.abs(line.direction.y) < 0.9 else Vector3(1.0, 0.0, 0.0)).normalized()
+            result.append(HandleLine("angle", angle_slot, 1.0, line.origin, line.direction, -1, across.multiply_scalar(size)))
+    return result
+
+## The line of edge `edge` (a reference) on whichever model holds it.
+func edge_line(models: list[CadModel], edge: str) -> AxisLine!:
+    for model in models:
+        let found = CadModeling.edge_axis(model, edge) catch failure:
+            continue
+        if found.found:
+            return found
+    error(ui.invalid, "The edge to rotate about is gone: pick it again")
+
+## The models turned about edge `edge`'s line (Rotate about a picked
+## edge): whole ones placed, faces of the others turned with their
+## neighbors following.
+func turned(step: EditStep, models: list[CadModel], shown: Mesh, edge: str) -> list[CadModel]!:
+    let line = edge_line(models, edge)
+    let angle = radians(at(step.numbers, angle_slot))
+    let result: list[CadModel] = []
+    for index in 0..<models.length:
+        let share = CadEdits.model_share(shown, step.group, index)
+        if share == 0:
+            result.append(models[index])
+        elif share == 2:
+            result.append(CadModeling.moved_body(models[index], Vector3(), line.origin, line.direction, angle))
+        else:
+            result.append(CadDirect.rotated_faces(models[index], CadEdits.model_faces(shown, step.group, index), line.origin, line.direction, angle))
+    return result

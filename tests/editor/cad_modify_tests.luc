@@ -1,0 +1,328 @@
+## Stage 7 of the Fusion CAD plan (docs/research/FUSION-CAD-UX.md): the
+## Modify features as nodes in the chain, Shell, Move, Combine, Split Body,
+## Split Face, Replace Face, Delete Face and Remove, each keeping its faces
+## and bodies by name; made from the viewport's selection, waiting (no
+## badge) for what is not picked yet, and picked input by input.
+from app import Luce3D
+from workspace import Workspace
+from luce_3d.graphics import Vector3
+from luce_geocore.geocore import Mesh
+from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+from sketch_support import render
+from node import waiting
+import node_commands
+import selection_commands
+import tool_prompts
+import cad_modify
+import cad_moves
+import edit_cad_faces
+import handle_lines
+from luce_std import math
+
+pub func cad_modify_tests() -> unit!:
+    shelled_box()
+    moved_bodies_and_faces()
+    combined_and_split()
+    faces_split_replaced_deleted()
+    from_the_viewport()
+    print("PASS CAD Modify nodes: Shell Inside, Outside and Both (outer less inner, the top open) and closed, its arrows; Move by Translate, Rotate, Point to point, Point to position, faces moved and copied, bodies copied; Combine Join, Cut, Intersect, Keep tools, a wired tool; Split Body; Split Face, its pieces named apart; Replace Face onto another body's face; Delete Face healing a chamfer; Remove; a node waiting with no badge; Shell and Combine made from the viewport and picked input by input")
+
+## The tessellated volume of every model `id` makes.
+func volume(w: Workspace, id: int) -> float!:
+    let data = w.network.evaluate_data(id)
+    var total = 0.0
+    for model in data.models():
+        let mesh = model.tessellate(32)
+        for triangle in 0..<mesh.index_count() // 3:
+            let a = mesh.vertex(mesh.index(triangle * 3)).position
+            let b = mesh.vertex(mesh.index(triangle * 3 + 1)).position
+            let c = mesh.vertex(mesh.index(triangle * 3 + 2)).position
+            total += a.dot(b.cross(c)) / 6.0
+    return total
+
+func near(got: float, expected: float, what: str) -> unit!:
+    if math.abs(got - expected) > math.abs(expected) * 0.003 + 1e-6:
+        print(f"{what}: {got}, expected {expected}")
+        assert(false)
+
+func models(w: Workspace, id: int) -> list[CadModel]!:
+    return w.network.evaluate_data(id).models()
+
+## The face of `model` whose outward normal is `normal` (its middle at
+## `height` along it when given): its name.
+func face_facing(model: CadModel, normal: Vector3, height: float = 1.0e30) -> str!:
+    for face in 0..<model.face_count():
+        let name = CadModeling.face_name_of(model, face)
+        let at = CadModeling.face_point(model, name)
+        if at.found and at.normal.dot(normal) > 0.999 and (height > 1.0e29 or math.abs(at.point.dot(normal) - height) < 1e-6):
+            return name
+    return ""
+
+## A CAD node holding a 20 mm Solid Box; its id.
+func box(w: Workspace) -> int!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    return w.network.selected
+
+## `kind` added after the selected node; its id.
+func add(w: Workspace, kind: str) -> int!:
+    node_commands.add_node(w, kind, 0.0, 120.0)
+    return w.network.selected
+
+func body_box(model: CadModel) -> (Vector3, Vector3)!:
+    let b = model.tessellate(8).bounds()
+    return (b.minimum, b.maximum)
+
+## Shell of a 20 mm box with its top open: Inside 1 (outer less 18 × 19 ×
+## 18), Outside 1 (22 × 21 × 22 less the box), Both 1 in and 2 out; closed
+## (a void); its arrows; nothing picked: it waits, no badge.
+func shelled_box() -> unit!:
+    let w = Workspace()
+    let solid = box(w)
+    let top = face_facing(models(w, solid)[0], Vector3(0.0, 1.0, 0.0))
+    let shell = add(w, "Shell")
+    let node = w.network.require(shell)
+    # Nothing picked: a neutral wait, the box passing through.
+    _ = w.network.evaluate_data(shell)
+    near(volume(w, shell), 8000.0, "a Shell waiting passes its input")
+    assert(waiting(w.network.evaluate_data(shell).warning))
+    node_commands.set_text(w, cad_modify.first_text, top)
+    near(volume(w, shell), 8000.0 - 18.0 * 19.0 * 18.0, "Inside 1")
+    let arrows = handle_lines.parse(w.network.evaluate_data(shell).handles)
+    assert(arrows.length == 1 and arrows[0].kind == "arrow" and arrows[0].slot == edit_cad_faces.thickness_slot)
+    node_commands.set_parameter(w, edit_cad_faces.shell_side_slot, 1.0)
+    near(volume(w, shell), 22.0 * 21.0 * 22.0 - 8000.0, "Outside 1")
+    node_commands.set_parameter(w, edit_cad_faces.shell_side_slot, 2.0)
+    node_commands.set_parameter(w, edit_cad_faces.outside_slot, 2.0)
+    near(volume(w, shell), 24.0 * 22.0 * 24.0 - 18.0 * 19.0 * 18.0, "Both: 1 in, 2 out")
+    assert(handle_lines.parse(w.network.evaluate_data(shell).handles).length == 2)
+    # A whole body, nothing opened: a closed void (Inside).
+    node_commands.set_parameter(w, edit_cad_faces.shell_side_slot, 0.0)
+    node_commands.set_text(w, cad_modify.first_text, "")
+    node_commands.set_text(w, cad_modify.second_text, top)
+    near(volume(w, shell), 8000.0 - 18.0 * 18.0 * 18.0, "closed")
+    assert(node.kind == "Shell")
+
+## Move: the box translated, turned 90° about Z, by Point to point and Point
+## to position; Create copy; its top face moved up (faces); faces copied.
+func moved_bodies_and_faces() -> unit!:
+    let w = Workspace()
+    let solid = box(w)
+    let top = face_facing(models(w, solid)[0], Vector3(0.0, 1.0, 0.0))
+    let move = add(w, "Move")
+    node_commands.set_text(w, cad_modify.first_text, top)
+    node_commands.set_parameter(w, cad_moves.type_slot, 1.0)
+    node_commands.set_parameter(w, 0, 5.0)
+    let (low, high) = body_box(models(w, move)[0])
+    assert(math.abs(low.x + 5.0) < 1e-6 and math.abs(high.x - 15.0) < 1e-6)
+    # Translate leaves turns out; its arrows stand at the pivot.
+    node_commands.set_parameter(w, 3, 45.0)
+    let (low2, _) = body_box(models(w, move)[0])
+    assert(math.abs(low2.x + 5.0) < 1e-6)
+    assert(handle_lines.parse(w.network.evaluate_data(move).handles).length == 3)
+    # Rotate about Z, 90°: the box turned in place (about its middle).
+    node_commands.set_parameter(w, cad_moves.type_slot, 2.0)
+    node_commands.set_parameter(w, cad_moves.axis_slot, 2.0)
+    node_commands.set_parameter(w, cad_moves.angle_slot, 90.0)
+    let (low3, high3) = body_box(models(w, move)[0])
+    assert(math.abs(low3.x + 10.0) < 1e-6 and math.abs(high3.y - 10.0) < 1e-6)
+    # Point to point: the corner (10, 10, 10) to the origin.
+    node_commands.set_parameter(w, cad_moves.type_slot, 3.0)
+    for k in 0..<3:
+        node_commands.set_parameter(w, cad_moves.from_slot + k, 10.0)
+        node_commands.set_parameter(w, cad_moves.to_slot + k, 0.0)
+    let (_, high4) = body_box(models(w, move)[0])
+    assert(math.abs(high4.x) < 1e-6 and math.abs(high4.y) < 1e-6 and math.abs(high4.z) < 1e-6)
+    # Point to position: that corner to (30, 0, 0).
+    node_commands.set_parameter(w, cad_moves.type_slot, 4.0)
+    node_commands.set_parameter(w, cad_moves.to_slot, 30.0)
+    let (_, high5) = body_box(models(w, move)[0])
+    assert(math.abs(high5.x - 30.0) < 1e-6)
+    # Create copy: two bodies.
+    node_commands.set_parameter(w, cad_moves.copy_slot, 1.0)
+    assert(models(w, move).length == 2)
+    near(volume(w, move), 16000.0, "a moved copy")
+    # Faces: the top moved up 3, the sides following.
+    node_commands.set_parameter(w, cad_moves.copy_slot, 0.0)
+    node_commands.set_parameter(w, cad_modify.object_slot, 1.0)
+    node_commands.set_parameter(w, cad_moves.type_slot, 1.0)
+    node_commands.set_parameter(w, 0, 0.0)
+    node_commands.set_parameter(w, 1, 3.0)
+    near(volume(w, move), 8000.0 + 1200.0, "the top face moved up 3")
+    # Faces copied: the box as it was and the top as a surface body above.
+    node_commands.set_parameter(w, cad_moves.copy_slot, 1.0)
+    let copied = models(w, move)
+    assert(copied.length == 2 and copied[1].face_count() == 1)
+    let (low6, _) = body_box(copied[1])
+    assert(math.abs(low6.y - 13.0) < 1e-6)
+
+## Combine: the box and a copy 10 along X, Join (30 × 20 × 20), Cut,
+## Intersect, Keep tools; a tool wired to the second input; Split Body by
+## YZ; Remove.
+func combined_and_split() -> unit!:
+    let w = Workspace()
+    let solid = box(w)
+    let first = models(w, solid)[0]
+    let move = add(w, "Move")
+    node_commands.set_text(w, cad_modify.first_text, face_facing(first, Vector3(0.0, 1.0, 0.0)))
+    node_commands.set_parameter(w, cad_moves.type_slot, 1.0)
+    node_commands.set_parameter(w, 0, 10.0)
+    node_commands.set_parameter(w, cad_moves.copy_slot, 1.0)
+    let pair = models(w, move)
+    let combine = add(w, "Combine")
+    assert(waiting(w.network.evaluate_data(combine).warning))
+    node_commands.set_text(w, cad_modify.first_text, face_facing(pair[0], Vector3(0.0, 1.0, 0.0)))
+    assert(w.network.evaluate_data(combine).warning.contains("tool bodies"))
+    node_commands.set_text(w, cad_modify.second_text, face_facing(pair[1], Vector3(0.0, 1.0, 0.0)))
+    assert(models(w, combine).length == 1)
+    near(volume(w, combine), 12000.0, "Join")
+    node_commands.set_parameter(w, edit_cad_faces.combine_slot, 1.0)
+    near(volume(w, combine), 4000.0, "Cut")
+    node_commands.set_parameter(w, edit_cad_faces.combine_slot, 2.0)
+    near(volume(w, combine), 4000.0, "Intersect")
+    node_commands.set_parameter(w, edit_cad_faces.keep_tools_slot, 1.0)
+    assert(models(w, combine).length == 2)
+    near(volume(w, combine), 12000.0, "Intersect, the tool kept")
+    # Split Body by the YZ plane: two bodies of 4000 and 8000 (of the
+    # joined 30-long body from x -10 to 20).
+    node_commands.set_parameter(w, edit_cad_faces.keep_tools_slot, 0.0)
+    node_commands.set_parameter(w, edit_cad_faces.combine_slot, 0.0)
+    let joined = models(w, combine)[0]
+    let split = add(w, "Split Body")
+    node_commands.set_text(w, cad_modify.first_text, face_facing(joined, Vector3(0.0, 1.0, 0.0)))
+    assert(waiting(w.network.evaluate_data(split).warning))
+    node_commands.set_parameter(w, edit_cad_faces.split_tool_slot, 3.0)
+    let halves = models(w, split)
+    assert(halves.length == 2)
+    near(volume(w, split), 12000.0, "split, nothing lost")
+    # Remove one half.
+    let remove = add(w, "Remove")
+    # The half from x -10 to 0, by its end face (a name only it has).
+    var end = face_facing(halves[0], Vector3(-1.0, 0.0, 0.0), 10.0)
+    if end == "":
+        end = face_facing(halves[1], Vector3(-1.0, 0.0, 0.0), 10.0)
+    node_commands.set_text(w, cad_modify.first_text, end)
+    assert(models(w, remove).length == 1)
+    near(volume(w, remove), 8000.0, "the half from x -10 removed")
+    # A tool wired (Houdini's way): Combine with no target takes the
+    # chain's first body.
+    node_commands.add_node(w, "Solid Cylinder", 400.0, 0.0)
+    node_commands.set_parameter(w, 0, 2.0)
+    node_commands.set_parameter(w, 1, 40.0)
+    let pin = w.network.selected
+    node_commands.select_node(w, solid)
+    let drill = add(w, "Combine")
+    w.network.connect(pin, drill, 1)
+    node_commands.set_parameter(w, edit_cad_faces.combine_slot, 1.0)
+    near(volume(w, drill), 8000.0 - math.pi * 4.0 * 20.0, "a wired tool drills the box")
+
+## Split Face: the top split by the YZ plane (7 faces, the pieces named
+## apart); Replace Face: the top onto a
+## raised copy's top; Delete Face: a chamfer's face healed.
+func faces_split_replaced_deleted() -> unit!:
+    let w = Workspace()
+    let solid = box(w)
+    let top = face_facing(models(w, solid)[0], Vector3(0.0, 1.0, 0.0))
+    let split = add(w, "Split Face")
+    node_commands.set_text(w, cad_modify.first_text, top)
+    node_commands.set_parameter(w, edit_cad_faces.split_tool_slot, 3.0)
+    let cut = models(w, split)[0]
+    assert(cut.face_count() == 7)
+    near(volume(w, split), 8000.0, "a split face changes no volume")
+    var piece = ""
+    for face in 0..<cut.face_count():
+        let name = CadModeling.face_name_of(cut, face)
+        if name.contains("split["):
+            piece = name
+    # The pieces are named apart: the one on the plane's normal side
+    # (+X) is the split piece, the other keeps the top's name.
+    assert(piece != "" and face_facing(cut, Vector3(0.0, 1.0, 0.0)) != "")
+    let pick = CadModeling.face_point(cut, piece)
+    assert(pick.found and pick.point.x > 0.0)
+    # Replace Face: a copy raised 5; the box's top onto the copy's top.
+    node_commands.select_node(w, solid)
+    let raise = add(w, "Move")
+    node_commands.set_text(w, cad_modify.first_text, top)
+    node_commands.set_parameter(w, cad_moves.type_slot, 1.0)
+    node_commands.set_parameter(w, 1, 5.0)
+    node_commands.set_parameter(w, cad_moves.copy_slot, 1.0)
+    let copy = models(w, raise)[1]
+    let replace = add(w, "Replace Face")
+    node_commands.set_text(w, cad_modify.first_text, top)
+    assert(waiting(w.network.evaluate_data(replace).warning))
+    node_commands.set_text(w, cad_modify.second_text, face_facing(copy, Vector3(0.0, 1.0, 0.0)))
+    let replaced = models(w, replace)
+    let (_, high) = body_box(replaced[0])
+    assert(math.abs(high.y - 15.0) < 1e-6)
+    # Delete Face: a chamfered top edge's face healed back to the box.
+    node_commands.select_node(w, solid)
+    let chamfer = add(w, "Chamfer")
+    node_commands.set_text(w, 0, CadModeling.edge_references(models(w, solid)[0], [0]))
+    node_commands.set_parameter(w, 0, 2.0)
+    let chamfered = models(w, chamfer)[0]
+    var face = ""
+    for at in 0..<chamfered.face_count():
+        let name = CadModeling.face_name_of(chamfered, at)
+        if name.contains("blend[") and face == "":
+            face = name
+    let delete = add(w, "Delete Face")
+    node_commands.set_text(w, cad_modify.first_text, face)
+    assert(models(w, delete)[0].face_count() == chamfered.face_count() - 1)
+    near(volume(w, delete), 8000.0, "the chamfer healed")
+
+## Shell from the viewport: the box's top selected, Modify's Shell makes
+## the node with that face and opens its value box. Combine from nothing
+## selected waits for its target, then (by itself) its tools; picks go in
+## by name, Enter finishes, and the node shows no badge while it waits.
+func from_the_viewport() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    let solid = box(w)
+    render(editor)
+    selection_commands.set_mode(w, w.level_of(2))
+    let mesh = w.geometry else trap("no pick mesh")
+    let top = face_at_height(mesh, 10.0)
+    selection_commands.choose_component(w, top, false)
+    editor.panels.actions.refresh()
+    let shell = editor.panels.actions.cad_modify.command("Shell") else trap("Shell")
+    assert(shell.is_enabled())
+    shell.trigger()
+    let node = w.network.require(w.network.selected)
+    assert(node.kind == "Shell" and node.texts[0] != "" and node.inputs[0] == solid and w.ask_value)
+    near(volume(w, node.id), 8000.0 - 18.0 * 19.0 * 18.0, "Shell of the selected top")
+    # Combine with nothing selected: it waits for its target body.
+    w.ask_value = false
+    node_commands.select_node(w, solid)
+    node_commands.display_selected(w)
+    w.selection = none
+    render(editor)
+    let combine = editor.panels.actions.cad_modify.command("Combine") else trap("Combine")
+    combine.trigger()
+    let prompt = w.prompt else trap("Combine waits for its target")
+    assert(prompt.label == "Pick target body")
+    let made = w.network.require(prompt.node)
+    assert(made.kind == "Combine")
+    render(editor)
+    let picked = w.geometry else trap("the body to pick on")
+    selection_commands.choose_component(w, face_at_height(picked, 10.0), false)
+    # The target taken, the tools are asked for at once.
+    assert(made.texts[0] != "")
+    let next = w.prompt else trap("Combine then waits for its tools")
+    assert(next.label == "Pick tool bodies")
+    tool_prompts.accept_prompt(w)
+    assert(w.prompt == none)
+    editor.close()
+
+## The pick mesh's face whose every point is at height `y`, or -1.
+func face_at_height(mesh: Mesh, y: float) -> int!:
+    for face in 0..<mesh.face_count():
+        var level = true
+        for corner in 0..<mesh.face_size(face):
+            level = level and math.abs(mesh.point(mesh.face_point(face, corner)).y - y) < 1e-6
+        if level:
+            return face
+    return -1

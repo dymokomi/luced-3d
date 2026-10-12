@@ -18,9 +18,11 @@
 ##   CVs moved by the point verbs that keep topology, a moved boundary CV
 ##     re-projecting its trims (luce-cad);
 ##   luce-cad's analytic solids, created named.
-## The faces a step makes are named for its place in the recipe (`#s<n>`),
-## so later steps find them by name; a model whose faces have no names
-## (a STEP import) gets them when the recipe starts.
+## The faces a step makes are named for the node and the step's place in
+## the recipe (`#<node>s<n>`), so later steps find them by name and two Edit
+## CAD nodes in one chain never make the same names; a model whose faces
+## have no names (a STEP import) gets them when the recipe starts
+## (`#<node>m<i>`).
 from luce_geocore.geocore import Mesh, Verbs, Groups, Domain, GroupType, Vector3, Matrix4
 from luce_cad.cad_geometry import CadGeometry
 from luce_cad.cad_edits import CadEdits
@@ -31,7 +33,8 @@ import cad_nodes
 from geometry_data import GeometryData
 from edit_operations import EditStep
 from edit_types import EditKind, EditLevel, EditTool, object_level, point_level, edge_level, face_level, patch_level, missing
-from parameter_rows import Parameter, vector, toggle
+from parameter_rows import Parameter
+import cad_moves
 from tools import tool_run
 import edit_cad_sketches
 import edit_cad_faces
@@ -61,17 +64,19 @@ func levels() -> list[EditLevel]:
             EditLevel("Patch", "grid", Domain.face, GroupType.faces, patch_piece)]
 
 ## The tools on picked components: Move/Copy (the gizmo's step, its tool
-## bar: translation, rotation, Create copy), Delete (models go, faces heal),
-## Remove Faces, Offset Face, Replace Face, Shell, Combine and Split Body;
-## Fillet and Chamfer of edges; Noise, Flatten and Snap of CVs.
+## bar Fusion's dialog: cad_moves.luc), Delete (models go, faces heal),
+## Remove (bodies, as a step of its own), Remove Faces, Offset Face,
+## Replace Face, Split Face, Shell, Combine and Split Body; Fillet and
+## Chamfer of edges; Noise, Flatten and Snap of CVs.
 func tool_list() -> list[EditTool]:
     let result: list[EditTool] = []
-    result.append(EditTool("Move/Copy", "Transform Components", [object_level, face_level, patch_level], move_numbers(), move_rows()))
+    result.append(EditTool("Move/Copy", "Transform Components", [object_level, face_level, patch_level], cad_moves.starting(), cad_moves.rows()))
     let none_shown: list[Parameter] = []
     result.append(EditTool("Delete", "Delete", [object_level, face_level, patch_level], [0.0], none_shown))
+    result.append(EditTool("Remove", "Remove", [object_level], [0.0], none_shown))
     result.append(EditTool("Remove Faces", "Remove Faces", [face_level, patch_level], [0.0], none_shown))
-    result.append(EditTool("Replace Face", "Replace Face", [face_level, patch_level], [0.0], none_shown))
-    for (name, offered) in [("Offset Face", [face_level, patch_level]), ("Shell", [object_level, face_level, patch_level]), ("Combine", [object_level]), ("Split Body", [object_level])]:
+    for (name, offered) in [("Offset Face", [face_level, patch_level]), ("Replace Face", [face_level, patch_level]), ("Split Face", [face_level, patch_level]),
+                            ("Shell", [object_level, face_level, patch_level]), ("Combine", [object_level]), ("Split Body", [object_level])]:
         result.append(EditTool(name, name, offered))
     for (name, offered) in [("Noise", [cv_level]), ("Flatten", [cv_level]), ("Snap", [cv_level])]:
         let made = tool_run(name) else continue
@@ -79,19 +84,6 @@ func tool_list() -> list[EditTool]:
     for feature in edge_features():
         result.append(EditTool(feature, feature, [edge_level]))
     return result
-
-## Move/Copy's starting numbers: Transform Components' fifteen (nothing
-## moved, about the selection's middle), then Create copy.
-func move_numbers() -> list[float]:
-    return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0]
-
-## Move/Copy's tool bar, Fusion's dialog: X, Y and Z distances, the angles
-## about each axis (about the selection's middle), Create copy.
-func move_rows() -> list[Parameter]:
-    let distance = vector("Translate", 0, [0.0, 0.0, 0.0], "How far the bodies or faces move along X, Y and Z.", -100000.0, 100000.0)
-    let angle = vector("Rotate", 3, [0.0, 0.0, 0.0], "The turn about X, then Y, then Z, in degrees, about the selection's middle.", -360.0, 360.0, suffix = "°")
-    let copy = toggle("Create copy", edit_cad_faces.copy_slot, 0.0, "Bodies: leave them where they are and move copies of them.")
-    return [distance, angle, copy]
 
 ## The CAD nodes that are Edit CAD tools on picked edges.
 pub func edge_features() -> list[str]:
@@ -129,9 +121,9 @@ pub func edge_chain(mesh: Mesh, edge: int) -> str!:
 ## import's), and its sketches; other components pass through (with a
 ## warning when there are no models yet: create one, sketch, or connect
 ## CAD).
-func start(data: GeometryData) -> GeometryData!:
+func start(data: GeometryData, tag: str) -> GeometryData!:
     if data.has_cad():
-        return stated(GeometryData(geometry = CadEdits.named_models(data.geometry, "#m")))
+        return stated(GeometryData(geometry = CadEdits.named_models(data.geometry, f"{tag}m")))
     if data.instance_count() == 0 and data.mesh == none:
         return stated(data)
     return data.passed("The input has no CAD models; it passes through (create a solid, or connect CAD)")
@@ -157,38 +149,39 @@ pub func pick_mesh(data: GeometryData) -> Mesh!:
 
 ## Step number `at` of a recipe on `data`, with the model's sketches told
 ## to the editor (Node.sketch_state).
-func run(step: EditStep, at: int, data: GeometryData) -> GeometryData!:
-    return stated(ran(step, at, data))
+func run(step: EditStep, at: int, data: GeometryData, tag: str) -> GeometryData!:
+    return stated(ran(step, f"{tag}s{at}", data))
 
 ## `data` with its sketches as the editor reads them.
 func stated(data: GeometryData) -> GeometryData!:
     data.sketch_state = edit_cad_sketches.state_of(data)
     return data
 
-func ran(step: EditStep, at: int, data: GeometryData) -> GeometryData!:
+## `name` names what the step makes (`#<node>s<n>`).
+func ran(step: EditStep, name: str, data: GeometryData) -> GeometryData!:
     if step.verb.starts_with("Create "):
-        return created(step, at, data)
+        return created(step, name, data)
     if edit_cad_sketches.is_sketch_step(step.verb):
         return edit_cad_sketches.sketched(step, data)
     if edit_cad_sketches.is_feature_step(step.verb):
-        return edit_cad_sketches.featured(step, at, data)
+        return edit_cad_sketches.featured(step, name, data)
     if not data.has_cad():
         error(ui.invalid, "Edit CAD has no models to edit yet: create one, sketch and extrude, or connect CAD")
     if step.group_type == 1:
         return moved_cvs(step, data)
     let shown = edit_cad_faces.picked(step, data, pick_mesh)
     if step.verb in edge_features():
-        return featured(step, at, data, shown)
+        return featured(step, name, data, shown)
     if step.group_type == 2:
         error(ui.invalid, f"{step.verb} does not apply to CAD edges")
     if step.verb == "Transform Components" or step.verb in edit_cad_faces.face_verbs():
-        return edit_cad_faces.run_face_step(step, at, data, shown)
+        return edit_cad_faces.run_face_step(step, name, data, shown)
     error(ui.invalid, f"{step.verb} does not apply to CAD models or faces")
 
 ## A feature on picked edges, as its node makes it: each model with picked
 ## edges replaced by the feature on them (its new faces named for the
 ## step); the first one's radius arrow is the step's handle.
-func featured(step: EditStep, at: int, data: GeometryData, shown: Mesh) -> GeometryData!:
+func featured(step: EditStep, name: str, data: GeometryData, shown: Mesh) -> GeometryData!:
     var geometry = data.geometry
     var any = false
     var handles = ""
@@ -197,7 +190,7 @@ func featured(step: EditStep, at: int, data: GeometryData, shown: Mesh) -> Geome
         if edges == "":
             continue
         let body = GeometryData(geometry = CadGeometry.of_model(CadGeometry.model(data.geometry, index)))
-        let made = cad_nodes.evaluate_cad(step.verb, step.numbers, body, f"#s{at}.{index}", texts = [edges, "", ""])
+        let made = cad_nodes.evaluate_cad(step.verb, step.numbers, body, f"{name}.{index}", texts = [edges, "", ""])
         geometry = CadEdits.replaced(geometry, index, CadGeometry.model(made.geometry, 0))
         if handles == "":
             handles = made.handles
@@ -215,7 +208,7 @@ func moved_cvs(step: EditStep, data: GeometryData) -> GeometryData!:
     let before = CadGeometry.cv_cloud(data.geometry)
     if step.topology != 0 and step.topology != before.topology_hash():
         error(ui.invalid, "The CAD input's control vertices changed. Undo the upstream change or clear this node's edits.")
-    let numbers = step.numbers[..<edit_cad_faces.copy_slot] if step.numbers.length > edit_cad_faces.copy_slot else step.numbers
+    let numbers = step.numbers[..<cad_moves.transform_count] if step.numbers.length > cad_moves.transform_count else step.numbers
     let result = Verbs.run(step.verb, before, step.group, step.group_type, numbers, step.symmetry, step.keep)
     let made = GeometryData(geometry = CadGeometry.with_cv_cloud(data.geometry, before, result.mesh()))
     made.warning = result.warning()
@@ -236,15 +229,15 @@ func create(name: str) -> EditStep?!:
         sizes = [1.0, 0.3, 0.0]
     return EditStep("Create " + name, "", 0, sizes + [0.0, 0.0, 0.0], 0)
 
-## `data` with the solid of step number `at` added as a model of its own,
+## `data` with the solid of step `name` added as a model of its own,
 ## named for the step and selected as what was created.
-func created(step: EditStep, at: int, data: GeometryData) -> GeometryData!:
+func created(step: EditStep, tag: str, data: GeometryData) -> GeometryData!:
     let name = step.verb[7..]
     let v = step.numbers
     if v.length < 6:
         error(ui.invalid, f"{step.verb} needs six numbers")
     let index = CadGeometry.model_count(data.geometry)
-    let solid = CadModeling.tagged(solid_of(name, v), f"#s{at}")
+    let solid = CadModeling.tagged(solid_of(name, v), tag)
     let position = Vector3(v[3], v[4], v[5])
     let placed = solid if position.length() == 0.0 else solid.placed(Matrix4.compose(position, Vector3(), Vector3(1.0, 1.0, 1.0)))
     let result = GeometryData(geometry = CadEdits.with_model(data.geometry, placed))

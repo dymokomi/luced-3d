@@ -15,10 +15,12 @@ from workspace import Workspace
 from actions import Actions
 from parameter_rows import Parameter
 from shader_nodes import is_shader
-from node import Node
+from node import Node, waiting
 from shader_nodes import inputs as shader_inputs
 import node_catalog
 from edit_kinds import is_edit
+from edit_types import point_level
+import edit_cad
 from usd_nodes import Composition, compose_usd
 import node_commands
 import cad_nodes
@@ -28,6 +30,7 @@ from sketch_commands import SketchDimension
 import units
 from angles import radians, degrees
 import tool_prompts
+import modify_picks
 import cad_features
 import cad_blends
 
@@ -188,6 +191,9 @@ pub class Inspector:
             node_commands.set_text(self.workspace, cad_features.bodies_text, "")
         elif role == "pick_faces" or role == "pick_other_faces" or role == "pick_offset_faces":
             if let node = self.workspace.selected(): tool_prompts.pick_faces(self.workspace, node.id, 2 if role == "pick_other_faces" else (0 if role == "pick_offset_faces" else 1))
+        elif role.starts_with("modify_pick:"):
+            if let node = self.workspace.selected():
+                modify_picks.start(self.workspace, node.id, modify_picks.inputs(node.kind)[int(role[12..])])
         elif role == "reselect":
             if let node = self.workspace.selected(): tool_prompts.reselect(self.workspace, node.id)
         elif role == "keep_ids":
@@ -240,6 +246,10 @@ pub class Inspector:
             if let node = self.workspace.selected():
                 fields = fields + code_node.spare_rows(node)
         for row in fields:
+            if kind == edit_cad.kind_name and not self.cv_rows():
+                # Fusion's direct edits have no soft selection, symmetry or
+                # Keep selection: only Edit CAD's control vertices use them.
+                continue
             specs.append(row.spec(shown))
             self.rows.append(row)
             self.roles.append("ramp" if row.kind in ["ramp", "color_ramp"] else "text" if row.kind in ["text", "path"] else (("render" if row.name == "Render" else "reload") if row.kind == "button" else ("info" if row.kind == "info" else "value")))
@@ -298,6 +308,14 @@ pub class Inspector:
                                                    doc = "The faces moved, kept by their names (Press Pull on faces of the body)."))
             self.add(specs, "pick_offset_faces", ParameterSpec(name = "pick_offset_faces", label = "Pick faces", kind = ParameterKind.button,
                                                                doc = "Show the body and pick the faces to move (Shift adds); Enter accepts."))
+        # The Modify features' selection inputs (modify_picks.luc): what
+        # each holds, and its pick button.
+        let picks = modify_picks.inputs(kind)
+        for index in 0..<picks.length:
+            let input = picks[index]
+            self.add(specs, f"modify:{index}", ParameterSpec(name = f"picked_{index}", label = input.label, kind = ParameterKind.info, hide_when = input.hide_when, doc = input.doc))
+            self.add(specs, f"modify_pick:{index}", ParameterSpec(name = f"pick_{index}", label = "Set pivot" if input.label == "Pivot" else input.prompt(), kind = ParameterKind.button, hide_when = input.hide_when,
+                                                                 doc = f"Show the input body and {"click the point" if input.takes == modify_picks.point else "pick it"} in the viewport."))
         if kind == "Fillet":
             let between = "{ type != 1 } { rule == 0 }"
             self.add(specs, "center_face", ParameterSpec(name = "center_face", label = "Center face", kind = ParameterKind.info, hide_when = "{ type != 2 }",
@@ -347,6 +365,11 @@ pub class Inspector:
         self.rows.append(Parameter(spec.label, slot, 0.0))
         self.roles.append(role)
 
+    ## Whether Edit CAD shows the Edit framework's soft selection, symmetry
+    ## and Keep rows: only at its CVs level, the one level they act on.
+    func cv_rows(self) -> bool:
+        return self.workspace.level_index() == point_level
+
     pub func refresh(self) -> unit!:
         self.generic_rows.layout().set_visible(self.workspace.selected() != none)
         self.nothing.layout().set_visible(self.workspace.selected() == none)
@@ -354,7 +377,7 @@ pub class Inspector:
         let changed = node.id != self.showing
         let file = node.kind == "File"
         let format = node_catalog.file_format(node.texts[0]) if file else ""
-        let key = f"{node.kind}|{format}|{self.compose(node.texts, node.source_revision) if format == "usd" else ""}|{self.sketch_key(node.kind, node.texts[0])}|{node.texts[code_cook.spares_slot] + code_node.ramp_key(node) if node.kind in [code_cook.kind_name, script_cook.kind_name] else ""}|{self.workspace.network.units}"
+        let key = f"{node.kind}|{format}|{self.compose(node.texts, node.source_revision) if format == "usd" else ""}|{self.sketch_key(node.kind, node.texts[0])}|{node.texts[code_cook.spares_slot] + code_node.ramp_key(node) if node.kind in [code_cook.kind_name, script_cook.kind_name] else ""}|{self.workspace.network.units}|{self.cv_rows() if node.kind == edit_cad.kind_name else false}"
         if key != self.built:
             self.build(node.kind, node.texts[0])
             self.built = key
@@ -400,7 +423,7 @@ pub class Inspector:
         let network = self.workspace.network
         self.kind.set_text(node.kind + (" · output" if network.is_output(node.id) and not network.on_object_level(node.id) else "") + (" · displayed" if node.visible else "") + ("" if node.enabled else " · bypassed") + (" · frozen" if node.frozen != "" else ""))
         # One line: a message from code may hold line breaks or tabs.
-        self.description.set_text(one_line(node.failure if node.failure != "" else ("Warning: " + node.warning if node.warning != "" else node_catalog.description(node.kind))))
+        self.description.set_text(one_line(node.failure if node.failure != "" else ((node.warning if waiting(node.warning) else "Warning: " + node.warning) if node.warning != "" else node_catalog.description(node.kind))))
         self.description.layout().set_visible(not file or node.failure != "" or node.warning != "")
         self.parameters.layout().set_enabled(node.enabled or file)
         for index in 0..<self.rows.length:
@@ -460,6 +483,8 @@ pub class Inspector:
                 let text = node.texts[0 if role == "faces" else (1 if role == "rule_faces" else 2)]
                 let count = text.split(";").length
                 self.parameters.set_text(index, ("Any face" if role == "rule_others" else "None picked") if text.trim() == "" else ("1 face" if count == 1 else f"{count} faces"))
+            elif role.starts_with("modify:"):
+                self.parameters.set_text(index, modify_picks.summary(node, modify_picks.inputs(node.kind)[int(role[7..])]))
             elif role == "clear":
                 self.parameters.set_enabled(index, node.edits.length > 0)
             elif role == "keep_ids":

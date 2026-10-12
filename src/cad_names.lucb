@@ -1,0 +1,260 @@
+## Faces and bodies a CAD feature node keeps by name (Fusion's Shell,
+## Move, Combine, Split, Remove…: luce-cad's face names survive upstream
+## edits, polygon numbers do not), turned back into group expressions on
+## the pick mesh of the body the node cooks on (luce-cad's
+## CadEdits.pick_mesh: polygons tagged `cad_model`, `cad_face`,
+## `cad_face_name`). Edit CAD's steps take such groups, so a node runs the
+## same step code on what its names find. One pass over the polygons, in
+## Base.
+import interop
+import memory
+import strings
+from luce_std import math
+from luce_geocore.geocore import Mesh, Vector3, invalid
+from luce_geocore.kernel import group_bits_of, Domain, ComponentTransform
+from luce_cad.model import CadModel
+from luce_geocore.core.growing import Growing
+from luce_cad.modeling import names_meet
+
+## Whether face name `face` (several names apart by `|` on merged faces)
+## is one of `names` (apart by `;` outside brackets, as luce-cad's names
+## nest).
+func named(face: str, names: str) -> bool!:
+    if face.length == 0:
+        return false
+    let bytes = names.bytes
+    var start: usize = 0
+    var depth = 0
+    for at in 0..<names.length + 1:
+        if at < names.length:
+            if bytes[at] == (u8)'[':
+                depth += 1
+            elif bytes[at] == (u8)']':
+                depth -= 1
+            if bytes[at] != (u8)';' or depth > 0:
+                continue
+        let one = strings.trim((str)bytes[start..<at])
+        start = at + 1
+        if one.length > 0 and (try names_meet(face, one)):
+            return true
+    return false
+
+## Polygon runs (`0-5 12`) for the polygons where `wanted` is true; `!*`
+## (nothing) when there are none.
+func runs(wanted: const bool[]) -> interop.Owned[str]!:
+    var text = Growing[u8]()
+    defer text.close()
+    var at: usize = 0
+    while at < wanted.length:
+        if not wanted[at]:
+            at += 1
+            continue
+        var end = at
+        while end + 1 < wanted.length and wanted[end + 1]:
+            end += 1
+        if text.count > 0:
+            try text.push((u8)' ')
+        try push_number(&text, (i64)at)
+        if end > at:
+            try text.push((u8)'-')
+            try push_number(&text, (i64)end)
+        at = end + 1
+    if text.count == 0:
+        return try interop.copy_text("!*")
+    return try interop.copy_text((str)text.view())
+
+func push_number(text: Growing[u8]*, value: i64) -> !:
+    var buffer: u8[24] = ---
+    for c in try strings.format_i64(value, buffer[0..]):
+        try text.push((u8)c)
+
+## The polygons of `pick` on faces named in `names` (apart by `;`), as a
+## group; with `bodies`, every polygon of each model holding such a face
+## (a body kept by the name of one of its faces).
+pub func named_group(pick: interop.Reference[Mesh], names: str, bodies: bool = false) -> interop.Owned[str]!:
+    let mesh = try pick.get()
+    let texts = mesh.find_attribute("cad_face_name", 2)
+    let models = mesh.find_attribute("cad_model", 2)
+    if texts < 0 or models < 0:
+        error(invalid, "the body has no face names: make it inside a CAD node")
+    let count = (usize)mesh.face_count()
+    let wanted = try new bool[count] in memory.heap
+    defer free(wanted) in memory.heap
+    var held = Growing[i64]()
+    defer held.close()
+    for face in 0..<count:
+        let hit = try named(try mesh.attribute_text(texts, (i64)face), names)
+        wanted[face] = hit
+        if hit and bodies:
+            try held.push((i64)(try mesh.attribute_value(models, (i64)face)))
+    if bodies:
+        for face in 0..<count:
+            let model = (i64)(try mesh.attribute_value(models, (i64)face))
+            for m in held.view():
+                if m == model:
+                    wanted[face] = true
+                    break
+    return try runs(wanted)
+
+## The model of `pick` holding a face named `name` (one name), or -1.
+pub func model_named(pick: interop.Reference[Mesh], name: str) -> i64!:
+    let mesh = try pick.get()
+    let texts = mesh.find_attribute("cad_face_name", 2)
+    let models = mesh.find_attribute("cad_model", 2)
+    if texts < 0 or models < 0:
+        return -1
+    for face in 0..<mesh.face_count():
+        if try named(try mesh.attribute_text(texts, face), name):
+            return (i64)(try mesh.attribute_value(models, face))
+    return -1
+
+## The name of a face of model `model` of `pick`: how a feature keeps a
+## body ("" when its faces have no names).
+pub func model_name(pick: interop.Reference[Mesh], model: i64) -> interop.Owned[str]!:
+    let mesh = try pick.get()
+    let texts = mesh.find_attribute("cad_face_name", 2)
+    let models = mesh.find_attribute("cad_model", 2)
+    if texts >= 0 and models >= 0:
+        for face in 0..<mesh.face_count():
+            if (i64)(try mesh.attribute_value(models, face)) == model:
+                return try interop.copy_text(try mesh.attribute_text(texts, face))
+    return try interop.copy_text("")
+
+## The middle of the box round the polygons of face group `group` of
+## `pick`: Move's pivot when it is the selection's middle.
+pub func group_middle(pick: interop.Reference[Mesh], group: str) -> Vector3!:
+    let (low, high) = try group_box(pick, group)
+    return low.add(high).multiply_scalar(0.5)
+
+## Half the diagonal of that box: how large Move's handles are drawn.
+pub func group_radius(pick: interop.Reference[Mesh], group: str) -> f64!:
+    let (low, high) = try group_box(pick, group)
+    return high.subtract(low).length() * 0.5
+
+## The box round the polygons of face group `group` of `pick` (both
+## corners the origin when the group is empty).
+func group_box(pick: interop.Reference[Mesh], group: str) -> (Vector3, Vector3)!:
+    let mesh = try pick.get()
+    var bits = try group_bits_of(mesh, group, Domain.face)
+    defer bits.bits.release()
+    let words = bits.bits.view()
+    var low = Vector3(1e300, 1e300, 1e300)
+    var high = Vector3(-1e300, -1e300, -1e300)
+    var any = false
+    for face in 0..<mesh.face_count():
+        if (words[(usize)face >> 6] >> (u64)((usize)face & 63)) & 1 == 0: continue
+        for corner in 0..<try mesh.face_size(face):
+            let p = try mesh.point(try mesh.face_point(face, corner))
+            low = Vector3(math.min(low.x, p.x), math.min(low.y, p.y), math.min(low.z, p.z))
+            high = Vector3(math.max(high.x, p.x), math.max(high.y, p.y), math.max(high.z, p.z))
+            any = true
+    if not any:
+        return (Vector3(), Vector3())
+    return (low, high)
+
+## Where a click on mesh edge `edge` of `pick` (an Edges level pick) puts
+## a point, as Fusion's point picks snap: the end of its B-rep edge nearer
+## the click's edge, or a closed edge's (a circle's) middle.
+pub func edge_point(pick: interop.Reference[Mesh], edge: i64) -> Vector3!:
+    let mesh = try pick.get()
+    let owners = mesh.find_attribute("cad_edge", 4)
+    let models = mesh.find_attribute("cad_edge_model", 4)
+    if owners < 0 or models < 0:
+        error(invalid, "the body's edges have no tags: pick on a CAD body")
+    let owner = (i64)(try mesh.attribute_value(owners, edge))
+    let model = (i64)(try mesh.attribute_value(models, edge))
+    let clicked = try mesh.point(try mesh.edge_point(edge, 0)).add(try mesh.point(try mesh.edge_point(edge, 1))).multiply_scalar(0.5)
+    # Points of the B-rep edge's polyline, and how many of its pieces end
+    # at each: an end is used once.
+    var points = Growing[i64]()
+    defer points.close()
+    var uses = Growing[i64]()
+    defer uses.close()
+    for e in 0..<try mesh.edge_count():
+        if (i64)(try mesh.attribute_value(owners, e)) != owner or (i64)(try mesh.attribute_value(models, e)) != model: continue
+        for end in 0..<2:
+            let p = try mesh.edge_point(e, (i64)end)
+            var found = false
+            for at in 0..<points.count:
+                if points.items[at] == p:
+                    uses.items[at] += 1
+                    found = true
+                    break
+            if not found:
+                try points.push(p)
+                try uses.push(1)
+    var best = Vector3()
+    var nearest = 1e300
+    var sum = Vector3()
+    for at in 0..<points.count:
+        let p = try mesh.point(points.items[at])
+        sum = sum.add(p)
+        if uses.items[at] != 1: continue
+        let d = p.subtract(clicked).length()
+        if d < nearest:
+            nearest = d
+            best = p
+    if nearest < 1e300:
+        return best
+    return sum.multiply_scalar(1.0 / (f64)points.count)
+
+## `model` placed whole by Transform Components' numbers (Move/Copy's:
+## translation, the turn about X, Y, Z in degrees, the pivot) about
+## `middle` when the pivot is the selection's: a copy of faces moved as a
+## body of its own.
+pub func placed_by(model: interop.Reference[CadModel], numbers: const f64[], middle: Vector3) -> interop.Reference[CadModel]!:
+    let transform = try ComponentTransform.of(numbers, middle)
+    return try model.value().placed(transform.matrix(transform.translation))
+
+## One face name for each model face group `group` of `pick` touches,
+## apart by `;`: the bodies a pick at the Object level (or of any of their
+## faces) chose, as a feature keeps them. The name is one no other model
+## has (two pieces of a split body share the split face's name), so it
+## finds that body alone.
+pub func model_names(pick: interop.Reference[Mesh], group: str) -> interop.Owned[str]!:
+    let mesh = try pick.get()
+    let texts = mesh.find_attribute("cad_face_name", 2)
+    let models = mesh.find_attribute("cad_model", 2)
+    if texts < 0 or models < 0:
+        return try interop.copy_text("")
+    var bits = try group_bits_of(mesh, group, Domain.face)
+    defer bits.bits.release()
+    let words = bits.bits.view()
+    var seen = Growing[i64]()
+    defer seen.close()
+    var joined = Growing[u8]()
+    defer joined.close()
+    for face in 0..<mesh.face_count():
+        if (words[(usize)face >> 6] >> (u64)((usize)face & 63)) & 1 == 0: continue
+        let model = (i64)(try mesh.attribute_value(models, face))
+        var known = false
+        for other in seen.view(): known = known or other == model
+        if known: continue
+        try seen.push(model)
+        let name = try unique_name(mesh, texts, models, model)
+        if name.length == 0: continue
+        if joined.count > 0: try joined.push((u8)';')
+        for c in name.bytes: try joined.push(c)
+    return try interop.copy_text((str)joined.view())
+
+## A face name of model `model` that no other model's face has; else its
+## first name ("" without names).
+func unique_name(mesh: const Mesh*, texts: i64, models: i64, model: i64) -> str!:
+    var first = ""
+    var tried = ""
+    for face in 0..<mesh.face_count():
+        if (i64)(try mesh.attribute_value(models, face)) != model: continue
+        let name = try mesh.attribute_text(texts, face)
+        # A face's polygons come together: its name is tried once.
+        if name.length == 0 or name == tried: continue
+        tried = name
+        if first.length == 0: first = name
+        var shared = false
+        for other in 0..<mesh.face_count():
+            if (i64)(try mesh.attribute_value(models, other)) == model: continue
+            if try names_meet(try mesh.attribute_text(texts, other), name):
+                shared = true
+                break
+        if not shared:
+            return name
+    return first

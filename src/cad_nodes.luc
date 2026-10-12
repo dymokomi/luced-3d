@@ -17,6 +17,7 @@ import handle_lines
 import cad_features
 import extrude_inputs
 import cad_blends
+import cad_modify
 from cad_blends import BlendMemo
 from angles import radians
 
@@ -26,16 +27,12 @@ pub func solid_kinds() -> list[str]:
 
 ## Nodes only a CAD node holds.
 pub func cad_only_kinds() -> list[str]:
-    return [sketch_node.kind_name, "Extrude", "Revolve", "Offset Face", "Boolean", "Fillet", "Chamfer", "Mirror Body", "Pattern"] + solid_kinds()
+    return [sketch_node.kind_name, "Extrude", "Revolve", "Offset Face", "Fillet", "Chamfer"] + cad_modify.kinds() + ["Mirror Body", "Pattern"] + solid_kinds()
 
-## Edit CAD's direct modeling steps that are not nodes (yet): their rows
-## are node_catalog's, as a node's would be.
-pub func direct_step_kinds() -> list[str]:
-    return ["Shell", "Combine", "Split Body"]
-
-## Features with a second input (Boolean's tool, Extrude's target bodies).
+## Features with a second input (Combine's tool bodies, Extrude's target
+## bodies).
 pub func two_inputs(kind: str) -> bool:
-    return kind in ["Extrude", "Revolve", "Boolean"]
+    return kind in ["Extrude", "Revolve", "Combine"]
 
 pub func is_cad_only(kind: str) -> bool:
     return kind in cad_only_kinds()
@@ -66,7 +63,7 @@ pub func cad_categories() -> list[str]:
 pub func cad_category(kind: str) -> str:
     if kind == sketch_node.kind_name:
         return "Sketch"
-    if kind in ["Boolean", "Fillet", "Chamfer", "Offset Face", "Mirror Body", "Pattern"]:
+    if kind in ["Fillet", "Chamfer", "Offset Face", "Mirror Body", "Pattern"] or kind in cad_modify.kinds():
         return "Modify"
     if is_cad_only(kind):
         return "Create"
@@ -178,6 +175,8 @@ pub func evaluate_cad(kind: str, v: list[float], data: GeometryData, tag: str, s
         if at.found:
             result.handles = handle_lines.encode([HandleLine("arrow", 0, 1.0, at.point, at.normal, -1, Vector3())])
         return result
+    if kind in cad_modify.kinds():
+        return cad_modify.evaluate(kind, v, t, data, tag, second)
     if kind == "Fillet" or kind == "Chamfer":
         return cad_blends.blended(kind, v, t, body_of(data, "first"), tag, memo)
     if kind == "Mirror Body":
@@ -213,9 +212,6 @@ pub func evaluate_cad(kind: str, v: list[float], data: GeometryData, tag: str, s
         if v[5] != 0.0:
             return separate
         return GeometryData(geometry = CadGeometry.of_model(result))
-    if kind == "Boolean":
-        let tool = second else error(ui.invalid, "Connect the tool body to the second input")
-        return GeometryData(geometry = CadGeometry.of_model(CadModeling.combined(body_of(data, "first"), body_of(tool, "second"), int(v[0]))))
     error(ui.invalid, f"{kind} is not a CAD feature")
 
 ## Extrude or Revolve (cad_features.luc) from the nearest sketch upstream's

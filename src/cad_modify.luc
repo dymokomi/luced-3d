@@ -1,0 +1,148 @@
+## Fusion 360's Modify features on bodies and faces as CAD nodes in the
+## chain (the timeline): Shell, Move, Combine, Split Body, Split Face,
+## Replace Face, Delete Face and Remove. Each keeps the faces and bodies it
+## works on by luce-cad's face names (a body by the name of one of its
+## faces), so they hold as the chain upstream changes; at each cook the
+## names become groups on its input's pick geometry (cad_names.lucb) and the
+## node runs Edit CAD's own step on them (edit_cad_faces.luc,
+## cad_moves.luc): the node and the direct-modeling step are one code.
+## A node with nothing picked yet waits (a neutral "Pick …"), showing its
+## input; a name no longer found upstream is an error saying so.
+from luce_cad.cad_geometry import CadGeometry
+from geometry_data import GeometryData
+from luce_geocore.geocore import Mesh
+from edit_operations import EditStep
+from luce_cad.cad_edits import CadEdits
+import edit_cad_faces
+import cad_moves
+import cad_names
+from luce_ui import ui
+
+## The Modify features this module makes.
+pub func kinds() -> list[str]:
+    return ["Shell", "Move", "Combine", "Split Body", "Split Face", "Replace Face", "Delete Face", "Remove"]
+
+## The verb of Edit CAD's step each runs.
+pub func verb_of(kind: str) -> str:
+    if kind == "Move": return "Transform Components"
+    if kind == "Delete Face": return "Delete"
+    return kind
+
+# -- Texts: what each node keeps by name.
+
+## Shell: the faces opened; bodies hollowed closed. Move: what moves (faces
+## or bodies, by Move object), then a picked rotate axis. Combine: the
+## target body (none, with a second input wired: the chain's first body),
+## then the tool bodies (the second input's are tools too). Split Body: the bodies, then the
+## splitting face. Split Face, Replace Face: the faces, then the splitting
+## face or target faces. Delete Face: the faces. Remove: the bodies.
+pub let first_text = 0
+pub let second_text = 1
+## Move's Move object (0 bodies, 1 faces), after Move/Copy's numbers.
+pub let object_slot = 25
+
+## Whether text `slot` of `kind` holds bodies (each by one face's name).
+pub func holds_bodies(kind: str, slot: int, values: list[float]) -> bool:
+    if kind == "Move":
+        return slot == first_text and int(values[object_slot]) == 0
+    if kind == "Combine":
+        return true
+    if kind == "Shell":
+        return slot == second_text
+    return slot == first_text and kind in ["Split Body", "Remove"]
+
+## What node `kind` waits for (a "Pick …" prompt), or "" when it has what
+## it needs.
+pub func waits_for(kind: str, v: list[float], t: list[str], wired: bool) -> str:
+    let first = t[first_text].trim() == ""
+    let second = t[second_text].trim() == ""
+    if kind == "Shell" and first and second:
+        return "Pick the faces to remove, or a body to hollow"
+    if kind == "Move" and first:
+        return "Pick the bodies or faces to move"
+    if kind == "Combine":
+        if first and not wired:
+            return "Pick the target body"
+        if second and not wired:
+            return "Pick the tool bodies"
+    if kind == "Split Body":
+        if first:
+            return "Pick the body to split"
+        if second and int(v[edit_cad_faces.split_tool_slot]) == 0:
+            return "Pick the splitting face, or choose an origin plane"
+    if kind == "Split Face":
+        if first:
+            return "Pick the faces to split"
+        if second and int(v[edit_cad_faces.split_tool_slot]) == 0:
+            return "Pick the splitting face, or choose an origin plane"
+    if kind == "Replace Face":
+        if first:
+            return "Pick the faces to replace"
+        if second:
+            return "Pick the target faces"
+    if kind == "Delete Face" and first:
+        return "Pick the faces to delete"
+    if kind == "Remove" and first:
+        return "Pick the bodies to remove"
+    if kind == "Move" and int(v[cad_moves.type_slot]) == 2 and int(v[cad_moves.axis_slot]) == 3 and second:
+        return "Pick the edge to rotate about"
+    return ""
+
+## Node `kind`'s result on `data` (the bodies down the chain; a Combine's
+## second input brings more tool bodies), its faces named for `tag`.
+pub func evaluate(kind: str, v: list[float], t: list[str], data: GeometryData, tag: str, second: GeometryData?) -> GeometryData!:
+    var input = data
+    var wired = 0
+    if let more = second:
+        if kind == "Combine":
+            wired = CadGeometry.model_count(more.geometry)
+            input = data.merged(more)
+    let waiting = waits_for(kind, v, t, wired > 0)
+    if waiting != "":
+        return data.passed(waiting)
+    if CadGeometry.model_count(input.geometry) == 0:
+        error(ui.invalid, f"{kind} works on bodies: the chain brings none here")
+    let shown = CadEdits.pick_mesh(input.geometry)
+    var group = ""
+    var texts = ["", ""]
+    if kind == "Shell":
+        group = joined([found(shown, t[first_text], false), found(shown, t[second_text], true)])
+    elif kind == "Combine":
+        # Wired, with no target picked: the chain's first body is it.
+        group = found(shown, t[first_text], true) if t[first_text].trim() != "" else "@cad_model=0"
+        let tools: list[str] = []
+        if t[second_text].trim() != "":
+            tools.append(found(shown, t[second_text], true))
+        let count = CadGeometry.model_count(input.geometry)
+        for index in count - wired..<count:
+            tools.append(f"@cad_model={index}")
+        texts = [joined(tools), ""]
+    elif kind == "Move":
+        group = found(shown, t[first_text], int(v[object_slot]) == 0)
+        texts = ["", t[second_text]]
+    else:
+        group = found(shown, t[first_text], holds_bodies(kind, first_text, v))
+        texts = [t[second_text], ""]
+    let numbers = v[..<cad_moves.move_count] if kind == "Move" else v[..<8]
+    let step = EditStep(verb_of(kind), group, 3, numbers, 0, texts = texts)
+    let result = edit_cad_faces.run_face_step(step, tag, input, shown)
+    result.created = ""
+    return result
+
+## The group of what `names` find on `shown` (bodies: whole models); an
+## error when names were given and none is found upstream any more.
+func found(shown: Mesh, names: str, bodies: bool) -> str!:
+    if names.trim() == "":
+        return ""
+    let group = cad_names.named_group(shown, names, bodies)
+    if group == "!*":
+        error(ui.invalid, "The faces or bodies this feature refers to are gone upstream: pick them again")
+    return group
+
+## Groups united (Houdini's syntax: apart by spaces); empty ones left out.
+func joined(groups: list[str]) -> str:
+    let kept: list[str] = []
+    for group in groups:
+        if group != "":
+            kept.append(group)
+    return kept.join(" ")
