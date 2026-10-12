@@ -71,13 +71,18 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
 4. Choose Polygons (**2**), then click a face. Shift-click adds/removes components,
    Ctrl/Cmd-click takes one away, and a click on empty space clears them. Drag a
    box to select the points inside it, or the edges and faces it touches (only
-   what shows); Shift adds, Ctrl/Cmd takes away. At Object (**1**) a click or a
+   what shows; **V**, or the button beside the levels, selects through the
+   depth, hidden and back-facing ones too); Shift adds, Ctrl/Cmd takes away, and
+   a plain box over nothing clears the selection. At Object (**1**) a click or a
    box selects whole pieces.
    Press **E** or click Extrude. Repeat to keep extending the selected cap.
 5. Set **Next distance** before extrusion; **Last distance** changes the most
    recent extrusion. The Edit node lists the operations it owns.
 6. Choose Move (**M**) and drag an XYZ handle to move selected points, edges or
    faces. **Q** returns to selection; **1–5** change the selection level.
+   With nothing selected there is nothing to move: Move, Rotate, Scale and the
+   Manipulator leave the tool column (W, E, R, T do nothing) and come back,
+   still chosen, with the next selection.
 7. **Cmd/Ctrl-Z** undoes; **Cmd/Ctrl-Shift-Z** redoes. A scrub or handle drag is
    one step; Escape cancels a handle or node drag.
 
@@ -86,8 +91,8 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
 - Middle-drag or Space-drag pans. Touchpad scrolling pans; the mouse wheel,
   Cmd/Ctrl-scroll and pinch zoom around the pointer.
 - Drag on empty space to box the nodes and wires it touches; Shift adds,
-  Ctrl/Cmd takes away, and a click on empty space selects nothing (Parameters
-  then shows nothing). Click a wire to pick it (Shift adds); Delete/Backspace
+  Ctrl/Cmd takes away, and a click or a plain box on empty space selects nothing
+  (Parameters then shows nothing). Click a wire to pick it (Shift adds); Delete/Backspace
   removes the picked wires and nodes in one undo step. Hold **Y** and drag
   across wires to cut them.
 - Drag node bodies to move them. Home or **Frame nodes** fits the network.
@@ -181,7 +186,8 @@ Maya-style: **Alt-left-drag** orbits, **Alt-middle-drag** pans, and
 orbit, **Shift** with two fingers pans, and a pinch zooms; a mouse wheel zooms.
 Ordinary left-click is reserved for tools and selection: at the Object level a
 click picks an object, a drag every object the box touches (hidden ones too, as
-Houdini does), and a click on empty space selects nothing. Navigation never
+Houdini does), and a click or a plain box on empty space selects nothing
+(Shift or Ctrl/Cmd boxes over nothing change nothing). Navigation never
 changes the selection.
 **F** frames the displayed geometry; **G** toggles the grid. Component picking
 ignores occluded points, edges and faces, with orange hover previews before

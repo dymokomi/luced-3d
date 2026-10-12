@@ -243,9 +243,10 @@ pub func main(arguments: list[str]) -> int!:
         node_commands.set_text(w, 0, CadModeling.edge_references(body, edges))
         w.frame_cube()
         editor.panels.refresh()
-    if arguments.length > 1 and arguments[1] == "cad_sketch":
+    if arguments.length > 1 and arguments[1] in ["cad_sketch", "sketch_marquee"]:
         # A Sketch node edited on the ground: a 40 x 20 mm plate, a 10 mm
-        # hole, the plate's width dimensioned, A held (the Create menu).
+        # hole, the plate's width dimensioned, A held (the Create menu); or
+        # boxed at the Lines level (sketch_marquee).
         let w = editor.workspace
         node_commands.delete_selected(w)
         node_commands.add_node(w, "CAD", 40.0, 40.0)
@@ -264,9 +265,12 @@ pub func main(arguments: list[str]) -> int!:
         w.view.target = Vector3(20.0, 0.0, 8.0)
         w.view.update_camera()
         editor.panels.view.sketch.editor.sync()
-        editor.panels.view.sketch.editor.selection = [9]
+        if arguments[1] == "sketch_marquee":
+            selection_commands.set_mode(w, 2)
+        else:
+            editor.panels.view.sketch.editor.selection = [9]
         editor.panels.refresh()
-        if arguments.length > 10 and arguments[9] == "0.0":
+        if arguments[1] == "cad_sketch" and arguments.length > 10 and arguments[9] == "0.0":
             editor.app.layout(2200.0, 1400.0)
             let area = editor.panels.view.layout().bounds()
             editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + area.width * 0.6, y = area.y + area.height * 0.5))
@@ -635,7 +639,7 @@ pub func main(arguments: list[str]) -> int!:
             node_commands.set_parameter(w, 9, 1.0)
         node_commands.leave_group(w)
         editor.panels.refresh()
-    if arguments.length > 1 and arguments[1] in ["marquee_components", "marquee_objects", "marquee_network", "nothing_selected"]:
+    if arguments.length > 1 and arguments[1] in ["marquee_components", "marquee_objects", "marquee_network", "nothing_selected", "through_depth", "sketch_marquee"]:
         setup_selection(editor, arguments[1])
     var frames = 0
     var computing_frames = 0
@@ -764,7 +768,7 @@ pub func main(arguments: list[str]) -> int!:
             if elapsed * 1000.0 > frame_worst: frame_worst = elapsed * 1000.0
         if frames == 2 and arguments.length > 1 and arguments[1].starts_with("param_"):
             probe_parameters(editor, arguments[1])
-        if frames in [3, 4] and arguments.length > 1 and arguments[1] in ["marquee_components", "marquee_objects", "marquee_network", "nothing_selected"]:
+        if frames in [3, 4] and arguments.length > 1 and arguments[1] in ["marquee_components", "marquee_objects", "marquee_network", "nothing_selected", "through_depth", "sketch_marquee"]:
             drive_selection(editor, arguments[1], frames)
         if frames == 2:
             editor.panels.graph.frame_all()
@@ -827,16 +831,19 @@ pub func main(arguments: list[str]) -> int!:
     return 0
 
 ## The marquee captures' scenes: an Edit Mesh on a sphere at the Point
-## level; three objects at the root; Cube → Transform → Null beside a Sphere
-## in the network; or the root's objects, about to be clicked away.
+## level (at the Faces level for through_depth); three objects at the root;
+## Cube → Transform → Null beside a Sphere in the network; or the root's
+## objects, about to be clicked away (sketch_marquee's is cad_sketch's).
 func setup_selection(editor: Luce3D, scene: str) -> unit!:
     let w = editor.workspace
-    if scene == "marquee_components":
+    if scene == "sketch_marquee":
+        return
+    if scene in ["marquee_components", "through_depth"]:
         node_commands.delete_selected(w)
         node_commands.add_node(w, "Sphere", 40.0, 40.0)
         node_commands.set_parameter(w, 1, 24.0)
         node_commands.add_node(w, "Edit Mesh", 40.0, 140.0)
-        selection_commands.set_mode(w, 1)
+        selection_commands.set_mode(w, 1 if scene == "marquee_components" else 3)
     elif scene == "marquee_network":
         node_commands.add_node(w, "Transform", 40.0, 130.0)
         node_commands.add_node(w, "Null", 40.0, 220.0)
@@ -874,6 +881,26 @@ func drive_selection(editor: Luce3D, scene: str, frame: int) -> unit!:
         else:
             let end = graph.to_screen(transform.x + 140.0, transform.y + 140.0)
             press(editor, area.x + start.x, area.y + start.y, area.x + end.x, area.y + end.y, false, shift = true)
+    elif scene == "through_depth":
+        # V, then a box over the sphere's left half takes its faces through
+        # to the back; the view then looks down to show the band front to back.
+        if frame == 3:
+            editor.panels.actions.through_depth.trigger()
+            # The capture ends on a notice: this one is expected.
+            w.notice = ""
+            let middle = project(w, Vector3(), area.width, area.height)
+            press(editor, area.x + middle[0] - 200.0, area.y + middle[1] - 200.0, area.x + middle[0] - 40.0, area.y + middle[1] + 200.0, true)
+        else:
+            w.view.pitch = 1.35
+            w.view.update_camera()
+    elif scene == "sketch_marquee":
+        # A box over the plate's right corner takes the two sides it meets;
+        # then a Shift box held over the hole.
+        let frame_of = editor.panels.view.sketch.editor.frame
+        let a = project(w, frame_of.at(30.0, -26.0) if frame == 3 else frame_of.at(4.0, -3.0), area.width, area.height)
+        let b = project(w, frame_of.at(50.0, -14.0) if frame == 3 else frame_of.at(20.0, -13.0), area.width, area.height)
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + a[0], y = area.y + a[1]))
+        press(editor, area.x + a[0], area.y + a[1], area.x + b[0], area.y + b[1], frame == 3, shift = frame == 4)
     elif scene == "marquee_components":
         let middle = project(w, Vector3(), area.width, area.height)
         if frame == 3:
@@ -891,9 +918,11 @@ func drive_selection(editor: Luce3D, scene: str, frame: int) -> unit!:
         else:
             press(editor, area.x + third[0] - 80.0, area.y + third[1] - 90.0, area.x + third[0] + 90.0, area.y + third[1] + 80.0, false, shift = true)
     elif frame == 3:
-        # Pick the middle object, then click empty space above them all.
+        # Pick the middle object and choose Move, then click empty space
+        # above them all.
         let middle = project(w, Vector3(3.0, 0.0, 0.0), area.width, area.height)
         press(editor, area.x + middle[0], area.y + middle[1], area.x + middle[0], area.y + middle[1], true)
+        modeling_commands.choose_tool(w, "Move")
     else:
         let above = project(w, Vector3(3.0, 4.0, 0.0), area.width, area.height)
         press(editor, area.x + above[0], area.y + above[1], area.x + above[0], area.y + above[1], true)

@@ -45,8 +45,9 @@ pub class Actions:
     ## The splat brush's radius ([ and ]).
     pub let smaller_brush: Command
     pub let larger_brush: Command
-    ## Edit GSplats: select only the splats seen, or through the depth (V).
-    pub let visible_splats: Command
+    ## Boxes select through the depth, or only what shows (V): components,
+    ## and Edit GSplats' splats.
+    pub let through_depth: Command
     ## The timeline's (timeline_pane.luc connects them): ↑ play or stop,
     ## ←/→ a frame back or on, ↓ the range's first frame.
     pub let play: Command
@@ -166,11 +167,11 @@ pub class Actions:
         self.larger_brush = Command("Larger brush", Shortcut(Key.right_bracket), id = "larger_brush")
         self.connections.append(self.smaller_brush.on_trigger(func (): modeling_commands.scale_brush(workspace, 0.8)))
         self.connections.append(self.larger_brush.on_trigger(func (): modeling_commands.scale_brush(workspace, 1.25)))
-        self.visible_splats = Command("Select visible splats only", Shortcut(Key.v), id = "visible_splats")
-        self.connections.append(self.visible_splats.on_trigger(func (): modeling_commands.toggle_visible_splats(workspace)))
+        self.through_depth = Command("Select through the depth", Shortcut(Key.v), id = "select_through_depth", icon = "ghosted")
+        self.connections.append(self.through_depth.on_trigger(func (): modeling_commands.toggle_through_depth(workspace)))
         for kind in kinds():
             self.add.append(Command(kind, id = "add_" + kind, icon = asset_name(kind)))
-        self.all = [self.undo, self.redo, self.frame, self.grid, self.hulls, self.display, self.parent, self.add_node, self.set_output, self.frame_nodes, self.group, self.enabled, self.freeze, self.play, self.play_backwards, self.previous_frame, self.next_frame, self.first_frame, self.last_frame, self.looping, self.delete, self.rename, self.extrude, self.clear_edits, self.select_all, self.smaller_brush, self.larger_brush, self.visible_splats] + self.add + self.modes + self.context_modes + self.tools + self.modeling + self.create + self.selection_tools
+        self.all = [self.undo, self.redo, self.frame, self.grid, self.hulls, self.display, self.parent, self.add_node, self.set_output, self.frame_nodes, self.group, self.enabled, self.freeze, self.play, self.play_backwards, self.previous_frame, self.next_frame, self.first_frame, self.last_frame, self.looping, self.delete, self.rename, self.extrude, self.clear_edits, self.select_all, self.smaller_brush, self.larger_brush, self.through_depth] + self.add + self.modes + self.context_modes + self.tools + self.modeling + self.create + self.selection_tools
         self.all += [self.new_project, self.open_project, self.save, self.save_as, self.project_settings, self.reset_layout]
         self.refresh()
 
@@ -223,6 +224,11 @@ pub class Actions:
         let selecting = w.selecting()
         self.extrude.set_enabled(selecting and w.on_domain(Domain.face) and w.tool_available("Extrude"))
         self.select_all.set_enabled(selecting)
+        # Where pick geometry hides inside surfaces (Edit SDF) boxes always
+        # select through; a sketch is flat.
+        let kind = w.selection_kind()
+        self.through_depth.set_enabled(selecting and not w.sketching() and not (kind != none and (kind else trap("kind")).see_through))
+        self.through_depth.set_checked(modeling_commands.selects_through(w))
         let levels = w.levels()
         let sketching = w.sketching()
         for index in 0..<self.context_modes.length:
@@ -236,10 +242,11 @@ pub class Actions:
                 self.modes[index].set_text(levels[index].name)
         for command in self.create:
             command.set_enabled(w.editing() and w.tool_available(command.text()))
+        # Move, Rotate, Scale and Manipulator need something to act on.
         for tool in self.tools:
             if not w.sketching():
-                tool.set_enabled(true)
-            tool.set_checked(tool.text() == w.edit_tool)
+                tool.set_enabled(tool is self.tools[0] or w.transform_target())
+            tool.set_checked(tool.text() == w.tool_in_use())
         # Tools apply to the selection, or prompt for one (Tool → Select);
         # on the Edit node they need a selection.
         for command in self.modeling:

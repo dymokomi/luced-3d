@@ -1,8 +1,9 @@
 ## The viewport's chrome, drawn over the scene and keeping its clicks
 ## from every tool: the view buttons (top right; the shading button left
-## of them, view.luc's), the selection levels (top left, 1-5), the
-## transform tools (left center, Q, W, E, R, T) with the tool in use below
-## them, a tool prompt's hint, the snapping button and its options (bottom
+## of them, view.luc's), the selection levels (top left, 1-5) and beside
+## them whether boxes select through the depth (V), the transform tools
+## (left center, Q, W, E, R, T; Select alone while nothing is selected)
+## with the tool in use below them, a tool prompt's hint, the snapping button and its options (bottom
 ## left), and where the pointer snapped.
 from luce_ui.ui import Painter, Point
 from luce_gpu.gpu import Rect, Color
@@ -23,7 +24,8 @@ pub class ViewportChrome:
     let actions: Actions
     ## The button under the pointer: 100 + a view button, 200 + a level,
     ## 300 + a transform tool (the slot below them: 300 + their count), 400
-    ## the snapping button, 410 + one of its options (-1: none).
+    ## the snapping button, 410 + one of its options, 500 through the
+    ## depth (-1: none).
     pub var hover_tool: int = -1
     ## The snapping options shown (the snapping button opened them).
     pub var snaps_open: bool = false
@@ -69,16 +71,28 @@ pub class ViewportChrome:
             ui.draw_icon(painter.target(), icon, Rect(x + 5.0, 12.0, 22.0, 22.0), ink)
             if self.hover_tool == 200 + index:
                 tip(painter, f"{self.level_label(index)}  ({index + 1})", x, 44.0)
+        # Beside them, lit while boxes select through the depth (V).
+        var caption_x = level_x(shown.length) + 4.0
+        if self.actions.through_depth.is_enabled():
+            let x = level_x(shown.length)
+            let through = self.actions.through_depth.is_checked()
+            painter.rounded_rectangle(Rect(x, 8.0, 32.0, 30.0), theme.accent() if through else theme.surface(), 4.0)
+            ui.draw_icon(painter.target(), "ghosted", Rect(x + 5.0, 12.0, 22.0, 22.0), theme.grey(0.0) if through else (theme.accent() if self.hover_tool == 500 else theme.text()))
+            if self.hover_tool == 500:
+                tip(painter, ("Selecting through the depth" if through else "Selecting what shows") + "  (V)", x, 44.0)
+            caption_x += 38.0
         if sketching:
-            painter.text(sketch_level_names()[w.sketch_level], level_x(shown.length) + 4.0, 15.0, theme.text_muted())
+            painter.text(sketch_level_names()[w.sketch_level], caption_x, 15.0, theme.text_muted())
         else:
             let caption = w.level().name + (" (Smart)" if w.component_mode == smart_level else "")
-            painter.text(caption + (f" / {w.selected_entities()} selected" if w.selected_entities() > 0 else ""), level_x(shown.length) + 4.0, 15.0, theme.text_muted())
+            painter.text(caption + (f" / {w.selected_entities()} selected" if w.selected_entities() > 0 else ""), caption_x, 15.0, theme.text_muted())
         let tools = transform_tools()
         let keys = transform_key_names()
         let current = self.current_tool()
-        for index in 0..<tools.length:
-            let y = tools_top(height) + float(index) * 36.0
+        let shown_tools = self.shown_tools()
+        for slot in 0..<shown_tools.length:
+            let index = shown_tools[slot]
+            let y = tools_top(height) + float(slot) * 36.0
             let on = current == tools[index]
             # In a sketch only Select is there (its own tools move things).
             let usable = not sketching or index == 0
@@ -89,7 +103,7 @@ pub class ViewportChrome:
         # Below them, the tool in use (yellow), or the last one (to pick
         # again).
         let last = self.last_tool()
-        let y = tools_top(height) + float(tools.length) * 36.0 + 6.0
+        let y = tools_top(height) + float(shown_tools.length) * 36.0 + 6.0
         let active = last != "" and current == last
         painter.rounded_rectangle(Rect(16.0, y, 32.0, 30.0), theme.accent() if active else theme.surface(), 4.0)
         if last != "":
@@ -164,7 +178,19 @@ pub class ViewportChrome:
     ## workspace's (Select, Move, …, the Knife).
     func current_tool(self) -> str:
         let w = self.workspace
-        return w.sketch_tool if w.sketching() else w.edit_tool
+        return w.sketch_tool if w.sketching() else w.tool_in_use()
+
+    ## The transform tools the column shows, as places in transform_tools():
+    ## Select alone while nothing is selected (there is nothing to move),
+    ## else all (in a sketch only Select is usable).
+    func shown_tools(self) -> list[int]:
+        let w = self.workspace
+        if not w.sketching() and not w.transform_target():
+            return [0]
+        let all: list[int] = []
+        for index in 0..<transform_tools().length:
+            all.append(index)
+        return all
 
     ## The bottom slot's tool: the one in use when it is not Q, W, E, R or
     ## T, else the last such ("" none yet).
@@ -184,10 +210,13 @@ pub class ViewportChrome:
         let shown = self.workspace.shown_levels()
         if y >= 8.0 and y <= 38.0 and x >= 16.0 and x < level_x(shown.length) - 6.0:
             return 200 + shown[int((x - 16.0) / 38.0)]
+        if y >= 8.0 and y <= 38.0 and x >= level_x(shown.length) and x <= level_x(shown.length) + 32.0 and self.actions.through_depth.is_enabled():
+            return 500
         let top = tools_top(height)
         let count = transform_tools().length
-        if x >= 16.0 and x <= 48.0 and y >= top and y < top + float(count) * 36.0 - 6.0:
-            return 300 + int((y - top) / 36.0)
+        let shown_tools = self.shown_tools()
+        if x >= 16.0 and x <= 48.0 and y >= top and y < top + float(shown_tools.length) * 36.0 - 6.0:
+            return 300 + shown_tools[int((y - top) / 36.0)]
         if y >= height - 40.0 and y <= height - 10.0 and x >= 16.0 and x <= 48.0:
             return 400
         if self.snaps_open:
@@ -195,14 +224,16 @@ pub class ViewportChrome:
             let rows = snap_menu_top(height, options)
             if x >= 16.0 and x <= 16.0 + snap_menu_width and y >= rows and y < rows + float(options) * snap_row:
                 return 410 + int((y - rows) / snap_row)
-        let slot = top + float(count) * 36.0 + 6.0
+        let slot = top + float(shown_tools.length) * 36.0 + 6.0
         if x >= 16.0 and x <= 48.0 and y >= slot and y <= slot + 30.0 and self.last_tool() != "":
             return 300 + count
         return -1
 
     ## A click on button `button` (see hover_tool).
     pub func press(self, button: int) -> unit!:
-        if button >= 410:
+        if button == 500:
+            self.actions.through_depth.trigger()
+        elif button >= 410:
             self.workspace.snaps.toggle(button - 410)
             self.workspace.revision += 1
         elif button == 400:

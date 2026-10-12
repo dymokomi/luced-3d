@@ -379,9 +379,13 @@ the top left choose what Select picks: Points, Lines or Shapes.
   selection (or what is clicked) from one click to the next, Shift copying;
   Sketch Scale takes a base point, a point and where it goes. Blend Curve
   waits for splines.
-- **Select** picks entities (Shift adds) and drags points, the sketch solving
-  as they move (one undo when released); Delete removes the selection and
-  what is drawn on it, X toggles construction.
+- **Select** picks entities (Shift adds, Ctrl/Cmd takes away) and drags
+  points, the sketch solving as they move (one undo when released). A drag
+  from empty space boxes what the level offers: the points inside it, the
+  curves it meets, at Shapes their whole chains (luce-cad's
+  `CadSketch.select_box` on the box cast onto the plane), with the same
+  modifiers; a plain box over nothing clears the selection. Delete removes
+  the selection and what is drawn on it, X toggles construction.
 
 Each finished action is one undo step: the editor works on a live sketch
 read from the node and writes it back.

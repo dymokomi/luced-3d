@@ -12,8 +12,11 @@
 ## Holding Cmd (Ctrl elsewhere) places freely. Constraint tools take their
 ## entities in order, the first the reference (sketch_constrain.luc);
 ## Sketch Dimension takes one entity or two, then a click in empty space.
-## Select picks entities (Shift adds) and drags points, which snap and
-## are held where they are let go. Delete removes the selection, X makes
+## Select picks entities (Shift adds, Ctrl or Cmd takes away) and drags
+## points, which snap and are held where they are let go; a drag from
+## empty space draws a box selecting what it holds at the level (points
+## inside it, curves meeting it, at Shapes their whole chains), the same
+## modifiers, a plain box over nothing selecting nothing. Delete removes the selection, X makes
 ## it construction, Q is Select.
 ##
 ## The editor works on a live CadSketch read from the node; each finished
@@ -35,6 +38,7 @@ from luce_std import math
 import sketch_constrain
 import sketch_kinds
 from sketch_kinds import coincident, on_curve, horizontal, vertical, midpoint, point_kind, line_kind
+import marquee
 
 ## How near the cursor snaps, in points on screen.
 let snap_reach = 9.0
@@ -81,6 +85,12 @@ pub class SketchEditor:
     ## A point being dragged by Select.
     var dragging: int = -1
     var drag_moved: bool = false
+    ## Select pressed on nothing: a box from (box[0], box[1]) to the pointer
+    ## at (box[2], box[3]) while `boxing`, and what it does (0 replaces, 1
+    ## adds, 2 takes away).
+    pub var boxing: bool = false
+    pub var box: list[float]
+    var box_operation: int = 0
     ## Counts changes to the live sketch, so drawings are made again.
     pub var revision: int = 0
     ## A new dimension's value is typed here: called with its constraint and
@@ -126,6 +136,7 @@ pub class SketchEditor:
         self.cursor = [0.0, 0.0]
         self.selection = []
         self.picks = []
+        self.box = []
 
     ## Whether a Sketch node is being edited: selected, displayed, enabled,
     ## and no tool prompt open.
@@ -265,6 +276,7 @@ pub class SketchEditor:
         self.made = []
         self.picks = []
         self.dragging = -1
+        self.boxing = false
 
     ## The status line's hint for the current tool.
     pub func hint(self) -> str:
@@ -296,9 +308,16 @@ pub class SketchEditor:
         self.width = width
         self.height = height
         let sketch = self.sketch else return false
+        if self.boxing and (event.cancelled or event.kind in [EventKind.pointer_left, EventKind.focus_lost]):
+            self.boxing = false
+            self.revision += 1
         if event.kind == EventKind.key_down:
             return self.key(event)
         if event.kind == EventKind.pointer_moved:
+            if self.boxing:
+                self.box = [self.box[0], self.box[1], event.x, event.y]
+                self.revision += 1
+                return true
             self.track(event.x, event.y, event.meta or event.control)
             if self.dragging >= 0:
                 if sketch.drag(self.dragging, self.cursor[0], self.cursor[1]):
@@ -323,6 +342,11 @@ pub class SketchEditor:
                         _ = sketch.solve()
                 self.commit("Drag sketch point")
             return true
+        if event.kind == EventKind.pointer_up and event.button == 0 and self.boxing:
+            self.boxing = false
+            self.box = [self.box[0], self.box[1], event.x, event.y]
+            self.finish_box()
+            return true
         if event.kind != EventKind.pointer_down or not event.inside:
             return false
         if let clicked = self.on_click:
@@ -337,7 +361,7 @@ pub class SketchEditor:
         self.pointer_x = event.x
         self.pointer_y = event.y
         if self.tool == "Select":
-            self.select_at(event.shift)
+            self.select_at(marquee.operation_of(event))
         elif self.tool == "Project":
             self.project_at()
         elif sketch_tools.draws(self.tool):
@@ -352,7 +376,9 @@ pub class SketchEditor:
     ## Keys: a tool's letter, Esc, Delete, X.
     func key(self, event: Event) -> bool!:
         if event.key == Key.escape:
-            if self.clicks.length > 0 or self.picks.length > 0:
+            if self.boxing:
+                self.boxing = false
+            elif self.clicks.length > 0 or self.picks.length > 0:
                 self.reset_tool()
             elif self.tool != "Select":
                 self.choose("Select")
@@ -587,30 +613,63 @@ pub class SketchEditor:
             return 1
         return 2 if self.w.sketch_level in [edge_level, face_level] else 0
 
-    ## Select's click: the entity under the cursor, at the Shapes level its
-    ## whole chain (Shift adds or takes away), or nothing; a point pressed
-    ## starts a drag.
-    func select_at(self, extend: bool) -> unit!:
+    ## Select's press: the entity under the cursor, at the Shapes level its
+    ## whole chain, alone (`operation` 0), added or taken away again (1,
+    ## Shift) or taken away (2, Ctrl or Cmd); a point pressed starts a drag.
+    ## On nothing it starts a box (a click when it is not dragged).
+    func select_at(self, operation: int) -> unit!:
         let sketch = self.sketch else return
         let at = self.hover
-        if at >= 0 and sketch.kind(at) == point_kind:
+        if at < 0:
+            self.boxing = true
+            self.box = [self.pointer_x, self.pointer_y, self.pointer_x, self.pointer_y]
+            self.box_operation = operation
+            return
+        if sketch.kind(at) == point_kind:
             self.dragging = at
             self.drag_moved = false
-        let picked = chain_of(sketch, at) if at >= 0 and self.w.sketch_level == face_level and sketch.kind(at) != point_kind else [at]
-        if at < 0:
-            if not extend:
-                self.selection = []
-        elif extend:
-            if at in self.selection:
-                for each in picked:
-                    self.selection = without(self.selection, each)
-            else:
-                for each in picked:
-                    if not (each in self.selection):
-                        self.selection.append(each)
-        else:
+        let picked = chain_of(sketch, at) if self.w.sketch_level == face_level and sketch.kind(at) != point_kind else [at]
+        self.change_selection(picked, 2 if operation == 1 and at in self.selection else operation)
+
+    ## The selection with `picked` alone (`operation` 0), added (1) or
+    ## taken away (2).
+    func change_selection(self, picked: list[int], operation: int):
+        if operation == 0:
             self.selection = picked
+        elif operation == 2:
+            for each in picked:
+                self.selection = without(self.selection, each)
+        else:
+            for each in picked:
+                if not (each in self.selection):
+                    self.selection.append(each)
         self.revision += 1
+
+    ## Select's box let go: a click on nothing selects nothing (Shift or
+    ## Ctrl: changes nothing); a drag selects what the box holds at the
+    ## level, as the view casts its corners onto the plane (CadSketch.
+    ## select_box), at Shapes each curve's chain.
+    func finish_box(self) -> unit!:
+        let sketch = self.sketch else return
+        let operation = self.box_operation
+        if not marquee.dragged(self.box):
+            if operation == 0:
+                self.change_selection([], 0)
+            return
+        let corners: list[float] = []
+        let normal = self.frame.normal()
+        for (x, y) in [(self.box[0], self.box[1]), (self.box[2], self.box[1]), (self.box[2], self.box[3]), (self.box[0], self.box[3])]:
+            let place = self.frame.coordinates(view_projection.plane(self.w, x, y, self.width, self.height, self.frame.origin, normal))
+            corners.append(place[0])
+            corners.append(place[1])
+        let picked: list[int] = []
+        for at in 0..<sketch.select_box(corners, self.pick_filter()):
+            let entity = sketch.boxed(at)
+            let whole = chain_of(sketch, entity) if self.w.sketch_level == face_level and sketch.kind(entity) != point_kind else [entity]
+            for each in whole:
+                if not (each in picked):
+                    picked.append(each)
+        self.change_selection(picked, operation)
 
     ## A constraint or dimension tool's click.
     func pick(self) -> unit!:

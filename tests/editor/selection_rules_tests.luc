@@ -1,0 +1,203 @@
+## What the selection decides beyond picking, driven through the app's
+## events: with nothing selected the transform tools leave the viewport's
+## column, their keys and the menu (the chosen one comes back with the next
+## selection); V makes component boxes select through the depth (a button
+## beside the levels and Modify › Selection show it); a sketch's Select
+## draws boxes over its points and curves with the viewport's modifiers.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3
+from luce_cad.sketch import CadSketch
+from view_projection import project
+import node_commands
+import selection_commands
+from edit_types import object_level, point_level, edge_level, face_level
+from luce_std import math
+from sketch_support import open_sketch, render
+
+pub func selection_rules_tests() -> unit!:
+    transform_tools_need_selection()
+    boxes_through_depth()
+    sketch_marquee()
+    print("PASS selection rules: transform tools only with something to move (the chosen one returns), boxes through the depth on V, sketch marquees with Shift, Ctrl and empty boxes")
+
+func key(editor: Luce3D, pressed: Key) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = pressed))
+    editor.app.dispatch(Event(kind = EventKind.key_up, key = pressed))
+    editor.panels.refresh()
+
+## A press, moves and release with the same modifiers.
+func drag(editor: Luce3D, x0: float, y0: float, x1: float, y1: float, shift: bool = false, control: bool = false) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = x0, y = y0, shift = shift, control = control))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = x0, y = y0, button = 0, shift = shift, control = control))
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = (x0 + x1) * 0.5, y = (y0 + y1) * 0.5, shift = shift, control = control))
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = x1, y = y1, shift = shift, control = control))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = x1, y = y1, button = 0, shift = shift, control = control))
+    editor.panels.refresh()
+
+## The Geo at the root, then an Edit Mesh in it: Move, Rotate, Scale and
+## Manipulator only while something is selected.
+func transform_tools_need_selection() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.leave_group(w)
+    let geo = w.network.selected
+    editor.app.layout(1400.0, 900.0)
+    editor.panels.refresh()
+    editor.app.focus(editor.panels.view.layout())
+    let a = editor.panels.actions
+    let tools = editor.panels.view.tools
+    let area = editor.panels.view.layout().bounds()
+    let top = math.max(84.0, area.height * 0.5 - 90.0)
+    # The Geo selected: all five in the column; W chooses Move.
+    key(editor, Key.w)
+    assert(w.edit_tool == "Move" and w.tool_in_use() == "Move" and tools.gizmos.available())
+    assert(tools.chrome.button_at(32.0, top + 36.0 + 10.0, area.width, area.height) == 301)
+    # Nothing selected: Select alone shows and is in use; the others are
+    # disabled (keys and Modify › Transform tool), Move kept for later.
+    node_commands.select_nothing(w)
+    editor.panels.refresh()
+    assert(not w.transform_target() and w.tool_in_use() == "Select" and w.edit_tool == "Move" and not tools.gizmos.available())
+    assert(a.tools[0].is_enabled() and a.tools[0].is_checked() and editor.panels.menus.transform.is_enabled())
+    for index in 1..<a.tools.length:
+        assert(not a.tools[index].is_enabled() and not a.tools[index].is_checked(), a.tools[index].text())
+    assert(tools.chrome.button_at(32.0, top + 10.0, area.width, area.height) == 300)
+    assert(tools.chrome.button_at(32.0, top + 36.0 + 10.0, area.width, area.height) != 301)
+    for pressed in [Key.e, Key.r, Key.t]:
+        key(editor, pressed)
+        assert(w.edit_tool == "Move")
+    # Selected again: Move is back, gizmo and all.
+    node_commands.select_node(w, geo)
+    editor.panels.refresh()
+    assert(w.tool_in_use() == "Move" and a.tools[1].is_checked() and tools.gizmos.available())
+    # Q with nothing selected is a choice that stays.
+    node_commands.select_nothing(w)
+    editor.panels.refresh()
+    key(editor, Key.q)
+    node_commands.select_node(w, geo)
+    editor.panels.refresh()
+    assert(w.tool_in_use() == "Select")
+    # At a component level it is the components that move: none selected,
+    # nothing to move; any selected, the tools are back.
+    node_commands.enter_group(w, geo)
+    node_commands.select_node(w, w.network.nodes[0].id)
+    node_commands.add_node(w, "Edit Mesh", 0.0, 100.0)
+    selection_commands.set_mode(w, point_level)
+    w.selection = none
+    editor.panels.refresh()
+    assert(w.selecting() and not w.transform_target() and not a.tools[1].is_enabled())
+    selection_commands.select_all(w)
+    editor.panels.refresh()
+    assert(w.transform_target() and a.tools[1].is_enabled())
+    key(editor, Key.w)
+    assert(w.tool_in_use() == "Move" and tools.gizmos.available())
+    editor.close()
+
+## An Edit Mesh on the Cube seen from a corner (7 of its 8 points, 9 of
+## its 12 edges and 3 of its 6 faces show): a box over it all takes what
+## shows, and with V everything, hidden and back-facing too.
+func boxes_through_depth() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let a = editor.panels.actions
+    # Objects are picked through the depth already: nothing to turn on.
+    selection_commands.set_mode(w, object_level)
+    editor.panels.refresh()
+    assert(w.picking_objects() and not a.through_depth.is_enabled())
+    node_commands.add_node(w, "Edit Mesh", 0.0, 100.0)
+    w.view.camera.set_position(Vector3(4.0, 5.0, 6.0))
+    w.view.camera.look_at(Vector3())
+    editor.app.layout(1400.0, 900.0)
+    editor.panels.refresh()
+    editor.app.focus(editor.panels.view.layout())
+    let area = editor.panels.view.layout().bounds()
+    let (x0, y0) = (area.x + 120.0, area.y + 60.0)
+    let (x1, y1) = (area.x + area.width - 20.0, area.y + area.height - 20.0)
+    for (level, shown, all) in [(point_level, 7, 8), (edge_level, 9, 12), (face_level, 3, 6)]:
+        selection_commands.set_mode(w, level)
+        w.selection = none
+        editor.panels.refresh()
+        assert(a.through_depth.is_enabled() and not a.through_depth.is_checked())
+        drag(editor, x0, y0, x1, y1)
+        assert(w.selected_count() == shown, f"level {level}: {w.selected_count()} shown")
+        key(editor, Key.v)
+        assert(w.through_depth and a.through_depth.is_checked())
+        drag(editor, x0, y0, x1, y1)
+        assert(w.selected_count() == all, f"level {level}: {w.selected_count()} through")
+        # The button beside the levels shows it and turns it off.
+        let button = 16.0 + float(w.shown_levels().length) * 38.0 + 10.0
+        let chrome = editor.panels.view.tools.chrome
+        assert(chrome.button_at(button, 20.0, area.width, area.height) == 500)
+        chrome.press(500)
+        editor.panels.refresh()
+        assert(not w.through_depth and not a.through_depth.is_checked())
+    # Modify › Selection offers it.
+    let menu = editor.panels.menus.selecting
+    var offered = false
+    for index in 0..<menu.item_count():
+        offered = offered or menu.item(index) is a.through_depth
+    assert(offered)
+    editor.close()
+
+## The sketch point (`x`, `y`) on the screen.
+func at(editor: Luce3D, x: float, y: float) -> list[float]!:
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    let s = project(editor.workspace, view.sketch.editor.frame.at(x, y), bounds.width, bounds.height)
+    return [bounds.x + s[0], bounds.y + s[1]]
+
+## A box in the sketch from sketch point (x0, y0) to (x1, y1).
+func sketch_box(editor: Luce3D, x0: float, y0: float, x1: float, y1: float, shift: bool = false, control: bool = false) -> unit!:
+    let a = at(editor, x0, y0)
+    let b = at(editor, x1, y1)
+    drag(editor, a[0], a[1], b[0], b[1], shift = shift, control = control)
+
+## A 20 mm square (a chain of four lines) and a line apart: boxes at the
+## Points, Lines and Shapes levels.
+func sketch_marquee() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let id = open_sketch(editor, 25.0, 10.0, 150.0)
+    let w = editor.workspace
+    let e = editor.panels.view.sketch.editor
+    let s = CadSketch.parse("")
+    let corners = [s.add_point(0.0, 0.0), s.add_point(20.0, 0.0), s.add_point(20.0, 20.0), s.add_point(0.0, 20.0)]
+    let sides: list[int] = []
+    for k in 0..<4:
+        sides.append(s.add_line(corners[k], corners[(k + 1) % 4]))
+    let apart = s.add_line(s.add_point(40.0, 0.0), s.add_point(60.0, 0.0))
+    node_commands.set_text(w, 0, s.text())
+    render(editor)
+    assert(w.sketching() and e.tool == "Select" and not editor.panels.actions.through_depth.is_enabled())
+    # Points: the two inside the box along the square's bottom.
+    selection_commands.set_mode(w, point_level)
+    sketch_box(editor, -10.0, -10.0, 30.0, 6.0)
+    assert(sorted(e.selection) == [corners[0], corners[1]], f"{e.selection}")
+    # Lines: those the box meets (the bottom and both sides).
+    selection_commands.set_mode(w, edge_level)
+    sketch_box(editor, -10.0, -10.0, 30.0, 6.0)
+    assert(sorted(e.selection) == [sides[0], sides[1], sides[3]], f"{e.selection}")
+    # Shift adds the line apart; Ctrl takes the bottom away.
+    sketch_box(editor, 45.0, -8.0, 55.0, 8.0, shift = true)
+    assert(sorted(e.selection) == [sides[0], sides[1], sides[3], apart])
+    sketch_box(editor, 8.0, -8.0, 12.0, 8.0, control = true)
+    assert(sorted(e.selection) == [sides[1], sides[3], apart])
+    # Boxes over nothing: Shift or Ctrl change nothing, a plain one empties.
+    sketch_box(editor, 30.0, 30.0, 36.0, 36.0, shift = true)
+    sketch_box(editor, 30.0, 30.0, 36.0, 36.0, control = true)
+    assert(e.selection.length == 3)
+    sketch_box(editor, 30.0, 30.0, 36.0, 36.0)
+    assert(e.selection.length == 0)
+    # Shapes: a box over one corner takes the whole square.
+    selection_commands.set_mode(w, face_level)
+    sketch_box(editor, -8.0, -8.0, 6.0, 6.0)
+    assert(sorted(e.selection) == sides, f"{e.selection}")
+    # The node's sketch is untouched by selecting.
+    assert(CadSketch.parse(w.network.require(id).texts[0]).text() == s.text())
+    editor.close()
+
+func sorted(values: list[int]) -> list[int]:
+    let copy = values.copy()
+    copy.sort()
+    return copy
