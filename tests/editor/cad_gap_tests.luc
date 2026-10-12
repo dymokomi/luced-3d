@@ -26,8 +26,9 @@ pub func cad_gap_tests() -> unit!:
     split_unextended()
     split_face_unextended()
     replaced_onto_quilt()
+    foot_deleted()
     manipulator_drags()
-    print("PASS CAD parity gaps: Delete Face of a G3 cube's filleted and chamfered top chain heals back to the rounded cube; Split Body by a face that misses with Extend splitting tool off is refused, extended it splits; Split Face by a face right across the top halves it unextended, one part way across is refused naming the option; Replace Face of a top's tangent chain onto an overlapping copy's top, fillet and side; the Move node's manipulator dragged along X and round Y sets Translate and Rotate and stands where the body went, its axes turned with the body: dragged along the turned X arrow and round the turned X ring")
+    print("PASS CAD parity gaps: Delete Face of a G3 cube's filleted and chamfered top chain heals back to the rounded cube; Split Body by a face that misses with Extend splitting tool off is refused, extended it splits; Split Face by a face right across the top halves it unextended, one part way across is refused naming the option; Delete Face of a pin's foot fillet healed; Replace Face of a top's tangent chain onto an overlapping copy's top, fillet and side; the Move node's manipulator dragged along X and round Y sets Translate and Rotate and stands where the body went, its axes turned with the body: dragged along the turned X arrow and round the turned X ring")
 
 func models(w: Workspace, id: int) -> list[CadModel]!:
     return w.network.evaluate_data(id).models()
@@ -230,6 +231,37 @@ func replaced_onto_quilt() -> unit!:
     let expected = 20.0 * (20.0 * 25.0 - 9.0 + 9.0 * math.pi / 4.0)
     let got = volume(replaced[0])
     assert(math.abs(got - expected) < expected * 1e-3, f"{got}, expected {expected}")
+
+## Delete Face node beside a curved face: a 20 mm box with a pin of
+## radius 5 through it (Combine, the Solid Cylinder wired as its tool),
+## the pin's foot on the top filleted 2 (an inside corner), the fillet
+## deleted: the pin meets the top along a circle again, the joined volume.
+func foot_deleted() -> unit!:
+    let w = Workspace()
+    let solid = box(w)
+    node_commands.add_node(w, "Solid Cylinder", 300.0, 0.0)
+    let pin = w.network.selected
+    node_commands.set_parameter(w, 0, 5.0)
+    node_commands.set_parameter(w, 1, 40.0)
+    node_commands.select_node(w, solid)
+    node_commands.add_node(w, "Combine", 0.0, 0.0)
+    let join = w.network.selected
+    w.network.connect(pin, join, 1)
+    let joined = models(w, join)
+    assert(joined.length == 1)
+    let expected = 8000.0 + math.pi * 25.0 * 20.0
+    assert(math.abs(volume(joined[0]) - expected) < expected * 1e-4)
+    node_commands.add_node(w, "Fillet", 0.0, 0.0)
+    let round = w.network.selected
+    node_commands.set_parameter(w, 0, 2.0)
+    node_commands.set_text(w, 0, CadModeling.edge_references(joined[0], edges_where(joined[0], func (a: Vector3, b: Vector3) -> bool: return math.abs(a.y - 10.0) < 1e-6 and math.abs(b.y - 10.0) < 1e-6 and math.abs(a.x * a.x + a.z * a.z - 25.0) < 1e-6)))
+    let footed = models(w, round)[0]
+    node_commands.add_node(w, "Delete Face", 0.0, 0.0)
+    let delete = w.network.selected
+    node_commands.set_text(w, cad_modify.first_text, made(footed, joined[0]))
+    let healed = models(w, delete)
+    assert(w.network.require(delete).failure == "", w.network.require(delete).failure)
+    assert(healed.length == 1 and math.abs(volume(healed[0]) - expected) < expected * 1e-4, f"{volume(healed[0])}, expected {expected}")
 
 ## The Move node's manipulator: grabbed on the X arrow and dragged along
 ## it, Translate X follows (Y and Z stay); grabbed on the Y ring and turned

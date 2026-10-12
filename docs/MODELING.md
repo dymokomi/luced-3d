@@ -620,7 +620,8 @@ step each. **Split Body** and **Split Face** have Fusion's **Extend
 splitting tool** (on): off, a picked face cuts only where it reaches (Split
 Face: right across each face it meets, or refused naming the option).
 **Delete Face** heals a rounded or chamfered top chain beside rounded
-uprights (G1, G2, G3), and **Replace Face** takes an open surface body's
+uprights (G1, G2, G3), a fillet or chamfer at a pin's foot or on a hole's
+rim, and groups of faces apart at once, and **Replace Face** takes an open surface body's
 faces on several surfaces as its target, or another body's faces matching
 the replaced ones one for one (a top's tangent chain onto a copy's), that
 body free to overlap.
