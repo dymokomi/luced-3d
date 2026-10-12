@@ -673,10 +673,13 @@ G2 or G3; a straight edge ending at any flat faces, a chain round a flat face
 running out where it stops, a loop between curved faces).
 **Corner type** (G1): Rolling ball, or Setback (the fillets stop short of the
 corner and a patch blends them, as G2 and G3 corners always are). Continuity is G1
-(Fusion's Tangent), G2 (Curvature) or G3; **Tangency weight** (Fusion's, 0.1 to 2,
-1 the plain fillet): more hugs the faces longer and turns tighter in the
-middle, less is flatter; a G1 fillet with a weight is a conic, its corners
-setbacks. Tangent chain as Fusion's.
+(Fusion's Tangent), G2 (Curvature: Fusion's own curve, its faces' B-spline
+data matched) or G3; **Tangency weight** (Fusion's, 0.1 to 2, 1 the plain
+fillet, constant or variable radius): more hugs the faces longer and turns
+tighter in the middle, less is flatter; a G1 fillet with a weight is a conic
+(Fusion's), its corners setbacks. A dome's rim fillets too (Fusion's torus at
+G1), and a plane meeting a cylinder along it at G2 under any weight. Tangent
+chain as Fusion's.
 Chamfer's **Type** is Equal distance, **Two distances** (Distance along the
 first face, the one more of the picked edges lie on, such as a top round its
 rim; Distance 2 along the other; Flip swaps) or **Distance and angle**
