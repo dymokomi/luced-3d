@@ -46,6 +46,9 @@ class Computation:
     ## fail, the viewport keeps that (Fusion's last good preview).
     let last_good: map[int, int]
     var preview_warning: str = ""
+    ## What showing each node's CAD left out (faces its tessellation could
+    ## not mesh, named): on the node, beside its own warning.
+    let display_warnings: map[int, str]
     var recipes: int = 0
     ## Meshes published under keys the UI may hold, kept alive so an identity
     ## match never sees a recycled object. A mesh reaching several nodes (an
@@ -64,6 +67,7 @@ class Computation:
         self.sources = SourceCache()
         self.cooks = {}
         self.failures = {}
+        self.display_warnings = {}
         self.last_good = {}
         self.meshes = []
         self.keys = []
@@ -82,6 +86,7 @@ class Computation:
         self.preview_warning = ""
         self.recipes = 0
         self.failures.clear()
+        self.display_warnings.clear()
         var notice = ""
         let meshes: list[Mesh] = []
         let keys: list[int] = []
@@ -356,6 +361,8 @@ class Computation:
                     failure = f"{node.name}: {entry.failure}"
             elif failure != "":
                 cooked = node.stamp
+            if let shown = self.display_warnings[node.id]:
+                warning = shown if warning == "" else f"{warning}; {shown}"
             let outcome = Outcome(node.id, cooked, failure, summary, self.cooks[node.id] else 0, paths)
             outcome.warning = warning
             outcome.console = console
@@ -390,11 +397,12 @@ class Computation:
         # placement too.
         let placement = salt if salt != 0 else (0 if matrix.is_identity() else matrix_key(matrix))
         _ = self.display(data, matrix, node, 0, placement)
-        # CAD edges are keyed by what they are drawn from, so a CV drag keeps
-        # them held; normal guides follow the result.
+        # CAD edges are keyed by what they are drawn from (the models' edges
+        # as the viewport's quality samples them), so a CV drag keeps them
+        # held; normal guides follow the result.
         let edges = data.edges_key()
         if edges != 0:
-            self.publish_lines((edges, "cad-edges", placement).hash(), node, data, matrix, true, false)
+            self.publish_lines((edges, "cad-edges", placement, self.graph.cad_quality).hash(), node, data, matrix, true, false)
             if self.graph.show_normals:
                 self.publish_lines((node.stamp, "guides", placement).hash(), node, data, matrix, false, true)
         else:
@@ -485,8 +493,10 @@ class Computation:
             if preview.failed_faces > 0:
                 self.preview_warning = f"{preview.failed_faces} CAD preview patches failed: {preview.first_error}"
                 self.channel.progress(node.id, 0.9, f"{preview.failed_faces} preview failures")
+                self.display_warnings[node.id] = self.preview_warning
             elif preview.cv_warning != "":
                 self.preview_warning = preview.cv_warning
+                self.display_warnings[node.id] = preview.cv_warning
         for index in 0..<data.instance_count():
             if data.instance_visible(index):
                 self.prepare(data.instance(index), node)

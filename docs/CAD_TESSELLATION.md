@@ -44,8 +44,11 @@ tessellation at the Tessellate node's defaults (16 divisions, no target edge,
 curvature when the placement allows it), which the B-rep keeps
 (`BrepModel.mesh`): a Tessellate node with those settings places that same
 mesh in O(1), and the renderer reuses the GPU buffers already made for it. The
-display draws each edge's analytic polyline once and a normal guide per face
-(`CadModel.overlay`, which also returns the control-net hull). A model that
+display draws each B-rep edge along the mesh's own samples of it (the mesh
+edges between faces on different surfaces, so a line never dips behind the
+faces it bounds) and a normal guide per face (`CadModel.overlay`, which also
+returns the control-net hull); the lines are keyed by the viewport's CAD
+quality too, so changing it draws them again. A model that
 cannot be tessellated falls back to the independent per-patch preview
 (`CadModel.preview`) and reports its failure.
 
@@ -91,9 +94,11 @@ A full tessellation (`CadModel.tessellate(segments, edge_size)`) runs:
    model tessellated with its face cache) mesh
    independent faces from the frozen plans. Each owns scratch and temporaries;
    shared samples are immutable. Results merge in source-face order, so output is
-   deterministic. After a failure, no new jobs start; earlier in-flight jobs
-   join and the first failing face in source order is reported. No partial mesh
-   is assembled.
+   deterministic. A face no strategy meshes (or one that made no polygon) is
+   left out and named in the mesh (`CadGeometry.skipped_faces`: "Skipped CAD
+   face i: reason"), and the node showing it carries that as its warning (the
+   viewport's own tessellation included), so no face goes missing silently;
+   only running out of memory, or every face failing, fails the model.
 4. **Strategy per face** (`patch_dispatch`, transactional): local mapped rows,
    support-grid clipping, canonical rows, constrained fallback, baseline plus
    conformity. A rejected strategy rewinds scratch before the next is tried; final
