@@ -346,22 +346,33 @@ model back exactly.
   and editing the sketch later leaves the feature as it was.
 - **Faces and bodies**: the gizmo's Move at the Faces level moves and turns
   faces, the faces around following (whole models are placed at Object);
-  **Move/Copy**'s tool bar holds the distances, angles and Create copy;
+  **Move/Copy**'s tool bar is Fusion's dialog: Move type (Free move,
+  Translate, Rotate about an origin axis or a picked edge, Point to point,
+  Point to position, whose points are clicked as the type is chosen), the
+  pivot (the selection's middle, the origin or a point) and Create copy
+  (bodies, or faces as a surface body);
   **Press Pull** is Extrude in a sketch, Offset Face on faces and Fillet on
   edges; **Offset Face**; **Delete** removes whole models and heals faces (a
-  hole, a boss, a fillet's or chamfer's strip, a corner: the faces around
-  extended to close the gap; refused with why otherwise); **Remove Faces**
-  leaves the model open; **Replace Face**, **Combine** and **Split Body** wait
-  for their target face, tool bodies or splitting face (Split Body may take an
-  origin plane from its tool bar); **Shell** opens the faces picked (a whole
-  model: a closed void), Inside, Outside or Both.
+  hole, a boss, fillet, chamfer and corner faces, several at once: the faces
+  around extended to close the gap; refused with why otherwise); **Remove**
+  takes bodies away as a step of its own; **Remove Faces** leaves the model
+  open; **Replace Face** (several target faces, Shift adds, Enter; Tangent
+  chain), **Split Face**, **Combine** (its target lit while it waits) and
+  **Split Body** wait for their targets, tool bodies or splitting face (the
+  splits may take an origin plane from their tool bar); **Shell** opens the
+  faces picked (a whole model: a closed void), with Tangent chain, Inside,
+  Outside or Both (a thickness each way). A sketch's plane is changed with
+  **Redefine Sketch Plane** (onto the selected face, or a face clicked or an
+  origin plane from its tool bar).
 - **Fillet and Chamfer** of picked edges run the nodes' own code, their radius
   arrow and tool bar as the nodes'. CVs move with the gizmo, Rotate, Scale,
   Noise, Flatten and Snap; a moved boundary CV takes its trims along.
 - Primitives are luce-cad's analytic solids: Box, Cylinder, Cone, Sphere and
-  Torus. Faces a step makes are named for its place in the recipe, so later
-  steps find them; an imported model's unnamed faces are named when the recipe
-  starts.
+  Torus. Faces a step makes are named for the node and the step's place in
+  the recipe (`#<node>s<n>`), so later steps find them and two Edit CAD nodes
+  in one chain never clash; an imported model's unnamed faces are named when
+  the recipe starts. The panel shows Soft radius, Falloff, Symmetry and Keep
+  selection only at the CVs level, the one level they act on.
 
 The last step's handles, value box and tool bar rows are the nodes'; a step
 that cannot be built says why under its rows and on the node, while the model
@@ -578,6 +589,27 @@ sketch's normal; a negative angle the other way), Two sides (an angle each
 way) or Symmetric (the angle each way, Fusion's). A Revolve made from the
 sketch (right-click, A, Create) asks for its axis at once; while it waits the
 node warns, showing the sketch, rather than failing.
+
+**Modify features as nodes** (`cad_modify.luc`, stage 7 of
+docs/research/FUSION-CAD-UX.md): **Shell**, **Move** (Fusion's Move/Copy),
+**Combine** (its tool bodies picked, or wired to the second input), **Split
+Body**, **Split Face**, **Replace Face**, **Delete Face** and **Remove** go
+in the chain like Extrude and Fillet. They keep their faces and bodies by
+name and run Edit CAD's own steps on them, with Fusion's options as above.
+The right-click menu (on selected faces), the S menu and Modify › CAD
+features make them after the displayed node, taking what is selected; a
+node then waits for each input it lacks in turn (its input body shown, the
+prompt in the viewport, "waiting" on the node with no badge), and each input
+is a panel row with its pick button.
+
+**The timeline strip** (`cad_timeline.luc`, stage 8) runs along the Network
+panel inside a CAD network: the chain's features as icons in order, a
+marker after the displayed one that rolls the design back when dragged, a
+click to select, a double-click to edit (Fusion's Edit Feature: the marker
+rolled to the feature while it is edited, its value box open; a
+double-click on the node does the same), and a drag to reorder, which is
+cooked first on a copy and refused with the reason when a feature that
+cooked would break (a Fillet put before the Extrude making its edges).
 
 **Press Pull** (right-click, the S menu, Modify › CAD features) dispatches
 on the selection as Fusion's does: in a sketch it is Extrude; on faces an

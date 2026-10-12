@@ -8,6 +8,9 @@
 ##     the projection is not live).
 ##   Edit Sketch: the sketch's text replaced; its plane stays.
 ##   Sketch Visibility: the sketch shown or hidden.
+##   Sketch Plane: Fusion's Redefine Sketch Plane: the sketch moved onto
+##     another origin plane or flat face, its drawing kept in its own
+##     coordinates (what was projected from the old face stays as it was).
 ##   Extrude, Revolve: the node's own code (cad_features.luc) on the
 ##     sketch's profiles as the step finds them, combined with the models
 ##     its Operation says (Auto: Fusion's, inside a model it cuts). A
@@ -34,6 +37,7 @@ from luce_ui import ui
 pub let sketch_verb = "Sketch"
 pub let edit_sketch_verb = "Edit Sketch"
 pub let visibility_verb = "Sketch Visibility"
+pub let plane_verb = "Sketch Plane"
 
 ## A sketch step's texts: its CadSketch text, the face it is on (Face
 ## plane), its name; its numbers: the plane (sketch_node's plane names)
@@ -143,6 +147,11 @@ pub func edit_step(name: str, text: str) -> EditStep:
 pub func visibility_step(name: str, visible: bool) -> EditStep:
     return EditStep(visibility_verb, "", 0, [1.0 if visible else 0.0], 0, texts = ["", "", name])
 
+## The step putting sketch `name` on plane `plane` (an origin plane, or
+## Face: the face named `face`, "" while one is picked) moved `offset`.
+pub func plane_step(name: str, plane: int, offset: float, face: str) -> EditStep:
+    return EditStep(plane_verb, "", 0, [float(plane), offset], 0, texts = ["", face, name])
+
 ## Extrude's or Revolve's step from sketch `name`'s profiles `keys` (none:
 ## its closed shapes), with the node's starting `values`.
 pub func feature_step(kind: str, name: str, keys: str, values: list[float]) -> EditStep:
@@ -150,7 +159,7 @@ pub func feature_step(kind: str, name: str, keys: str, values: list[float]) -> E
 
 ## Whether `verb` is one of the steps here.
 pub func is_sketch_step(verb: str) -> bool:
-    return verb in [sketch_verb, edit_sketch_verb, visibility_verb]
+    return verb in [sketch_verb, edit_sketch_verb, visibility_verb, plane_verb]
 
 pub func is_feature_step(verb: str) -> bool:
     return verb in ["Extrude", "Revolve"]
@@ -183,6 +192,15 @@ pub func sketched(step: EditStep, data: GeometryData) -> GeometryData!:
         error(ui.invalid, f"the sketch {name} is not in the model")
     if step.verb == visibility_verb:
         return GeometryData(geometry = CadSketches.with_visible(data.geometry, name, step.numbers[0] != 0.0))
+    if step.verb == plane_verb:
+        let plane = int(step.numbers[0])
+        let offset = step.numbers[1] if step.numbers.length > 1 else 0.0
+        var f = frame(plane, offset)
+        if plane == face_plane:
+            let (_, found) = face_frame(data, step.text(face_slot).trim())
+            f = SketchFrame(found.origin.add(found.normal().multiply_scalar(offset)), found.u, found.v)
+        let moved = GeometryData(geometry = CadSketches.with_sketch(data.geometry, name, CadSketches.text(data.geometry, index), f.origin, f.u, f.v))
+        return GeometryData(geometry = CadSketches.with_visible(moved.geometry, name, CadSketches.visible(data.geometry, index)))
     let sketch = CadSketch.parse(step.text(text_slot))
     if sketch.entity_count() > 0 and not sketch.solve():
         error(ui.invalid, "The sketch's constraints cannot all hold: remove one that conflicts")

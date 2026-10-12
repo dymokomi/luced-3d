@@ -17,6 +17,10 @@ import tool_prompts
 import cad_modify
 import cad_moves
 import edit_cad_faces
+import edit_cad_commands
+import edit_cad_picks
+import modeling_commands
+from node import Node
 import handle_lines
 from luce_std import math
 
@@ -26,7 +30,8 @@ pub func cad_modify_tests() -> unit!:
     combined_and_split()
     faces_split_replaced_deleted()
     from_the_viewport()
-    print("PASS CAD Modify nodes: Shell Inside, Outside and Both (outer less inner, the top open) and closed, its arrows; Move by Translate, Rotate, Point to point, Point to position, faces moved and copied, bodies copied; Combine Join, Cut, Intersect, Keep tools, a wired tool; Split Body; Split Face, its pieces named apart; Replace Face onto another body's face; Delete Face healing a chamfer; Remove; a node waiting with no badge; Shell and Combine made from the viewport and picked input by input")
+    edit_cad_steps()
+    print("PASS CAD Modify nodes: Shell Inside, Outside and Both (outer less inner, the top open) and closed, its arrows; Move by Translate, Rotate, Point to point, Point to position, faces moved and copied, bodies copied; Combine Join, Cut, Intersect, Keep tools, a wired tool; Split Body; Split Face, its pieces named apart; Replace Face onto another body's face; Delete Face healing a chamfer; Remove; a node waiting with no badge; Shell and Combine made from the viewport and picked input by input; in Edit CAD, Split Face by an origin plane, Move/Copy Point to point with its points clicked, a face copied, Remove")
 
 ## The tessellated volume of every model `id` makes.
 func volume(w: Workspace, id: int) -> float!:
@@ -326,3 +331,80 @@ func face_at_height(mesh: Mesh, y: float) -> int!:
         if level:
             return face
     return -1
+
+## Edit CAD's steps: the box's top split by the YZ plane (chosen in the
+## tool bar while the step waits, then Enter); Move/Copy Point to point,
+## its points clicked on corners (the box moved by their difference); a
+## face copied (a surface body); Remove of a body.
+func edit_cad_steps() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    let node = w.selected() else trap("Edit CAD")
+    modeling_commands.create(w, "Box")
+    # Split Face: waits for its tool; the YZ plane and Enter.
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
+    edit_cad_commands.tool(w, "Split Face")
+    assert(w.prompt != none)
+    modeling_commands.set_last_step(w, edit_cad_faces.split_tool_slot, 3.0, 0.0, 3.0)
+    tool_prompts.accept_prompt(w)
+    assert(w.prompt == none and models(w, node.id)[0].face_count() == 7)
+    # Move/Copy of the whole box, Point to point: from the corner at
+    # (1, 1, 1) to the one at (-1, -1, -1).
+    select_where(w, 0, func (c: Vector3, n: Vector3) -> bool: return true)
+    edit_cad_commands.tool(w, "Move/Copy")
+    modeling_commands.set_last_step(w, cad_moves.type_slot, 3.0, 0.0, 4.0)
+    edit_cad_picks.pick_move(w, edit_cad_picks.from_label)
+    click_corner(w, Vector3(1.0, 1.0, 1.0))
+    let next = w.prompt else trap("Point to point asks for its To point")
+    assert(next.label == edit_cad_picks.to_label)
+    click_corner(w, Vector3(-1.0, -1.0, -1.0))
+    assert(w.prompt == none)
+    let (low, _) = body_box(models(w, node.id)[0])
+    assert(math.abs(low.x + 3.0) < 1e-6 and math.abs(low.y + 3.0) < 1e-6)
+    # A face copied: Move/Copy of the box's bottom face with Create copy,
+    # Translate down 2: the box and a one-face surface body.
+    w.selection = none
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y < -0.99)
+    edit_cad_commands.tool(w, "Move/Copy")
+    modeling_commands.set_last_step(w, cad_moves.type_slot, 1.0, 0.0, 4.0)
+    modeling_commands.set_last_step(w, 1, -2.0, -100000.0, 100000.0)
+    modeling_commands.set_last_step(w, cad_moves.copy_slot, 1.0, 0.0, 1.0)
+    let pair = models(w, node.id)
+    assert(pair.length == 2 and pair[1].face_count() == 1)
+    # Remove: the surface body goes, as a step of its own.
+    w.selection = none
+    select_where(w, 0, func (c: Vector3, n: Vector3) -> bool: return c.y < -4.5)
+    edit_cad_commands.tool(w, "Remove")
+    assert(node_now(w, node).edits[-1].verb == "Remove" and models(w, node.id).length == 1)
+
+func node_now(w: Workspace, node: Node) -> Node!:
+    return w.network.require(node.id)
+
+## A click on the pick mesh's edge nearest `corner` (the Edges level).
+func click_corner(w: Workspace, corner: Vector3) -> unit!:
+    let mesh = w.geometry else trap("pick geometry")
+    let owners = mesh.find_attribute("cad_edge", 4)
+    var best = -1
+    var nearest = 1.0e30
+    for edge in 0..<mesh.edge_count():
+        if mesh.attribute_value(owners, edge) < 0.0:
+            continue
+        let a = mesh.point(mesh.edge_point(edge, 0))
+        let b = mesh.point(mesh.edge_point(edge, 1))
+        let d = a.subtract(corner).length() + b.subtract(corner).length() * 0.5
+        if d < nearest:
+            nearest = d
+            best = edge
+    selection_commands.choose_component(w, best, false)
+
+func select_where(w: Workspace, level: int, keep: func(Vector3, Vector3) -> bool) -> unit!:
+    selection_commands.set_mode(w, level)
+    let mesh = w.geometry else trap("pick geometry")
+    for polygon in 0..<mesh.face_count():
+        if keep(mesh.face_center(polygon), mesh.face_normal(polygon)):
+            selection_commands.choose_component(w, polygon, false)
+            return
+    assert(false, "nothing to select there")

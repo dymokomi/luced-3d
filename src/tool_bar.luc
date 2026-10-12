@@ -13,6 +13,9 @@ from interop import Connection
 from workspace import Workspace
 from parameter_rows import Parameter
 import cad_features
+import cad_moves
+import edit_cad_picks
+from edit_operations import EditStep
 import edit_cad_commands
 import edit_types
 import node_catalog
@@ -121,7 +124,7 @@ pub class ToolBar:
             return (tool.name, rows) if rows.length > 0 else none
         # A command's feature step (a sketch's step has no rows here: its
         # plane is set when it is made).
-        if verb in kind.steps and verb in ["Extrude", "Revolve"]:
+        if verb in kind.steps and verb in ["Extrude", "Revolve", "Sketch Plane"]:
             let rows = node_catalog.tool_rows(verb)
             return (verb, rows) if rows.length > 0 else none
         return none
@@ -134,14 +137,31 @@ pub class ToolBar:
     ## After row `index` was set: an Edit CAD Extrude's extent turned To
     ## object waits for the face to run to (Fusion's selection field).
     func picks_after(self, index: int) -> unit!:
-        if index < 0 or index >= self.rows.length or self.rows[index].slot != cad_features.extent_slot:
+        if index < 0 or index >= self.rows.length:
             return
         let node = self.w.selected() else return
         if node.edits.length == 0:
             return
         let step = node.edits[-1]
+        if step.verb == "Transform Components":
+            self.move_picks(self.rows[index].slot, step)
+            return
+        if self.rows[index].slot != cad_features.extent_slot:
+            return
         if step.verb == "Extrude" and int(step.numbers[cad_features.extent_slot]) == 1 and step.text(cad_features.face_text) == "":
             edit_cad_commands.pick_extent_face(self.w)
+
+    ## Move/Copy's row on `slot` set: Point to point and Point to position
+    ## wait for the From point, Rotate about a picked edge for the edge, a
+    ## Point pivot for the point (Fusion's selection fields).
+    func move_picks(self, slot: int, step: EditStep) -> unit!:
+        let kind = int(step.numbers[cad_moves.type_slot]) if step.numbers.length > cad_moves.type_slot else 0
+        if slot == cad_moves.type_slot and kind >= 3:
+            edit_cad_picks.pick_move(self.w, edit_cad_picks.from_label)
+        elif (slot == cad_moves.axis_slot or slot == cad_moves.type_slot) and kind == 2 and int(step.numbers[cad_moves.axis_slot]) == 3:
+            edit_cad_picks.pick_move(self.w, edit_cad_picks.rotate_label)
+        elif slot == cad_moves.pivot_slot and int(step.numbers[cad_moves.pivot_slot]) == 2:
+            edit_cad_picks.pick_move(self.w, edit_cad_picks.pivot_label)
 
     func changed(self, index: int) -> unit!:
         let row = self.rows[index]

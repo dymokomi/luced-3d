@@ -76,9 +76,9 @@ The same luce-cad operations serve both workflows. A node runs them on its input
 | 3 | Sketch on a face from the viewport, with projection and offset (done) |
 | 4 | Extrude, Revolve and Press Pull in full (done; the parity round added Thin, faces as profiles, Start object, Extend, Objects To Cut and Revolve To) |
 | 5 | Fillet and Chamfer in the viewport (done; the parity round added Full round, chord length, variable radius, G1 setback corners and chamfer corner types) |
-| 6 | Edit CAD direct modeling (done; Split Face, Replace Face onto several targets, Move Face by Point to Point and a face sketch's Redefine open) |
-| 7 | Shell, Move/Copy, Combine as nodes |
-| 8 | A timeline strip and history polish |
+| 6 | Edit CAD direct modeling (done; its parity gaps closed with stages 7–8) |
+| 7 | Shell, Move/Copy, Combine, Split Body and the other Modify features as nodes (done) |
+| 8 | A timeline strip and history polish (done) |
 
 ## 2. What we have, and the gaps
 
@@ -356,10 +356,10 @@ SolidCraft:
 | Revolve | Revolve | Axis may be a picked sketch line or a body edge. |
 | Press Pull | none: a gesture | As Fusion's: a profile makes an Extrude, an edge a Fillet, a face an Offset Face node (§6.2). |
 | Fillet, Chamfer | Fillet, Chamfer | Created from selected edges with Shift+F or the S menu, radius on an arrow. |
-| Shell | Shell (new) | Faces to remove, thickness, inside, outside or both. |
-| Combine | Boolean | Unchanged. |
-| Move/Copy (bodies) | Transform | "Create copy" keeps the original, as Merge would. |
-| Move/Copy (faces), Offset Face, Delete, Replace Face | Edit CAD steps, and later nodes if wanted | See §7. |
+| Shell | Shell (new) | Faces to remove, thickness, inside, outside or both. Built (stage 7). |
+| Combine | Combine (stage 7; Boolean replaced) | Target and tool bodies, or a wired tool. |
+| Move/Copy | Move (stage 7) | Bodies or faces, every Move type, pivot, Create copy. |
+| Split Body, Split Face, Replace Face, Delete, Remove | Split Body, Split Face, Replace Face, Delete Face, Remove (stage 7) | The same code as Edit CAD's steps (§7). |
 | Base Feature | Edit CAD | It is one: a direct-modeling block inside a history. |
 | Mirror, Pattern | Mirror Body, Pattern | Unchanged. |
 
@@ -761,7 +761,7 @@ texts, values and the result's volume checked.
 - **Failures**: a step that cannot be built says why under its rows in the tool bar and on the node (WARNING), and the model before it shows; a step waiting for a pick says what it waits for. While a drag makes the last step fail, the node fails instead so the viewport keeps the drag's last good result, as a feature node's does.
 - **Selection** stays on the same B-rep faces and edges when a step meshes them again (luce-cad `CadEdits.carried`), so a face can be moved again at once.
 - Follow-ups from stages 4–5: a Revolve node waiting for its axis is a warning, not an error; arrows keep at least 44 points on screen (Fusion's manipulators keep their size), and a drag moves the value by how far the pointer goes along the arrow.
-- Not built (Fusion parity gaps): Split Face (luce-cad has no face split); Replace Face onto several target faces or a surface body, with Tangent chain; Shell's Tangent chain (luce-cad shells the faces named); Move/Copy's Point to Point and Point to Position, a settable pivot, copies of faces; Combine's New component; Delete healing more than one strip or corner at a time (luce-cad limit 7); a sketch's plane redefined after it is made; a body's Remove as a recorded feature apart from Delete; picking a sketch's curves in the viewport to edit it (Edit Sketch is a menu of the model's sketches).
+- Not built at stage 6, closed with stages 7–8 (below), but Combine's New component and picking a sketch's curves in the viewport to edit it: Split Face (luce-cad has no face split); Replace Face onto several target faces or a surface body, with Tangent chain; Shell's Tangent chain (luce-cad shells the faces named); Move/Copy's Point to Point and Point to Position, a settable pivot, copies of faces; Combine's New component; Delete healing more than one strip or corner at a time (luce-cad limit 7); a sketch's plane redefined after it is made; a body's Remove as a recorded feature apart from Delete; picking a sketch's curves in the viewport to edit it (Edit Sketch is a menu of the model's sketches).
 - Plan as written:
 - Sketch objects and the Sketch/Edit Sketch steps.
 - Extrude and Revolve steps.
@@ -794,14 +794,31 @@ texts, values and the result's volume checked.
 - **Still open**: variable radius beyond one straight edge (chains, curved faces, corners with other fillets, G2/G3).
 - Screenshots: `luce_work/cad/parity/shots/` (`cad_crossing`, `cad_repeat`, `cad_filter`, `cad_thin`, `cad_face_extrude`, `cad_through`, `cad_bodies`, `cad_revolve_to`, `cad_full_round`, `cad_chamfer_corner`, `cad_chamfer_blend`, `cad_shown_sketch`, `cad_variable`, `cad_setback`, `g3_after`).
 
-**Stage 7: Shell, Move/Copy, Combine as nodes** (luce-cad 10).
-- Tests: a shelled box's volume (outer minus inner, with the removed face open). Inside, Outside and Both.
+**Stage 7: the Modify features as nodes** (luce-cad 10). Done 2026-10-12 (`cad_modify_tests`, `edit_cad_direct_tests`; luce-cad `face_parity_tests`, `shell_tests`). As built:
+- **Nodes** (`cad_modify.luc`): **Shell**, **Move** (Fusion's Move/Copy; a node may not be named with a `/`, Fusion's timeline calls the feature Move), **Combine** (Boolean is gone: Combine with its tool wired is it), **Split Body**, **Split Face**, **Replace Face**, **Delete Face** and **Remove**, in the chain beside Extrude, Revolve, Offset Face, Fillet and Chamfer. Each keeps its faces by luce-cad's names and its bodies by a name only that body's faces have (`cad_names.model_names`: the pieces of a split body share the split face's name); at each cook the names become groups on the input's pick mesh (`cad_names.lucb`, one Base pass) and the node runs **Edit CAD's own step code** (`edit_cad_faces.luc`, `cad_moves.luc`), so the node and the direct-modeling step cannot drift apart. A name no longer found upstream is an error saying so.
+- **Fusion's options**:
+  - Shell: Faces or Bodies (hollowed closed), **Tangent chain** (on, Fusion's default), **Inside thickness**, **Outside thickness**, Direction Inside, Outside or **Both** (a thickness each way; luce-cad `shelled(chain, outside_thickness)`).
+  - Move: Move object Bodies or Faces; Move type **Free move** (X, Y, Z and turns about each), **Translate**, **Rotate** (an origin axis or a **picked edge's line**, an angle), **Point to point** (from a picked point to another), **Point to position** (from a picked point to typed coordinates); **Pivot** the selection's middle, the origin or a point (Set pivot picks it); **Create copy** of bodies, and of **faces** (a surface body, luce-cad `copied_faces`). A point pick snaps as Fusion's does: the nearer end of the clicked B-rep edge, a round edge's middle (`cad_names.edge_point`).
+  - Combine: Target body, Tool bodies (and the second input's bodies; wired with no target picked, the chain's first body is the target, Houdini's way), Join, Cut, Intersect, Keep tools.
+  - Split Body, Split Face: the bodies or faces, Splitting tool a picked face (its surface extended) or an origin plane with an offset. Split Face's piece on the tool's outer side is named `<tag>/split[<name>]` (luce-cad), so it can be picked and changed apart.
+  - Replace Face: the faces, **Target faces** (several: one surface, or a closed solid's faces; luce-cad trims or extends the body to the quilt), **Tangent chain**.
+  - Delete Face heals several fillet, chamfer or corner faces at once where every face round them is flat (luce-cad `face_heal.lucb`); Remove takes bodies away as a recorded feature, apart from Delete.
+- **Reached** from the viewport's right-click menu (faces: the features on faces, then on their bodies; nothing selected: a Modify submenu), the S marking menu, and Modify › CAD features (`modify_commands.luc`); the same commands are Edit CAD's steps in an edited model. Made from a selection, a node takes it (faces, or the bodies they are on); then it **waits input by input** for what it lacks (`modify_picks.luc`): its input body shows, picks go in by name, a single pick (a face, a body, an edge, a point) finishes at once and the others at Enter, and the next empty input starts by itself, as Fusion's dialog moves to its next selection field. Each input is a row of the parameter panel with its pick button.
+- **Handles**: Shell's Inside arrow into the body and Outside arrow out of it, its value box opening by itself; Move's arrows along X, Y, Z and rings about them at the pivot (Free move), the arrows (Translate), the ring about its axis (Rotate).
+- **Waiting is not a fault**: a node or Edit CAD step waiting for a pick ("Pick …") shows "waiting" in the muted color with no badge, the prompt in the viewport's prompt line and the panel; only failures (red) and lost references (yellow) badge (`node.waiting`). While Combine waits for its tool bodies its target is lit in the sketch blue (`combine_target.luc`), in the node and in Edit CAD.
+- **Stage 6's gaps closed in Edit CAD**: Split Face (waits for its splitting face, or an origin plane from its tool bar and Enter), Replace Face onto several target faces (Shift adds, Enter) with Tangent chain, Shell's Tangent chain and two thicknesses, Move/Copy's dialog in its tool bar (Move type, Axis and Angle, Pivot and Pivot point, From and To points; choosing Point to point waits for the From point clicked, then the To point, the move standing still meanwhile so the model is picked where it was; Rotate about a picked edge and a Point pivot wait for theirs), copies of faces, **Remove** as a step of its own, Delete healing several strips at once, **Redefine Sketch Plane** (below). Faces a step makes are named for the node too (`#<node>s<n>`, imported models `#<node>m<i>`), so two Edit CAD nodes in one chain never make the same names. Edit CAD's parameter panel shows the Edit framework's Soft radius, Falloff, Symmetry and Keep selection only at its CVs level, the one level they act on (Fusion's direct edits have none).
+- **Redefine Sketch Plane** (Fusion's): in a Sketch node, from the sketch's right-click menu, the sketch waits for the face it goes onto (Pick face; an origin plane is its Plane row); in Edit CAD, from the right-click menu on a sketch's curve or the Redefine Sketch Plane submenu, a step `Sketch Plane` moves it onto the selected face, else waits for a face clicked or an origin plane chosen in its tool bar and Enter. The drawing keeps its own coordinates; curves projected from the old face stay as they were (a Sketch node's draw yellow as lost).
+- **Not built**: Combine's **New Component**: a CAD node is one component (one object of the scene), so Fusion's "a new component with the results" has no place inside it; the equivalent is the result brought into another CAD node with an Import node. Fusion's Split Body "Extend splitting tool" off (luce-cad always extends the face's surface). Move's gizmo dragging a Move node (its handles drag one value each; Edit CAD's Move/Copy keeps the full gizmo). Delete healing next to curved faces (luce-cad declines with the reason).
+- Screenshots: `luce_work/cad/stage78/shots/` (`modify_shell`, `modify_face_menu`, `modify_marking`, `modify_combine`, `modify_move`, `modify_split_face`, `direct_move_face`).
+- Plan as written: Tests: a shelled box's volume (outer minus inner, with the removed face open). Inside, Outside and Both.
 
-**Stage 8: history polish.**
-- The timeline strip.
-- Reorder checked by a trial cook.
-- Double-click a node to edit it in the viewport.
-- Tests: a reorder that would put a Fillet before the Extrude making its edges is refused with the reason, and the network is unchanged.
+**Stage 8: history polish.** Done 2026-10-12 (`cad_history_tests`, `sketch_plane_tests`). As built:
+- **The timeline strip** (`cad_timeline.luc`) along the Network panel's bottom, over its tools, shown inside a CAD network: Fusion's playback buttons (to the start, a feature back, a feature on, to the end), each feature of the chain an icon in order, the selected one outlined, a failed one underlined red and one with a lost reference yellow (a waiting one: none), bypassed and rolled-back ones dimmed (rolled back struck through), the marker an accent bar after the displayed feature, the hovered feature's name at the right. The chain (`cad_chain.luc`) runs up first inputs from the Output node the displayed node feeds, else as far down as one node at a time takes it on; branches off it are not on it (the strip is a second view of the nodes, not a second history).
+- **The marker**: dragged between icons it rolls the design back or forward (the display flag; one undo step), as do the buttons.
+- **Reorder**: an icon dragged along the strip. It is cooked first on a copy of the network; when a feature that cooked would fail (or gain a warning), it is refused, the reason in the status line ("Reorder refused: Fillet 6 would fail: The first input has no solid body"), and the network is unchanged. A primitive making the body from nothing stays first. Otherwise the first inputs are rewired as one undo step.
+- **Edit Feature**: a double-click on a feature node in the network, or on its icon in the strip, edits it in the viewport as Fusion's Edit Feature does: selected, the marker rolled to it while it is edited (selecting another node rolls forward again, as a sketch's editing does), its value box open by its first handle; a feature still waiting for picks asks for them; a Sketch or Edit node is edited as selecting it does; a container is entered.
+- Screenshots: `luce_work/cad/stage78/shots/` (`timeline_strip`, `timeline_rolled`, `timeline_refused`).
+- Plan as written: The timeline strip; reorder checked by a trial cook; double-click a node to edit it in the viewport. Tests: a reorder that would put a Fillet before the Extrude making its edges is refused with the reason, and the network is unchanged.
 
 ## 10. Open questions for the owner
 

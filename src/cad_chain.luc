@@ -1,0 +1,191 @@
+## A CAD network's chain as Fusion 360's timeline (docs/research/
+## FUSION-CAD-UX.md §4.3, stage 8): the features in order along first
+## inputs, the display flag the rollback marker, and reordering a feature
+## along it, checked by a trial cook first.
+##   The chain runs up first inputs from its end: the network's Output node
+##     when the displayed node feeds it, else as far down from the displayed
+##     node as one node at a time takes it on. A second view of the same
+##     nodes, not a second history: branches off the chain are not on it.
+##   Reorder takes a feature out of the chain and puts it back at another
+##     place, rewiring first inputs only. It is cooked first on a copy of the
+##     network; when a feature that cooked before would fail (a Fillet put
+##     before the Extrude that makes its edges, its edges gone), it is
+##     refused with the reason and the network stays as it was, as Fusion
+##     refuses a move before a dependency. A node that makes its body from
+##     nothing (a primitive) stays first.
+## Edit Feature: a feature double-clicked (in the network or the strip) is
+## edited in the viewport: it is selected and shown, the marker rolled to it
+## while it is edited (selecting another node rolls forward again, as a
+## sketch's does), its value box open by its first handle; a feature still
+## waiting for picks asks for them.
+from workspace import Workspace
+from network import Network
+from node import waiting
+import node_catalog
+import node_commands
+import levels
+import sketch_node
+import modify_picks
+import tool_prompts
+from edit_kinds import is_edit
+
+## The chain shown in network `w`'s scope, start first (empty outside a
+## CAD network).
+pub func chain(w: Workspace) -> list[int]!:
+    let g = w.network
+    if g.context() != "cad" or g.in_material():
+        return []
+    let shown = g.find(g.display) else return []
+    var end = shown.id
+    # The Output node when the displayed node feeds it.
+    for node in g.local_nodes():
+        if node.kind == levels.output_kind and node.inputs.length > 0 and node.inputs[0] >= 0:
+            if node.inputs[0] == shown.id or shown.id in g.upstream_chain(node.inputs[0]):
+                end = node.inputs[0]
+    # Else down while one node at a time takes it on.
+    if end == shown.id:
+        var guard = 0
+        while guard < 128:
+            guard += 1
+            let next = single_consumer(g, end)
+            if next < 0:
+                break
+            end = next
+    let result = g.upstream_chain(end).reversed()
+    result.append(end)
+    return result
+
+## The one node of the scope taking node `id` as its first input (the
+## Output node aside), or -1.
+func single_consumer(g: Network, id: int) -> int:
+    var found = -1
+    for node in g.local_nodes():
+        if node.kind != levels.output_kind and node.inputs.length > 0 and node.inputs[0] == id:
+            if found >= 0:
+                return -1
+            found = node.id
+    return found
+
+## Whether a node of `kind` makes its body from nothing (no input).
+func source(kind: str) -> bool:
+    return node_catalog.input_count(kind) == 0
+
+## Chain `order` rewired along first inputs in network `g`: each takes the
+## one before it, the first what the chain's first took (`head`), and the
+## nodes that took the old last (`tail`, off the chain) take the new last.
+func rewire(g: Network, order: list[int], head: int, tail: int) -> unit!:
+    var consumers: list[(int, int)] = []
+    for node in g.local_nodes():
+        for port in 0..<node.inputs.length:
+            if node.inputs[port] == tail and not (node.id in order):
+                consumers.append((node.id, port))
+    for at in 0..<order.length:
+        let node = g.require(order[at])
+        if node.inputs.length == 0:
+            continue
+        node.inputs[0] = head if at == 0 else order[at - 1]
+        node.sources[0] = 0
+        g.invalidate(node.id)
+    for (id, port) in consumers:
+        g.require(id).inputs[port] = order[-1]
+        g.invalidate(id)
+
+## The chain with the feature at `taken` moved to `to` (the place it takes
+## in the new order).
+func moved(order: list[int], taken: int, to: int) -> list[int]:
+    let rest: list[int] = []
+    for at in 0..<order.length:
+        if at != taken:
+            rest.append(order[at])
+    let result: list[int] = []
+    for at in 0..<rest.length:
+        if at == to:
+            result.append(order[taken])
+        result.append(rest[at])
+    if to >= rest.length:
+        result.append(order[taken])
+    return result
+
+## Why node `id`'s cook in `g` is broken ("" when it is not): its failure,
+## or a warning that is no wait for a pick.
+func broken(g: Network, id: int) -> str:
+    let data = g.evaluate_data(id) catch failure:
+        return failure.message
+    return data.warning if data.warning != "" and not waiting(data.warning) else ""
+
+## Move the feature at place `taken` of the chain to place `to`: refused,
+## with the reason in the status line, when the trial cook breaks a
+## feature that cooked; else one undo step. The reason ("" when moved).
+pub func reorder(w: Workspace, taken: int, to: int) -> str!:
+    let order = chain(w)
+    if taken < 0 or taken >= order.length or to < 0 or to >= order.length or taken == to:
+        return ""
+    let g = w.network
+    let feature = g.require(order[taken])
+    if source(feature.kind):
+        return refuse(w, f"{feature.name} makes the body from nothing: it stays first")
+    if to == 0 and source(g.require(order[0]).kind):
+        return refuse(w, f"Nothing goes before {g.require(order[0]).name}: it makes the body")
+    let first = g.require(order[0])
+    let head = first.inputs[0] if first.inputs.length > 0 else -1
+    let tail = order[-1]
+    let order_after = moved(order, taken, to)
+    # The trial: the same chain rewired on a copy, every feature cooked.
+    let trial = g.copy()
+    rewire(trial, order_after, head, tail)
+    for id in order_after:
+        let before = broken(g, id)
+        let after = broken(trial, id)
+        if before == "" and after != "":
+            let name = g.require(id).name
+            let why = after[name.length + 2..] if after.starts_with(name + ": ") else after
+            return refuse(w, f"Reorder refused: {name} would fail: {why}")
+    w.perform(f"Reorder {feature.name}", func () -> unit!:
+        rewire(g, order_after, head, tail)
+        w.rebuild())
+    return ""
+
+func refuse(w: Workspace, reason: str) -> str:
+    w.notice = reason
+    w.revision += 1
+    return reason
+
+## Roll the marker to just after the feature at place `at` of the chain
+## (its display flag), one undo step.
+pub func roll_to(w: Workspace, at: int) -> unit!:
+    let order = chain(w)
+    if at < 0 or at >= order.length or w.network.display == order[at]:
+        return
+    let id = order[at]
+    w.perform("Roll back", func () -> unit!:
+        w.sketch_return = -1
+        w.network.set_display(id)
+        w.network.selected = id
+        w.network.picked = [id]
+        w.selection = none
+        w.rebuild())
+
+## Edit Feature: node `id` edited in the viewport (see the header).
+pub func edit_feature(w: Workspace, id: int) -> unit!:
+    let node = w.network.require(id)
+    if node_catalog.holds_nodes(node.kind):
+        node_commands.enter_group(w, id)
+        return
+    if node.kind == sketch_node.kind_name or is_edit(node.kind) or w.network.context() != "cad":
+        # A sketch and an Edit node are edited when selected.
+        node_commands.select_node(w, id)
+        return
+    let back = w.network.display
+    node_commands.select_node(w, id)
+    if back != id:
+        w.network.set_display(id)
+        w.sketch_return = back
+    if let input = modify_picks.next_input(node):
+        modify_picks.start(w, id, input)
+        return
+    if node.kind == "Revolve" and waiting(node.warning):
+        tool_prompts.pick_axis(w, id)
+        return
+    w.ask_value = true
+    w.revision += 1
+    w.rebuild()

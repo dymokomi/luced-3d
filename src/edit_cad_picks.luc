@@ -11,6 +11,9 @@ from node import Node
 from tool_prompt import ToolPrompt
 import edit_cad_faces
 import cad_features
+import cad_moves
+import cad_names
+from edit_types import edge_level
 
 ## The prompts Edit CAD's steps wait in.
 pub let target_label = "Pick target faces"
@@ -18,6 +21,12 @@ pub let tools_label = "Pick tool bodies"
 pub let splitting_label = "Pick splitting face"
 pub let axis_label = "Pick revolve axis"
 pub let object_label = "Pick extent face"
+pub let plane_label = "Pick sketch plane"
+## Move/Copy's picks: its points and the edge it turns about.
+pub let from_label = "Pick from point"
+pub let to_label = "Pick to point"
+pub let pivot_label = "Pick pivot"
+pub let rotate_label = "Pick rotate axis"
 
 ## The last step waits for prompt `label` at level `level`: the model as
 ## the steps before it left it shows, and what is picked goes into it.
@@ -31,7 +40,7 @@ pub func wait_for(w: Workspace, node: Node, label: str, level: int, hint: str) -
 
 ## Whether prompt `label` is one of Edit CAD's.
 pub func waits(label: str) -> bool:
-    return label in [target_label, tools_label, splitting_label, axis_label, object_label]
+    return label in [target_label, tools_label, splitting_label, axis_label, object_label, plane_label, from_label, to_label, pivot_label, rotate_label]
 
 ## The selection changed while the last step waits: what was picked goes
 ## into it (a face's name, the tool bodies' group, an edge as the axis);
@@ -70,6 +79,9 @@ pub func follow_pick(w: Workspace, node: Node, mesh: Mesh, chosen: Selection) ->
         return
     if first < 0:
         return
+    if prompt.label in [from_label, to_label, pivot_label, rotate_label]:
+        moved_pick(w, node, prompt.label, mesh, first)
+        return
     if prompt.label == axis_label:
         let references = mesh.find_attribute("cad_edge_reference", 4)
         if references < 0 or not w.on_domain(Domain.edge):
@@ -91,6 +103,9 @@ pub func follow_pick(w: Workspace, node: Node, mesh: Mesh, chosen: Selection) ->
         let texts = [step.text(0), step.text(1), step.text(2), step.text(3)]
         texts[cad_features.face_text] = name
         node.edits[-1] = step.with_texts(texts)
+    elif prompt.label == plane_label:
+        # Redefine Sketch Plane: the face the sketch goes onto.
+        node.edits[-1] = step.with_texts([step.text(0), name, step.text(2)])
     else:
         node.edits[-1] = step.with_texts([name])
         if step.verb == "Split Body":
@@ -98,6 +113,56 @@ pub func follow_pick(w: Workspace, node: Node, mesh: Mesh, chosen: Selection) ->
             numbers[edit_cad_faces.split_tool_slot] = 0.0
             node.edits[-1] = node.edits[-1].with_numbers(numbers)
     finish_pick(w, node)
+
+## Move/Copy's pick `label` took edge `edge` of the pick mesh: a point
+## (the B-rep edge's nearer end, a round edge's middle) into the step's
+## numbers, or the edge into its rotate axis; Point to point asks for its
+## To point next.
+func moved_pick(w: Workspace, node: Node, label: str, mesh: Mesh, edge: int) -> unit!:
+    if not w.on_domain(Domain.edge):
+        return
+    let step = node.edits[-1]
+    if label == rotate_label:
+        let references = mesh.find_attribute("cad_edge_reference", 4)
+        let reference = mesh.attribute_text(references, edge) if references >= 0 else ""
+        if reference == "":
+            say(w, "This edge has no name to keep")
+            return
+        node.edits[-1] = step.with_texts(["", reference])
+        finish_pick(w, node)
+        return
+    let at = cad_names.edge_point(mesh, edge)
+    let slot = cad_moves.from_slot if label == from_label else (cad_moves.to_slot if label == to_label else cad_moves.pivot_point_slot)
+    let numbers = step.numbers.copy()
+    while numbers.length < cad_moves.move_count:
+        numbers.append(0.0)
+    numbers[slot] = at.x
+    numbers[slot + 1] = at.y
+    numbers[slot + 2] = at.z
+    node.edits[-1] = step.with_numbers(numbers)
+    finish_pick(w, node)
+    if label == from_label and int(numbers[cad_moves.type_slot]) == 3:
+        pick_move(w, to_label)
+
+## Move/Copy waits for pick `label` (its points, its pivot, its axis) on
+## the edited model's edges.
+pub func pick_move(w: Workspace, label: str) -> unit!:
+    let node = w.selected() else return
+    if w.in_transaction() or node.edits.length == 0 or node.edits[-1].verb != "Transform Components":
+        return
+    w.begin(label)
+    # While a point is picked the move stands still (From and To alike), so
+    # the model is picked on where it was.
+    if label in [from_label, to_label]:
+        let numbers = node.edits[-1].numbers.copy()
+        while numbers.length < cad_moves.move_count:
+            numbers.append(0.0)
+        let (still, moving) = (cad_moves.to_slot, cad_moves.from_slot) if label == from_label else (cad_moves.from_slot, cad_moves.to_slot)
+        for k in 0..<3:
+            numbers[moving + k] = numbers[still + k]
+        node.edits[-1] = node.edits[-1].with_numbers(numbers)
+        w.network.invalidate(node.id)
+    wait_for(w, node, label, edge_level, f"{label}: click near a corner or an edge's end (a round edge: its middle); Esc cancels")
 
 ## The waiting Revolve's axis: `axis` (a picked sketch line's or edge's).
 pub func set_axis(w: Workspace, node: Node, axis: str) -> unit!:

@@ -1,0 +1,90 @@
+## Fusion's Redefine Sketch Plane (docs/research/FUSION-CAD-UX.md, stage
+## 6's parity gaps): an Edit CAD sketch moved onto a box's top face (a step
+## of its recipe, one undo), then onto an origin plane chosen while the
+## step waits; a Sketch node's plane redefined by picking the face, its
+## drawing kept in its own coordinates.
+from workspace import Workspace
+from luce_3d.graphics import Vector3
+from luce_cad.cad_sketches import CadSketches
+from node import waiting
+import node_commands
+import selection_commands
+import modeling_commands
+import edit_cad_commands
+import edit_cad_sketches
+import edit_cad_picks
+import sketch_commands
+import sketch_source
+import cad_commands
+import tool_prompts
+from luce_std import math
+
+pub func sketch_plane_tests() -> unit!:
+    edit_cad_sketch()
+    sketch_node()
+    print("PASS Redefine Sketch Plane: an Edit CAD sketch onto a selected face and, waiting, onto an origin plane from its tool bar; a Sketch node onto a face picked; drawings kept")
+
+func select_where(w: Workspace, level: int, keep: func(Vector3, Vector3) -> bool) -> unit!:
+    selection_commands.set_mode(w, level)
+    let mesh = w.geometry else trap("pick geometry")
+    for polygon in 0..<mesh.face_count():
+        if keep(mesh.face_center(polygon), mesh.face_normal(polygon)):
+            selection_commands.choose_component(w, polygon, false)
+            return
+    assert(false, "nothing to select there")
+
+func edit_cad_sketch() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    let node = w.selected() else trap("Edit CAD")
+    modeling_commands.create(w, "Box")
+    w.selection = none
+    # A sketch on the ground (XZ), a 4 mm square drawn, finished.
+    edit_cad_commands.create_sketch(w, 1)
+    let name = w.edit_sketch
+    assert(sketch_source.write(w, node, name, sketch_commands.rectangle_text(0.0, 0.0, 4.0, 4.0), "Draw"))
+    edit_cad_commands.finish_sketch(w)
+    let text = CadSketches.text(w.network.evaluate_data(node.id).geometry, 0)
+    # Onto the box's top (y 1), selected: one step.
+    let steps = node.edits.length
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
+    edit_cad_commands.redefine_sketch(w, name)
+    assert(node.edits.length == steps + 1 and node.edits[-1].verb == edit_cad_sketches.plane_verb)
+    let moved = w.network.evaluate_data(node.id).geometry
+    assert(math.abs(CadSketches.origin(moved, 0).y - 1.0) < 1e-9 and CadSketches.text(moved, 0) == text)
+    w.undo()
+    assert(w.network.require(node.id).edits.length == steps)
+    # Nothing selected: it waits; XY chosen in its tool bar and Enter.
+    w.selection = none
+    edit_cad_commands.redefine_sketch(w, name)
+    let prompt = w.prompt else trap("Redefine waits for its face")
+    assert(prompt.label == edit_cad_picks.plane_label and waiting(w.network.evaluate_data(node.id).warning))
+    assert(w.network.require(node.id).edits[-1].verb == edit_cad_sketches.plane_verb)
+    modeling_commands.set_last_step(w, 0, 0.0, 0.0, 3.0)
+    tool_prompts.accept_prompt(w)
+    assert(w.prompt == none)
+    let flat = w.network.evaluate_data(node.id).geometry
+    assert(math.abs(CadSketches.u(flat, 0).cross(CadSketches.v(flat, 0)).z) > 0.999)
+
+func sketch_node() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    node_commands.add_node(w, "Sketch", 0.0, 120.0)
+    let sketch = w.selected() else trap("Sketch")
+    node_commands.set_text(w, 0, sketch_commands.rectangle_text(0.0, 0.0, 4.0, 4.0))
+    let text = sketch.texts[0]
+    node_commands.select_node(w, sketch.id)
+    assert(w.sketching())
+    cad_commands.redefine_plane(w)
+    let prompt = w.prompt else trap("the Sketch waits for its face")
+    assert(prompt.label == "Pick face")
+    select_where(w, w.level_of(2), func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
+    assert(w.prompt == none and sketch.texts[1] != "" and int(sketch.values[0]) == 3)
+    # Its drawing as it was (projected loops added to it on the face).
+    assert(w.network.require(sketch.id).texts[0].contains(text.split("\n")[0]))

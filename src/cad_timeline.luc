@@ -1,0 +1,232 @@
+## The CAD timeline strip along the Network panel's bottom (above its
+## tools), shown inside a CAD network: Fusion 360's timeline as a second
+## view of the chain (cad_chain.luc).
+##   Its buttons, Fusion's: roll back to the start, a feature back, a
+##     feature on, to the end.
+##   Each feature an icon, in chain order; the selected one outlined in the
+##     accent, a failed one underlined red, one with a warning yellow (one
+##     waiting for picks: none); bypassed ones dim; those after the marker
+##     (rolled back) dim and struck through, as Fusion greys them.
+##   The marker, an accent bar after the displayed feature: dragged between
+##     icons it rolls the design back or forward (the display flag).
+##   A click selects a feature; a double-click edits it (Edit Feature); a
+##     drag moves it along the chain (Reorder), refused with the reason when
+##     the trial cook breaks a feature.
+## The hovered feature's name shows at the strip's right.
+from luce_ui.ui import Widget, Layout, Constraints, Size, Event, Painter, Point
+from luce_gpu.gpu import RenderTarget, Rect
+from luce_window.input import EventKind
+from workspace import Workspace
+from node import waiting
+from tool_icons import draw_icon
+import cad_chain
+import node_commands
+import theme
+from luce_std import math
+from luce_ui import ui
+import time
+
+## The strip's height, an icon's side and the gap between icons.
+pub let strip_height = 34.0
+let icon = 24.0
+let gap = 6.0
+## Where the first icon starts: after the four buttons.
+let first_x = 4.0 * 22.0 + 14.0
+## The buttons' icons, Fusion's playback order.
+func button_icons() -> list[str]:
+    return ["go-to-start", "step-back", "step-forward", "go-to-end"]
+
+pub class CadTimeline: Widget:
+    let box: Layout
+    let w: Workspace
+    ## The chain as last drawn, and what it was drawn for.
+    var order: list[int]
+    var drawn_revision: int = -1
+    ## The icon under the pointer (-1 none), pressed, and the press place.
+    var hovered: int = -1
+    var pressed: int = -1
+    var press_x: float = 0.0
+    ## "": idle; "item": an icon pressed; "drag": an icon dragged (reorder);
+    ## "marker": the marker dragged.
+    var mode: str = ""
+    ## The place a drag would drop at (an insertion index), and the
+    ## marker's place while dragged (after icon `marker_at`).
+    var drop: int = -1
+    var marker_at: int = -1
+    var pointer_x: float = 0.0
+    var last_click: int = 0
+    var last_item: int = -1
+
+    pub func init(self, w: Workspace) -> unit!:
+        self.w = w
+        self.order = []
+        self.box = Layout()
+        self.box.set_interactive(true)
+
+    pub func layout(self) -> Layout:
+        return self.box
+
+    pub func measure(self, available: Constraints) -> Size!:
+        return Size(200.0, strip_height)
+
+    ## Whether it shows: inside a CAD network.
+    pub func wanted(self) -> bool!:
+        return self.w.network.context() == "cad" and not self.w.network.in_material()
+
+    ## Each frame: shown or not, the chain read again as the network
+    ## changes.
+    pub func poll(self) -> unit!:
+        let shown = self.wanted()
+        if shown != self.box.is_visible():
+            self.box.set_visible(shown)
+        if shown and self.w.revision != self.drawn_revision:
+            self.drawn_revision = self.w.revision
+            self.order = cad_chain.chain(self.w)
+            self.box.invalidate()
+
+    ## Icon `at`'s left edge.
+    func icon_x(self, at: int) -> float:
+        return first_x + float(at) * (icon + gap)
+
+    ## The marker's place: after the displayed feature.
+    func displayed(self) -> int:
+        for at in 0..<self.order.length:
+            if self.order[at] == self.w.network.display:
+                return at
+        return self.order.length - 1
+
+    ## The icon under `x` (-1 none).
+    func item_at(self, x: float) -> int:
+        for at in 0..<self.order.length:
+            let left = self.icon_x(at)
+            if x >= left - gap * 0.5 and x < left + icon + gap * 0.5:
+                return at
+        return -1
+
+    ## The insertion place nearest `x` (0 to the chain's length).
+    func place_at(self, x: float) -> int:
+        let at = int(math.floor((x - first_x + gap * 0.5) / (icon + gap) + 0.5))
+        return clamp(at, 0, self.order.length)
+
+    ## The marker's x after icon `at`.
+    func marker_x(self, at: int) -> float:
+        return self.icon_x(at) + icon + gap * 0.5
+
+    pub func draw(self, target: RenderTarget) -> unit!:
+        let size = target.size()
+        let p = Painter(target)
+        p.rectangle(Rect(0.0, 0.0, size.width, size.height), theme.surface_raised())
+        p.rectangle(Rect(0.0, 0.0, size.width, 1.0), theme.border())
+        let top = (size.height - icon) * 0.5
+        let icons = button_icons()
+        for at in 0..<icons.length:
+            ui.draw_icon(p.target(), icons[at], Rect(6.0 + float(at) * 22.0, top + 3.0, 18.0, 18.0), theme.text_muted())
+        p.rectangle(Rect(first_x - 8.0, 6.0, 1.0, size.height - 12.0), theme.border())
+        let g = self.w.network
+        let shown = self.displayed()
+        let marker = self.marker_at if self.mode == "marker" else shown
+        for at in 0..<self.order.length:
+            let node = g.find(self.order[at]) else continue
+            let x = self.icon_x(at)
+            let selected = node.id == g.selected
+            let rolled = at > marker
+            if selected:
+                p.rounded_rectangle(Rect(x - 2.0, top - 2.0, icon + 4.0, icon + 4.0), theme.accent(), 4.0)
+            p.rounded_rectangle(Rect(x, top, icon, icon), theme.grey(70.0) if self.hovered == at else theme.grey(56.0), 3.0)
+            let ink = theme.text_muted() if rolled or not node.enabled else theme.text()
+            draw_icon(p, node.kind, x + 3.0, top + 3.0, icon - 6.0, ink)
+            if rolled:
+                p.line(Point(x + 2.0, top + icon - 2.0), Point(x + icon - 2.0, top + 2.0), 1.0, theme.grey(110.0))
+            # Fusion's timeline colors: red failed, yellow a lost
+            # reference; a feature waiting for picks has none.
+            if node.failure != "":
+                p.rectangle(Rect(x, top + icon + 1.0, icon, 2.0), theme.failure())
+            elif node.warning != "" and not waiting(node.warning):
+                p.rectangle(Rect(x, top + icon + 1.0, icon, 2.0), theme.warning())
+        if self.order.length > 0:
+            let mx = self.marker_x(marker)
+            p.rectangle(Rect(mx - 1.5, 3.0, 3.0, size.height - 6.0), theme.accent())
+            p.rectangle(Rect(mx - 4.0, 2.0, 8.0, 4.0), theme.accent())
+        if self.mode == "drag" and self.drop >= 0:
+            let dx = self.icon_x(self.drop) - gap * 0.5
+            p.rectangle(Rect(dx - 1.0, 2.0, 2.0, size.height - 4.0), theme.text())
+        if self.hovered >= 0 and self.hovered < self.order.length:
+            if let node = g.find(self.order[self.hovered]):
+                let label = node.name + ("" if node.failure == "" else ": failed")
+                let end = self.icon_x(self.order.length) + 8.0
+                p.text(label, math.max(end, size.width - float(label.length) * 7.5 - 10.0), (size.height - 14.0) * 0.5, theme.text_muted())
+        p.close()
+
+    pub func event(self, event: Event) -> unit!:
+        if event.kind == EventKind.pointer_moved:
+            self.pointer_x = event.x
+            let over = self.item_at(event.x) if event.inside else -1
+            if over != self.hovered:
+                self.hovered = over
+                self.box.invalidate()
+            if self.mode == "item" and math.abs(event.x - self.press_x) > 4.0:
+                self.mode = "drag"
+            if self.mode == "drag":
+                self.drop = self.place_at(event.x)
+                self.box.invalidate()
+            elif self.mode == "marker":
+                self.marker_at = clamp(self.place_at(event.x) - 1, 0, self.order.length - 1)
+                self.box.invalidate()
+        elif event.kind == EventKind.pointer_down and event.button == 0 and event.inside:
+            self.press(event.x)
+        elif event.kind == EventKind.pointer_up and event.button == 0:
+            self.release(event.x)
+        elif event.kind == EventKind.pointer_left:
+            self.hovered = -1
+            self.box.invalidate()
+        elif event.cancelled or event.kind == EventKind.focus_lost:
+            self.mode = ""
+            self.box.invalidate()
+
+    ## A press: a button, the marker, or an icon.
+    func press(self, x: float) -> unit!:
+        if x < first_x - 8.0:
+            let button = int(math.floor((x - 4.0) / 22.0))
+            let shown = self.displayed()
+            let target = [0, shown - 1, shown + 1, self.order.length - 1][clamp(button, 0, 3)]
+            cad_chain.roll_to(self.w, clamp(target, 0, self.order.length - 1))
+            return
+        if self.order.length > 0 and math.abs(x - self.marker_x(self.displayed())) <= 5.0:
+            self.mode = "marker"
+            self.marker_at = self.displayed()
+            return
+        let at = self.item_at(x)
+        if at < 0:
+            return
+        self.mode = "item"
+        self.pressed = at
+        self.press_x = x
+
+    ## A release ends what the press began: a click selects (twice quickly:
+    ## edits), a drag reorders, the marker rolls.
+    func release(self, x: float) -> unit!:
+        let mode = self.mode
+        self.mode = ""
+        self.box.invalidate()
+        if mode == "marker":
+            cad_chain.roll_to(self.w, self.marker_at)
+            return
+        if mode == "drag":
+            let to = self.drop if self.drop <= self.pressed else self.drop - 1
+            self.drop = -1
+            _ = cad_chain.reorder(self.w, self.pressed, to)
+            return
+        if mode != "item" or self.pressed < 0 or self.pressed >= self.order.length:
+            return
+        let id = self.order[self.pressed]
+        let now = time.now()
+        if self.last_item == id and now - self.last_click < 400000000:
+            self.last_item = -1
+            cad_chain.edit_feature(self.w, id)
+            return
+        self.last_item = id
+        self.last_click = now
+        node_commands.select_node(self.w, id)
+
+func clamp(value: int, low: int, high: int) -> int:
+    return low if value < low else (high if value > high else value)

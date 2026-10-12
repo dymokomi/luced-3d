@@ -1,0 +1,167 @@
+## Stage 8 of the Fusion CAD plan (docs/research/FUSION-CAD-UX.md):
+## history polish. The chain as Fusion's timeline (cad_chain.luc), the
+## strip along the Network panel (cad_timeline.luc): its marker rolling
+## the design back, a click selecting, a double-click editing (Edit
+## Feature), a drag reordering; a reorder checked by a trial cook, refused
+## with the reason when it would break a feature (a Fillet before the
+## Extrude making its edges), the network unchanged.
+from app import Luce3D
+from workspace import Workspace
+from luce_ui.ui import Event
+from luce_window.input import EventKind
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.modeling import CadModeling
+from sketch_support import render
+import node_commands
+import sketch_commands
+import cad_chain
+import cad_modify
+import cad_moves
+
+pub func cad_history_tests() -> unit!:
+    refused_reorder()
+    allowed_reorder()
+    strip_in_the_panel()
+    print("PASS CAD history: the chain in order; a Fillet moved before the Extrude making its edges refused with the reason, the network unchanged; a Move moved before a Fillet, one undo; the strip shown in a CAD network, its marker dragged rolling back, a click selecting, a double-click editing the feature rolled to (forward again on leaving), a drag reordering; double-click in the network edits a feature")
+
+## Every node's first input, to see the network unchanged.
+func wiring(w: Workspace) -> list[int]:
+    let result: list[int] = []
+    for node in w.network.nodes:
+        result.append(node.id)
+        result.append(node.inputs[0] if node.inputs.length > 0 else -2)
+    return result
+
+## Sketch (a 10 mm square) → Extrude 10 → Fillet of its four uprights.
+func plate(w: Workspace) -> list[int]!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Sketch", 0.0, 0.0)
+    node_commands.set_parameter(w, 0, 0.0)
+    node_commands.set_text(w, 0, sketch_commands.rectangle_text(0.0, 0.0, 10.0, 10.0))
+    let sketch = w.network.selected
+    node_commands.add_node(w, "Extrude", 0.0, 120.0)
+    let extrude = w.network.selected
+    let body = CadGeometry.model(w.network.evaluate_data(extrude).geometry, 0)
+    node_commands.add_node(w, "Fillet", 0.0, 240.0)
+    let fillet = w.network.selected
+    # Four of the extrusion's edges, by the faces they lie between.
+    node_commands.set_text(w, 0, CadModeling.edge_references(body, [0, 1, 2, 3]))
+    node_commands.set_parameter(w, 0, 1.0)
+    _ = w.network.evaluate_data(fillet)
+    return [sketch, extrude, fillet]
+
+func refused_reorder() -> unit!:
+    let w = Workspace()
+    let ids = plate(w)
+    assert(cad_chain.chain(w) == ids)
+    let before = wiring(w)
+    let undos = w.history.undo_label()
+    # The Fillet (place 2) put before the Extrude (place 1).
+    let reason = cad_chain.reorder(w, 2, 1)
+    assert(reason.starts_with("Reorder refused: ") and reason.contains(w.network.require(ids[2]).name))
+    assert(w.notice == reason)
+    assert(wiring(w) == before and w.history.undo_label() == undos)
+    assert(cad_chain.chain(w) == ids)
+
+## Box → Fillet (its uprights) → Move 5 along X: the Move put before the
+## Fillet cooks the same body, one undo step back.
+func allowed_reorder() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let box = w.network.selected
+    node_commands.add_node(w, "Fillet", 0.0, 120.0)
+    let fillet = w.network.selected
+    node_commands.set_parameter(w, 0, 1.0)
+    node_commands.add_node(w, "Move", 0.0, 240.0)
+    let move = w.network.selected
+    let solid = CadGeometry.model(w.network.evaluate_data(box).geometry, 0)
+    node_commands.set_text(w, cad_modify.first_text, CadModeling.face_name_of(solid, 0))
+    node_commands.set_parameter(w, cad_moves.type_slot, 1.0)
+    node_commands.set_parameter(w, 0, 5.0)
+    let faces = CadGeometry.model(w.network.evaluate_data(move).geometry, 0).face_count()
+    assert(cad_chain.chain(w) == [box, fillet, move])
+    # A primitive stays first.
+    assert(cad_chain.reorder(w, 2, 0) != "" and cad_chain.chain(w) == [box, fillet, move])
+    assert(cad_chain.reorder(w, 2, 1) == "")
+    assert(w.network.require(move).inputs[0] == box and w.network.require(fillet).inputs[0] == move)
+    assert(cad_chain.chain(w) == [box, move, fillet])
+    assert(CadGeometry.model(w.network.evaluate_data(fillet).geometry, 0).face_count() == faces)
+    w.undo()
+    assert(w.network.require(fillet).inputs[0] == box and w.network.require(move).inputs[0] == fillet)
+
+## The strip in the editor: shown in a CAD network, hidden at the root;
+## the marker dragged to the first feature rolls back; a click selects; a
+## double-click edits (rolled to, forward again when another is chosen);
+## a drag of the Fillet onto the Extrude's place is refused.
+func strip_in_the_panel() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    let ids = plate(w)
+    node_commands.select_node(w, ids[2])
+    node_commands.display_selected(w)
+    render(editor)
+    let strip = editor.panels.cad_timeline
+    strip.poll()
+    render(editor)
+    let bounds = strip.layout().bounds()
+    assert(strip.layout().is_visible() and bounds.width > 0.0 and bounds.height > 20.0)
+    let y = bounds.y + bounds.height * 0.5
+    # Icon k's middle: after the four buttons (cad_timeline's layout).
+    let middle = func (k: int) -> float: return bounds.x + 102.0 + float(k) * 30.0 + 12.0
+    let marker = bounds.x + 102.0 + 2.0 * 30.0 + 24.0 + 3.0
+    # The marker dragged back to just after the Sketch: it shows.
+    press(editor, marker, y)
+    drag_to(editor, middle(0) + 14.0, y)
+    release(editor, middle(0) + 14.0, y)
+    assert(w.network.display == ids[0])
+    # The buttons: to the end.
+    click(editor, bounds.x + 6.0 + 3.0 * 22.0 + 9.0, y)
+    assert(w.network.display == ids[2])
+    # A click on the Extrude selects it; a double-click edits it: shown
+    # (rolled to), its value box asked for.
+    click(editor, middle(1), y)
+    assert(w.network.selected == ids[1] and w.network.display == ids[2])
+    click(editor, middle(1), y)
+    assert(w.network.selected == ids[1] and w.network.display == ids[1])
+    assert(w.ask_value or editor.panels.sketch_value.is_open())
+    # Leaving it rolls forward again.
+    node_commands.select_node(w, ids[2])
+    assert(w.network.display == ids[2])
+    # The Fillet dragged before the Extrude: refused, said, unchanged.
+    let before = wiring(w)
+    press(editor, middle(2), y)
+    drag_to(editor, middle(1) - 8.0, y)
+    drag_to(editor, middle(1) - 14.0, y)
+    release(editor, middle(1) - 14.0, y)
+    assert(wiring(w) == before and w.notice.starts_with("Reorder refused: "))
+    # Double-click a feature node in the network: the same Edit Feature.
+    w.ask_value = false
+    cad_chain.edit_feature(w, ids[1])
+    assert(w.network.display == ids[1] and (w.ask_value or editor.panels.sketch_value.is_open()))
+    # At the root the strip hides.
+    node_commands.leave_group(w)
+    strip.poll()
+    assert(not strip.layout().is_visible())
+    editor.close()
+
+func press(editor: Luce3D, x: float, y: float) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = x, y = y))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = x, y = y, button = 0))
+
+func drag_to(editor: Luce3D, x: float, y: float) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = x, y = y))
+
+func release(editor: Luce3D, x: float, y: float) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = x, y = y, button = 0))
+    editor.panels.refresh()
+    editor.panels.cad_timeline.poll()
+
+func click(editor: Luce3D, x: float, y: float) -> unit!:
+    press(editor, x, y)
+    release(editor, x, y)
