@@ -15,6 +15,8 @@
 ## row, the box and the handle being one value. In Edit CAD the same
 ## handles drag the last step's values (its Extrude, Revolve, Offset Face,
 ## Fillet, Chamfer or Shell), the step's tool bar and box being that value.
+## A Move node of Free move or Translate shows Fusion's whole manipulator
+## instead (move_manipulator.luc), at its pivot moved by the translation.
 from luce_ui.ui import Painter, Point, Event
 from luce_gpu.gpu import Rect, Color
 from luce_window.input import EventKind, Key
@@ -25,6 +27,7 @@ from handle_lines import HandleLine
 from snapping import grid_step, stepped
 from angles import radians, degrees
 import handle_lines
+from move_manipulator import MoveManipulator, first_ring
 import node_catalog
 from edit_kinds import is_edit
 import view_projection
@@ -78,10 +81,68 @@ pub class FeatureHandles:
     var pressed_y: float = 0.0
     ## A handle clicked: its value box is wanted (panels reads and clears).
     pub var clicked: int = -1
+    ## A Move node's manipulator and its part hovered or dragged (-1 none).
+    let manipulator: MoveManipulator
+    pub var part: int = -1
 
     pub func init(self, w: Workspace):
         self.w = w
         self.parsed = []
+        self.manipulator = MoveManipulator(w)
+
+    ## Where a Move node's manipulator turns (its pivot, as the cook
+    ## reports it: its arrows' foot), when the node moves freely or
+    ## translates; none for its other types and everything else.
+    func move_pivot(self, target: HandleTarget) -> Vector3?!:
+        if target.step or target.kind != "Move" or target.values.length <= 16 or int(target.values[16]) > 1:
+            return none
+        for h in self.handles(target):
+            if h.kind == "arrow":
+                return h.foot
+        return none
+
+    ## The manipulator's events (see move_event).
+    func move_event(self, target: HandleTarget, pivot: Vector3, event: Event, width: float, height: float) -> bool!:
+        let rings = int(target.values[16]) == 0
+        if self.dragging:
+            if event.cancelled or event.kind in [EventKind.focus_lost, EventKind.overflow] or (event.kind == EventKind.key_down and event.key == Key.escape):
+                self.w.cancel()
+                self.dragging = false
+                return true
+            if event.kind == EventKind.pointer_up:
+                self.dragging = false
+                if self.moved:
+                    self.w.commit()
+                else:
+                    self.w.cancel()
+                return true
+            if event.kind == EventKind.pointer_moved:
+                if math.hypot(event.x - self.pressed_x, event.y - self.pressed_y) < 3.0 and not self.moved:
+                    return true
+                self.moved = true
+                self.w.preview_parameters(self.manipulator.dragged(event.x, event.y, width, height, not (event.meta or event.control)))
+                return true
+            return false
+        if event.alt:
+            return false
+        if event.kind == EventKind.pointer_moved:
+            let at = self.manipulator.hit(pivot, target.values, rings, event.x, event.y, width, height)
+            let changed = at != self.part
+            self.part = at
+            return changed
+        if event.kind == EventKind.pointer_down and event.button == 0 and event.inside:
+            let at = self.manipulator.hit(pivot, target.values, rings, event.x, event.y, width, height)
+            if at < 0:
+                return false
+            self.part = at
+            self.w.begin("Move rotate" if at >= first_ring else "Move translate")
+            self.dragging = true
+            self.moved = false
+            self.pressed_x = event.x
+            self.pressed_y = event.y
+            self.manipulator.press(at, pivot, target.values, event.x, event.y, width, height)
+            return true
+        return false
 
     ## What the handles set, when they show: the selected feature (enabled,
     ## no prompt open), or the edited Edit CAD model's last step.
@@ -191,6 +252,8 @@ pub class FeatureHandles:
     ## Pointer events; whether one was used.
     pub func event(self, event: Event, width: float, height: float) -> bool!:
         let node = self.feature() else return false
+        if let pivot = self.move_pivot(node):
+            return self.move_event(node, pivot, event, width, height)
         let shown = self.handles(node)
         if self.dragging:
             if event.cancelled or event.kind in [EventKind.focus_lost, EventKind.overflow] or (event.kind == EventKind.key_down and event.key == Key.escape):
@@ -320,6 +383,9 @@ pub class FeatureHandles:
     ## The handles over the scene, lit when hovered or dragged.
     pub func draw(self, p: Painter, width: float, height: float) -> unit!:
         let node = self.feature() else return
+        if let pivot = self.move_pivot(node):
+            self.manipulator.draw(p, pivot, node.values, int(node.values[16]) == 0, self.part, width, height)
+            return
         let shown = self.handles(node)
         for at in 0..<shown.length:
             let h = shown[at]

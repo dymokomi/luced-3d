@@ -1,0 +1,220 @@
+## Fusion's Move manipulator on a Move node (Free move and Translate): the
+## gizmo Edit CAD's Move Face drags, in one: arrows along X, Y and Z, a
+## square in each plane between two of them, the middle square moving in
+## the view's plane and (Free move) rings turning about each axis. It
+## stands where the pivot has gone (the pivot the cook reports, moved by
+## the node's translation), so it follows the moved body as it is dragged.
+## Drags set the node's Translate and Rotate values, snapped to the grid
+## and to whole degrees (Cmd or Ctrl frees them), one undo step each.
+from luce_ui.ui import Painter, Point
+from luce_gpu.gpu import Rect, Color
+from luce_3d.graphics import Vector3
+from workspace import Workspace
+from snapping import grid_step, stepped
+from angles import degrees
+import view_projection as gm
+import theme
+from luce_std import math
+
+## The parts: arrows 0-2, plane squares 3-5 (across axis k - 3), the
+## middle 6, rings 7-9.
+pub let part_middle = 6
+pub let first_ring = 7
+## Sizes on screen, in points: the arrows' length, the rings' radius, the
+## plane squares' near and far corners along each axis.
+let arrow_points = 96.0
+let ring_points = 64.0
+let square_near = 22.0
+let square_far = 40.0
+
+pub class MoveManipulator:
+    let w: Workspace
+    ## Where the press was, the values then and the part dragged.
+    var part: int = -1
+    var start_point: Vector3
+    var start_values: list[float]
+    var center: Vector3
+    var normal: Vector3
+    var start_angle: float = 0.0
+    var turned: float = 0.0
+    var pressed_along: float = 0.0
+
+    pub func init(self, w: Workspace):
+        self.w = w
+        self.start_point = Vector3()
+        self.start_values = []
+        self.center = Vector3()
+        self.normal = Vector3()
+
+    ## A point's size in the world at `at`.
+    func pixel(self, at: Vector3, width: float, height: float) -> float!:
+        let lens = self.w.view.camera.projection(math.max(1.0, width) / math.max(1.0, height))
+        let depth = math.max(lens.near, -at.subtract(lens.position).dot(lens.backward))
+        return 2.0 * depth / (lens.focal * math.max(1.0, height))
+
+    ## The corners of the square in the plane across axis `axis`, on screen.
+    func square(self, at: Vector3, axis: int, scale: float, width: float, height: float) -> list[list[float]]!:
+        let a = gm.axis((axis + 1) % 3)
+        let b = gm.axis((axis + 2) % 3)
+        let result: list[list[float]] = []
+        for pair in [[square_near, square_near], [square_far, square_near], [square_far, square_far], [square_near, square_far]]:
+            result.append(gm.project(self.w, at.add(a.multiply_scalar(pair[0] * scale)).add(b.multiply_scalar(pair[1] * scale)), width, height))
+        return result
+
+    ## Ring `axis`'s points on screen, closed.
+    func ring(self, at: Vector3, axis: int, scale: float, width: float, height: float) -> list[list[float]]!:
+        let points: list[list[float]] = []
+        for k in 0..<65:
+            let angle = float(k) * math.pi / 32.0
+            points.append(gm.project(self.w, at.add(gm.axis((axis + 1) % 3).multiply_scalar(math.cos(angle) * ring_points * scale)).add(gm.axis((axis + 2) % 3).multiply_scalar(math.sin(angle) * ring_points * scale)), width, height))
+        return points
+
+    ## The part at (`x`, `y`), or -1; `rings` when the rings show.
+    pub func hit(self, pivot: Vector3, values: list[float], rings: bool, x: float, y: float, width: float, height: float) -> int!:
+        let at = origin(pivot, values)
+        let scale = self.pixel(at, width, height)
+        let middle = gm.project(self.w, at, width, height)
+        if middle[2] <= 0.0:
+            return -1
+        if math.hypot(x - middle[0], y - middle[1]) < 9.0:
+            return part_middle
+        for axis in 0..<3:
+            if gm.inside(x, y, self.square(at, axis, scale, width, height)):
+                return 3 + axis
+        var best = 8.0
+        var found = -1
+        for axis in 0..<3:
+            let a = gm.project(self.w, at.add(gm.axis(axis).multiply_scalar(square_far * scale)), width, height)
+            let b = gm.project(self.w, at.add(gm.axis(axis).multiply_scalar(arrow_points * scale)), width, height)
+            let distance = gm.segment_distance(x, y, a, b)
+            if a[2] > 0.0 and b[2] > 0.0 and distance < best:
+                best = distance
+                found = axis
+        if found >= 0 or not rings:
+            return found
+        best = 7.0
+        for axis in 0..<3:
+            let points = self.ring(at, axis, scale, width, height)
+            for k in 0..<64:
+                let distance = gm.segment_distance(x, y, points[k], points[k + 1])
+                if points[k][2] > 0.0 and points[k + 1][2] > 0.0 and distance < best:
+                    best = distance
+                    found = first_ring + axis
+        return found
+
+    ## A drag of part `part` starts at (`x`, `y`).
+    pub func press(self, part: int, pivot: Vector3, values: list[float], x: float, y: float, width: float, height: float) -> unit!:
+        self.part = part
+        self.start_values = values.copy()
+        self.center = origin(pivot, values)
+        if part >= first_ring:
+            self.normal = gm.axis(part - first_ring)
+        elif part >= 3 and part < part_middle:
+            self.normal = gm.axis(part - 3)
+        else:
+            self.normal = self.w.view.camera.projection(width / height).backward
+        self.start_point = gm.plane(self.w, x, y, width, height, self.center, self.normal)
+        self.start_angle = self.angle_at(x, y, width, height)
+        self.turned = 0.0
+        self.pressed_along = self.along(x, y, width, height) if part < 3 else 0.0
+
+    ## Where along arrow `part`'s line (from the center) the pointer's ray
+    ## at (`x`, `y`) passes nearest it.
+    func along(self, x: float, y: float, width: float, height: float) -> float!:
+        let lens = self.w.view.camera.projection(math.max(1.0, width) / math.max(1.0, height))
+        let n = gm.axis(self.part)
+        let r = gm.ray(self.w, x, y, width, height)
+        let gap = self.center.subtract(lens.position)
+        let b = n.dot(r)
+        let c = r.dot(r)
+        let denominator = c - b * b
+        if math.abs(denominator) < 1e-9:
+            return 0.0
+        return (b * gap.dot(r) - c * n.dot(gap)) / denominator
+
+    ## The angle of the pointer about the ring's axis at the center.
+    func angle_at(self, x: float, y: float, width: float, height: float) -> float!:
+        if self.part < first_ring:
+            return 0.0
+        let axis = self.part - first_ring
+        let q = gm.plane(self.w, x, y, width, height, self.center, self.normal).subtract(self.center)
+        return math.atan2(q.dot(gm.axis((axis + 2) % 3)), q.dot(gm.axis((axis + 1) % 3)))
+
+    ## The values the drag to (`x`, `y`) gives: the translation moved along
+    ## the arrow, in the plane or the view's plane, or the turn about the
+    ## ring's axis added; `snap` to the grid and whole degrees.
+    pub func dragged(self, x: float, y: float, width: float, height: float, snap: bool) -> list[float]!:
+        let values = self.start_values.copy()
+        if self.part >= first_ring:
+            let angle = self.angle_at(x, y, width, height)
+            var change = angle - self.start_angle
+            while change > math.pi:
+                change -= math.pi * 2.0
+            while change < -math.pi:
+                change += math.pi * 2.0
+            self.turned += change
+            self.start_angle = angle
+            let axis = self.part - first_ring
+            values[3 + axis] = stepped(self.start_values[3 + axis] + degrees(self.turned), 1.0, snap)
+            return values
+        var delta = Vector3()
+        if self.part < 3:
+            # Along the arrow, by how far the pointer's ray passes along
+            # its line since the press.
+            delta = gm.axis(self.part).multiply_scalar(self.along(x, y, width, height) - self.pressed_along)
+        else:
+            delta = gm.plane(self.w, x, y, width, height, self.center, self.normal).subtract(self.start_point)
+        let step = grid_step(self.w.view.distance)
+        let moved = [delta.x, delta.y, delta.z]
+        for axis in 0..<3:
+            if moved[axis] != 0.0:
+                values[axis] = stepped(self.start_values[axis] + moved[axis], step, snap)
+        return values
+
+    ## The manipulator over the scene: `hot` the part hovered or dragged;
+    ## `rings` when the rings show.
+    pub func draw(self, p: Painter, pivot: Vector3, values: list[float], rings: bool, hot: int, width: float, height: float) -> unit!:
+        let at = origin(pivot, values)
+        let scale = self.pixel(at, width, height)
+        let middle = gm.project(self.w, at, width, height)
+        if middle[2] <= 0.0:
+            return
+        if rings:
+            for axis in 0..<3:
+                let points = self.ring(at, axis, scale, width, height)
+                let color = theme.accent() if hot == first_ring + axis else theme.axis(axis)
+                for k in 0..<64:
+                    if points[k][2] > 0.0 and points[k + 1][2] > 0.0:
+                        p.line(Point(points[k][0], points[k][1]), Point(points[k + 1][0], points[k + 1][1]), 3.0 if hot == first_ring + axis else 1.6, color)
+        for axis in 0..<3:
+            let color = theme.accent() if hot == axis else theme.axis(axis)
+            let start = gm.project(self.w, at.add(gm.axis(axis).multiply_scalar(square_far * scale)), width, height)
+            let end = gm.project(self.w, at.add(gm.axis(axis).multiply_scalar(arrow_points * scale)), width, height)
+            if start[2] > 0.0 and end[2] > 0.0:
+                p.line(Point(start[0], start[1]), Point(end[0], end[1]), 3.0 if hot == axis else 2.2, color)
+                let dx = end[0] - start[0]
+                let dy = end[1] - start[1]
+                let length = math.max(0.001, math.hypot(dx, dy))
+                let ux = dx / length
+                let uy = dy / length
+                p.triangle(Point(end[0] + ux * 4.0, end[1] + uy * 4.0), Point(end[0] - ux * 10.0 - uy * 6.0, end[1] - uy * 10.0 + ux * 6.0), Point(end[0] - ux * 10.0 + uy * 6.0, end[1] - uy * 10.0 - ux * 6.0), color)
+            let corners = self.square(at, axis, scale, width, height)
+            let ink = theme.accent() if hot == 3 + axis else theme.axis(axis)
+            let a = Point(corners[0][0], corners[0][1])
+            let b = Point(corners[1][0], corners[1][1])
+            let c = Point(corners[2][0], corners[2][1])
+            let d = Point(corners[3][0], corners[3][1])
+            p.mesh([a, b, c, a, c, d], translucent(ink, 0.55 if hot == 3 + axis else 0.25))
+            for k in 0..<4:
+                p.line(Point(corners[k][0], corners[k][1]), Point(corners[(k + 1) % 4][0], corners[(k + 1) % 4][1]), 1.5, ink)
+        let center_color = theme.accent() if hot == part_middle else theme.text()
+        p.rectangle(Rect(middle[0] - 6.0, middle[1] - 6.0, 12.0, 12.0), theme.backdrop())
+        p.rectangle(Rect(middle[0] - 5.0, middle[1] - 5.0, 10.0, 10.0), center_color)
+
+## Where the manipulator stands: the pivot moved by the translation.
+pub func origin(pivot: Vector3, values: list[float]) -> Vector3:
+    return pivot.add(Vector3(values[0], values[1], values[2]))
+
+## `color` at `alpha`.
+func translucent(color: Color, alpha: float) -> Color:
+    return Color(color.red, color.green, color.blue, alpha)

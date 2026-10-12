@@ -1,0 +1,202 @@
+## The last Fusion parity gaps of stages 6-8 (docs/research/FUSION-CAD-UX.md,
+## "Gaps closed"): Delete Face healing a top chain beside rounded uprights,
+## Split Body with Extend splitting tool off, and the Move node's whole
+## manipulator, dragged along an arrow and round a ring, following the body.
+from app import Luce3D
+from workspace import Workspace
+from luce_ui.ui import Event
+from luce_window.input import EventKind
+from luce_3d.graphics import Vector3
+from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+from view_projection import project
+from sketch_support import render
+import node_commands
+import handle_lines
+import cad_modify
+import cad_moves
+import edit_cad_faces
+from luce_std import math
+
+pub func cad_gap_tests() -> unit!:
+    top_chain_deleted()
+    split_unextended()
+    move_manipulator()
+    print("PASS CAD parity gaps: Delete Face of a G3 cube's filleted and chamfered top chain heals back to the rounded cube; Split Body by a face that misses with Extend splitting tool off is refused, extended it splits; the Move node's manipulator dragged along X and round Y sets Translate and Rotate and stands where the body went")
+
+func models(w: Workspace, id: int) -> list[CadModel]!:
+    return w.network.evaluate_data(id).models()
+
+func volume(model: CadModel) -> float!:
+    let mesh = model.tessellate(32)
+    var total = 0.0
+    for triangle in 0..<mesh.index_count() // 3:
+        let a = mesh.vertex(mesh.index(triangle * 3)).position
+        let b = mesh.vertex(mesh.index(triangle * 3 + 1)).position
+        let c = mesh.vertex(mesh.index(triangle * 3 + 2)).position
+        total += a.dot(b.cross(c)) / 6.0
+    return total
+
+## Edge numbers of `model` whose ends both satisfy `keep`.
+func edges_where(model: CadModel, keep: func(Vector3, Vector3) -> bool) -> list[int]!:
+    let found: list[int] = []
+    for face in 0..<model.face_count():
+        for use in 0..<model.face_edge_count(face):
+            let id = model.face_edge_id(face, use)
+            if keep(model.face_edge_point(face, use, 0.0), model.face_edge_point(face, use, 1.0)) and not (id in found):
+                found.append(id)
+    return found
+
+## The names of `model`'s faces that `before` has not, apart by `;`.
+func made(model: CadModel, before: CadModel) -> str!:
+    let old: list[str] = []
+    for f in 0..<before.face_count():
+        old.append(CadModeling.face_name_of(before, f))
+    let found: list[str] = []
+    for f in 0..<model.face_count():
+        let name = CadModeling.face_name_of(model, f)
+        if not (name in old) and not (name in found):
+            found.append(name)
+    return found.join(";")
+
+## The face of `model` whose outward normal is `normal`: its name.
+func face_facing(model: CadModel, normal: Vector3) -> str!:
+    for face in 0..<model.face_count():
+        let name = CadModeling.face_name_of(model, face)
+        let at = CadModeling.face_point(model, name)
+        if at.found and at.normal.dot(normal) > 0.999:
+            return name
+    return ""
+
+## A CAD node holding a 20 mm Solid Box; its id.
+func box(w: Workspace) -> int!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    return w.network.selected
+
+## The owner's case through nodes: a 20 mm cube's uprights filleted G3
+## (4), its top chain filleted (2) or chamfered (2) from one edge, then the
+## chain's faces deleted by a Delete Face node: the rounded cube again.
+func top_chain_deleted() -> unit!:
+    let w = Workspace()
+    let cube = models(w, box(w))[0]
+    node_commands.add_node(w, "Fillet", 0.0, 120.0)
+    let corners = w.network.selected
+    node_commands.set_parameter(w, 0, 4.0)
+    node_commands.set_parameter(w, 1, 2.0)
+    node_commands.set_text(w, 0, CadModeling.edge_references(cube, edges_where(cube, func (a: Vector3, b: Vector3) -> bool: return math.abs(a.x - b.x) < 1e-9 and math.abs(a.z - b.z) < 1e-9)))
+    let rounded = models(w, corners)[0]
+    let expected = volume(rounded)
+    let line = edges_where(rounded, func (a: Vector3, b: Vector3) -> bool: return a.y > 9.99 and b.y > 9.99 and math.abs(a.x - b.x) < 1e-9)[0]
+    for kind in ["Fillet", "Chamfer"]:
+        node_commands.select_node(w, corners)
+        node_commands.add_node(w, kind, 0.0, 240.0)
+        let blend = w.network.selected
+        node_commands.set_parameter(w, 0, 2.0)
+        node_commands.set_text(w, 0, CadModeling.edge_references(rounded, [line]))
+        let blended = models(w, blend)[0]
+        assert(blended.face_count() == 18)
+        node_commands.add_node(w, "Delete Face", 0.0, 360.0)
+        let delete = w.network.selected
+        node_commands.set_text(w, cad_modify.first_text, made(blended, rounded))
+        let healed = models(w, delete)
+        assert(w.network.require(delete).failure == "", w.network.require(delete).failure)
+        assert(healed.length == 1 and healed[0].face_count() == 10)
+        let got = volume(healed[0])
+        assert(math.abs(got - expected) < expected * 1e-4, f"{kind}: {got}, expected {expected}")
+
+## Split Body of the box by a copy's side face standing 20 off (the copy
+## moved 10 along -X and 30 along Z): extended, the face's plane x = 0
+## halves the box; with Extend splitting tool off the face misses it and
+## the node says so.
+func split_unextended() -> unit!:
+    let w = Workspace()
+    let solid = box(w)
+    let top = face_facing(models(w, solid)[0], Vector3(0.0, 1.0, 0.0))
+    node_commands.add_node(w, "Move", 0.0, 120.0)
+    node_commands.set_text(w, cad_modify.first_text, top)
+    node_commands.set_parameter(w, cad_moves.type_slot, 1.0)
+    node_commands.set_parameter(w, 0, -10.0)
+    node_commands.set_parameter(w, 2, 30.0)
+    node_commands.set_parameter(w, cad_moves.copy_slot, 1.0)
+    let move = w.network.selected
+    let pair = models(w, move)
+    assert(pair.length == 2)
+    node_commands.add_node(w, "Split Body", 0.0, 240.0)
+    let split = w.network.selected
+    assert(w.network.require(split).values[edit_cad_faces.split_extend_slot] == 1.0)
+    node_commands.set_text(w, cad_modify.first_text, top)
+    node_commands.set_text(w, cad_modify.second_text, face_facing(pair[1], Vector3(1.0, 0.0, 0.0)))
+    assert(models(w, split).length == 3)
+    node_commands.set_parameter(w, edit_cad_faces.split_extend_slot, 0.0)
+    var refused = false
+    _ = w.network.evaluate_data(split) catch failure:
+        refused = failure.message.contains("reach")
+    assert(refused and w.network.require(split).failure.contains("reach"), w.network.require(split).failure)
+
+## A point's size in the world at `at` in the viewport.
+func pixel(w: Workspace, at: Vector3, width: float, height: float) -> float!:
+    let lens = w.view.camera.projection(math.max(1.0, width) / math.max(1.0, height))
+    let depth = math.max(lens.near, -at.subtract(lens.position).dot(lens.backward))
+    return 2.0 * depth / (lens.focal * math.max(1.0, height))
+
+func drag(editor: Luce3D, first: list[float], last: list[float]) -> unit!:
+    let bounds = editor.panels.view.layout().bounds()
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + first[0], y = bounds.y + first[1]))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = bounds.x + first[0], y = bounds.y + first[1], button = 0))
+    for k in 1..<5:
+        let f = float(k) / 4.0
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + first[0] + (last[0] - first[0]) * f, y = bounds.y + first[1] + (last[1] - first[1]) * f, meta = true))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = bounds.x + last[0], y = bounds.y + last[1], button = 0))
+    render(editor)
+
+## The Move node's manipulator: grabbed on the X arrow and dragged along
+## it, Translate X follows (Y and Z stay); grabbed on the Y ring and turned
+## a quarter of the way round, Rotate Y about 45°; the manipulator then
+## stands at the pivot moved by Translate (it follows the body).
+func move_manipulator() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let solid = box(w)
+    let top = face_facing(models(w, solid)[0], Vector3(0.0, 1.0, 0.0))
+    node_commands.add_node(w, "Move", 0.0, 120.0)
+    let move = w.network.selected
+    node_commands.set_text(w, cad_modify.first_text, top)
+    node_commands.display_selected(w)
+    w.view.yaw = 0.6
+    w.view.pitch = 0.5
+    w.view.distance = 120.0
+    w.view.target = Vector3()
+    w.view.update_camera()
+    render(editor)
+    let arrows = handle_lines.parse(w.network.require(move).handles)
+    assert(arrows.length > 0)
+    let pivot = arrows[0].foot
+    assert(pivot.length() < 1e-6)
+    let bounds = editor.panels.view.layout().bounds()
+    let size = pixel(w, pivot, bounds.width, bounds.height)
+    let grab = project(w, pivot.add(Vector3(70.0 * size, 0.0, 0.0)), bounds.width, bounds.height)
+    let to = project(w, pivot.add(Vector3(70.0 * size + 12.0, 0.0, 0.0)), bounds.width, bounds.height)
+    drag(editor, grab, to)
+    let moved = w.network.require(move).values
+    assert(math.abs(moved[0] - 12.0) < 0.05 and math.abs(moved[1]) < 1e-9 and math.abs(moved[2]) < 1e-9, f"{moved[0]} {moved[1]} {moved[2]}")
+    let (low, _) = body_low(models(w, move)[0])
+    assert(math.abs(low - 2.0) < 0.05)
+    # The Y ring, round the moved pivot: from between Z and X to X.
+    let center = pivot.add(Vector3(moved[0], 0.0, 0.0))
+    let r = 64.0 * pixel(w, center, bounds.width, bounds.height)
+    let from_ring = project(w, center.add(Vector3(r, 0.0, r).multiply_scalar(math.sqrt(0.5))), bounds.width, bounds.height)
+    let to_ring = project(w, center.add(Vector3(r, 0.0, 0.0)), bounds.width, bounds.height)
+    drag(editor, from_ring, to_ring)
+    let turned = w.network.require(move).values
+    assert(math.abs(math.abs(turned[4]) - 45.0) < 1.0 and math.abs(turned[0] - moved[0]) < 1e-9, f"{turned[4]}")
+    # One undo step per drag.
+    w.undo()
+    assert(math.abs(w.network.require(move).values[4]) < 1e-9)
+
+## The least X of `model`'s tessellation, and its greatest.
+func body_low(model: CadModel) -> (float, float)!:
+    let bounds = model.tessellate(8).bounds()
+    return (bounds.minimum.x, bounds.maximum.x)

@@ -600,7 +600,22 @@ The right-click menu (on selected faces), the S menu and Modify › CAD
 features make them after the displayed node, taking what is selected; a
 node then waits for each input it lacks in turn (its input body shown, the
 prompt in the viewport, "waiting" on the node with no badge), and each input
-is a panel row with its pick button.
+is a panel row with its pick button. A **Move** node of Free move or
+Translate shows Fusion's whole manipulator (`move_manipulator.luc`): arrows
+along X, Y and Z, a square in each plane between them, the middle square
+moving in the view's plane and, for Free move, rings turning about each
+axis. It stands at the pivot moved by Translate, so it follows the body as
+it is dragged; drags snap to the grid and to whole degrees (Cmd or Ctrl
+frees them), one undo step each. **Split Body** has Fusion's **Extend
+splitting tool** (on): off, a picked face cuts only where it reaches.
+**Delete Face** heals a rounded or chamfered top chain beside rounded
+uprights (G1, G2, G3), and **Replace Face** takes an open surface body's
+faces on several surfaces as its target.
+The nodes keep the names **Move** and **Delete Face**, Fusion's own names
+for these timeline features (its API's MoveFeature and DeleteFaceFeature):
+Fusion's dialog title Move/Copy cannot be a node's name (no `/` in names),
+and a plain Delete would read as the Delete key, which deletes nodes, and as
+the Edit nodes' Delete step.
 
 **The timeline strip** (`cad_timeline.luc`, stage 8) runs along the Network
 panel inside a CAD network: the chain's features as icons in order, a
