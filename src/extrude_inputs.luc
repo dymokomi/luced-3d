@@ -1,0 +1,150 @@
+## What an Extrude extrudes and combines with, beyond a sketch's profiles,
+## as Fusion 360's Extrude dialog has it:
+##   Thin Extrude: the profiles' chains (or every chain of the sketch)
+##     made into bands Wall thickness wide on Side 1 (inside a closed
+##     chain, left of an open one), Side 2 (outside, right) or Center
+##     (luce-cad's CadSketch.thicken); open chains are walls too.
+##   A face as the profile: a flat face of the body flowing down the chain,
+##     kept by its name (the Profiles text "face <name>"), its loops the
+##     region (luce-cad's project_face).
+##   Objects To Cut: the bodies Join, Cut and Intersect act on, kept by one
+##     face name each (none: every body, Fusion's Auto-Select); Cut and
+##     Intersect act on each body apart, as Fusion's do.
+from luce_cad.sketch import CadSketch
+from luce_cad.modeling import CadModeling
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadModel
+from luce_geocore.geocore import GeometrySet
+from geometry_data import GeometryData
+from sketch_kinds import point_kind, text_kind
+from sketch_chains import chain_of
+from luce_ui import ui
+import sketch_node
+
+## The Profiles text that names face `name` as the profile.
+pub func face_profile(name: str) -> str:
+    return f"face {name}"
+
+## The face a Profiles text names ("" when it holds profile keys).
+pub func profile_face(text: str) -> str:
+    let t = text.trim()
+    return t[5..<t.length] if t.starts_with("face ") else ""
+
+## The curves of flat face `name` of the first body in `data` on its own
+## plane: the face's loops, as a sketch on it would project them.
+pub func face_curves(data: GeometryData, name: str) -> GeometrySet!:
+    if CadGeometry.model_count(data.geometry) == 0:
+        error(ui.invalid, "The face to extrude is on the body flowing down the chain: there is none")
+    let model = CadGeometry.model(data.geometry, 0)
+    let frame = CadModeling.face_frame(model, name)
+    if not frame.found:
+        error(ui.invalid, "The face to extrude is gone or not flat: pick a flat face of the body")
+    let s = CadSketch.parse("")
+    _ = s.project_face(model, name, frame.origin, frame.u, frame.v)
+    return s.curves(frame.origin, frame.u, frame.v)
+
+## The sketch entity each curve of `sketch`'s curves stands for, in their
+## order (a text's outline pieces after it are not counted: a key naming
+## them is refused).
+func curve_entities(sketch: CadSketch) -> list[int]:
+    let result: list[int] = []
+    for at in 0..<sketch.entity_count():
+        if sketch.construction(at) or sketch.kind(at) == point_kind:
+            continue
+        result.append(-1 if sketch.kind(at) == text_kind else at)
+    return result
+
+## Thin Extrude's bands from `sketch` (a Sketch's text) on `plane`: the
+## chains round the profiles `keys` (none: every chain), `thickness` wide
+## on side `side` (0 Side 1, 1 Side 2, 2 Center); the bands' outlines as
+## curves on the plane, every other curve left out.
+pub func thin_curves(sketch: str, plane: sketch_node.SketchFrame, keys: str, thickness: float, side: int) -> GeometrySet!:
+    if not (thickness > 0.0):
+        error(ui.invalid, "Thin Extrude needs a wall thickness above 0")
+    let s = CadSketch.parse(sketch)
+    _ = s.solve()
+    let entities = curve_entities(s)
+    # The curves the walls follow.
+    let chosen: list[int] = []
+    if keys.trim() == "":
+        for entity in entities:
+            if entity >= 0:
+                chosen.append(entity)
+    else:
+        for key in keys.split(";"):
+            for part in key.trim().split(","):
+                # A curve and the way the profile runs along it: "3+".
+                let p = part.trim()
+                if p == "":
+                    continue
+                let digits = p[0..<p.length - 1] if p.ends_with("+") or p.ends_with("-") else p
+                let curve = int(digits)
+                if curve < 0 or curve >= entities.length or entities[curve] < 0:
+                    error(ui.invalid, "Thin Extrude follows lines, arcs and curves, not text")
+                if not (entities[curve] in chosen):
+                    chosen.append(entities[curve])
+    if chosen.length == 0:
+        error(ui.invalid, "Thin Extrude needs curves in the sketch")
+    let inner = thickness if side == 0 else (thickness * 0.5 if side == 2 else 0.0)
+    let outer = thickness - inner
+    # Each chain once, thickened; every curve before them left out.
+    let before = s.entity_count()
+    let done: list[int] = []
+    for curve in chosen:
+        if curve in done:
+            continue
+        let chain = chain_of(s, curve)
+        for each in chain:
+            done.append(each)
+        _ = s.thicken(chain, inner, outer)
+    # The curves no wall follows are left out (the chains' own curves bound
+    # their bands when a side is 0; thicken makes them construction else).
+    for at in 0..<before:
+        if s.kind(at) != point_kind and not (at in done):
+            s.set_construction(at, true)
+    return s.curves(plane.origin, plane.u, plane.v)
+
+## The bodies of `target` that Objects To Cut names (`chosen`: a face name
+## of each, apart by `;`), and the rest; with none chosen, every body.
+pub func split_bodies(target: GeometryData, chosen: str) -> (list[CadModel], list[CadModel])!:
+    let taken: list[CadModel] = []
+    let kept: list[CadModel] = []
+    let names: list[str] = []
+    for name in chosen.split(";"):
+        if name.trim() != "":
+            names.append(name.trim())
+    for at in 0..<CadGeometry.model_count(target.geometry):
+        let body = CadGeometry.model(target.geometry, at)
+        var wanted = names.length == 0
+        for name in names:
+            wanted = wanted or CadModeling.face_point(body, name).found
+        if wanted:
+            taken.append(body)
+        else:
+            kept.append(body)
+    if taken.length == 0:
+        error(ui.invalid, "None of the bodies Objects To Cut names is left: pick the bodies again, or Auto-select")
+    return (taken, kept)
+
+## `made` combined with the bodies of `target` by `operation` (1 join, 2
+## cut, 3 intersect), only the bodies `chosen` names (none: all): joined
+## into one body with those; cut from or intersected with each apart.
+pub func combined_with(made: CadModel, target: GeometryData, operation: int, chosen: str) -> GeometryData!:
+    let (taken, kept) = split_bodies(target, chosen)
+    let result: list[CadModel] = []
+    if operation == 1:
+        var joined = made
+        for body in taken:
+            joined = CadModeling.combined(body, joined, 0)
+        result.append(joined)
+    else:
+        for body in taken:
+            let piece = CadModeling.combined(body, made, operation - 1)
+            if piece.face_count() > 0:
+                result.append(piece)
+    var out = GeometryData(geometry = CadGeometry.of_model(result[0])) if result.length > 0 else GeometryData()
+    for at in 1..<result.length:
+        out = out.merged(GeometryData(geometry = CadGeometry.of_model(result[at])))
+    for body in kept:
+        out = out.merged(GeometryData(geometry = CadGeometry.of_model(body)))
+    return out

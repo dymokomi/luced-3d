@@ -1,21 +1,26 @@
 ## Extrude and Revolve as Fusion 360's dialogs have them, on luce-cad's
 ## extents (CadModeling.extruded_sides, extruded_through, extruded_to,
 ## revolved_about), and where their viewport handles stand (handle_lines).
-##   Extrude: Start (Profile plane or Offset), Direction (One side, Two
+##   Extrude: Type (Extrude, or Thin with a wall thickness on Side 1, Side
+##     2 or Center: extrude_inputs.luc), Start (Profile plane, Offset, or
+##     Object: a face picked, with an Offset), Direction (One side, Two
 ##     sides, Symmetric with Half or Whole length), each side's Extent
-##     (Distance, To object: a face picked in the viewport, with an Offset;
-##     All, with Flip one side) and Taper angle. Fusion's taper sign: a
+##     (Distance; To object: a face picked in the viewport, with an Offset
+##     and Fusion's Extend: To selected face, To adjacent faces, To body,
+##     Through body; All, with Flip one side) and Taper angle. Fusion's taper sign: a
 ##     positive angle leans the sides out (the profile grows along the
 ##     extrusion), the kernel's leans them in, so it is turned over here.
 ##   Revolve: an Axis (a sketch line, a body edge picked in the viewport,
-##     or an origin axis), Partial or Full, Direction One side, Two sides
-##     or Symmetric (the angle each way, as Fusion's).
+##     or an origin axis), Type Angle, Full or To (a face picked, Flip
+##     turning the other way), Direction One side, Two sides or Symmetric
+##     (the angle each way, as Fusion's).
 ## Operation is the node's own (cad_nodes.operated): Auto by default.
 from luce_cad.cad_geometry import CadGeometry
 from luce_cad.modeling import CadModeling, ProfileAnchor
 from luce_cad.model import CadModel
 from luce_cad.sketch import CadSketch
 from luce_3d.graphics import Vector3
+from luce_geocore.geocore import GeometrySet
 from geometry_data import GeometryData
 from handle_lines import HandleLine
 from luce_ui import ui
@@ -38,9 +43,20 @@ pub let measurement_slot = 10
 pub let offset_slot = 11
 pub let offset_two_slot = 12
 pub let flip_slot = 13
-## Extrude's texts: the profiles, then each side's To object face.
+pub let type_slot = 14
+pub let thickness_slot = 15
+pub let wall_slot = 16
+pub let extend_slot = 17
+pub let extend_two_slot = 18
+## Extrude's texts: the profiles (or "face <name>": extrude_inputs), each
+## side's To object face, the Start object's face, and Objects To Cut (a
+## face name of each body; none: every body).
 pub let face_text = 1
 pub let face_two_text = 2
+pub let start_face_text = 3
+pub let bodies_text = 4
+## Start's entries: Profile plane, Offset, Object.
+pub let start_object = 2
 
 # -- Revolve's value slots; its axis picked is text 1.
 pub let revolve_type_slot = 0
@@ -48,13 +64,22 @@ pub let angle_slot = 2
 pub let revolve_direction_slot = 3
 pub let angle_two_slot = 4
 pub let axis_slot = 5
+pub let revolve_flip_slot = 6
 pub let axis_text = 1
+## Revolve's To face.
+pub let revolve_face_text = 2
+## Revolve's Type entries: Angle, Full, To.
+pub let revolve_to = 2
 
 pub func direction_names() -> str:
     return "One side|Two sides|Symmetric"
 
 pub func extent_names() -> str:
     return "Distance|To object|All"
+
+## To object's Extend entries, Fusion's (luce-cad's extend_face ...).
+pub func extend_names() -> str:
+    return "To selected face|To adjacent faces|To body|Through body"
 
 pub func axis_names() -> str:
     return "Picked|X axis|Y axis|Z axis"
@@ -70,14 +95,16 @@ class Side:
     let face: str
     let offset: float
     let way: float
+    let extend: int
 
-    func init(self, extent: int, distance: float, taper: float, face: str, offset: float, way: float):
+    func init(self, extent: int, distance: float, taper: float, face: str, offset: float, way: float, extend: int):
         self.extent = extent
         self.distance = distance
         self.taper = taper
         self.face = face
         self.offset = offset
         self.way = way
+        self.extend = extend
 
 ## An Extrude's sides as its values say: side one along the normal (or
 ## against it for a negative distance), side two against it (none one
@@ -89,13 +116,14 @@ func sides_of(v: list[float], texts: list[str]) -> list[Side]:
     if direction == 2:
         let each = v[distance_slot] * (0.5 if int(v[measurement_slot]) == 1 else 1.0)
         let extent = int(v[extent_slot])
-        return [Side(extent, each, taper, texts[face_text], v[offset_slot], 1.0), Side(extent, -each, taper, texts[face_text], v[offset_slot], -1.0)]
+        let extend = int(v[extend_slot])
+        return [Side(extent, each, taper, texts[face_text], v[offset_slot], 1.0, extend), Side(extent, -each, taper, texts[face_text], v[offset_slot], -1.0, extend)]
     let flip = v[flip_slot] != 0.0
-    let first = Side(int(v[extent_slot]), v[distance_slot], taper, texts[face_text], v[offset_slot], -1.0 if flip else 1.0)
+    let first = Side(int(v[extent_slot]), v[distance_slot], taper, texts[face_text], v[offset_slot], -1.0 if flip else 1.0, int(v[extend_slot]))
     if direction == 0:
         return [first]
-    let second = Side(int(v[extent_two_slot]), -v[distance_two_slot], -radians(v[taper_two_slot]), texts[face_two_text], v[offset_two_slot], -1.0)
-    return [Side(first.extent, first.distance, first.taper, first.face, first.offset, 1.0), second]
+    let second = Side(int(v[extent_two_slot]), -v[distance_two_slot], -radians(v[taper_two_slot]), texts[face_two_text], v[offset_two_slot], -1.0, int(v[extend_two_slot]))
+    return [Side(first.extent, first.distance, first.taper, first.face, first.offset, 1.0, first.extend), second]
 
 ## The bodies `target` holds as one (To object and All run against them).
 func target_body(target: GeometryData?) -> CadModel!:
@@ -108,50 +136,86 @@ func target_body(target: GeometryData?) -> CadModel!:
         body = CadModeling.combined(body, CadGeometry.model(bodies.geometry, at), 0)
     return body
 
-## One side's solid from the profiles in `data`, from `start` along the
+## One side's solid from the profiles in `curves`, from `start` along the
 ## normal.
-func side_solid(data: GeometryData, side: Side, start: float, tag: str, profiles: str, target: GeometryData?) -> CadModel!:
+func side_solid(curves: GeometrySet, side: Side, start: float, tag: str, profiles: str, target: GeometryData?) -> CadModel!:
     if side.extent == 0:
         if math.abs(side.distance) < 1e-9:
             error(ui.invalid, "The distance is zero: drag the arrow or type a distance")
-        return CadModeling.extruded_sides(data.geometry, side.distance, 0.0, tag, side.taper, 0.0, start, profiles)
-    if start != 0.0:
-        error(ui.invalid, "Start Offset works with the Distance extent for now: set Start to Profile plane for To object and All")
+        return CadModeling.extruded_sides(curves, side.distance, 0.0, tag, side.taper, 0.0, start, profiles)
     if side.extent == 1:
         if side.face.trim() == "":
-            error(ui.invalid, "To object: pick the face to extrude to (the Object row's Pick face)")
-        return CadModeling.extruded_to(data.geometry, target_body(target), tag, side.face.trim(), side.offset, side.taper, profiles)
-    return CadModeling.extruded_through(data.geometry, target_body(target), tag, int(side.way), side.taper, profiles)
+            error(ui.invalid, "To object: pick the face to extrude to (the Object row's Pick object)")
+        return CadModeling.extruded_to(curves, target_body(target), tag, side.face.trim(), side.offset, side.taper, profiles, start, side.extend)
+    return CadModeling.extruded_through(curves, target_body(target), tag, int(side.way), side.taper, profiles, start)
 
-## The solid an Extrude with values `v` makes from the profiles in `data`
-## (texts: profiles, then the faces it runs to), against `target`'s bodies.
-pub func extruded(v: list[float], texts: list[str], data: GeometryData, tag: str, target: GeometryData?) -> CadModel!:
-    let profiles = texts[0]
+## Start: Object: one side from the face Start object names, by the
+## side's extent.
+func from_object(v: list[float], texts: list[str], curves: GeometrySet, tag: str, profiles: str, target: GeometryData?) -> CadModel!:
+    let face = texts[start_face_text].trim()
+    if face == "":
+        error(ui.invalid, "Start: Object: pick the face to start from (Pick start object)")
+    if int(v[direction_slot]) != 0:
+        error(ui.invalid, "Start: Object extrudes one side: set Direction to One side")
+    let side = sides_of(v, texts)[0]
+    let body = target_body(target)
+    let offset = v[start_offset_slot]
+    if side.extent == 1:
+        if side.face.trim() == "":
+            error(ui.invalid, "To object: pick the face to extrude to (the Object row's Pick object)")
+        if side.extend != 0:
+            error(ui.invalid, "Start: Object runs to the selected face: set Extend to To selected face")
+        return CadModeling.extruded_from(curves, body, tag, face, offset, 1, 1.0, side.face.trim(), side.offset, side.taper, profiles)
+    if side.extent == 2:
+        return CadModeling.extruded_from(curves, body, tag, face, offset, 2, side.way, "", 0.0, side.taper, profiles)
+    return CadModeling.extruded_from(curves, body, tag, face, offset, 0, side.distance, "", 0.0, side.taper, profiles)
+
+## The solid an Extrude with values `v` makes from the profiles in `curves`
+## (`profiles` their keys; texts: profiles, then the faces it runs to),
+## against `target`'s bodies.
+pub func extruded(v: list[float], texts: list[str], curves: GeometrySet, profiles: str, tag: str, target: GeometryData?) -> CadModel!:
+    if int(v[start_slot]) == start_object:
+        return from_object(v, texts, curves, tag, profiles, target)
     let start = v[start_offset_slot] if int(v[start_slot]) == 1 else 0.0
     let sides = sides_of(v, texts)
     if sides.length == 1:
-        return side_solid(data, sides[0], start, tag, profiles, target)
+        return side_solid(curves, sides[0], start, tag, profiles, target)
     let one = sides[0]
     let two = sides[1]
     if one.extent == 0 and two.extent == 0:
         if one.distance <= 0.0 or two.distance >= 0.0:
             error(ui.invalid, "Two sides take positive distances, one each way")
-        return CadModeling.extruded_sides(data.geometry, one.distance, -two.distance, tag, one.taper, two.taper, start, profiles)
+        return CadModeling.extruded_sides(curves, one.distance, -two.distance, tag, one.taper, two.taper, start, profiles)
     if one.extent == 2 and two.extent == 2 and int(v[direction_slot]) == 2:
-        if start != 0.0:
-            error(ui.invalid, "Start Offset works with the Distance extent for now: set Start to Profile plane for All")
-        return CadModeling.extruded_through(data.geometry, target_body(target), tag, 0, one.taper, profiles)
+        return CadModeling.extruded_through(curves, target_body(target), tag, 0, one.taper, profiles, start)
     # Sides of different extents: each its own solid, side two's faces
     # named apart, joined.
-    let first = side_solid(data, one, start, tag, profiles, target)
-    let second = CadModeling.prefixed(side_solid(data, two, start, tag, profiles, target), f"{tag}.2:")
+    let first = side_solid(curves, one, start, tag, profiles, target)
+    let second = CadModeling.prefixed(side_solid(curves, two, start, tag, profiles, target), f"{tag}.2:")
     return CadModeling.combined(first, second, 0)
+
+## How far along the normal from the profiles' anchor the extrusion starts:
+## the Start offset, or where the Start object's face is over the anchor
+## (its point near its middle, the offset on), when it can be found.
+pub func start_height(v: list[float], texts: list[str], anchor: ProfileAnchor, target: GeometryData?) -> float!:
+    let start = int(v[start_slot])
+    if start == 1:
+        return v[start_offset_slot]
+    if start != start_object or texts[start_face_text].trim() == "":
+        return 0.0
+    let bodies = target else return 0.0
+    for at in 0..<CadGeometry.model_count(bodies.geometry):
+        let found = CadModeling.face_point(CadGeometry.model(bodies.geometry, at), texts[start_face_text].trim())
+        if found.found:
+            let height = found.point.subtract(anchor.point).dot(anchor.normal)
+            let way = 1.0 if v[distance_slot] >= 0.0 else -1.0
+            return height + way * v[start_offset_slot]
+    return 0.0
 
 ## Halfway along the Extrude's new solid, for Auto: on a Distance side the
 ## middle of its sides' span; a To object or All side runs into what it
-## meets, so a point just past the start that way.
-pub func extrude_probe(v: list[float], texts: list[str], anchor: ProfileAnchor) -> Vector3:
-    let start = v[start_offset_slot] if int(v[start_slot]) == 1 else 0.0
+## meets, so a point just past the start that way (`start`: start_height).
+pub func extrude_probe(v: list[float], texts: list[str], anchor: ProfileAnchor, start: float) -> Vector3:
     let reach = 0.001 * math.max(1.0, math.sqrt(anchor.area))
     let sides = sides_of(v, texts)
     # Each side's far end along the normal (a To object or All side: just
@@ -165,9 +229,8 @@ pub func extrude_probe(v: list[float], texts: list[str], anchor: ProfileAnchor) 
 
 ## Where an Extrude's handles stand: per Distance side an arrow along it
 ## from the start, and its taper ring.
-pub func extrude_handles(v: list[float], texts: list[str], anchor: ProfileAnchor) -> list[HandleLine]:
+pub func extrude_handles(v: list[float], texts: list[str], anchor: ProfileAnchor, start: float) -> list[HandleLine]:
     let handles: list[HandleLine] = []
-    let start = v[start_offset_slot] if int(v[start_slot]) == 1 else 0.0
     let foot = anchor.point.add(anchor.normal.multiply_scalar(start))
     let direction = int(v[direction_slot])
     let half = 0.5 if direction == 2 and int(v[measurement_slot]) == 1 else 1.0
@@ -282,14 +345,22 @@ func turning(axis: Axis, anchor: ProfileAnchor) -> (Vector3, Vector3, Vector3):
 
 ## The solid a Revolve with values `v` makes from the profiles in `data`,
 ## and the point halfway round it (for Auto) when there is a profile.
-pub func revolved(v: list[float], texts: list[str], data: GeometryData, tag: str, sketch: str) -> (CadModel, Vector3)!:
+pub func revolved(v: list[float], texts: list[str], data: GeometryData, tag: str, sketch: str, target: GeometryData?) -> (CadModel, Vector3)!:
     let profiles = texts[0]
     let axis = axis_of(v, texts, data, sketch)
-    let span = span_of(v)
     let anchor = CadModeling.profile_anchor(data.geometry, profiles)
     if not anchor.found:
         error(ui.invalid, "The sketch has no closed profile to revolve")
     let (center, way, radial) = turning(axis, anchor)
+    if int(v[revolve_type_slot]) == revolve_to:
+        # To: until the face picked, toward the normal (Flip: against it).
+        let face = texts[revolve_face_text].trim()
+        if face == "":
+            error(ui.invalid, "Revolve To: pick the face to turn to (Pick object)")
+        let sense = -1.0 if v[revolve_flip_slot] != 0.0 else 1.0
+        let made = CadModeling.revolved_to(data.geometry, axis.origin, axis.direction, tag, target_body(target), face, sense, profiles)
+        return (made, center.add(radial.rotated_about(way, sense * radians(5.0))))
+    let span = span_of(v)
     let whole = span[1] - span[0] >= 360.0 - 1e-9
     var made = CadModeling.revolved_about(data.geometry, axis.origin, way, tag, radians(360.0 if whole else span[1] - span[0]), profiles)
     if not whole and span[0] != 0.0:
@@ -300,7 +371,7 @@ pub func revolved(v: list[float], texts: list[str], data: GeometryData, tag: str
 ## Where a Revolve's handles stand: an angle ring per side (none Full).
 pub func revolve_handles(v: list[float], texts: list[str], data: GeometryData, sketch: str) -> list[HandleLine]!:
     let handles: list[HandleLine] = []
-    if int(v[revolve_type_slot]) == 1:
+    if int(v[revolve_type_slot]) != 0:
         return handles
     let anchor = CadModeling.profile_anchor(data.geometry, texts[0])
     if not anchor.found:

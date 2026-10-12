@@ -1,0 +1,265 @@
+## The Fusion parity round's Extrude and Revolve options, each a node in
+## the chain checked by its body's volume: Thin extrude (Side 1, Side 2,
+## Center), a body face extruded as the profile (Extrude face, and picked in
+## Pick profiles), Start: Object (a face picked by Pick start object), a
+## start offset with To object and All, To object's Extend (To body,
+## Through body), Objects To Cut (Pick bodies, Auto-select), Cut acting on
+## each body apart, and Revolve To a face (Pick object).
+from app import Luce3D
+from workspace import Workspace
+from luce_3d.graphics import Vector3
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.modeling import CadModeling
+import node_commands
+import selection_commands
+import sketch_commands
+import tool_prompts
+import cad_features
+import extrude_inputs
+from luce_std import math
+
+pub func cad_parity_tests() -> unit!:
+    thin_extrude()
+    face_profiles()
+    starts_and_extends()
+    objects_to_cut()
+    revolve_to()
+    print("PASS CAD parity: Thin extrude on Side 1, Side 2 and Center; a face extruded as its own profile (Extrude face, Pick profiles); Start: Object from a picked face; a start offset with To object and All; Extend To body and Through body; Objects To Cut picked and Auto-select, Cut on each body apart; Revolve To a picked face, either way")
+
+## The tessellated volume of every body of node `id`.
+func volume(w: Workspace, id: int) -> float!:
+    let data = w.network.evaluate_data(id)
+    var total = 0.0
+    for at in 0..<CadGeometry.model_count(data.geometry):
+        let mesh = CadGeometry.model(data.geometry, at).tessellate(32)
+        for triangle in 0..<mesh.index_count() // 3:
+            let a = mesh.vertex(mesh.index(triangle * 3)).position
+            let b = mesh.vertex(mesh.index(triangle * 3 + 1)).position
+            let c = mesh.vertex(mesh.index(triangle * 3 + 2)).position
+            total += a.dot(b.cross(c)) / 6.0
+    return total
+
+## Whether node `id`'s bodies have volume `expected` (to 0.3%).
+func volume_is(w: Workspace, id: int, expected: float) -> bool!:
+    let got = volume(w, id)
+    if math.abs(got - expected) > math.abs(expected) * 0.003: print(f"volume {got}, expected {expected}")
+    return math.abs(got - expected) <= math.abs(expected) * 0.003
+
+## The name of the face of node `id`'s first body facing `normal`.
+func face_facing(w: Workspace, id: int, normal: Vector3) -> str!:
+    let model = CadGeometry.model(w.network.evaluate_data(id).geometry, 0)
+    for face in 0..<model.face_count():
+        let name = CadModeling.face_name_of(model, face)
+        let at = CadModeling.face_point(model, name)
+        if at.found and at.normal.dot(normal) > 0.999:
+            return name
+    return ""
+
+## A new CAD node, entered.
+func cad(w: Workspace) -> unit!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+
+## A 20 x 10 rectangle on XY, extruded 2 thin: the wall inside (20 x 10
+## less 18 x 8), outside (22 x 12 less it) and centered (21 x 11 less
+## 19 x 9).
+func thin_extrude() -> unit!:
+    let w = Workspace()
+    cad(w)
+    node_commands.add_node(w, "Sketch", 0.0, 0.0)
+    node_commands.set_parameter(w, 0, 0.0)
+    node_commands.set_text(w, 0, sketch_commands.rectangle_text(0.0, 0.0, 20.0, 10.0))
+    node_commands.add_node(w, "Extrude", 0.0, 120.0)
+    let extrude = w.network.selected
+    node_commands.set_parameter(w, cad_features.distance_slot, 2.0)
+    node_commands.set_parameter(w, cad_features.type_slot, 1.0)
+    node_commands.set_parameter(w, cad_features.thickness_slot, 1.0)
+    assert(volume_is(w, extrude, (200.0 - 144.0) * 2.0))
+    node_commands.set_parameter(w, cad_features.wall_slot, 1.0)
+    assert(volume_is(w, extrude, (264.0 - 200.0) * 2.0))
+    node_commands.set_parameter(w, cad_features.wall_slot, 2.0)
+    assert(volume_is(w, extrude, (231.0 - 171.0) * 2.0))
+    # Back to a plain Extrude: the whole rectangle.
+    node_commands.set_parameter(w, cad_features.type_slot, 0.0)
+    assert(volume_is(w, extrude, 400.0))
+
+## A box's top face selected at the Faces level and Extrude face: an
+## Extrude of the face itself (no sketch), joined: 8000 + 400 × 10. Pick
+## profiles takes a face clicked off any region.
+func face_profiles() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1400.0, 900.0)
+    let w = editor.workspace
+    cad(w)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let box = w.network.selected
+    selection_commands.set_mode(w, w.level_of(2))
+    editor.panels.refresh()
+    let mesh = w.geometry else trap("no pick mesh")
+    var top = -1
+    for face in 0..<mesh.face_count():
+        if top < 0 and math.abs(mesh.face_center(face).y - 10.0) < 1e-6:
+            top = face
+    selection_commands.choose_component(w, top, false)
+    editor.panels.actions.refresh()
+    editor.panels.actions.extrude_face.trigger()
+    let extrude = w.network.selected
+    let node = w.network.require(extrude)
+    assert(node.kind == "Extrude" and node.inputs[0] == box and extrude_inputs.profile_face(node.texts[0]) == face_facing(w, box, Vector3(0.0, 1.0, 0.0)))
+    assert(volume_is(w, extrude, 8000.0 + 4000.0) and node.automatic == "Join")
+    # Down 5 into the box: Auto cuts the face's area away.
+    node_commands.set_parameter(w, cad_features.distance_slot, -5.0)
+    assert(volume_is(w, extrude, 8000.0 - 2000.0) and node.automatic == "Cut")
+    editor.close()
+
+## A 20 mm box with a 4 mm square sketched on the ground 30 below its
+## middle.
+func box_and_square(w: Workspace) -> (int, int)!:
+    cad(w)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let box = w.network.selected
+    node_commands.add_node(w, "Sketch", 0.0, 120.0)
+    node_commands.set_parameter(w, 0, 1.0)
+    node_commands.set_parameter(w, 1, -30.0)
+    node_commands.set_text(w, 0, sketch_commands.rectangle_text(0.0, 0.0, 4.0, 4.0))
+    node_commands.add_node(w, "Extrude", 0.0, 240.0)
+    return (box, w.network.selected)
+
+## Start: Object, start offsets with To object and All, Extend.
+func starts_and_extends() -> unit!:
+    let w = Workspace()
+    let (box, extrude) = box_and_square(w)
+    let bottom = face_facing(w, box, Vector3(0.0, -1.0, 0.0))
+    let top = face_facing(w, box, Vector3(0.0, 1.0, 0.0))
+    # Start offset 15 (y -15) up To object the bottom (y -10): 16 × 5
+    # joined.
+    node_commands.set_parameter(w, cad_features.start_slot, 1.0)
+    node_commands.set_parameter(w, cad_features.start_offset_slot, 15.0)
+    node_commands.set_parameter(w, cad_features.extent_slot, 1.0)
+    node_commands.set_text(w, cad_features.face_text, bottom)
+    assert(volume_is(w, extrude, 8000.0 + 80.0))
+    # Extend To body (picked by its top face): the same; Through body: out
+    # of the top, the square joined all the way, 16 × 25 more.
+    node_commands.set_text(w, cad_features.face_text, top)
+    node_commands.set_parameter(w, cad_features.extend_slot, 2.0)
+    assert(volume_is(w, extrude, 8000.0 + 80.0))
+    node_commands.set_parameter(w, cad_features.extend_slot, 3.0)
+    assert(volume_is(w, extrude, 8000.0 + 80.0 + 0.0))
+    # Cut through the body: a square hole.
+    node_commands.set_parameter(w, cad_features.operation_slot, 3.0)
+    assert(volume_is(w, extrude, 8000.0 - 16.0 * 20.0))
+    node_commands.set_parameter(w, cad_features.operation_slot, 0.0)
+    node_commands.set_parameter(w, cad_features.extend_slot, 0.0)
+    # All from the start offset: cut through, the same hole.
+    node_commands.set_parameter(w, cad_features.extent_slot, 2.0)
+    node_commands.set_parameter(w, cad_features.operation_slot, 3.0)
+    assert(volume_is(w, extrude, 8000.0 - 16.0 * 20.0))
+    node_commands.set_parameter(w, cad_features.operation_slot, 0.0)
+    node_commands.set_parameter(w, cad_features.extent_slot, 0.0)
+    # Start: Object, the box's top picked: 10 up from it, a new body
+    # beside (joined, touching: 8000 + 160).
+    tool_prompts.pick_start_object(w, extrude)
+    assert(w.prompt != none and w.prompt_level() == w.level_of(2))
+    let mesh = w.geometry else trap("no pick mesh")
+    var face = -1
+    for at in 0..<mesh.face_count():
+        if face < 0 and math.abs(mesh.face_center(at).y - 10.0) < 1e-6:
+            face = at
+    selection_commands.choose_component(w, face, false)
+    let node = w.network.require(extrude)
+    assert(w.prompt == none and node.texts[cad_features.start_face_text] == top and int(node.values[cad_features.start_slot]) == cad_features.start_object)
+    node_commands.select_node(w, extrude)
+    node_commands.set_parameter(w, cad_features.start_offset_slot, 0.0)
+    node_commands.set_parameter(w, cad_features.distance_slot, 10.0)
+    assert(volume_is(w, extrude, 8000.0 + 160.0))
+
+## Two boxes side by side, a square sketched under both cut up through
+## all: Objects To Cut picks the left one alone; Auto-select cuts both,
+## each apart (two bodies stay two).
+func objects_to_cut() -> unit!:
+    let w = Workspace()
+    cad(w)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let left = w.network.selected
+    node_commands.add_node(w, "Transform", 0.0, 100.0)
+    node_commands.set_parameter(w, 1, -15.0)
+    let moved = w.network.selected
+    node_commands.add_node(w, "Solid Box", 200.0, 0.0)
+    let right = w.network.selected
+    node_commands.add_node(w, "Transform", 200.0, 100.0)
+    node_commands.set_parameter(w, 1, 15.0)
+    let moved_right = w.network.selected
+    node_commands.add_node(w, "Merge", 100.0, 200.0)
+    let both = w.network.selected
+    node_commands.connect(w, moved, both, 0)
+    node_commands.connect(w, moved_right, both, 1)
+    node_commands.add_node(w, "Sketch", 100.0, 300.0)
+    node_commands.set_parameter(w, 0, 1.0)
+    node_commands.set_parameter(w, 1, -30.0)
+    # 60 x 4 across both boxes (x -30..30).
+    node_commands.set_text(w, 0, sketch_commands.rectangle_text(0.0, 0.0, 60.0, 4.0))
+    node_commands.add_node(w, "Extrude", 100.0, 400.0)
+    let extrude = w.network.selected
+    node_commands.set_parameter(w, cad_features.extent_slot, 2.0)
+    node_commands.set_parameter(w, cad_features.operation_slot, 3.0)
+    # Each box loses 20 x 4 x 20 (the strip crosses each whole), and they
+    # stay two bodies.
+    assert(volume_is(w, extrude, 16000.0 - 2.0 * 1600.0))
+    assert(CadGeometry.model_count(w.network.evaluate_data(extrude).geometry) == 2)
+    # Pick bodies: the left box alone.
+    tool_prompts.pick_bodies(w, extrude)
+    assert(w.prompt_level() == 0)
+    let mesh = w.geometry else trap("no pick mesh")
+    var face = -1
+    for at in 0..<mesh.face_count():
+        if face < 0 and mesh.face_center(at).x < -20.0:
+            face = at
+    selection_commands.choose_component(w, face, false)
+    tool_prompts.accept_prompt(w)
+    let node = w.network.require(extrude)
+    assert(node.texts[cad_features.bodies_text] != "" and not (";" in node.texts[cad_features.bodies_text]))
+    assert(volume_is(w, extrude, 16000.0 - 1600.0))
+    # Auto-select again: both.
+    node_commands.select_node(w, extrude)
+    node_commands.set_text(w, cad_features.bodies_text, "")
+    assert(volume_is(w, extrude, 16000.0 - 2.0 * 1600.0))
+    _ = left
+    _ = right
+
+## A 1 x 1 square 1..2 out along X on XY, about the Y axis, To the face
+## x = 0 of a 4 x 20 x 20 wall standing at x -4..0: a quarter tube, either
+## way (Flip).
+func revolve_to() -> unit!:
+    let w = Workspace()
+    cad(w)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    node_commands.set_parameter(w, 0, 4.0)
+    node_commands.set_parameter(w, 1, 20.0)
+    node_commands.set_parameter(w, 2, 20.0)
+    node_commands.add_node(w, "Transform", 0.0, 100.0)
+    node_commands.set_parameter(w, 1, -2.0)
+    let wall = w.network.selected
+    node_commands.add_node(w, "Sketch", 0.0, 200.0)
+    node_commands.set_parameter(w, 0, 0.0)
+    node_commands.set_text(w, 0, sketch_commands.rectangle_text(1.5, 0.5, 1.0, 1.0))
+    node_commands.add_node(w, "Revolve", 0.0, 300.0)
+    let revolve = w.network.selected
+    node_commands.set_parameter(w, cad_features.axis_slot, 2.0)
+    node_commands.set_parameter(w, cad_features.operation_slot, 1.0)
+    # Pick object: the wall's face at x = 0.
+    tool_prompts.pick_object(w, revolve)
+    let mesh = w.geometry else trap("no pick mesh")
+    var face = -1
+    for at in 0..<mesh.face_count():
+        if face < 0 and math.abs(mesh.face_center(at).x) < 1e-6:
+            face = at
+    selection_commands.choose_component(w, face, false)
+    let node = w.network.require(revolve)
+    assert(int(node.values[cad_features.revolve_type_slot]) == cad_features.revolve_to and node.texts[cad_features.revolve_face_text] == face_facing(w, wall, Vector3(1.0, 0.0, 0.0)))
+    # A new body beside the wall: the wall and the quarter tube.
+    let quarter = math.pi * 3.0 / 4.0
+    assert(volume_is(w, revolve, 1600.0 + quarter))
+    node_commands.select_node(w, revolve)
+    node_commands.set_parameter(w, cad_features.revolve_flip_slot, 1.0)
+    assert(volume_is(w, revolve, 1600.0 + quarter))

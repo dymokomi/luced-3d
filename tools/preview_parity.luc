@@ -1,0 +1,231 @@
+## The captures of the Fusion parity round (preview_features.luc hands these
+## scenes here):
+##   cad_crossing: a box at the Faces level, a box dragged right to left
+##     over half its front face and held: the dashed crossing box, the face
+##     it touches taken.
+##   cad_repeat: after a Fillet from the right-click menu, S held: the
+##     Modify menu led by Repeat Fillet.
+##   cad_filter: an Extrude's Pick object waiting while Smart is the
+##     level, the pointer on the box's top edge: only the face lights (the
+##     caption says Faces only).
+##   cad_thin: a rectangle and an open L thin extruded, Center: its Type,
+##     Wall thickness and Wall location rows.
+##   cad_face_extrude: a box's top face extruded as its own profile
+##     (Extrude face): its arrow and box.
+##   cad_through: a square under a box extruded To object, Extend Through
+##     body, cut: the hole; the Extend row.
+##   cad_bodies: two boxes, an Extrude's Pick bodies waiting at the Object
+##     level, the left box picked.
+##   cad_revolve_to: a rectangle revolved To a wall's face: the quarter
+##     turn, its Type To and Object rows.
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.modeling import CadModeling
+from app import Luce3D
+from view_projection import project
+from edit_types import smart_level
+import node_commands
+import sketch_commands
+import selection_commands
+import tool_prompts
+import cad_features
+from workspace import Workspace
+from luce_cad.sketch import CadSketch
+from luce_std import math
+
+pub func scenes() -> list[str]:
+    return ["cad_crossing", "cad_repeat", "cad_filter", "cad_thin", "cad_face_extrude", "cad_through", "cad_bodies", "cad_revolve_to"]
+
+func look(editor: Luce3D, yaw: float, pitch: float, distance: float, target: Vector3) -> unit!:
+    let w = editor.workspace
+    w.view.yaw = yaw
+    w.view.pitch = pitch
+    w.view.distance = distance
+    w.view.target = target
+    w.view.update_camera()
+
+## A new CAD node, entered, holding a Solid Box (20 mm).
+func box_in_cad(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 40.0, 40.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+
+## The screen point (window coordinates) of world point `p`.
+func screen(editor: Luce3D, p: Vector3) -> list[float]!:
+    let area = editor.panels.view.layout().bounds()
+    let s = project(editor.workspace, p, area.width, area.height)
+    return [area.x + s[0], area.y + s[1]]
+
+## Scene `scene` before its first frame.
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    let w = editor.workspace
+    if scene == "cad_crossing":
+        box_in_cad(editor)
+        look(editor, 0.0, 0.0, 80.0, Vector3())
+        selection_commands.set_mode(w, w.level_of(2))
+    elif scene == "cad_repeat":
+        box_in_cad(editor)
+        look(editor, 0.5, 0.6, 75.0, Vector3())
+        let model = CadGeometry.model(w.network.evaluate_data(w.network.selected).geometry, 0)
+        var top: list[int] = []
+        for face in 0..<model.face_count():
+            for use in 0..<model.face_edge_count(face):
+                let a = model.face_edge_point(face, use, 0.0)
+                let b = model.face_edge_point(face, use, 1.0)
+                if top.length == 0 and a.y > 9.99 and b.y > 9.99:
+                    top = [model.face_edge_id(face, use)]
+        node_commands.add_node(w, "Fillet", 40.0, 140.0)
+        node_commands.display_selected(w)
+        node_commands.set_text(w, 0, CadModeling.edge_references(model, top))
+        node_commands.set_parameter(w, 0, 3.0)
+        w.last_cad_tool = "fillet_edges"
+        w.last_cad_name = "Fillet"
+    elif scene == "cad_filter":
+        box_in_cad(editor)
+        node_commands.add_node(w, "Sketch", 40.0, 140.0)
+        node_commands.set_parameter(w, 0, 1.0)
+        node_commands.set_parameter(w, 1, -16.0)
+        node_commands.set_text(w, 0, sketch_commands.rectangle_text(0.0, 0.0, 6.0, 6.0))
+        node_commands.add_node(w, "Extrude", 40.0, 240.0)
+        node_commands.display_selected(w)
+        node_commands.set_parameter(w, 0, 4.0)
+        look(editor, 0.6, 0.35, 95.0, Vector3(0.0, -4.0, 0.0))
+        selection_commands.set_mode(w, smart_level)
+        tool_prompts.pick_object(w, w.network.selected)
+    elif scene == "cad_thin":
+        node_commands.delete_selected(w)
+        node_commands.add_node(w, "CAD", 40.0, 40.0)
+        node_commands.enter_group(w, w.network.selected)
+        node_commands.add_node(w, "Sketch", 40.0, 40.0)
+        node_commands.set_parameter(w, 0, 1.0)
+        let s = CadSketch.parse(sketch_commands.rectangle_text(0.0, 0.0, 30.0, 20.0))
+        let a = s.add_point(-15.0, -25.0)
+        let b = s.add_point(15.0, -25.0)
+        let c = s.add_point(15.0, -35.0)
+        _ = s.add_line(a, b)
+        _ = s.add_line(b, c)
+        node_commands.set_text(w, 0, s.text())
+        node_commands.add_node(w, "Extrude", 40.0, 160.0)
+        node_commands.display_selected(w)
+        node_commands.set_parameter(w, cad_features.type_slot, 1.0)
+        node_commands.set_parameter(w, cad_features.thickness_slot, 2.0)
+        node_commands.set_parameter(w, cad_features.wall_slot, 2.0)
+        node_commands.set_parameter(w, cad_features.distance_slot, 12.0)
+        look(editor, 0.6, 0.6, 110.0, Vector3(0.0, 4.0, 8.0))
+    elif scene == "cad_face_extrude":
+        box_in_cad(editor)
+        look(editor, 0.5, 0.6, 85.0, Vector3(0.0, 6.0, 0.0))
+        selection_commands.set_mode(w, w.level_of(2))
+        let mesh = w.geometry else trap("no pick mesh")
+        for face in 0..<mesh.face_count():
+            if math.abs(mesh.face_center(face).y - 10.0) < 1e-6:
+                selection_commands.choose_component(w, face, false)
+                break
+        editor.panels.refresh()
+        editor.panels.actions.extrude_face.trigger()
+        node_commands.set_parameter(w, cad_features.distance_slot, 8.0)
+    elif scene == "cad_through":
+        box_in_cad(editor)
+        let box = w.network.selected
+        let top = facing(w, box, Vector3(0.0, 1.0, 0.0))
+        node_commands.add_node(w, "Sketch", 40.0, 140.0)
+        node_commands.set_parameter(w, 0, 1.0)
+        node_commands.set_parameter(w, 1, -16.0)
+        node_commands.set_text(w, 0, sketch_commands.rectangle_text(0.0, 0.0, 8.0, 8.0))
+        node_commands.add_node(w, "Extrude", 40.0, 240.0)
+        node_commands.display_selected(w)
+        node_commands.set_parameter(w, cad_features.extent_slot, 1.0)
+        node_commands.set_text(w, cad_features.face_text, top)
+        node_commands.set_parameter(w, cad_features.extend_slot, 3.0)
+        node_commands.set_parameter(w, cad_features.operation_slot, 3.0)
+        look(editor, 0.6, -0.45, 90.0, Vector3(0.0, -4.0, 0.0))
+    elif scene == "cad_bodies":
+        node_commands.delete_selected(w)
+        node_commands.add_node(w, "CAD", 40.0, 40.0)
+        node_commands.enter_group(w, w.network.selected)
+        let moved: list[int] = []
+        for side in [-1.0, 1.0]:
+            node_commands.add_node(w, "Solid Box", 40.0 + side * 100.0, 40.0)
+            node_commands.add_node(w, "Transform", 40.0 + side * 100.0, 140.0)
+            node_commands.set_parameter(w, 1, side * 15.0)
+            moved.append(w.network.selected)
+        node_commands.add_node(w, "Merge", 40.0, 240.0)
+        let both = w.network.selected
+        node_commands.connect(w, moved[0], both, 0)
+        node_commands.connect(w, moved[1], both, 1)
+        node_commands.add_node(w, "Sketch", 40.0, 340.0)
+        node_commands.set_parameter(w, 0, 1.0)
+        node_commands.set_parameter(w, 1, -30.0)
+        node_commands.set_text(w, 0, sketch_commands.rectangle_text(0.0, 0.0, 60.0, 4.0))
+        node_commands.add_node(w, "Extrude", 40.0, 440.0)
+        node_commands.display_selected(w)
+        node_commands.set_parameter(w, cad_features.extent_slot, 2.0)
+        node_commands.set_parameter(w, cad_features.operation_slot, 3.0)
+        look(editor, 0.5, 0.5, 120.0, Vector3(0.0, 0.0, 0.0))
+        tool_prompts.pick_bodies(w, w.network.selected)
+        let mesh = w.geometry else trap("no pick mesh")
+        for face in 0..<mesh.face_count():
+            if mesh.face_center(face).x < -20.0:
+                selection_commands.choose_component(w, face, false)
+                break
+    elif scene == "cad_revolve_to":
+        node_commands.delete_selected(w)
+        node_commands.add_node(w, "CAD", 40.0, 40.0)
+        node_commands.enter_group(w, w.network.selected)
+        node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+        node_commands.set_parameter(w, 0, 4.0)
+        node_commands.set_parameter(w, 1, 20.0)
+        node_commands.set_parameter(w, 2, 30.0)
+        node_commands.add_node(w, "Transform", 40.0, 140.0)
+        node_commands.set_parameter(w, 1, -2.0)
+        let wall = w.network.selected
+        let face = facing(w, wall, Vector3(1.0, 0.0, 0.0))
+        node_commands.add_node(w, "Sketch", 40.0, 240.0)
+        node_commands.set_parameter(w, 0, 0.0)
+        node_commands.set_text(w, 0, sketch_commands.rectangle_text(9.0, 2.0, 6.0, 4.0))
+        node_commands.add_node(w, "Revolve", 40.0, 340.0)
+        node_commands.display_selected(w)
+        node_commands.set_parameter(w, cad_features.axis_slot, 2.0)
+        node_commands.set_parameter(w, cad_features.revolve_type_slot, 2.0)
+        node_commands.set_text(w, cad_features.revolve_face_text, face)
+        look(editor, 0.9, 0.55, 90.0, Vector3(0.0, 2.0, 0.0))
+    editor.panels.refresh()
+
+## The name of the face of node `id`'s first body facing `normal`.
+func facing(w: Workspace, id: int, normal: Vector3) -> str!:
+    let model = CadGeometry.model(w.network.evaluate_data(id).geometry, 0)
+    for face in 0..<model.face_count():
+        let name = CadModeling.face_name_of(model, face)
+        let at = CadModeling.face_point(model, name)
+        if at.found and at.normal.dot(normal) > 0.999:
+            return name
+    return ""
+
+## Frame `frame` of scene `scene` (from 2; `last` is the frame captured).
+pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
+    if frame != last - 1:
+        return
+    if scene == "cad_crossing":
+        # Right to left from below the front face's right side to above its
+        # middle: let go once (the face taken), then held again.
+        let a = screen(editor, Vector3(14.0, -13.0, 10.0))
+        let b = screen(editor, Vector3(0.0, 13.0, 10.0))
+        for round in 0..<2:
+            editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = a[0], y = a[1]))
+            editor.app.dispatch(Event(kind = EventKind.pointer_down, x = a[0], y = a[1], button = 0, shift = round == 1))
+            editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = b[0], y = b[1], shift = round == 1))
+            if round == 0:
+                editor.app.dispatch(Event(kind = EventKind.pointer_up, x = b[0], y = b[1], button = 0))
+    elif scene == "cad_repeat":
+        let at = screen(editor, Vector3(0.0, 10.0, 0.0))
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = at[0], y = at[1]))
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.s))
+    elif scene == "cad_filter":
+        # On the box's top front edge: Smart would take the edge; the
+        # prompt takes faces only.
+        let at = screen(editor, Vector3(0.0, 10.0, 10.0))
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = at[0], y = at[1]))

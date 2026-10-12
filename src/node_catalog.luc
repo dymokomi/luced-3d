@@ -864,8 +864,14 @@ func cad_fields(kind: str) -> list[Parameter]:
 ## Extrude's rows, Fusion 360's dialog (cad_features.luc reads the slots).
 func extrude_fields() -> list[Parameter]:
     let operation = menu("Operation", cad_features.operation_slot, cad_nodes.operation_names(), 0.0, "Auto: cuts where it goes into the body, else joins it (a new body without one), as Fusion does. Join, Cut, Intersect: combined with the body flowing down the chain, or the second input's when one is wired.")
-    let start = menu("Start", cad_features.start_slot, "Profile plane|Offset", 0.0, "Where the extrusion starts: on the sketch's plane, or that plane moved Start offset along its normal.")
-    let start_offset = number("Start offset", cad_features.start_offset_slot, 0.0, -100000.0, 100000.0, 0.5, "How far along the normal the extrusion starts (negative: the other way).", soft = 100.0)
+    let kind_row = menu("Type", cad_features.type_slot, "Extrude|Thin extrude", 0.0, "Extrude: the whole area inside the profiles. Thin extrude: a wall along the profiles' curves (open ones too), Wall thickness wide.")
+    let thickness = number("Wall thickness", cad_features.thickness_slot, 1.0, 0.0001, 100000.0, 0.1, "Thin extrude: how thick the wall is.", soft = 10.0)
+    thickness.hide_when = "{ type == 0 }"
+    thickness.length = true
+    let wall = menu("Wall location", cad_features.wall_slot, "Side 1|Side 2|Center", 0.0, "Thin extrude: Side 1 inside a closed profile (left of an open curve as it was drawn), Side 2 outside it (right), Center half each way.")
+    wall.hide_when = "{ type == 0 }"
+    let start = menu("Start", cad_features.start_slot, "Profile plane|Offset|Object", 0.0, "Where the extrusion starts: on the sketch's plane; that plane moved Start offset along its normal; or a face of the body (Pick start object), Start offset further on.")
+    let start_offset = number("Start offset", cad_features.start_offset_slot, 0.0, -100000.0, 100000.0, 0.5, "Offset: how far along the normal the extrusion starts (negative: the other way). Object: how far past the face.", soft = 100.0)
     start_offset.hide_when = "{ start == 0 }"
     let direction = menu("Direction", cad_features.direction_slot, cad_features.direction_names(), 0.0, "One side: along the normal (a negative distance goes the other way). Two sides: an extent and taper each way. Symmetric: the same each way.")
     let measurement = menu("Measurement", cad_features.measurement_slot, "Half length|Whole length", 0.0, "Symmetric: Half length extrudes the distance to each side, Whole length half of it to each side.")
@@ -873,8 +879,10 @@ func extrude_fields() -> list[Parameter]:
     let extent = menu("Extent", cad_features.extent_slot, cad_features.extent_names(), 0.0, "Distance: as far as Distance says. To object: until the face picked (Pick object), Offset further. All: through the whole body.")
     let distance = number("Distance", cad_features.distance_slot, 10.0, -100000.0, 100000.0, 0.5, "How far the profiles sweep along the sketch plane's normal; negative goes the other way.", soft = 100.0)
     distance.hide_when = "{ extent != 0 }"
+    let extend = menu("Extend", cad_features.extend_slot, cad_features.extend_names(), 0.0, "To object, as Fusion's: To selected face, its surface extended past the face; To adjacent faces, the face and the faces next to it; To body, the body the face is on; Through body, out of its far side.")
+    extend.hide_when = "{ extent != 1 }"
     let offset = number("Offset", cad_features.offset_slot, 0.0, -100000.0, 100000.0, 0.5, "To object: how far past the face the extrusion stops (negative: short of it).", soft = 100.0)
-    offset.hide_when = "{ extent != 1 }"
+    offset.hide_when = "{ extent != 1 } { extend != 0 }"
     let flip = toggle("Flip", cad_features.flip_slot, 0.0, "All, one side: through the body against the normal instead.")
     flip.hide_when = "{ extent != 2 } { direction != 0 }"
     let taper = number("Taper angle", cad_features.taper_slot, 0.0, -89.0, 89.0, 1.0, "Leans the sides: positive out, the profile growing along the extrusion; negative in. Fusion's sign.", suffix = "°")
@@ -883,26 +891,30 @@ func extrude_fields() -> list[Parameter]:
     let distance_two = number("Side 2 distance", cad_features.distance_two_slot, 10.0, 0.0, 100000.0, 0.5, "Two sides: how far the second side goes against the normal.", soft = 100.0)
     distance_two.hide_when = "{ direction != 1 } { side_2_extent != 0 }"
     distance_two.length = true
+    let extend_two = menu("Side 2 extend", cad_features.extend_two_slot, cad_features.extend_names(), 0.0, "To object, second side: as Extend.")
+    extend_two.hide_when = "{ direction != 1 } { side_2_extent != 1 }"
     let offset_two = number("Side 2 offset", cad_features.offset_two_slot, 0.0, -100000.0, 100000.0, 0.5, "To object, second side: how far past its face it stops.", soft = 100.0)
-    offset_two.hide_when = "{ direction != 1 } { side_2_extent != 1 }"
+    offset_two.hide_when = "{ direction != 1 } { side_2_extent != 1 } { side_2_extend != 0 }"
     offset_two.length = true
     let taper_two = number("Side 2 taper", cad_features.taper_two_slot, 0.0, -89.0, 89.0, 1.0, "Two sides: the second side's taper, positive out.", suffix = "°")
     taper_two.hide_when = "{ direction != 1 }"
     start_offset.length = true
-    return [start, start_offset, direction, measurement, extent, distance, offset, flip, taper, extent_two, distance_two, offset_two, taper_two, operation]
+    return [kind_row, start, start_offset, direction, measurement, extent, distance, extend, offset, flip, taper, extent_two, distance_two, extend_two, offset_two, taper_two, thickness, wall, operation]
 
 ## Revolve's rows, Fusion 360's dialog.
 func revolve_fields() -> list[Parameter]:
     let axis = menu("Axis", cad_features.axis_slot, cad_features.axis_names(), 0.0, "Picked: the sketch line or body edge picked (Pick axis), projected onto the sketch's plane. X, Y, Z: an origin axis.")
-    let kind_row = menu("Type", cad_features.revolve_type_slot, "Partial|Full", 0.0, "Partial: as far as Angle says. Full: all the way round.")
+    let kind_row = menu("Type", cad_features.revolve_type_slot, "Angle|Full|To", 0.0, "Angle: as far as Angle says. Full: all the way round. To: until the face picked (Pick object), its surface extended past it.")
     let direction = menu("Direction", cad_features.revolve_direction_slot, cad_features.direction_names(), 0.0, "One side: from the sketch's plane toward its normal (a negative angle the other way). Two sides: an angle each way. Symmetric: Angle each way.")
-    direction.hide_when = "{ type == 1 }"
+    direction.hide_when = "{ type != 0 }"
     let angle = number("Angle", cad_features.angle_slot, 360.0, -360.0, 360.0, 5.0, "How far the profiles turn about the axis.", suffix = "°")
-    angle.hide_when = "{ type == 1 }"
+    angle.hide_when = "{ type != 0 }"
     let angle_two = number("Side 2 angle", cad_features.angle_two_slot, 90.0, 0.0, 360.0, 5.0, "Two sides: how far the second side turns, the other way.", suffix = "°")
-    angle_two.hide_when = "{ type == 1 } { direction != 1 }"
+    angle_two.hide_when = "{ type != 0 } { direction != 1 }"
+    let flip = toggle("Flip", cad_features.revolve_flip_slot, 0.0, "To: turn against the sketch plane's normal instead.")
+    flip.hide_when = "{ type != 2 }"
     let operation = menu("Operation", cad_features.operation_slot, cad_nodes.operation_names(), 0.0, "Auto: cuts where it turns into the body, else joins it (a new body without one). Join, Cut, Intersect: combined with the body flowing down the chain, or the second input's when one is wired.")
-    return [axis, kind_row, direction, angle, angle_two, operation]
+    return [axis, kind_row, direction, angle, angle_two, flip, operation]
 
 ## Fillet's and Chamfer's rows, Fusion 360's dialogs (cad_blends.luc reads
 ## the slots).

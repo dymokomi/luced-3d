@@ -2,9 +2,9 @@
 ## for picking (Tool → Select, Reselect, Pick edges, Pick face, Pick
 ## profiles, Pick object, Pick axis); the node follows the selection, Shift
 ## or Cmd peeks at the input, Enter keeps it, Esc removes it.
-from luce_geocore.geocore import Mesh, Domain
+from luce_geocore.geocore import Mesh, Domain, Selection
 from workspace import Workspace
-from edit_types import edge_level
+from edit_types import edge_level, object_level
 from tools import ToolRun
 from tool_prompt import ToolPrompt
 from node import Node
@@ -115,6 +115,8 @@ pub func pick_face(w: Workspace, id: int) -> unit!:
 ## axis pick.
 pub let object_label = "Pick object"
 pub let object_two_label = "Pick side 2 object"
+pub let start_label = "Pick start object"
+pub let bodies_label = "Pick bodies"
 pub let axis_label = "Pick axis"
 ## The labels of face set picks: a Rule fillet's two sets, Offset Face's.
 pub let faces_label = "Pick faces"
@@ -151,9 +153,39 @@ func face_slot(label: str, node: Node) -> int:
 ## object.
 pub func pick_object(w: Workspace, id: int, second: bool = false) -> unit!:
     let node = w.network.require(id)
-    if node.kind != "Extrude" or node.inputs[0] < 0 or w.in_transaction():
+    if not (node.kind in ["Extrude", "Revolve"]) or node.inputs[0] < 0 or w.in_transaction():
         return
     let label = object_two_label if second else object_label
+    feature_face_prompt(w, node, label, "Click the face to extrude to; Esc cancels" if node.kind == "Extrude" else "Click the face to turn to; Esc cancels")
+
+## Pick start object: show Extrude node `id`'s input to pick the face it
+## starts from; its Start becomes Object.
+pub func pick_start_object(w: Workspace, id: int) -> unit!:
+    let node = w.network.require(id)
+    if node.kind != "Extrude" or node.inputs[0] < 0 or w.in_transaction():
+        return
+    feature_face_prompt(w, node, start_label, "Click the face to start the extrusion from; Esc cancels")
+
+## Pick bodies: show Extrude node `id`'s input at the Object level; the
+## bodies picked (Shift adds) are its Objects To Cut, one face name each;
+## Enter keeps them.
+pub func pick_bodies(w: Workspace, id: int) -> unit!:
+    let node = w.network.require(id)
+    if node.kind != "Extrude" or node.inputs[0] < 0 or w.in_transaction():
+        return
+    w.begin(bodies_label)
+    w.prompt = ToolPrompt(node.id, node.inputs[0], bodies_label, true)
+    w.network.selected = node.inputs[0]
+    show(w, node.inputs[0])
+    w.adopt_level(object_level)
+    w.selection = none
+    w.pending_changed = true
+    w.notice = "Pick the bodies to act on (Shift adds), then Enter; Esc cancels"
+    w.revision += 1
+    w.rebuild()
+
+## A prompt `label` for one face of node `node`'s input, saying `notice`.
+func feature_face_prompt(w: Workspace, node: Node, label: str, notice: str) -> unit!:
     w.begin(label)
     w.prompt = ToolPrompt(node.id, node.inputs[0], label, true)
     w.network.selected = node.inputs[0]
@@ -161,7 +193,7 @@ pub func pick_object(w: Workspace, id: int, second: bool = false) -> unit!:
     w.adopt_level(w.level_of(2))
     w.selection = none
     w.pending_changed = true
-    w.notice = "Click the face to extrude to; Esc cancels"
+    w.notice = notice
     w.revision += 1
     w.rebuild()
 
@@ -248,8 +280,15 @@ pub func follow_prompt(w: Workspace) -> unit!:
         w.commit()
         w.rebuild()
         return
-    if prompt.label in [object_label, object_two_label, axis_label]:
+    if prompt.label in [object_label, object_two_label, axis_label, start_label]:
         follow_feature_pick(w, prompt.label, node, mesh, chosen.next(-1))
+        return
+    if prompt.label == bodies_label:
+        node.texts[cad_features.bodies_text] = body_names(mesh, chosen)
+        w.network.invalidate(node.id)
+        w.notice = ""
+        w.pending_changed = true
+        w.rebuild()
         return
     if prompt.label in [faces_label, other_faces_label]:
         let names = face_names(w, mesh) else return
@@ -305,10 +344,35 @@ func follow_feature_pick(w: Workspace, label: str, node: Node, mesh: Mesh, first
         w.notice = "This face has no name to keep: pick one of a body made inside a CAD node"
         w.revision += 1
         return
-    let second = label == object_two_label
-    node.texts[cad_features.face_two_text if second else cad_features.face_text] = name
-    node.values[cad_features.extent_two_slot if second else cad_features.extent_slot] = 1.0
+    if label == start_label:
+        node.texts[cad_features.start_face_text] = name
+        node.values[cad_features.start_slot] = float(cad_features.start_object)
+    elif node.kind == "Revolve":
+        node.texts[cad_features.revolve_face_text] = name
+        node.values[cad_features.revolve_type_slot] = float(cad_features.revolve_to)
+    else:
+        let second = label == object_two_label
+        node.texts[cad_features.face_two_text if second else cad_features.face_text] = name
+        node.values[cad_features.extent_two_slot if second else cad_features.extent_slot] = 1.0
     finish_pick(w, node.id)
+
+## One face name of each body (CAD model) picked on `mesh`, apart by `;`.
+func body_names(mesh: Mesh, chosen: Selection) -> str!:
+    let names = mesh.find_attribute("cad_face_name", 2)
+    let models = mesh.find_attribute("cad_model", 2)
+    if names < 0 or models < 0:
+        return ""
+    let seen: list[int] = []
+    let picked: list[str] = []
+    var at = chosen.next(-1)
+    while at >= 0:
+        let model = int(mesh.attribute_value(models, at))
+        let name = mesh.attribute_text(names, at)
+        if not (model in seen) and name != "":
+            seen.append(model)
+            picked.append(name)
+        at = chosen.next(at)
+    return picked.join(";")
 
 ## The names of the faces picked on `mesh` (the body's pick tessellation),
 ## each once, apart by `;`; none, with a notice, when they have none.
@@ -377,7 +441,7 @@ pub func accept_prompt(w: Workspace) -> unit!:
     w.prompt = none
     w.peeking = false
     w.notice = ""
-    if node.kind in ["Fillet", "Chamfer", "Offset Face"]:
+    if node.kind in ["Fillet", "Chamfer", "Offset Face", "Extrude"]:
         w.selection = none
     else:
         w.adopt_output = true

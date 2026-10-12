@@ -4,9 +4,15 @@
 ## input sketch's curves over it, the chosen profiles outlined and the one
 ## under the pointer lit. A click in a region adds it or takes it away; the
 ## node keeps the profiles' keys (luce-cad's: they hold as dimensions
-## change). Enter finishes, Esc undoes the picking.
+## change). An Extrude's click off the regions on a flat face of the body
+## takes that face as its profile, as Fusion's Extrude takes planar faces
+## (extrude_inputs.face_profile). Enter finishes, Esc undoes the picking.
 from luce_cad.sketch import CadSketch
 from luce_cad.modeling import CadModeling
+from luce_cad.cad_edits import CadEdits
+from luce_cad.cad_geometry import CadGeometry
+from luce_geocore.geocore import Mesh
+import extrude_inputs
 from luce_geocore.geocore import GeometrySet
 from luce_gpu.gpu import RenderTarget
 from luce_ui.ui import Event
@@ -28,6 +34,9 @@ pub class ProfilePick:
     ## The key under the pointer ("": none).
     pub var hover: str = ""
     let frames: FrameCache
+    ## The input's bodies picked on for a face, as of the input's stamp.
+    var bodies: Mesh? = none
+    var bodies_from: int = 0
 
     pub func init(self, w: Workspace):
         self.w = w
@@ -62,6 +71,26 @@ pub class ProfilePick:
         let at = view_projection.plane(self.w, x, y, width, height, f.origin, f.normal())
         return CadModeling.profile_at(curves, at)
 
+    ## The name of the flat face of the input's body under (`x`, `y`), or
+    ## "" (none there, or not flat).
+    func face_at(self, x: float, y: float, width: float, height: float) -> str!:
+        let prompt = self.w.prompt else return ""
+        let input = self.w.network.find(prompt.input) else return ""
+        let data = self.w.network.evaluate_data(input.id)
+        if CadGeometry.model_count(data.geometry) == 0:
+            return ""
+        if self.bodies == none or self.bodies_from != input.stamp:
+            self.bodies = CadEdits.pick_mesh(data.geometry)
+            self.bodies_from = input.stamp
+        let mesh = self.bodies else return ""
+        let face = mesh.ray_face(self.w.view.camera.position(), view_projection.ray(self.w, x, y, width, height).normalized())
+        if face < 0:
+            return ""
+        let name = mesh.attribute_text(mesh.find_attribute("cad_face_name", 2), face)
+        if name == "" or not CadModeling.face_frame(CadGeometry.model(data.geometry, 0), name).found:
+            return ""
+        return name
+
     ## Pointer events while picking; whether one was used.
     pub func event(self, event: Event, width: float, height: float) -> bool!:
         if not self.active() or event.alt:
@@ -72,12 +101,20 @@ pub class ProfilePick:
             return before != self.hover
         if event.kind != EventKind.pointer_down or event.button != 0 or not event.inside:
             return false
-        let key = self.key_at(event.x, event.y, width, height)
-        if key == "":
-            return true
         let prompt = self.w.prompt else return true
         let node = self.w.network.find(prompt.node) else return true
-        let keys = toggled(node.texts[0], key)
+        let key = self.key_at(event.x, event.y, width, height)
+        var keys = toggled(node.texts[0], key)
+        if key == "" and node.kind == "Extrude":
+            # Off the regions: a flat face of the body as the profile.
+            let face = self.face_at(event.x, event.y, width, height)
+            if face == "":
+                return true
+            keys = extrude_inputs.face_profile(face)
+        elif key == "":
+            return true
+        elif extrude_inputs.profile_face(node.texts[0]) != "":
+            keys = key
         self.w.perform(label, func () -> unit!:
             node.texts[0] = keys
             self.w.network.invalidate(node.id)

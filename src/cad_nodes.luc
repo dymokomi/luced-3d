@@ -15,6 +15,7 @@ import sketch_node
 from handle_lines import HandleLine
 import handle_lines
 import cad_features
+import extrude_inputs
 import cad_blends
 from cad_blends import BlendMemo
 from angles import radians
@@ -96,7 +97,7 @@ pub func operation_items(chosen: str) -> str:
 
 ## Auto's choice, Fusion's: inside a body at `probe` (a point halfway along
 ## the new solid) it cuts, else it joins when there are bodies, else it is
-## a new body (operated's numbers: 0 new, 1 join, 2 cut).
+## a new body (0 new, 1 join, 2 cut).
 func automatic(target: GeometryData?, probe: Vector3) -> int!:
     let bodies = target else return 0
     for at in 0..<CadGeometry.model_count(bodies.geometry):
@@ -104,20 +105,18 @@ func automatic(target: GeometryData?, probe: Vector3) -> int!:
             return 2
     return 1
 
-## `made` combined with the bodies of `target` by operation `operation`
-## (0 a new body beside them, 1 join, 2 cut, 3 intersect).
-func operated(made: CadModel, target: GeometryData?, operation: int) -> GeometryData!:
+## `made` as a new body beside the bodies of `target`.
+func beside(made: CadModel, target: GeometryData?) -> GeometryData!:
     let other = target else return GeometryData(geometry = CadGeometry.of_model(made))
-    if operation == 0:
-        return other.merged(GeometryData(geometry = CadGeometry.of_model(made)))
-    let body = body_of(other, "target")
-    return GeometryData(geometry = CadGeometry.of_model(CadModeling.combined(body, made, operation - 1)))
+    return other.merged(GeometryData(geometry = CadGeometry.of_model(made)))
 
 ## What an Extrude's or Revolve's Profiles text (profile keys apart by
 ## `;`) shows.
 pub func profiles_summary(text: str) -> str:
     if text.trim() == "":
         return "Islands (the sketch's closed shapes)"
+    if extrude_inputs.profile_face(text) != "":
+        return "A face of the body"
     let count = text.split(";").length
     return "1 profile" if count == 1 else f"{count} profiles"
 
@@ -224,13 +223,28 @@ func featured(kind: str, v: list[float], texts: list[str], data: GeometryData, t
     var probe: Vector3? = none
     var solid: CadModel? = none
     if kind == "Extrude":
-        let anchor = CadModeling.profile_anchor(data.geometry, texts[0])
-        solid = cad_features.extruded(v, texts, data, tag, target)
+        # The profiles: the sketch's, a face of the body, or Thin's bands
+        # (extrude_inputs.luc).
+        var curves = data.geometry
+        var profiles = texts[0]
+        let face = extrude_inputs.profile_face(texts[0])
+        if face != "":
+            let bodies = chain else error(ui.invalid, "The face to extrude is on the body flowing down the chain: there is none")
+            curves = extrude_inputs.face_curves(bodies, face)
+            profiles = ""
+        if int(v[cad_features.type_slot]) == 1:
+            if face != "":
+                error(ui.invalid, "Thin Extrude follows a sketch's curves: pick the sketch's profiles, not a face")
+            curves = extrude_inputs.thin_curves(sketch, sketch_node.plane_of(data.geometry), profiles, v[cad_features.thickness_slot], int(v[cad_features.wall_slot]))
+            profiles = ""
+        let anchor = CadModeling.profile_anchor(curves, profiles)
+        solid = cad_features.extruded(v, texts, curves, profiles, tag, target)
         if anchor.found:
-            probe = cad_features.extrude_probe(v, texts, anchor)
-            handles = cad_features.extrude_handles(v, texts, anchor)
+            let start = cad_features.start_height(v, texts, anchor, target)
+            probe = cad_features.extrude_probe(v, texts, anchor, start)
+            handles = cad_features.extrude_handles(v, texts, anchor, start)
     else:
-        let (revolved, middle) = cad_features.revolved(v, texts, data, tag, sketch)
+        let (revolved, middle) = cad_features.revolved(v, texts, data, tag, sketch, target)
         solid = revolved
         probe = middle
         handles = cad_features.revolve_handles(v, texts, data, sketch)
@@ -242,7 +256,10 @@ func featured(kind: str, v: list[float], texts: list[str], data: GeometryData, t
             operation = automatic(target, at)
     if operation != 0 and target == none:
         error(ui.invalid, "Join, Cut and Intersect need a body: the sketch's input body, or one wired to the second input")
-    var result = operated(body, target, operation)
+    # Objects To Cut: the bodies acted on (none named: every body); Cut
+    # and Intersect act on each apart.
+    let chosen = texts[cad_features.bodies_text] if kind == "Extrude" else ""
+    var result = beside(body, target) if operation == 0 else extrude_inputs.combined_with(body, target else trap("target"), operation, chosen)
     # An explicit target leaves the chain's bodies as they were.
     if second != none:
         if let bodies = chain:
