@@ -7,6 +7,9 @@ from luce_3d.graphics import Vector3
 from workspace import Workspace
 from tools import ToolRun, verb_defaults
 from edit_steps import edit_step, insert_after_display
+from edit_operations import EditStep
+from edit_types import point_level
+import edit_cad_nets
 
 pub func move_selection(w: Workspace, delta: Vector3) -> unit!:
     if w.selected_count() == 0:
@@ -36,6 +39,41 @@ func append_transform(w: Workspace, mesh: Mesh, numbers: list[float]) -> unit!:
     node.texts[0] = group
     node.guard = mesh.topology_hash()
 
+## Whether components picked are Edit CAD's CVs.
+pub func at_cvs(w: Workspace) -> bool:
+    let kind = w.active_kind() else return false
+    return kind.name == "Edit CAD" and w.editing() and w.level_index() == point_level
+
+## Whether the gizmo moves CVs of Edit CAD by its CV move mode or falloff
+## (edit_cad_nets.luc) rather than as Transform Components.
+pub func moves_cvs_by_mode(w: Workspace) -> bool:
+    let node = w.selected() else return false
+    return at_cvs(w) and edit_cad_nets.moves_by_mode(node.values)
+
+## The gizmo's axes in the CV move mode (NUV's frame at the first picked
+## CV, Slide's hull directions, View's screen axes); none for World.
+pub func cv_axes(w: Workspace) -> list[Vector3]?!:
+    if not moves_cvs_by_mode(w):
+        return none
+    let node = w.selected() else return none
+    let mesh = w.geometry else return none
+    let ids = w.selected_ids()
+    if ids.length == 0:
+        return none
+    let lens = w.view.camera.projection(1.0)
+    return edit_cad_nets.gizmo_axes(int(node.values[edit_cad_nets.move_mode_slot]), mesh, ids[0], [lens.right, lens.up, lens.backward])
+
+## The gizmo's move `delta` as a Move CVs step on the Edit CAD node (the
+## whole gesture: previews start from the state before it).
+func append_cv_move(w: Workspace, mesh: Mesh, delta: Vector3) -> unit!:
+    let chosen = w.current_selection() else return
+    let node = w.selected() else return
+    let mode = int(node.values[edit_cad_nets.move_mode_slot])
+    let amount = edit_cad_nets.amount_of(mode, delta, w.cv_frame if w.cv_frame != none else cv_axes(w))
+    let numbers = edit_cad_nets.move_numbers(node.values, amount)
+    node.edits.append(EditStep(edit_cad_nets.move_verb, chosen.expression(mesh), 1, numbers, mesh.topology_hash()))
+    w.network.invalidate(node.id)
+
 ## Preview each gizmo delta against the original gesture snapshot, not
 ## against the last frame. A whole drag becomes one undo entry.
 ## One request per pointer move: the worker applies the preview recipe to
@@ -64,6 +102,14 @@ pub func preview_transform(w: Workspace, delta: Vector3, rotate: Vector3, scale:
         node.values[2] += delta.y
         node.values[3] += delta.z
         w.network.invalidate(node.id)
+        w.pending_changed = true
+    elif w.selecting() and w.selected_count() > 0 and moves_cvs_by_mode(w) and rotate.length() == 0.0 and scale.subtract(Vector3(1.0, 1.0, 1.0)).length() == 0.0:
+        let mesh = w.geometry else return
+        append_cv_move(w, mesh, delta) catch failure:
+            w.cancel()
+            w.notice = failure.message
+            w.revision += 1
+            return
         w.pending_changed = true
     elif w.selecting() and w.selected_count() > 0:
         let mesh = w.geometry else return

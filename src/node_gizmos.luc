@@ -18,6 +18,7 @@ from tools import gizmo_tool
 from snapping import SnapMark, grid_step, on_grid, stepped
 from angles import radians, degrees
 import component_moves
+import edit_cad_nets
 
 pub class NodeGizmos:
     let w: Workspace
@@ -89,6 +90,12 @@ pub class NodeGizmos:
 
     func axis(self, id: int) -> Vector3!:
         let node = self.w.selected() else return gm.axis(id)
+        # Edit CAD's CV move modes turn the move gizmo into their frame.
+        if self.mode() == "Move" and self.components():
+            if let fixed = self.w.cv_frame:
+                return fixed[id]
+            if let frame = component_moves.cv_axes(self.w):
+                return frame[id]
         if self.mode() != "Scale" or self.components():
             return gm.axis(id)
         let v = node.values
@@ -204,7 +211,7 @@ pub class NodeGizmos:
             let label_x = end[0] + 8.0
             let label_y = end[1] - 9.0
             if label_x >= -32.0 and label_x <= width and label_y >= -32.0 and label_y <= height:
-                painter.text(["X", "Y", "Z"][axis], label_x, label_y, color)
+                painter.text(self.axis_names()[axis], label_x, label_y, color)
             let corners = self.planes(axis, center, length, width, height)
             let ink = theme.accent() if hot == axis + 3 else theme.axis(axis)
             if hot == axis + 3:
@@ -233,11 +240,13 @@ pub class NodeGizmos:
             if self.dragging:
                 self.w.cancel()
                 self.dragging = false
+                self.released()
                 return true
         if self.dragging:
             if event.kind == EventKind.pointer_up:
                 self.w.commit()
                 self.dragging = false
+                self.released()
                 return true
             if event.kind == EventKind.pointer_moved:
                 self.update(event, width, height)
@@ -264,7 +273,28 @@ pub class NodeGizmos:
         self.rotation = 0.0
         self.w.begin("Resize Cube" if node.kind == "Cube" else self.mode() + " gizmo")
         self.dragging = true
+        # A CV drag keeps its frame and shows the hulls as they were.
+        if self.components() and component_moves.at_cvs(self.w):
+            self.w.cv_frame = component_moves.cv_axes(self.w) if self.mode() == "Move" else none
+            self.w.ghost_hulls = self.w.batches.hull_batches.copy()
         return true
+
+    ## The axes' labels: X, Y, Z, or the CV move mode's frame (NUV's
+    ## normal, U and V; the hull modes' U, V and normal; View's screen
+    ## horizontal, vertical and depth).
+    func axis_names(self) -> list[str]!:
+        if self.mode() == "Move" and self.components() and component_moves.moves_cvs_by_mode(self.w):
+            let node = self.w.selected() else return ["X", "Y", "Z"]
+            let mode = int(node.values[edit_cad_nets.move_mode_slot])
+            if mode == 1: return ["N", "U", "V"]
+            if mode >= 2 and mode <= 4: return ["U", "V", "N"]
+            if mode == 5: return ["H", "V", "D"]
+        return ["X", "Y", "Z"]
+
+    ## A drag over: no fixed frame, no ghost.
+    func released(self):
+        self.w.cv_frame = none
+        self.w.ghost_hulls = []
 
     func update(self, event: Event, width: float, height: float) -> unit!:
         let node = self.w.selected() else return
@@ -277,7 +307,7 @@ pub class NodeGizmos:
             let dy = b[1] - a[1]
             let amount = ((event.x - self.start_x) * dx + (event.y - self.start_y) * dy) / math.max(0.000001, dx * dx + dy * dy) * self.length
             delta = self.axis(self.handle).multiply_scalar(amount)
-        if self.mode() == "Move" or self.mode() == "Pivot":
+        if (self.mode() == "Move" or self.mode() == "Pivot") and self.w.cv_frame == none and component_moves.cv_axes(self.w) == none:
             delta = self.grid_moved(delta, event.meta or event.control)
         if node.kind == "Cube":
             let id = self.handle - 10

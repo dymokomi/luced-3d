@@ -1,0 +1,144 @@
+## Edit CAD's CVs level, surfacing Stage 1 (edit_cad_nets.luc): on a NURBS
+## dome, Move CVs steps move the middle CV along its normal alone (NUV) and
+## carry neighbors by Rows falloff (Preceding 1: a neighbor by the
+## exponent's weight, a corner by its square); in a workspace, a box's face
+## converted to a B-spline and raised to degree 2 gives CVs; the right-click
+## and S menus offer the structure tools on picked CVs; the gizmo in NUV
+## mode moves along the frame fixed at its press as one Move CVs step, with
+## a ghost of the hull; a second click takes a hull row; Insert Knot and
+## Rebuild (Explicit Control: multi-span quintic, then a single span of
+## degree 7) make one undo each and say what they did.
+from workspace import Workspace
+from node import Node
+from app import Luce3D
+from geometry_data import cad_data
+from edit_operations import EditStep
+from cad_display_tests import dome_model
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.nurbs import CadNurbs
+import edit_cad
+import edit_cad_nets
+import edit_cad_commands
+import marking_items
+import modeling_commands
+import node_commands
+import selection_commands
+import component_moves
+from luce_std import math
+
+pub func edit_cad_nets_tests() -> unit!:
+    steps_on_a_dome()
+    in_the_workspace()
+    print("PASS Edit CAD CVs: NUV and Rows falloff steps, a converted face's CVs, structure tools in the right-click and S menus, the NUV gizmo's fixed frame and ghost, hull rows, Insert Knot and Rebuild (multi-span quintic, single span degree 7) as one undo each")
+
+func steps_on_a_dome() -> unit!:
+    let kind = edit_cad.kind()
+    let dome = cad_data(dome_model())
+    let cloud = kind.pick(dome, 1) else trap("cloud")
+    # NUV: 1.5 along the middle CV's normal (up), nothing else moves.
+    let lifted = CadGeometry.model(kind.run(EditStep(edit_cad_nets.move_verb, "4", 1, [1.0, 1.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 3.0], cloud.topology_hash()), 0, dome, "#1").geometry, 0)
+    assert(math.abs(lifted.cv_position(4).z - 5.5) < 1e-6 and math.abs(lifted.cv_position(4).x - 1.0) < 1e-6)
+    for cv in [0, 1, 3, 8]:
+        assert(lifted.cv_position(cv).z == 0.0)
+    # Rows falloff, one row each way, exponent 1: an edge neighbor half, a
+    # corner a quarter.
+    let rows = CadGeometry.model(kind.run(EditStep(edit_cad_nets.move_verb, "4", 1, [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 3.0], cloud.topology_hash()), 0, dome, "#1").geometry, 0)
+    assert(math.abs(rows.cv_position(1).z - 0.5) < 1e-6 and math.abs(rows.cv_position(0).z - 0.25) < 1e-6 and math.abs(rows.cv_position(4).z - 5.0) < 1e-6)
+
+## The cloud point of the displayed model's CV (u, v) on its surface.
+func cv_at(w: Workspace, u: int, v: int) -> int!:
+    let cloud = w.geometry else trap("no cloud")
+    let us = cloud.find_attribute("cad_cv_u", 0)
+    let vs = cloud.find_attribute("cad_cv_v", 0)
+    for i in 0..<cloud.point_count():
+        if int(cloud.attribute_value(us, i)) == u and int(cloud.attribute_value(vs, i)) == v: return i
+    trap("no such CV")
+
+func in_the_workspace() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    let node = w.selected() else trap("node")
+    modeling_commands.create(w, "Box")
+    # A face converted, then raised to degree 2 each way: a 3 by 3 net.
+    selection_commands.set_mode(w, 3)
+    selection_commands.choose_component(w, 0, false)
+    edit_cad_commands.tool(w, edit_cad_nets.convert_verb)
+    assert(node.edits[-1].verb == edit_cad_nets.convert_verb and not node.warning.contains("could not"), node.warning)
+    let converted = CadGeometry.model(w.network.evaluate_data(node.id).geometry, 0)
+    var spline = -1
+    for face in 0..<converted.face_count():
+        if converted.face_surface_kind(face) == 3: spline = converted.face_surface_id(face)
+    assert(spline >= 0)
+    selection_commands.choose_component(w, 0, false)
+    edit_cad_commands.tool(w, edit_cad_nets.raise_verb)
+    let raised = CadGeometry.model(w.network.evaluate_data(node.id).geometry, 0)
+    assert(CadNurbs.structure(raised, spline).nu == 3 and CadNurbs.structure(raised, spline).nv == 3, node.warning)
+    # The CVs level: the middle CV picked; the menus offer the tools.
+    selection_commands.set_mode(w, 1)
+    let middle = cv_at(w, 1, 1)
+    selection_commands.choose_component(w, middle, false)
+    assert(w.selected_count() == 1)
+    var offered: list[str] = []
+    editor.panels.refresh()
+    for command in editor.panels.viewport_menu.entries():
+        offered.append(command.text())
+    for name in [edit_cad_nets.insert_verb, edit_cad_nets.remove_verb, edit_cad_nets.raise_verb, edit_cad_nets.rebuild_verb]:
+        assert(name in offered, f"right-click lacks {name}: {offered}")
+    var marked: list[str] = []
+    for item in marking_items.modify_items(w, editor.panels.actions, no_add, editor.panels.view.sketch.editor):
+        marked.append(item.name)
+    assert(edit_cad_nets.rebuild_verb in marked and edit_cad_nets.insert_verb in marked, f"S menu: {marked}")
+    # NUV: the gizmo's axes the CV's frame, fixed at the press; one drag
+    # one Move CVs step, the hull's ghost kept meanwhile.
+    node_commands.set_parameter(w, edit_cad_nets.move_mode_slot, 1.0)
+    let frame = component_moves.cv_axes(w) else trap("no NUV frame")
+    let before = CadGeometry.model(w.network.evaluate_data(node.id).geometry, 0)
+    let steps = node.edits.length
+    w.begin("Move gizmo")
+    w.cv_frame = frame
+    w.ghost_hulls = w.batches.hull_batches.copy()
+    component_moves.preview_move(w, frame[0].multiply_scalar(0.3))
+    component_moves.preview_move(w, frame[0].multiply_scalar(0.7))
+    w.commit()
+    w.cv_frame = none
+    w.ghost_hulls = []
+    assert(shown(w).edits.length == steps + 1 and shown(w).edits[-1].verb == edit_cad_nets.move_verb)
+    let after = CadGeometry.model(w.network.evaluate_data(shown(w).id).geometry, 0)
+    let first = CadNurbs.first_cv(after, spline)
+    let moved = after.cv_position(first + 4).subtract(before.cv_position(first + 4))
+    assert(moved.subtract(frame[0].multiply_scalar(0.7)).length() < 1e-6, f"moved {moved.x} {moved.y} {moved.z}")
+    assert(after.cv_position(first).subtract(before.cv_position(first)).length() == 0.0)
+    # A second click on the CV takes its row (3 CVs), a third the other.
+    selection_commands.choose_component(w, cv_at(w, 1, 1), false, row = 0)
+    assert(w.selected_count() == 3)
+    selection_commands.choose_component(w, cv_at(w, 1, 1), false, row = 2)
+    assert(w.selected_count() == 9)
+    # Insert Knot: one undo, a row more, said in the tool bar's line.
+    selection_commands.choose_component(w, cv_at(w, 1, 1), false)
+    edit_cad_commands.tool(w, edit_cad_nets.insert_verb)
+    let inserted = CadGeometry.model(w.network.evaluate_data(shown(w).id).geometry, 0)
+    assert(CadNurbs.structure(inserted, spline).nu == 4)
+    assert(shown(w).summary.starts_with("Inserted 1 knot"), shown(w).summary)
+    w.undo()
+    assert(CadNurbs.structure(CadGeometry.model(w.network.evaluate_data(shown(w).id).geometry, 0), spline).nu == 3)
+    # Rebuild: Explicit Control's multi-span quintic (4 spans, held G2: 9
+    # CVs a direction), then a single span of degree 7 (8).
+    selection_commands.choose_component(w, cv_at(w, 1, 1), false)
+    edit_cad_commands.tool(w, edit_cad_nets.rebuild_verb)
+    let quintic = CadNurbs.structure(CadGeometry.model(w.network.evaluate_data(shown(w).id).geometry, 0), spline)
+    assert(quintic.du == 5 and quintic.nu == 9 and quintic.nv == 9, f"{quintic.du} {quintic.nu} {shown(w).warning}")
+    assert(shown(w).summary.contains("moved at most"), shown(w).summary)
+    modeling_commands.set_last_step(w, edit_cad_nets.preset_slot, 1.0, 0.0, 2.0)
+    let single = CadNurbs.structure(CadGeometry.model(w.network.evaluate_data(shown(w).id).geometry, 0), spline)
+    assert(single.du == 7 and single.nu == 8 and single.spans_u == 1)
+
+## The Edit node as it is now (a gizmo drag's previews replace the graph).
+func shown(w: Workspace) -> Node!:
+    return w.selected() else trap("no Edit node")
+
+func no_add(kind: str) -> unit!:
+    _ = kind

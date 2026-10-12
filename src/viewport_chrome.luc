@@ -19,6 +19,9 @@ from edit_types import smart_level, level_names, level_icons, sketch_level_names
 from tools import transform_tools, transform_key_names
 from snapping import snap_names, snap_icons
 from tool_prompt import hint
+import component_moves
+import edit_cad_nets
+import node_commands
 
 pub class ViewportChrome:
     let workspace: Workspace
@@ -26,7 +29,7 @@ pub class ViewportChrome:
     ## The button under the pointer: 100 + a view button, 200 + a level,
     ## 300 + a transform tool (the slot below them: 300 + their count), 400
     ## the snapping button, 410 + one of its options, 500 through the
-    ## depth (-1: none).
+    ## depth, 600 + an Edit CAD CV move mode, 620 + a CV falloff (-1: none).
     pub var hover_tool: int = -1
     ## The snapping options shown (the snapping button opened them).
     pub var snaps_open: bool = false
@@ -56,6 +59,38 @@ pub class ViewportChrome:
                 painter.rounded_rectangle(Rect(width - 196.0, 43.0, 180.0, 30.0), theme.surface(), 4.0)
                 painter.text(tips[index], width - 188.0, 49.0, theme.text())
         self.draw_switchers(painter, height)
+        self.draw_cv_modes(painter)
+
+    ## Under the levels at Edit CAD's CVs, Alias's Transform CV modes and
+    ## the falloff kinds (the Edit node's CV move and CV falloff), the
+    ## chosen ones lit.
+    func draw_cv_modes(self, painter: Painter) -> unit!:
+        for (button, label, x, on) in self.cv_buttons():
+            let r = Rect(x, cv_row_y, float(label.length) * 7.5 + 14.0, 24.0)
+            painter.rounded_rectangle(r, theme.accent() if on else theme.surface(), 4.0)
+            painter.text(label, x + 7.0, cv_row_y + 4.0, theme.grey(0.0) if on else (theme.accent() if self.hover_tool == button else theme.text()))
+
+    ## The CV row's buttons (see hover_tool), their labels, where they
+    ## start and whether they are chosen; none away from Edit CAD's CVs.
+    func cv_buttons(self) -> list[(int, str, float, bool)]!:
+        let w = self.workspace
+        let result: list[(int, str, float, bool)] = []
+        if not component_moves.at_cvs(w):
+            return result
+        let node = w.selected() else return result
+        if node.values.length <= edit_cad_nets.hull_pick_slot:
+            return result
+        var x = 16.0
+        let modes = ["World", "NUV", "Slide", "Project", "Parallel", "View"]
+        for index in 0..<modes.length:
+            result.append((600 + index, modes[index], x, int(node.values[edit_cad_nets.move_mode_slot]) == index))
+            x += float(modes[index].length) * 7.5 + 18.0
+        x += 12.0
+        let falloffs = ["Radius", "Rows", "Hull"]
+        for index in 0..<falloffs.length:
+            result.append((620 + index, falloffs[index], x, int(node.values[edit_cad_nets.falloff_kind_slot]) == index))
+            x += float(falloffs[index].length) * 7.5 + 18.0
+        return result
 
     ## Top left, the selection levels (1-5); left center, the transform
     ## tools (Q, W, E, R, T); a tool prompt's hint at the bottom.
@@ -218,6 +253,13 @@ pub class ViewportChrome:
     ## The button under (x, y): see hover_tool (400 the snapping button,
     ## 410 + one of its options).
     pub func button_at(self, x: float, y: float, width: float, height: float) -> int:
+        if y >= cv_row_y and y <= cv_row_y + 24.0:
+            let buttons = self.cv_buttons() catch failure:
+                recover []
+            for (button, label, left, on) in buttons:
+                _ = on
+                if x >= left and x <= left + float(label.length) * 7.5 + 14.0:
+                    return button
         if y >= 8.0 and y <= 38.0 and x >= width - view_buttons_width() and x <= width - 18.0:
             return 100 + int((x - width + view_buttons_width()) / 38.0)
         let shown = self.workspace.shown_levels()
@@ -244,7 +286,10 @@ pub class ViewportChrome:
 
     ## A click on button `button` (see hover_tool).
     pub func press(self, button: int) -> unit!:
-        if button == 500:
+        if button >= 600:
+            let slot = edit_cad_nets.move_mode_slot if button < 620 else edit_cad_nets.falloff_kind_slot
+            node_commands.set_parameter(self.workspace, slot, float(button - (600 if button < 620 else 620)))
+        elif button == 500:
             self.actions.through_depth.trigger()
         elif button >= 410:
             self.workspace.snaps.toggle(button - 410)
@@ -267,6 +312,9 @@ pub class ViewportChrome:
             self.actions.modes[button - 200].trigger()
         else:
             [self.actions.frame, self.actions.grid, self.actions.hulls][button - 100].trigger()
+
+## The top of the CV mode row, under the levels.
+let cv_row_y = 46.0
 
 ## The x of level button `index` (5: just past the last).
 func level_x(index: int) -> float:

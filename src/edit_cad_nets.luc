@@ -1,0 +1,252 @@
+## Edit CAD's CVs level, surfacing Stage 1 (docs/research/
+## SURFACING-ALIAS-PLASTICITY.md §7.2): Alias's Transform CV modes and
+## falloff as the Edit node's settings, and the NURBS structure steps,
+## each one luce-cad call (luce_cad.nurbs) and one undo:
+##   Move CVs: the gizmo's move when its mode is not World or its falloff
+##     counts rows or hull distance (World with the soft radius stays a
+##     Transform Components step): NUV along each CV's normal, u and v;
+##     Slide along its hull polyline; Project along its hull lines;
+##     Parallel along the first picked CV's; View in the screen plane.
+##   Insert Knot, Remove Knot, Raise Degree, Rebuild (Alias's types, with
+##     Explicit Control: multi-span quintic by default, a single span of
+##     degree 7, or degrees and spans of one's own), Convert to B-spline.
+## At the CVs level a step works on the surface of the first picked CV; at
+## the Faces and Patch levels on the first picked face's.
+from luce_cad.nurbs import CadNurbs, CadNurbsEdit, cv_world, falloff_none, falloff_rows, falloff_hull, falloff_radius
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.cad_edits import CadEdits
+from luce_geocore.geocore import Mesh, Selection
+from luce_3d.graphics import Vector3
+from geometry_data import GeometryData
+from edit_operations import EditStep
+from edit_types import EditTool
+from parameter_rows import Parameter, number, whole, toggle, menu
+from luce_ui import ui
+
+pub let move_verb = "Move CVs"
+pub let insert_verb = "Insert Knot"
+pub let remove_verb = "Remove Knot"
+pub let raise_verb = "Raise Degree"
+pub let rebuild_verb = "Rebuild"
+pub let convert_verb = "Convert to B-spline"
+
+## The structure steps' verbs.
+pub func structure_verbs() -> list[str]:
+    return [insert_verb, remove_verb, raise_verb, rebuild_verb, convert_verb]
+
+# -- The Edit CAD node's CV settings (its value slots after the Edit
+# kinds' four).
+
+pub let move_mode_slot = 4
+pub let falloff_kind_slot = 5
+pub let rows_u_slot = 6
+pub let rows_v_slot = 7
+pub let hull_distance_slot = 8
+pub let exponent_slot = 9
+pub let hull_pick_slot = 10
+
+## The CV rows of the Edit CAD node's parameters.
+pub func cv_fields() -> list[Parameter]:
+    let rows_u = whole("Rows U", rows_u_slot, 2.0, 0.0, 64.0, "Rows falloff: how many rows of CVs along U before and after each picked CV follow it (Alias's Preceding and Succeeding).")
+    rows_u.hide_when = "{ cv_falloff != 1 }"
+    let rows_v = whole("Rows V", rows_v_slot, 2.0, 0.0, 64.0, "Rows falloff: how many rows along V follow.")
+    rows_v.hide_when = "{ cv_falloff != 1 }"
+    let distance = number("Hull distance", hull_distance_slot, 10.0, 0.0, 100000.0, 0.1, "Hull falloff: how far along the hull lines CVs follow (Plasticity's).", soft = 50.0)
+    distance.hide_when = "{ cv_falloff != 2 }"
+    distance.length = true
+    let exponent = number("Falloff exponent", exponent_slot, 1.0, -5.0, 5.0, 0.1, "Rows and Hull falloff: 0 moves the followers fully, positive values damp the far ones, negative ones push them the other way (Alias's).", slider = true)
+    exponent.hide_when = "{ cv_falloff == 0 }"
+    return [menu("CV move", move_mode_slot, "World|NUV|Slide|Project|Parallel|View", 0.0, "How the gizmo moves CVs (Alias's Transform CV): World axes; NUV along each CV's normal, U and V; Slide along its hull; Project along its hull lines; Parallel along the first picked CV's hull lines; View in the screen plane."),
+            menu("CV falloff", falloff_kind_slot, "Radius|Rows|Hull", 0.0, "Which CVs follow a move: within the soft radius; within rows of the picked ones on their net; or within a distance along the hull."),
+            rows_u, rows_v, distance, exponent,
+            toggle("Pick hull rows", hull_pick_slot, 0.0, "A click on a CV takes its whole row (again: the other row, then the net). Off, a second click on a CV does.")]
+
+## Whether node values `values` make the gizmo's moves Move CVs steps.
+pub func moves_by_mode(values: list[float]) -> bool:
+    if values.length <= hull_pick_slot:
+        return false
+    return int(values[move_mode_slot]) != cv_world or int(values[falloff_kind_slot]) != 0
+
+## A Move CVs step's numbers: the mode, the amount (World and View: a
+## displacement; NUV: along normal, U, V; Slide, Project, Parallel: along
+## U and V), the falloff kind, its reach (rows U, rows V, hull distance or
+## the soft radius), its exponent and the soft radius's curve.
+pub func move_numbers(values: list[float], amount: Vector3) -> list[float]:
+    let kind = int(values[falloff_kind_slot])
+    var falloff = falloff_radius if values[0] > 0.0 else falloff_none
+    var reach = Vector3(0.0, 0.0, values[0])
+    if kind == 1:
+        falloff = falloff_rows
+        reach = Vector3(values[rows_u_slot], values[rows_v_slot], 0.0)
+    elif kind == 2:
+        falloff = falloff_hull
+        reach = Vector3(0.0, 0.0, values[hull_distance_slot])
+    return [values[move_mode_slot], amount.x, amount.y, amount.z, float(falloff), reach.x, reach.y, reach.z, values[exponent_slot], values[1]]
+
+## The gizmo's axes for CV mode `mode` at cloud point `id`: NUV's normal,
+## U and V; Slide's, Project's and Parallel's U and V hull directions and
+## the normal; View's screen right, up and back (`camera`); none for World.
+pub func gizmo_axes(mode: int, cloud: Mesh, id: int, camera: list[Vector3]) -> list[Vector3]?!:
+    if mode == 1:
+        return [CadNurbs.cloud_frame(cloud, id, 0), CadNurbs.cloud_frame(cloud, id, 1), CadNurbs.cloud_frame(cloud, id, 2)]
+    if mode >= 2 and mode <= 4:
+        return [CadNurbs.cloud_frame(cloud, id, 1), CadNurbs.cloud_frame(cloud, id, 2), CadNurbs.cloud_frame(cloud, id, 0)]
+    if mode == 5:
+        return camera
+    return none
+
+## A gizmo move `delta` (world) as a Move CVs amount in mode `mode`'s
+## frame `axes` (gizmo_axes).
+pub func amount_of(mode: int, delta: Vector3, axes: list[Vector3]?) -> Vector3:
+    let frame = axes else return delta
+    if mode == 5:
+        return delta
+    return Vector3(delta.dot(frame[0]), delta.dot(frame[1]), delta.dot(frame[2]) if mode == 1 else 0.0)
+
+# -- The structure tools.
+
+## Their numbers' slots.
+pub let direction_slot = 0
+pub let fraction_slot = 1
+pub let times_slot = 2
+pub let tolerance_slot = 3
+pub let kind_slot = 0
+pub let preset_slot = 1
+pub let degree_u_slot = 2
+pub let degree_v_slot = 3
+pub let spans_u_slot = 4
+pub let spans_v_slot = 5
+pub let keep_u_slot = 6
+pub let keep_v_slot = 7
+pub let rebuild_tolerance_slot = 8
+pub let most_slot = 9
+
+## The structure tools, at the CVs level (`cv`) and the Faces and Patch
+## levels.
+pub func tools(cv: int, faces: int, patch: int) -> list[EditTool]:
+    let both = [cv, faces, patch]
+    let direction = menu("Direction", direction_slot, "U|V", 0.0, "Across U (a new row of CVs along V) or across V.")
+    let fraction = number("Parameter", fraction_slot, 0.5, 0.001, 0.999, 0.01, "Where along the surface, from 0 at its start to 1 at its end.", slider = true)
+    let insert_rows = [direction, fraction, whole("Times", times_slot, 1.0, 1.0, 11.0, "How many times: up to the degree.")]
+    let remove_rows = [menu("Direction", direction_slot, "U|V", 0.0, "Across U or across V."),
+                       number("Parameter", fraction_slot, 0.5, 0.0, 1.0, 0.01, "The inner knot nearest this parameter goes.", slider = true),
+                       whole("Times", times_slot, 1.0, 1.0, 11.0, "How many times, as far as the tolerance allows."),
+                       number("Tolerance", tolerance_slot, 0.01, 0.0, 1000.0, 0.001, "How far the surface may move.", soft = 1.0)]
+    let raise_rows = [whole("Raise U", 0, 1.0, 0.0, 10.0, "Degrees added along U (to 11 at most)."), whole("Raise V", 1, 1.0, 0.0, 10.0, "Degrees added along V.")]
+    return [EditTool(insert_verb, insert_verb, both, [0.0, 0.5, 1.0], insert_rows),
+            EditTool(remove_verb, remove_verb, both, [0.0, 0.5, 1.0, 0.01], remove_rows),
+            EditTool(raise_verb, raise_verb, both, [1.0, 1.0], raise_rows),
+            EditTool(rebuild_verb, rebuild_verb, both, [0.0, 0.0, 5.0, 5.0, 4.0, 4.0, 2.0, 2.0, 0.01, 32.0], rebuild_rows()),
+            EditTool(convert_verb, convert_verb, [faces, patch], [0.0], none_shown())]
+
+func none_shown() -> list[Parameter]:
+    let rows: list[Parameter] = []
+    return rows
+
+## Rebuild's rows: Alias's types, Explicit Control, the edges' continuity.
+func rebuild_rows() -> list[Parameter]:
+    let preset = menu("Explicit Control", preset_slot, "Multi-span quintic|Single span degree 7|Custom", 0.0, "The structure: quintic spans (the default), one span of degree 7 (a Bezier patch, G3 at both edges), or degrees and spans of one's own.")
+    preset.hide_when = "{ kind != 0 }"
+    let degree_u = whole("Degree U", degree_u_slot, 5.0, 1.0, 11.0, "The degree along U.")
+    degree_u.hide_when = "{ kind > 1 } { kind == 0 explicit_control != 2 }"
+    let degree_v = whole("Degree V", degree_v_slot, 5.0, 1.0, 11.0, "The degree along V.")
+    degree_v.hide_when = "{ kind > 1 } { kind == 0 explicit_control != 2 }"
+    let spans_u = whole("Spans U", spans_u_slot, 4.0, 1.0, 256.0, "Spans along U (Within tolerance: to start with).")
+    spans_u.hide_when = "{ kind > 1 } { kind == 0 explicit_control == 1 }"
+    let spans_v = whole("Spans V", spans_v_slot, 4.0, 1.0, 256.0, "Spans along V.")
+    spans_v.hide_when = "{ kind > 1 } { kind == 0 explicit_control == 1 }"
+    let keep_u = menu("Keep U ends", keep_u_slot, "G0|G1|G2|G3", 2.0, "The continuity its edges at the U ends keep with what they meet.")
+    keep_u.hide_when = "{ kind == 2 } { kind == 3 } { kind == 5 }"
+    let keep_v = menu("Keep V ends", keep_v_slot, "G0|G1|G2|G3", 2.0, "The continuity its edges at the V ends keep.")
+    keep_v.hide_when = "{ kind == 2 } { kind == 3 } { kind == 5 }"
+    let tolerance = number("Tolerance", rebuild_tolerance_slot, 0.01, 0.0, 1000.0, 0.001, "How far the surface may move (Within tolerance, Reduce spans, Del multi knots).", soft = 1.0)
+    tolerance.hide_when = "{ kind == 0 } { kind > 3 }"
+    let most = whole("Max spans", most_slot, 32.0, 1.0, 256.0, "Within tolerance: the most spans a direction gets.")
+    most.hide_when = "{ kind != 1 }"
+    return [menu("Kind", kind_slot, "Explicit|Within tolerance|Reduce spans|Del multi knots|Non-rational|Bezier", 0.0, "Alias's Rebuild Surface types."),
+            preset, degree_u, degree_v, spans_u, spans_v, keep_u, keep_v, tolerance, most]
+
+# -- Running them.
+
+## Number `slot` of `step`, or `otherwise`.
+func value(step: EditStep, slot: int, otherwise: float) -> float:
+    return step.numbers[slot] if step.numbers.length > slot else otherwise
+
+## The model and surface step `step` works on: its first picked CV's (on
+## the cloud of `data`) or its first picked face's (on `faces`, the pick
+## mesh it was selected on).
+func target(step: EditStep, data: GeometryData, faces: Mesh?) -> (int, int)!:
+    if step.group_type == 1:
+        let cloud = CadGeometry.cv_cloud(data.geometry)
+        if step.topology != 0 and step.topology != cloud.topology_hash():
+            error(ui.invalid, "The CAD input's control vertices changed. Undo the upstream change or clear this node's edits.")
+        let first = Selection.of(cloud, step.group, 0).next(-1)
+        if first < 0:
+            error(ui.invalid, f"{step.verb}: pick a CV of the surface")
+        return (int(cloud.attribute_value(cloud.find_attribute("cad_cv_model", 0), first)), int(cloud.attribute_value(cloud.find_attribute("cad_cv_surface", 0), first)))
+    let mesh = faces else error(ui.invalid, f"{step.verb}: pick a face or a CV of the surface")
+    let first = Selection.of(mesh, step.group, 2).next(-1)
+    if first < 0:
+        error(ui.invalid, f"{step.verb}: pick a face of the surface")
+    return (int(mesh.attribute_value(mesh.find_attribute("cad_model", 2), first)), int(mesh.attribute_value(mesh.find_attribute("cad_surface", 2), first)))
+
+## A structure step on `data` (`faces`: the pick mesh of a face step).
+pub func run_structure(step: EditStep, data: GeometryData, faces: Mesh?) -> GeometryData!:
+    let (index, surface) = target(step, data, faces)
+    let model = CadGeometry.model(data.geometry, index)
+    var report = ""
+    var edit: CadNurbsEdit? = none
+    if step.verb == insert_verb:
+        let made = CadNurbs.inserted(model, surface, int(value(step, direction_slot, 0.0)), value(step, fraction_slot, 0.5), int(value(step, times_slot, 1.0)))
+        report = f"Inserted {made.changed} knot{"" if made.changed == 1 else "s"}: the surface is as it was"
+        edit = made
+    elif step.verb == remove_verb:
+        let made = CadNurbs.knot_removed(model, surface, int(value(step, direction_slot, 0.0)), value(step, fraction_slot, 0.5), int(value(step, times_slot, 1.0)), value(step, tolerance_slot, 0.01))
+        report = f"Removed {made.changed} knot{"" if made.changed == 1 else "s"}; the surface moved at most {made.deviation:.6f}"
+        edit = made
+    elif step.verb == raise_verb:
+        edit = CadNurbs.degree_raised(model, surface, int(value(step, 0, 1.0)), int(value(step, 1, 1.0)))
+        report = "Degree raised: the surface is as it was"
+    elif step.verb == rebuild_verb:
+        let kind = int(value(step, kind_slot, 0.0))
+        let preset = int(value(step, preset_slot, 0.0))
+        var du = int(value(step, degree_u_slot, 5.0))
+        var dv = int(value(step, degree_v_slot, 5.0))
+        var su = int(value(step, spans_u_slot, 4.0))
+        var sv = int(value(step, spans_v_slot, 4.0))
+        if kind == 0 and preset == 0:
+            du = 5
+            dv = 5
+        elif kind == 0 and preset == 1:
+            du = 7
+            dv = 7
+            su = 1
+            sv = 1
+        let made = CadNurbs.rebuilt(model, surface, kind, du, dv, su, sv, int(value(step, keep_u_slot, 2.0)), int(value(step, keep_v_slot, 2.0)), value(step, rebuild_tolerance_slot, 0.01), int(value(step, most_slot, 32.0)))
+        let shape = CadNurbs.structure(made.model(), surface)
+        report = f"Rebuilt: degree {shape.du} by {shape.dv}, {shape.spans_u} by {shape.spans_v} spans; the surface moved at most {made.deviation:.6f}"
+        edit = made
+    elif step.verb == convert_verb:
+        edit = CadNurbs.converted(model, surface)
+        report = "Converted to a B-spline: the surface is as it was"
+    let made = edit else error(ui.invalid, f"{step.verb} is not a structure step")
+    let result = GeometryData(geometry = CadEdits.replaced(data.geometry, index, made.model()))
+    result.report = report
+    return result
+
+## A Move CVs step on `data`'s control vertex cloud.
+pub func run_move(step: EditStep, data: GeometryData) -> GeometryData!:
+    let before = CadGeometry.cv_cloud(data.geometry)
+    if step.topology != 0 and step.topology != before.topology_hash():
+        error(ui.invalid, "The CAD input's control vertices changed. Undo the upstream change or clear this node's edits.")
+    let chosen = Selection.of(before, step.group, 0)
+    let ids: list[int] = []
+    var at = chosen.next(-1)
+    while at >= 0:
+        ids.append(at)
+        at = chosen.next(at)
+    let n = step.numbers
+    if n.length < 10:
+        error(ui.invalid, "A Move CVs step needs its ten numbers")
+    let after = CadNurbs.cloud_moved(before, ids, int(n[0]), Vector3(n[1], n[2], n[3]), int(n[4]), Vector3(n[5], n[6], n[7]), n[8], int(n[9]))
+    return GeometryData(geometry = CadGeometry.with_cv_cloud(data.geometry, before, after))

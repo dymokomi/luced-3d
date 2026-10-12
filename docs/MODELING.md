@@ -368,6 +368,38 @@ model back exactly.
 - **Fillet and Chamfer** of picked edges run the nodes' own code, their radius
   arrow and tool bar as the nodes'. CVs move with the gizmo, Rotate, Scale,
   Noise, Flatten and Snap; a moved boundary CV takes its trims along.
+- **The CVs level** (surfacing Stage 1, `edit_cad_nets.luc`; luce-cad's
+  `nurbs/`), as Alias's Transform CV:
+  - **Move modes**, a row under the levels (the Edit CAD node's CV move):
+    World; NUV (the gizmo's axes become N, U and V at the first picked CV,
+    and each CV moves in its own frame: its hull's normal and U and V
+    directions); Slide (along each CV's hull polyline, staying on it);
+    Project (along each CV's hull lines, off the polyline); Parallel (every
+    CV along the first one's hull lines); View (the screen plane). A drag's
+    frame is fixed when it starts, and the hull as it was then is drawn as a
+    blue ghost under the moving one (Alias's Proxy Display).
+  - **Falloff** (CV falloff, beside the modes): Radius (the soft radius and
+    its curve, as before), Rows (Rows U and Rows V before and after each
+    picked CV on its net, Alias's Preceding and Succeeding, weighted
+    `(1 - k / (rows + 1))^e` with Falloff exponent e from -5 to 5: 0 moves
+    them fully, negative values push them the other way) or Hull (a
+    distance along the hull lines, Plasticity's). World with Radius falloff
+    stays a Transform Components step; the rest make a **Move CVs** step.
+  - **Hull picking**: a second click on a CV takes its row along V, a third
+    its row along U, a fourth its whole net; with Pick hull rows the first
+    click takes the row.
+  - **Structure steps**, on the surface of the first picked CV (or face, at
+    Faces and Patch), from the right-click menu, the S menu and Modify, each
+    one undo with its tool bar: **Insert Knot** (Direction, Parameter,
+    Times: the new row shows as the hull's), **Remove Knot** (within a
+    Tolerance), **Raise Degree**, **Rebuild** (Alias's types: Explicit,
+    Within tolerance, Reduce spans, Del multi knots, Non-rational, Bezier;
+    Explicit Control: multi-span quintic by default, a single span of
+    degree 7, or Custom degrees and spans; Keep U ends and Keep V ends hold
+    G0 to G3 with what the edges meet, G2 by default) and **Convert to
+    B-spline** (an analytic face, at Faces and Patch). The tool bar's last
+    line says what the step did: "Rebuilt: degree 5 by 5, 4 by 4 spans; the
+    surface moved at most 0.0012".
 - Primitives are luce-cad's analytic solids: Box, Cylinder, Cone, Sphere and
   Torus. Faces a step makes are named for the node and the step's place in
   the recipe (`#<node>s<n>`), so later steps find them and two Edit CAD nodes

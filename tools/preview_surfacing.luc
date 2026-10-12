@@ -16,6 +16,18 @@
 ##   surf_draft: a frustum (radius 10 to 6) in Draft (--mode 10), pulled
 ##     up with 3° asked for: its side (11.3°) and top green, its bottom red,
 ##     and the shading menu open on Draft's rows.
+## Stage 1, the CVs level (edit_cad_nets.luc), on an Edit CAD box whose top
+## face was converted to a B-spline and rebuilt as 4 by 4 quintic spans:
+##   surf_cv_nuv: the middle CV dragged up in NUV with Rows falloff (two
+##     rows): the gizmo in the CV's frame, the hull's ghost under the
+##     moving net, the CV mode row lit on NUV and Rows.
+##   surf_cv_row: a hull row picked (a second click), the right-click menu
+##     open on it: the structure tools.
+##   surf_rebuild: Rebuild's tool bar (Explicit Control, multi-span
+##     quintic, G2 kept) and what it did.
+##   surf_insert: Insert Knot's tool bar, the new row of CVs.
+##   surf_convert: a cylinder's side converted (rational quadratic), its
+##     net at the CVs level.
 import preview_support
 from luce_3d.graphics import Vector3
 from luce_cad.cad_geometry import CadGeometry
@@ -23,12 +35,20 @@ from luce_cad.modeling import CadModeling
 from app import Luce3D
 from workspace import Workspace
 import node_commands
+import modeling_commands
+import selection_commands
+import edit_cad_commands
+import edit_cad_nets
+import component_moves
+from view_projection import project
+from luce_ui.ui import Event
+from luce_window.input import EventKind
 import cad_blends
 import cad_check
 from luce_std import math
 
 pub func scenes() -> list[str]:
-    return ["surf_check", "surf_check_g1", "surf_check_g3", "surf_combs", "surf_deviation", "surf_band", "surf_draft"]
+    return ["surf_check", "surf_check_g1", "surf_check_g3", "surf_combs", "surf_deviation", "surf_band", "surf_draft", "surf_cv_nuv", "surf_cv_row", "surf_rebuild", "surf_insert", "surf_convert"]
 
 func look(editor: Luce3D, yaw: float, pitch: float, distance: float, target: Vector3) -> unit!:
     let w = editor.workspace
@@ -80,6 +100,77 @@ func check(editor: Luce3D, level: int) -> int!:
     node_commands.set_parameter(w, cad_check.level_slot, float(level))
     return w.network.selected
 
+## An Edit CAD node with a `primitive`, its face whose center `pick` takes
+## converted to a B-spline (the Edit node selected, the Faces level).
+func converted(editor: Luce3D, primitive: str, pick: func(Vector3) -> bool) -> unit!:
+    let w = editor.workspace
+    cad(editor)
+    node_commands.add_node(w, "Edit CAD", 40.0, 40.0)
+    preview_support.settle(w)
+    modeling_commands.create(w, primitive)
+    preview_support.settle(w)
+    selection_commands.set_mode(w, 3)
+    pick_face(w, pick)
+    edit_cad_commands.tool(w, edit_cad_nets.convert_verb)
+
+## The face whose center `pick` takes (the highest such), picked.
+func pick_face(w: Workspace, pick: func(Vector3) -> bool) -> unit!:
+    let mesh = preview_support.shown(w) else trap("no pick mesh")
+    var best = -1
+    for face in 0..<mesh.face_count():
+        if pick(mesh.face_center(face)) and (best < 0 or mesh.face_center(face).y > mesh.face_center(best).y):
+            best = face
+    selection_commands.choose_component(w, best, false)
+
+## The CV at (u, v) of the shown cloud.
+func cv_at(w: Workspace, u: int, v: int) -> int!:
+    let cloud = preview_support.shown(w) else trap("no cloud")
+    let us = cloud.find_attribute("cad_cv_u", 0)
+    let vs = cloud.find_attribute("cad_cv_v", 0)
+    for i in 0..<cloud.point_count():
+        if int(cloud.attribute_value(us, i)) == u and int(cloud.attribute_value(vs, i)) == v: return i
+    trap("no such CV")
+
+## The box's top face converted and rebuilt (4 by 4 quintic spans, 9 by 9
+## CVs), at the CVs level with its middle CV picked.
+func quintic_top(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    w.view.hulls_visible = true
+    let top = func (c: Vector3) -> bool: return c.y > 0.99
+    converted(editor, "Box", top)
+    pick_face(w, top)
+    edit_cad_commands.tool(w, edit_cad_nets.rebuild_verb)
+    selection_commands.set_mode(w, 1)
+    selection_commands.choose_component(w, cv_at(w, 4, 4), false)
+    # A frame the worker put off till it cooked happens first.
+    preview_support.settle(w)
+    look(editor, 0.7, 0.85, 5.2, Vector3(0.0, 0.9, 0.0))
+
+## Frame `frame` of scene `scene` (`last` is the frame captured).
+pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
+    let w = editor.workspace
+    if frame != last - 1:
+        return
+    if scene == "surf_cv_nuv":
+        # Held mid-drag: the frame fixed at the press, the ghost kept.
+        let frame_axes = component_moves.cv_axes(w) else trap("no NUV frame")
+        w.ghost_hulls = w.batches.hull_batches.copy()
+        w.begin("Move gizmo")
+        w.cv_frame = frame_axes
+        component_moves.preview_move(w, frame_axes[0].multiply_scalar(0.6))
+        preview_support.settle(w)
+        editor.panels.refresh()
+    elif scene == "surf_cv_row":
+        let cloud = preview_support.shown(w) else trap("no cloud")
+        let middle = cv_at(w, 4, 4)
+        selection_commands.choose_component(w, middle, false, row = 0)
+        let p = cloud.point(middle)
+        let area = editor.panels.view.layout().bounds()
+        let s = project(w, Vector3(p.x, p.y, p.z), area.width, area.height)
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + s[0], y = area.y + s[1]))
+        editor.app.dispatch(Event(kind = EventKind.pointer_down, x = area.x + s[0], y = area.y + s[1], button = 1))
+        editor.app.dispatch(Event(kind = EventKind.pointer_up, x = area.x + s[0], y = area.y + s[1], button = 1))
+
 ## Scene `scene` before its first frame.
 pub func setup(editor: Luce3D, scene: str) -> unit!:
     let w = editor.workspace
@@ -118,6 +209,30 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
         node_commands.add_node(w, "Solid Cylinder", 40.0, 40.0)
         _ = check(editor, 2)
         look(editor, 0.5, 0.5, 70.0, Vector3(0.0, 0.0, 0.0))
+    elif scene in ["surf_cv_nuv", "surf_cv_row"]:
+        quintic_top(editor)
+        node_commands.set_parameter(w, edit_cad_nets.move_mode_slot, 1.0)
+        if scene == "surf_cv_nuv":
+            node_commands.set_parameter(w, edit_cad_nets.falloff_kind_slot, 1.0)
+            modeling_commands.choose_tool(w, "Move")
+        editor.panels.refresh()
+    elif scene == "surf_rebuild":
+        quintic_top(editor)
+        selection_commands.set_mode(w, 1)
+        editor.panels.refresh()
+    elif scene == "surf_insert":
+        quintic_top(editor)
+        edit_cad_commands.tool(w, edit_cad_nets.insert_verb)
+        modeling_commands.set_last_step(w, edit_cad_nets.fraction_slot, 0.3, 0.0, 1.0)
+        selection_commands.set_mode(w, 1)
+        editor.panels.refresh()
+    elif scene == "surf_convert":
+        converted(editor, "Cylinder", func (c: Vector3) -> bool: return math.hypot(c.x, c.z) > 0.95)
+        w.view.hulls_visible = true
+        selection_commands.set_mode(w, 1)
+        preview_support.settle(w)
+        look(editor, 0.7, 0.3, 7.5, Vector3(0.0, 1.0, 0.0))
+        editor.panels.refresh()
     elif scene == "surf_deviation":
         let (box, _) = filleted_box(editor, 2)
         let id = check(editor, 2)
