@@ -596,7 +596,14 @@ the way the tool bar edits it today (`set_last_step`).
 
 ## 8. What luce-cad needs
 
-In build order:
+In build order. Built ahead of the UI stages (2026-10-11, luce-cad docs/MODELING.md has the
+details): 4 (`CadSketch.project_face`, `project_end`, `relink` with gained edges), 5
+(`ConstraintKind.offset`, `offset(..., relation = true)`), 7 but Thin and a face as a profile
+(`extruded_sides`, `extruded_through`, `extruded_to`), 8 (`revolved_about`, `edge_axis`), 9
+(`CadDirect.offset_faces`, `moved_faces`, `rotated_faces`, `replaced_faces`, `deleted_faces`), 10 for
+analytic faces (`shelled`), 11 (drafted walls, open ends and loops between two curved faces;
+B-spline faces in booleans at any angle), and Split Body, lumps and Move/Copy (`split_by_plane`,
+`split_by_face`, `lump_count`, `lump`, `moved_body`).
 
 1. **Profile fills.** `CadModeling.profile_fills(set, keys)` triangulates profile regions with the planar polygon mesher (`polygons/`) for shading. `profile_anchor(set, keys)` gives the middle and area, where the arrow goes. Closed splines as profiles (MODELING.md lists them as missing).
 2. **Sketch tags.** Curves made by a sketch carry its tag. `extruded` and `revolved` take the tag and use only those curves. This keeps keys stable when other sketches' curves are in the set.
