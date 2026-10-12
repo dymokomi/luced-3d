@@ -1,0 +1,594 @@
+## A Fusion tutorial's part built end to end, as a user builds it: once as
+## a timeline (nodes down one chain) and once in Edit CAD (direct steps).
+## The chain: a 60 × 40 rectangle sketched on the XZ plane with typed
+## dimensions, extruded 20; a sketch on its top face, the projected loop
+## offset 5 inward; that pocket cut 8 deep; the pocket's uprights filleted
+## 3 and its floor's tangent chain filleted 1; the body shelled 1 open at
+## the bottom; an outer top edge chamfered 1; a boss revolved about a
+## sketch line from the pocket's floor; the body copied 45 along X; the two
+## combined. Then the timeline strip's buttons roll back to the first
+## sketch, its width dimension is made 70, and they roll forward: everything downstream
+## cooks again without a failure, the pocket and the copy following.
+## tools/preview_tutorial.luc captures each stage from the same builders.
+from app import Luce3D
+from workspace import Workspace
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3
+from luce_cad.model import CadModel
+from luce_cad.sketch import CadSketch
+from luce_cad.modeling import CadModeling
+from view_projection import project
+from sketch_support import render
+from node import Node
+import node_commands
+import selection_commands
+import sketch_commands
+import sketch_source
+import cad_modify
+import cad_moves
+import cad_features
+import edit_cad_commands
+import edit_cad_picks
+import edit_cad_sketches
+import edit_cad_faces
+import modeling_commands
+import text as characters
+from luce_std import math
+
+## The stages, in order (a stage's builder makes it and those before).
+pub let parametric_stages = 12
+pub let direct_stages = 10
+
+pub func cad_tutorial_tests() -> unit!:
+    let made = parametric()
+    direct(made)
+    print("PASS a Fusion tutorial's part end to end: as a timeline (an XZ sketch with typed dimensions, Extrude, a face sketch's projected loop offset, Extrude cut, uprights and a floor's tangent chain filleted, Shell, Chamfer, a boss revolved about a sketch line, Move with Create copy, Combine), its first sketch's width changed after the marker rolled back and everything downstream cooking again with the pocket and the copy following; and as Edit CAD steps, the same body")
+
+# -- What both builds share.
+
+## Type `text` into what has the keyboard.
+func type_text(editor: Luce3D, text: str) -> unit!:
+    for character in text:
+        editor.app.dispatch(Event(kind = EventKind.text_input, codepoint = characters.code_of(character)))
+
+func key(editor: Luce3D, pressed: Key) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = pressed))
+
+## Click the viewport at world point `p`.
+func click_at(editor: Luce3D, p: Vector3) -> unit!:
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    let s = project(editor.workspace, p, bounds.width, bounds.height)
+    for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+        editor.app.dispatch(Event(kind = kind, x = bounds.x + s[0], y = bounds.y + s[1], button = 0))
+
+## Move the pointer to world point `p`.
+func hover_at(editor: Luce3D, p: Vector3) -> unit!:
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    let s = project(editor.workspace, p, bounds.width, bounds.height)
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + s[0], y = bounds.y + s[1]))
+
+func look(w: Workspace, yaw: float, pitch: float, distance: float, target: Vector3) -> unit!:
+    w.view.yaw = yaw
+    w.view.pitch = pitch
+    w.view.distance = distance
+    w.view.target = target
+    w.view.update_camera()
+
+## The tessellated volume of `model`.
+pub func volume(model: CadModel) -> float!:
+    let mesh = model.tessellate(16)
+    var total = 0.0
+    for triangle in 0..<mesh.index_count() // 3:
+        let a = mesh.vertex(mesh.index(triangle * 3)).position
+        let b = mesh.vertex(mesh.index(triangle * 3 + 1)).position
+        let c = mesh.vertex(mesh.index(triangle * 3 + 2)).position
+        total += a.dot(b.cross(c)) / 6.0
+    return total
+
+## The bodies node `id` makes.
+pub func models(w: Workspace, id: int) -> list[CadModel]!:
+    return w.network.evaluate_data(id).models()
+
+## The X extent of every body together.
+pub func width_of(bodies: list[CadModel]) -> float!:
+    var low = 1.0e30
+    var high = -1.0e30
+    for model in bodies:
+        let b = model.tessellate(8).bounds()
+        low = math.min(low, b.minimum.x)
+        high = math.max(high, b.maximum.x)
+    return high - low
+
+## The name of a face of `model` facing `normal` whose point lies past
+## `at` along it (the outermost such face).
+func face_toward(model: CadModel, normal: Vector3) -> str!:
+    var best = ""
+    var furthest = -1.0e30
+    for face in 0..<model.face_count():
+        let name = CadModeling.face_name_of(model, face)
+        let at = CadModeling.face_point(model, name)
+        if at.found and at.normal.dot(normal) > 0.999 and at.point.dot(normal) > furthest:
+            furthest = at.point.dot(normal)
+            best = name
+    return best
+
+## Pick-mesh face (at level `level`) whose center and normal `keep` takes,
+## selected alone.
+func select_face(editor: Luce3D, level: int, keep: func(Vector3, Vector3) -> bool) -> unit!:
+    let w = editor.workspace
+    selection_commands.set_mode(w, level)
+    render(editor)
+    let mesh = w.geometry else trap("pick geometry")
+    for polygon in 0..<mesh.face_count():
+        if keep(mesh.face_center(polygon), mesh.face_normal(polygon)):
+            selection_commands.choose_component(w, polygon, false)
+            return
+    assert(false, "no such face to select")
+
+## Pick-mesh edge (at level `level`) of a B-rep edge whose ends `keep`
+## takes, selected (`add`: added to the selection).
+func select_edge(editor: Luce3D, level: int, attribute: str, keep: func(Vector3, Vector3) -> bool, add: bool = false) -> unit!:
+    let w = editor.workspace
+    if w.level_index() != level:
+        selection_commands.set_mode(w, level)
+    render(editor)
+    let mesh = w.geometry else trap("pick geometry")
+    let tag = mesh.find_attribute(attribute, 4)
+    for edge in 0..<mesh.edge_count():
+        let real = mesh.attribute_text(tag, edge) != "" if attribute == "cad_edge_reference" else mesh.attribute_value(tag, edge) >= 0.0
+        if real and keep(mesh.point(mesh.edge_point(edge, 0)), mesh.point(mesh.edge_point(edge, 1))):
+            selection_commands.choose_component(w, edge, add)
+            return
+    assert(false, "no such edge to select")
+
+## The B-rep edge numbers of `model` whose ends `keep` takes.
+func edge_ids(model: CadModel, keep: func(Vector3, Vector3) -> bool) -> list[int]!:
+    let found: list[int] = []
+    for face in 0..<model.face_count():
+        for use in 0..<model.face_edge_count(face):
+            let id = model.face_edge_id(face, use)
+            if keep(model.face_edge_point(face, use, 0.0), model.face_edge_point(face, use, 1.0)) and not (id in found):
+                found.append(id)
+    return found
+
+## The rectangle's sketch on XY for the boss: from the floor at `floor`
+## up to `top`, 5 out from the Y axis, its left side (on the axis) the
+## line it turns about. The text and that line's index.
+func boss_sketch(floor: float, top: float) -> (str, int)!:
+    let s = CadSketch.parse("")
+    let a = s.add_point(0.0, floor)
+    let b = s.add_point(5.0, floor)
+    let c = s.add_point(5.0, top)
+    let d = s.add_point(0.0, top)
+    _ = s.add_line(a, b)
+    _ = s.add_line(b, c)
+    _ = s.add_line(c, d)
+    let axis = s.add_line(d, a)
+    return (s.text(), axis)
+
+# -- The timeline.
+
+## The ids of the parametric build's nodes, in chain order.
+pub class Built:
+    pub var ids: list[int]
+    pub var top: float = 0.0
+    pub var up: Vector3
+
+    pub func init(self):
+        self.ids = []
+        self.up = Vector3(0.0, 1.0, 0.0)
+
+    pub func last(self) -> int:
+        return self.ids[-1]
+
+## Build the timeline part up to stage `stage` (0: the sketch, 1 Extrude,
+## 2 the face sketch and offset, 3 the cut, 4 the uprights' fillet, 5 the
+## floor's chain fillet, 6 Shell, 7 Chamfer, 8 the boss sketch, 9 Revolve,
+## 10 Move with a copy, 11 Combine); its ids.
+pub func build_parametric(editor: Luce3D, stage: int) -> Built!:
+    let w = editor.workspace
+    let built = Built()
+    w.snaps.flags[1] = false
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    # 0: a Sketch on XZ, a 2-Point Rectangle typed 60, Tab, 40.
+    node_commands.add_node(w, "Sketch", 0.0, 0.0)
+    let sketch = w.network.selected
+    built.ids.append(sketch)
+    node_commands.set_parameter(w, 0, 1.0)
+    node_commands.display_selected(w)
+    render(editor)
+    let e = editor.panels.view.sketch.editor
+    look(w, 0.0, 1.5, 160.0, Vector3())
+    render(editor)
+    e.choose("2-Point Rectangle")
+    click_at(editor, e.frame.at(-30.0, -20.0))
+    hover_at(editor, e.frame.at(5.0, 5.0))
+    type_text(editor, "60")
+    key(editor, Key.tab)
+    type_text(editor, "40")
+    key(editor, Key.enter)
+    key(editor, Key.escape)
+    render(editor)
+    if stage == 0:
+        look(w, 0.6, 0.6, 160.0, Vector3())
+        return built
+    # 1: its profile extruded 20 (typed in the box by the arrow).
+    let curves = CadSketch.parse(w.network.require(sketch).texts[0]).curves(e.frame.origin, e.frame.u, e.frame.v)
+    w.sketch_profiles = [CadModeling.profile_at(curves, e.frame.at(0.0, 0.0))]
+    editor.panels.refresh()
+    editor.panels.actions.extrude_profiles.trigger()
+    render(editor)
+    type_text(editor, "20")
+    key(editor, Key.enter)
+    let extrude = w.network.selected
+    built.ids.append(extrude)
+    built.up = e.frame.normal()
+    built.top = 20.0
+    look(w, 0.6, 0.6, 160.0, Vector3())
+    render(editor)
+    if stage == 1:
+        return built
+    # 2: a sketch on the top face, its projected loop offset 5 inward.
+    let up = built.up
+    select_face(editor, w.level_of(2), func (c: Vector3, n: Vector3) -> bool: return n.dot(up) > 0.99 and c.dot(up) > 19.99)
+    editor.panels.refresh()
+    editor.panels.actions.sketch_on_face.trigger()
+    render(editor)
+    let face_sketch = w.network.selected
+    built.ids.append(face_sketch)
+    let s = editor.panels.view.sketch.editor.sketch else trap("no face sketch")
+    var line = -1
+    for at in 0..<s.entity_count():
+        if line < 0 and s.kind(at) == 1 and s.linked(at):
+            line = at
+    let f = editor.panels.view.sketch.editor.frame
+    let middle = f.coordinates(up.multiply_scalar(20.0))
+    let p = s.part(line, 0)
+    let q = s.part(line, 1)
+    let mx = (s.x(p) + s.x(q)) * 0.5
+    let my = (s.y(p) + s.y(q)) * 0.5
+    editor.panels.view.sketch.editor.choose("Offset")
+    click_at(editor, f.at(middle[0] + (mx - middle[0]) * 0.95, middle[1] + (my - middle[1]) * 0.95))
+    type_text(editor, "5")
+    key(editor, Key.enter)
+    key(editor, Key.escape)
+    render(editor)
+    if stage == 2:
+        return built
+    # 3: the inner profile extruded 8 down: Auto cuts the pocket.
+    let drawn = CadSketch.parse(w.network.require(face_sketch).texts[0])
+    w.sketch_profiles = [CadModeling.profile_at(drawn.curves(f.origin, f.u, f.v), up.multiply_scalar(20.0))]
+    editor.panels.refresh()
+    editor.panels.actions.extrude_profiles.trigger()
+    render(editor)
+    type_text(editor, "-8")
+    key(editor, Key.enter)
+    let cut = w.network.selected
+    built.ids.append(cut)
+    look(w, 0.6, 0.7, 150.0, up.multiply_scalar(10.0))
+    render(editor)
+    if stage == 3:
+        return built
+    # 4: the pocket's four uprights filleted 3 (edges picked, Fillet from
+    # the right-click menu's command, 3 typed).
+    let inside = func (a: Vector3, b: Vector3) -> bool:
+        return math.abs(a.x - b.x) < 1e-6 and math.abs(a.z - b.z) < 1e-6 and math.abs(a.x) < 29.0 and math.abs(a.subtract(b).dot(up)) > 7.9
+    for k in 0..<4:
+        let corner = func (a: Vector3, b: Vector3) -> bool:
+            return inside(a, b) and (a.x > 0.0) == (k % 2 == 0) and (a.z > 0.0) == (k // 2 == 0)
+        select_edge(editor, w.level_of(4), "cad_edge_reference", corner, add = k > 0)
+    editor.panels.refresh()
+    editor.panels.actions.fillet_edges.trigger()
+    render(editor)
+    type_text(editor, "3")
+    key(editor, Key.enter)
+    let uprights = w.network.selected
+    built.ids.append(uprights)
+    render(editor)
+    if stage == 4:
+        return built
+    # 5: one straight edge of the pocket's floor; Tangent chain (on) takes
+    # the whole rounded loop; 1 typed.
+    select_edge(editor, w.level_of(4), "cad_edge_reference", func (a: Vector3, b: Vector3) -> bool: return math.abs(a.dot(up) - 12.0) < 1e-6 and math.abs(b.dot(up) - 12.0) < 1e-6 and math.abs(a.x - b.x) < 1e-6 and math.abs(a.x) < 29.0)
+    editor.panels.refresh()
+    editor.panels.actions.fillet_edges.trigger()
+    render(editor)
+    type_text(editor, "1")
+    key(editor, Key.enter)
+    let floor = w.network.selected
+    built.ids.append(floor)
+    render(editor)
+    if stage == 5:
+        return built
+    # 6: Shell 1 thick, the bottom opened.
+    let rounded = models(w, floor)[0]
+    node_commands.add_node(w, "Shell", 0.0, 0.0)
+    let shell = w.network.selected
+    built.ids.append(shell)
+    node_commands.set_text(w, cad_modify.first_text, face_toward(rounded, up.multiply_scalar(-1.0)))
+    node_commands.set_parameter(w, edit_cad_faces.thickness_slot, 1.0)
+    node_commands.display_selected(w)
+    look(w, 0.6, -0.6, 150.0, up.multiply_scalar(10.0))
+    render(editor)
+    if stage == 6:
+        return built
+    # 7: an outer top edge (along Z at +X) chamfered 1.
+    look(w, 0.6, 0.7, 150.0, up.multiply_scalar(10.0))
+    render(editor)
+    select_edge(editor, w.level_of(4), "cad_edge_reference", func (a: Vector3, b: Vector3) -> bool: return a.x > 29.99 and b.x > 29.99 and a.dot(up) > 19.99 and b.dot(up) > 19.99)
+    editor.panels.refresh()
+    editor.panels.actions.chamfer_edges.trigger()
+    render(editor)
+    type_text(editor, "1")
+    key(editor, Key.enter)
+    let chamfer = w.network.selected
+    built.ids.append(chamfer)
+    render(editor)
+    if stage == 7:
+        return built
+    # 8: a Sketch on XY: the boss's rectangle from the pocket's floor up to
+    # the top, 5 out from the Y axis.
+    node_commands.add_node(w, "Sketch", 0.0, 0.0)
+    let boss = w.network.selected
+    built.ids.append(boss)
+    node_commands.set_parameter(w, 0, 0.0)
+    let floor_height = 12.0 * up.y
+    let top_height = 20.0 * up.y
+    let (text, axis) = boss_sketch(math.min(floor_height, top_height), math.max(floor_height, top_height))
+    node_commands.set_text(w, 0, text)
+    look(w, 0.6, 0.5, 150.0, up.multiply_scalar(10.0))
+    render(editor)
+    if stage == 8:
+        return built
+    # 9: Revolve, Full, about the rectangle's side on the axis: Auto joins.
+    node_commands.add_node(w, "Revolve", 0.0, 0.0)
+    let revolve = w.network.selected
+    built.ids.append(revolve)
+    node_commands.set_text(w, cad_features.axis_text, f"line {axis}")
+    node_commands.set_parameter(w, cad_features.revolve_type_slot, 1.0)
+    node_commands.display_selected(w)
+    look(w, 0.6, 0.7, 150.0, up.multiply_scalar(10.0))
+    render(editor)
+    if stage == 9:
+        return built
+    # 10: Move, Translate 45 along X, Create copy.
+    let body = models(w, revolve)[0]
+    node_commands.add_node(w, "Move", 0.0, 0.0)
+    let move = w.network.selected
+    built.ids.append(move)
+    node_commands.set_text(w, cad_modify.first_text, face_toward(body, Vector3(1.0, 0.0, 0.0)))
+    node_commands.set_parameter(w, cad_moves.type_slot, 1.0)
+    node_commands.set_parameter(w, 0, 45.0)
+    node_commands.set_parameter(w, cad_moves.copy_slot, 1.0)
+    node_commands.display_selected(w)
+    look(w, 0.6, 0.7, 220.0, Vector3(22.0, 10.0, 0.0))
+    render(editor)
+    if stage == 10:
+        return built
+    # 11: Combine: the copy joined to the original.
+    let pair = models(w, move)
+    node_commands.add_node(w, "Combine", 0.0, 0.0)
+    let combine = w.network.selected
+    built.ids.append(combine)
+    node_commands.set_text(w, cad_modify.first_text, face_toward(pair[0], Vector3(-1.0, 0.0, 0.0)))
+    node_commands.set_text(w, cad_modify.second_text, face_toward(pair[1], Vector3(1.0, 0.0, 0.0)))
+    node_commands.display_selected(w)
+    render(editor)
+    return built
+
+## A click on the timeline strip's playback button `button` (0 to the
+## start, 1 a feature back, 2 a feature on, 3 to the end).
+func strip_button(editor: Luce3D, button: int) -> unit!:
+    render(editor)
+    let strip = editor.panels.cad_timeline
+    strip.poll()
+    render(editor)
+    let bounds = strip.layout().bounds()
+    assert(strip.layout().is_visible() and bounds.width > 0.0)
+    let x = bounds.x + 6.0 + float(button) * 22.0 + 9.0
+    let y = bounds.y + bounds.height * 0.5
+    for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+        editor.app.dispatch(Event(kind = kind, x = x, y = y, button = 0))
+    render(editor)
+
+## Every node of `ids` cooked without a failure or a warning.
+func all_clean(w: Workspace, ids: list[int]) -> unit!:
+    for id in ids:
+        _ = w.network.evaluate_data(id)
+        let node = w.network.require(id)
+        assert(node.failure == "" and node.warning == "", f"{node.name}: {node.failure}{node.warning}")
+
+## The timeline build checked stage by stage, then rolled back, edited and
+## rolled forward; the combined body's volume before the edit.
+func parametric() -> float!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    let built = build_parametric(editor, parametric_stages - 1)
+    let ids = built.ids
+    assert(ids.length == parametric_stages, f"{ids.length} nodes")
+    all_clean(w, ids)
+    # The sketch's typed sizes are its two dimensions.
+    let dims = sketch_commands.dimensions(w.network.require(ids[0]).texts[0])
+    assert(dims.length == 2 and math.abs(dims[0].value - 60.0) < 1e-9 and math.abs(dims[1].value - 40.0) < 1e-9)
+    # Extrude: the plate; the cut: Auto chose Cut, the pocket 50 × 30 × 8.
+    assert(math.abs(volume(models(w, ids[1])[0]) - 48000.0) < 48.0)
+    assert(w.network.require(ids[3]).automatic == "Cut")
+    assert(math.abs(volume(models(w, ids[3])[0]) - (48000.0 - 12000.0)) < 40.0)
+    # The floor's tangent chain: one edge picked, the whole loop rounded
+    # (four lines and the four corners round the uprights' fillets).
+    assert(models(w, ids[5])[0].face_count() >= models(w, ids[4])[0].face_count() + 8)
+    # Shell, Chamfer and the boss each change the body; the copy then two.
+    var last = volume(models(w, ids[5])[0])
+    for at in [6, 7, 9]:
+        let now = volume(models(w, ids[at])[0])
+        assert(math.abs(now - last) > 1.0, f"stage {at} changed nothing")
+        last = now
+    assert(models(w, ids[10]).length == 2)
+    let joined = models(w, ids[11])
+    assert(joined.length == 1 and math.abs(width_of(joined) - 105.0) < 0.01, f"{width_of(joined)}")
+    let made = volume(joined[0])
+    # The timeline: the marker rolled back to the first sketch (it shows
+    # alone), the width dimension made 70, rolled forward again.
+    strip_button(editor, 0)
+    assert(w.network.display == ids[0])
+    let s = CadSketch.parse(w.network.require(ids[0]).texts[0])
+    s.set_value(dims[0].constraint, 70.0)
+    _ = s.solve()
+    node_commands.select_node(w, ids[0])
+    node_commands.set_text(w, 0, s.text())
+    strip_button(editor, 3)
+    assert(w.network.display == ids[-1])
+    all_clean(w, ids)
+    # Everything followed: the plate 70 wide, the pocket 60 (the offset
+    # kept 5), the copy still 45 over: 115 across.
+    assert(math.abs(volume(models(w, ids[1])[0]) - 56000.0) < 56.0)
+    assert(math.abs(volume(models(w, ids[3])[0]) - (56000.0 - 60.0 * 30.0 * 8.0)) < 50.0)
+    assert(math.abs(width_of(models(w, ids[-1])) - 115.0) < 0.01, f"{width_of(models(w, ids[-1]))}")
+    editor.close()
+    return made
+
+# -- Edit CAD.
+
+## Build the Edit CAD part up to stage `stage` (0 the sketch, 1 Extrude, 2
+## the face sketch and offset, 3 the cut, 4 the fillets, 5 Shell, 6
+## Chamfer, 7 the boss revolved, 8 Move/Copy, 9 Combine); the node.
+pub func build_direct(editor: Luce3D, stage: int) -> Node!:
+    let w = editor.workspace
+    w.snaps.flags[1] = false
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    let node = w.selected() else trap("Edit CAD")
+    look(w, 0.6, 0.6, 160.0, Vector3())
+    # 0: a sketch on XZ: the 60 × 40 rectangle with its two dimensions.
+    edit_cad_commands.create_sketch(w, 1)
+    let rectangle = CadSketch.parse(sketch_commands.rectangle_text(0.0, 0.0, 60.0, 40.0))
+    draw(w, node, rectangle.text())
+    render(editor)
+    if stage == 0:
+        return node
+    # 1: Extrude 20.
+    edit_cad_commands.feature_from_sketch(w, "Extrude")
+    modeling_commands.set_last_step(w, cad_features.distance_slot, 20.0, -100000.0, 100000.0)
+    let up = up_of(w, node)
+    render(editor)
+    if stage == 1:
+        return node
+    # 2: a sketch on the top face (its loop projected once), offset 5 in.
+    select_face(editor, 3, func (c: Vector3, n: Vector3) -> bool: return n.dot(up) > 0.99 and c.dot(up) > 19.99)
+    edit_cad_commands.create_sketch(w)
+    let object = edit_cad_sketch(w, node, "Sketch2")
+    let projected = CadSketch.parse(object.text)
+    let loop: list[int] = []
+    for at in 0..<projected.entity_count():
+        if projected.kind(at) == 1 and projected.linked(at):
+            loop.append(at)
+    let middle = object.plane.coordinates(up.multiply_scalar(20.0))
+    _ = projected.offset(loop, 5.0, middle[0], middle[1], relation = true)
+    draw(w, node, projected.text())
+    render(editor)
+    if stage == 2:
+        return node
+    # 3: the inner profile extruded 8 down: a cut.
+    let drawn = CadSketch.parse(sketch_source.edited_text(node, "Sketch2"))
+    w.sketch_profiles = [CadModeling.profile_at(drawn.curves(object.plane.origin, object.plane.u, object.plane.v), up.multiply_scalar(20.0))]
+    edit_cad_commands.feature_from_sketch(w, "Extrude")
+    modeling_commands.set_last_step(w, cad_features.distance_slot, -8.0, -100000.0, 100000.0)
+    look(w, 0.6, 0.7, 150.0, up.multiply_scalar(10.0))
+    render(editor)
+    if stage == 3:
+        return node
+    # 4: the pocket's uprights filleted 3, then the floor's chain 1.
+    let inside = func (a: Vector3, b: Vector3) -> bool:
+        return math.abs(a.x - b.x) < 1e-6 and math.abs(a.z - b.z) < 1e-6 and math.abs(a.x) < 29.0 and math.abs(a.subtract(b).dot(up)) > 7.9
+    for k in 0..<4:
+        let corner = func (a: Vector3, b: Vector3) -> bool:
+            return inside(a, b) and (a.x > 0.0) == (k % 2 == 0) and (a.z > 0.0) == (k // 2 == 0)
+        select_edge(editor, 2, "cad_edge", corner, add = k > 0)
+    edit_cad_commands.tool(w, "Fillet")
+    modeling_commands.set_last_step(w, 0, 3.0, 0.0001, 100000.0)
+    select_edge(editor, 2, "cad_edge", func (a: Vector3, b: Vector3) -> bool: return math.abs(a.dot(up) - 12.0) < 1e-6 and math.abs(b.dot(up) - 12.0) < 1e-6 and math.abs(a.x - b.x) < 1e-6 and math.abs(a.x) < 29.0)
+    edit_cad_commands.tool(w, "Fillet")
+    modeling_commands.set_last_step(w, 0, 1.0, 0.0001, 100000.0)
+    render(editor)
+    if stage == 4:
+        return node
+    # 5: Shell 1, the bottom opened.
+    select_face(editor, 3, func (c: Vector3, n: Vector3) -> bool: return n.dot(up) < -0.99)
+    edit_cad_commands.tool(w, "Shell")
+    modeling_commands.set_last_step(w, edit_cad_faces.thickness_slot, 1.0, 0.0001, 100000.0)
+    look(w, 0.6, -0.6, 150.0, up.multiply_scalar(10.0))
+    render(editor)
+    if stage == 5:
+        return node
+    # 6: an outer top edge chamfered 1.
+    look(w, 0.6, 0.7, 150.0, up.multiply_scalar(10.0))
+    select_edge(editor, 2, "cad_edge", func (a: Vector3, b: Vector3) -> bool: return a.x > 29.99 and b.x > 29.99 and a.dot(up) > 19.99 and b.dot(up) > 19.99)
+    edit_cad_commands.tool(w, "Chamfer")
+    modeling_commands.set_last_step(w, 0, 1.0, 0.0001, 100000.0)
+    render(editor)
+    if stage == 6:
+        return node
+    # 7: a sketch on XY with the boss's rectangle, revolved Full about its
+    # side on the axis.
+    edit_cad_commands.create_sketch(w, 0)
+    let floor_height = 12.0 * up.y
+    let top_height = 20.0 * up.y
+    let (text, axis) = boss_sketch(math.min(floor_height, top_height), math.max(floor_height, top_height))
+    draw(w, node, text)
+    edit_cad_commands.feature_from_sketch(w, "Revolve")
+    edit_cad_picks.set_axis(w, node, f"line {axis}")
+    modeling_commands.set_last_step(w, cad_features.revolve_type_slot, 1.0, 0.0, 2.0)
+    render(editor)
+    if stage == 7:
+        return node
+    # 8: Move/Copy of the body, 45 along X, Create copy.
+    select_face(editor, 0, func (c: Vector3, n: Vector3) -> bool: return true)
+    edit_cad_commands.move_copy(w)
+    modeling_commands.set_last_step(w, cad_moves.copy_slot, 1.0, 0.0, 1.0)
+    modeling_commands.set_last_step(w, 0, 45.0, -100000.0, 100000.0)
+    look(w, 0.6, 0.7, 220.0, Vector3(22.0, 10.0, 0.0))
+    render(editor)
+    if stage == 8:
+        return node
+    # 9: Combine: the original the target, the copy the tool.
+    select_face(editor, 0, func (c: Vector3, n: Vector3) -> bool: return c.x < -20.0)
+    edit_cad_commands.tool(w, "Combine")
+    select_face(editor, 0, func (c: Vector3, n: Vector3) -> bool: return c.x > 60.0)
+    edit_cad_picks.accept_pick(w, node)
+    render(editor)
+    return node
+
+## Draw `text` into the sketch being edited, as the editor's commit does.
+func draw(w: Workspace, node: Node, text: str) -> unit!:
+    assert(sketch_source.write(w, node, w.edit_sketch, text, "Draw"))
+
+## The way the first extrude went (the XZ sketch's normal).
+func up_of(w: Workspace, node: Node) -> Vector3!:
+    let bounds = w.network.evaluate_data(node.id).models()[0].tessellate(8).bounds()
+    return Vector3(0.0, 1.0, 0.0) if bounds.maximum.y > 19.99 else Vector3(0.0, -1.0, 0.0)
+
+func edit_cad_sketch(w: Workspace, node: Node, name: str) -> edit_cad_sketches.SketchObject!:
+    return edit_cad_sketches.named(edit_cad_sketches.parse_objects(w.network.evaluate_data(node.id).sketch_state), name) else trap("no such sketch")
+
+## The Edit CAD build: no step failing, one body as wide as the
+## timeline's and of its volume (`expected`).
+func direct(expected: float) -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    let node = build_direct(editor, direct_stages - 1)
+    let now = w.network.find(node.id) else trap("node")
+    assert(now.failure == "" and now.warning == "", f"{now.failure}{now.warning}")
+    let bodies = models(w, node.id)
+    assert(bodies.length == 1 and math.abs(width_of(bodies) - 105.0) < 0.01, f"{bodies.length} bodies, {width_of(bodies)} wide")
+    let got = volume(bodies[0])
+    assert(math.abs(got - expected) < expected * 1e-4, f"Edit CAD {got}, the timeline {expected}")
+    editor.close()
