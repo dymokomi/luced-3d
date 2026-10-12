@@ -12,7 +12,7 @@ from luce_geocore.core.growing import Growing
 from luce_3d.graphics import WireBatch, wire_batch_type, PerspectiveCamera, WireRenderer, append_curve_segments
 from luce_gpu import gpu
 from luce_cad.model import CadOverlay, CadPreviewSet
-from luce_cad.measure import CadCheck, check_lines
+from luce_cad.measure import CadCheck, check_lines, check_labels
 from luce_cad.sketch import CadSketch, CadShadows, sketch_samples, shadow_samples, projection_per_edge, sketch_trim_piece, sketch_offset_preview
 from luce_geocore.geocore import GeometrySet, SceneKind, LightShape, Projection, Camera, Light
 from luce_geocore.kernel import SceneObjects, scene_flattened
@@ -34,6 +34,11 @@ pub struct OverlayLines:
     ## Segments held.
     pub func count() -> i64:
         return (i64)self.points.count // 2
+
+    ## Point `index` (segment i's ends are points 2i and 2i + 1).
+    pub func point(index: i64) -> Vector3!:
+        if index < 0 or (usize)index >= self.points.count: error(invalid, "overlay point out of range")
+        return self.points.items[(usize)index]
 
     ## Highlight helper strokes without rebuilding Luce endpoint lists.
     pub func draw(camera: interop.Reference[PerspectiveCamera], target: interop.View[gpu.RenderTarget], color: gpu.Color, width: f64 = 3.0) -> !:
@@ -280,6 +285,11 @@ pub struct OverlayLines:
     pub func add_check(check: interop.Reference[CadCheck], group: i64, matrix: Matrix4 = Matrix4()) -> !:
         for p in check_lines(check.value(), group): try self.points.push(matrix.transform_point(p))
 
+    ## A Check node's edge labels (luce-cad's CheckLabel) as pairs, as
+    ## check_label_pairs makes them.
+    pub func add_check_labels(check: interop.Reference[CadCheck], matrix: Matrix4 = Matrix4()) -> !:
+        try check_label_pairs(check.value(), matrix, &self.points)
+
     ## The evaluated curves of `set` (as CurveLines draws them).
     pub func add_curves(set: interop.Reference[GeometrySet]) -> !:
         try append_curve_segments(try set.get(), Matrix4(), &self.points, none)
@@ -403,6 +413,16 @@ pub struct OverlayLines:
         self.points.close()
 
 ## The endpoints of `lines`, for Base consumers (the worker channel).
+## A check's labels as two point pairs each: the label's place (placed by
+## `matrix`) and (level, order, value); then (group, 0, 0) and the origin.
+## The viewport reads them back into text (check_labels.luc).
+pub func check_label_pairs(check: const CadCheck*, matrix: Matrix4, out: Growing[Vector3]*) -> !:
+    for label in check_labels(check):
+        try out.push(matrix.transform_point(label.point))
+        try out.push(Vector3((f64)label.level, (f64)label.order, label.value))
+        try out.push(Vector3((f64)label.group, 0.0, 0.0))
+        try out.push(Vector3())
+
 pub func line_points(lines: const OverlayLines*) -> const Vector3[]:
     return lines.points.view()
 

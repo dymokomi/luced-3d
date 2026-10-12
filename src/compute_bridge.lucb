@@ -18,7 +18,7 @@ from luce_3d.graphics import GaussianSplats, gaussian_splats_type, gaussian_spla
 from luce_geocore.geocore import GeometrySet
 from luce_geocore.kernel import VolumeLook
 from luce_geocore.core.growing import Growing
-from overlay_lines import OverlayLines, line_points
+from overlay_lines import OverlayLines, line_points, check_label_pairs
 from luce_cad.measure import CadCheck, check_lines
 import platform
 
@@ -45,9 +45,10 @@ struct Product:
     var curves: Vector3[]
     var hulls: Vector3[]
     ## A Check node's lines (luce-cad's check groups) one group after the
-    ## other: group g ends at check_ends[g].
+    ## other, then its labels' pairs (check_label_pairs): group g ends at
+    ## check_ends[g], the labels at check_ends[5].
     var checks: Vector3[]
-    var check_ends: usize[5]
+    var check_ends: usize[6]
     ## A fog volume made here for the UI to adopt (its texels; the UI
     ## uploads them on its first draw), and the look a fog product draws
     ## with, on the heap (none for other products).
@@ -72,7 +73,7 @@ struct Held:
     var curves: Vector3[]
     var hulls: Vector3[]
     var checks: Vector3[]
-    var check_ends: usize[5]
+    var check_ends: usize[6]
 
 struct State:
     var lock: sync.Mutex
@@ -287,10 +288,12 @@ pub struct ComputeChannel:
         try self.check()
         var points = Growing[Vector3]()
         defer points.close()
-        var ends: usize[5] = [0, 0, 0, 0, 0]
+        var ends: usize[6] = [0, 0, 0, 0, 0, 0]
         for group in 0..<(i64)5:
             for p in check_lines(measured.value(), group): try points.push(matrix.transform_point(p))
             ends[(usize)group] = points.count
+        try check_label_pairs(measured.value(), matrix, &points)
+        ends[5] = points.count
         if points.count == 0:
             return
         var product = Product(key, none, node, false, false, true)
@@ -587,6 +590,15 @@ pub struct ComputeService:
         if group < 0 or group >= 5: error(invalid, "check line group out of range")
         return try self.batch(5 + group, outside, false)
 
+    ## The Check nodes' labels of every product, as check_label_pairs makes
+    ## them, into `into`.
+    pub func check_labels(outside: const i64[], into: interop.Reference[OverlayLines]) -> !:
+        let state = self.state else error(invalid, "Compute service closed")
+        for product in state.products[..<state.count]:
+            if listed(outside, product.node): continue
+            let pairs = overlay_of(state, product, 10)
+            for at in 0..<pairs.length // 2: try into.value().add_segment(pairs[at * 2], pairs[at * 2 + 1])
+
     ## Every published hull: curve control polygons and handles, CV nets.
     pub func hulls(outside: const i64[], around: bool = false) -> interop.Reference[WireBatch]!:
         return try self.batch(4, outside, around)
@@ -707,12 +719,12 @@ func overlay_of(state: const State*, product: const Product, which: i64) -> cons
     return empty
 
 ## Check group `group` of `checks` (its groups end at `ends`).
-func check_group(checks: const Vector3[], ends: const usize[5]*, group: i64) -> const Vector3[]:
+func check_group(checks: const Vector3[], ends: const usize[6]*, group: i64) -> const Vector3[]:
     let first = (*ends)[(usize)group - 1] if group > 0 else 0
     return checks[first..<(*ends)[(usize)group]]
 
 ## Overlay `which`: 0 wires, 1 normals, 2 patches, 3 curves, 4 curve hulls,
-## 5 to 9 a Check node's line groups (check_lines).
+## 5 to 9 a Check node's line groups (check_lines), 10 its labels' pairs.
 func pick(which: i64, wires: const Vector3[], normals: const Vector3[], patches: const Vector3[], curves: const Vector3[], hulls: const Vector3[]) -> const Vector3[]:
     match which:
         0: return wires

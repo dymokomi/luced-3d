@@ -717,8 +717,15 @@ the worker like curves, drawn in `view.luc`):
 
 - **Edges by result.** An edge that meets the continuity is green. One order
   short it is yellow, further short red.
-- **Ticks.** At its middle, an edge carries one tick across it per order met;
-  a cross means even G0 fails.
+- **Labels**, as Alias labels its continuity check on the model
+  (`check_labels.luc`). At its middle, an edge carries a label in its color:
+  the order it reached and the measure that decided it, which is the first
+  order it misses, or the order asked for when it passed. "G2  κ 0.00%" is a
+  G2 contact whose curvatures agree; "G0  90.00°" a crease, its normals 90°
+  apart; "G1  κ 100.00%" a G1 fillet's contact checked for G2; "G0 ×" a gap
+  wider than Distance. Gaps read in model units, angles in degrees, the
+  curvature (κ) and rate (κ') differences in percent. The labels cross from
+  the worker beside the lines.
 - **Combs.** Curvature combs on curved edges are magenta.
 - **Cross quills.** Each face's curvature across the edge is a blue quill at
   every station. Equal quills mean G2; a G1 fillet's jump from 0 to 1/r shows
@@ -726,9 +733,11 @@ the worker like curves, drawn in `view.luc`):
 
 The node's line in the inspector is the report: how many edges passed and
 the worst gap, angle and curvature and rate differences. With Deviation on,
-the output is the body's tessellation colored by its signed distance from
-the second input's surfaces: green within Acceptable, red outside the
-reference and blue inside, saturating at Ramp. The report then leads with the
+the body is shaded by its signed distance from the second input's surfaces,
+as Alias's Deviation Map: green within Acceptable, red outside the reference
+and blue inside, saturating at Ramp. The colors are a display overlay
+(`GeometryData.tint`, a mesh the viewport shades in the body's place): the
+output is still the CAD body, so it picks, measures and passes on as one. The report then leads with the
 deviation's range, RMS and share within Acceptable. Zebra, Isophotes and
 Curvature shading show the same surfaces.
 

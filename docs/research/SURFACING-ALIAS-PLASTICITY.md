@@ -1480,7 +1480,8 @@ Left for later:
 - **Surface-relative combs** for edges.
 - **Edges without a shared face.** No checks between faces that share no edge (Stage 3's
   stitching).
-- **Labels.** The continuity labels on the model are ticks, not text.
+- ~~**Labels.**~~ Done after Stage 0: Alias-style text labels on the model ("G2  κ 0.00%"), and
+  Deviation as a display tint over the CAD body rather than a mesh in its place.
 - **Deviation's precision.** It resolves single precision tessellation points: about 1e-7 of the
   model's size.
 

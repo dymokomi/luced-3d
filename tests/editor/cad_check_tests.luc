@@ -2,9 +2,10 @@
 ## (docs/research/SURFACING-ALIAS-PLASTICITY.md): a G2 fillet's contacts
 ## pass G2 and fail G3, the box's sharp edges fail; picked edges narrow it;
 ## its report stands for the description; its lines reach the viewport's
-## batches (local and from the worker); Deviation against a wired body
-## colors the tessellation; Check continuity from selected edges, and the
-## S menu offers Check.
+## batches (local and from the worker), with a label an edge reading the
+## order reached and its measure; Deviation against a wired body colors the
+## body as a display tint, the CAD body passing through; Check continuity
+## from selected edges, and the S menu offers Check.
 from workspace import Workspace
 from luce_cad.cad_geometry import CadGeometry
 from luce_cad.modeling import CadModeling
@@ -19,7 +20,7 @@ import time
 
 pub func cad_check_tests() -> unit!:
     fillet_checked()
-    print("PASS Check node: a G2 fillet's contacts pass G2 and fail G3, sharp edges fail, picked edges narrow it, its report, lines in the viewport's batches, a deviation map against a wired body, and the S menu's Check")
+    print("PASS Check node: a G2 fillet's contacts pass G2 and fail G3, sharp edges fail, picked edges narrow it, its report, lines and edge labels in the viewport's batches, a deviation tint over the body against a wired body, and the S menu's Check")
 
 ## A box with its front top edge filleted G2 (radius 3) inside a CAD node:
 ## the box's id and the fillet's.
@@ -97,6 +98,17 @@ func fillet_checked() -> unit!:
     # The viewport draws its groups: the local cook's batches.
     render(editor)
     assert(w.batches.check_batches.length == 5, f"{w.batches.check_batches.length} check batches")
+    # A label an edge: the contacts "G2  κ 0.00%" in green, the sharp edges
+    # "G0  90.00°" (G1's angle decided them) in red.
+    assert(w.batches.check_labels.length == 15, f"{w.batches.check_labels.length} labels")
+    var green = 0
+    for label in w.batches.check_labels:
+        if label.group == 0:
+            green += 1
+            assert(label.text == "G2  κ 0.00%", label.text)
+        else:
+            assert(label.group == 2 and label.text == "G0  90.00°", label.text)
+    assert(green == 2)
     # Deviation against the box before the fillet, made G1: zero on the
     # flat faces, down to r (1 - 1/√2) inside them at the fillet's middle.
     node_commands.select_node(w, fillet)
@@ -105,8 +117,12 @@ func fillet_checked() -> unit!:
     w.network.connect(box, check_id, 1)
     node_commands.set_parameter(w, cad_check.deviation_slot, 1.0)
     let mapped = w.network.evaluate_data(check_id)
-    assert(CadGeometry.model_count(mapped.geometry) == 0)
-    let shown = mapped.mesh else trap("no deviation mesh")
+    # The body passes through: the colors are a tint the viewport shades
+    # in its place, and the pick mesh is still the CAD body's.
+    assert(CadGeometry.model_count(mapped.geometry) == 1 and mapped.mesh == none)
+    let shown = mapped.tint else trap("no deviation tint")
+    render(editor)
+    assert(w.picking_brep())
     assert(shown.find_attribute("Cd", 0) >= 0)
     let depth = (1.0 - 1.0 / math.sqrt(2.0)) * 3.0
     assert(mapped.report.starts_with("deviation -"), mapped.report)
@@ -130,6 +146,14 @@ func fillet_checked() -> unit!:
     assert(not session.busy)
     # (The fillet is G1 by now: its contacts one order short, the creases red.)
     assert(w.batches.check_batches.length == 5 and w.batches.check_batches[1].count() > 0 and w.batches.check_batches[2].count() > 0 and w.batches.check_batches[3].count() > 0)
+    # Their labels come back too: the contacts G1, κ off by 100%.
+    assert(w.batches.check_labels.length == 15, f"{w.batches.check_labels.length} labels from the worker")
+    var near = 0
+    for label in w.batches.check_labels:
+        if label.group == 1:
+            near += 1
+            assert(label.text.starts_with("G1  κ "), label.text)
+    assert(near == 2)
 
 func no_add(kind: str) -> unit!:
     _ = kind
