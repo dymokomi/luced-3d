@@ -687,6 +687,60 @@ corner, as Fusion's). A chamfer's distance on a curved face is straight from the
 edge (a chord), as Fusion's; a dome's rim chamfers too. In Edit CAD a
 Fillet step blends the edges picked; the rule is the node's.
 
+**Check** (`cad_check.luc`; Inspect in the CAD menus, the S menu, and Check
+continuity on the right-click menu for selected edges). Check is Alias's
+continuity check and curvature combs, made a node. It changes nothing: its
+input passes through, and the viewport draws what it measured over the
+result. The measuring is luce-cad's `CadMeasure`, on the exact geometry
+(luce-cad `docs/MODELING.md`, Measuring).
+
+Its options:
+
+- **Continuity**: G0 to G3, G2 by default.
+- **Stations** per edge.
+- **Thresholds**: Distance (G0), Angle (G1), Curvature % (G2) and Curvature
+  rate % (G3).
+- **Sharp edges**: off by default, which leaves creases out (faces at more
+  than 10° all along the edge).
+- **Combs**, with their samples.
+- **Cross quills**.
+- **Comb scale**: at 1, the longest quill is a tenth of the body.
+- **Deviation**, against the second input, with Acceptable and Ramp.
+- **Edges**: Pick edges or All edges. None picked means every edge between
+  two faces.
+
+What the viewport draws (`viewport_batches.luc` `check_batches`, published by
+the worker like curves, drawn in `view.luc`):
+
+- **Edges by result.** An edge that meets the continuity is green. One order
+  short it is yellow, further short red.
+- **Ticks.** At its middle, an edge carries one tick across it per order met;
+  a cross means even G0 fails.
+- **Combs.** Curvature combs on curved edges are magenta.
+- **Cross quills.** Each face's curvature across the edge is a blue quill at
+  every station. Equal quills mean G2; a G1 fillet's jump from 0 to 1/r shows
+  as two lengths.
+
+The node's line in the inspector is the report: how many edges passed and
+the worst gap, angle and curvature and rate differences. With Deviation on,
+the output is the body's tessellation colored by its signed distance from
+the second input's surfaces: green within Acceptable, red outside the
+reference and blue inside, saturating at Ramp. The report then leads with the
+deviation's range, RMS and share within Acceptable. Zebra, Isophotes and
+Curvature shading show the same surfaces.
+
+**Analysis shading.** The shading menu's Curvature has a radius band: where
+the smallest radius of curvature is under Min radius it draws magenta, and
+over Max radius grey. **Draft** shades by the draft angle against a pull
+direction (±X, ±Y, ±Z):
+
+- green past the angle asked for;
+- yellow within it either way;
+- red past it facing away.
+
+Both are luce-gpu's mesh shading (modes 6 and 7); their settings persist with
+the other shading options.
+
 **Handles** (`feature_handles.luc`). The selected Extrude, Revolve, Offset
 Face, Fillet or Chamfer shows Fusion's manipulators where its cook placed
 them (`handle_lines.luc`; the cook reports them through the worker like

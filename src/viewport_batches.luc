@@ -19,6 +19,9 @@ pub class ViewportBatches:
     ## without the worker, one for the whole result with it.
     pub let curve_batches: list[WireBatch]
     pub let hull_batches: list[WireBatch]
+    ## Check nodes' lines (cad_check.luc), five a node in luce-cad's group
+    ## order (passed, near, failed, combs, quills): batch i is group i % 5.
+    pub let check_batches: list[WireBatch]
     ## The rest of the scene's lines: wires and CAD edges, patch borders,
     ## curves and hulls (no normal guides: those are the context's).
     pub var around: list[WireBatch]
@@ -44,7 +47,8 @@ pub class ViewportBatches:
     pub var scene_keys: list[int]
     pub var scene_nodes: list[int]
     ## The worker batches shown (ComputeService.batch_key; -1 none): wires,
-    ## normals, patches, curves, hulls.
+    ## normals, patches, curves, hulls; around the context (no normals); the
+    ## five check groups.
     var keys: list[int]
     var helper_keys: list[int]
     var helper_lines: list[list[OverlayLines]]
@@ -52,6 +56,7 @@ pub class ViewportBatches:
     pub func init(self):
         self.curve_batches = []
         self.hull_batches = []
+        self.check_batches = []
         self.volumes = []
         self.volume_nodes = []
         self.held_volumes = {}
@@ -61,15 +66,16 @@ pub class ViewportBatches:
         self.scenes = []
         self.scene_keys = []
         self.scene_nodes = []
-        self.keys = [-1, -1, -1, -1, -1, -1, -1, -1, -1]
+        self.keys = unshown()
         self.around = []
         self.helper_keys = []
         self.helper_lines = []
 
-    ## Start a synchronous cook: no curves or hulls yet.
+    ## Start a synchronous cook: no curves, hulls or checks yet.
     pub func clear_curves(self):
         self.curve_batches.clear()
         self.hull_batches.clear()
+        self.check_batches.clear()
 
     ## The lines of a synchronous cook (curve batches were added as it went),
     ## and the rest of the scene's (`around`).
@@ -77,7 +83,7 @@ pub class ViewportBatches:
         self.wire_batch = wires.batch()
         self.normal_batch = normals.batch()
         self.patch_batch = patches.batch()
-        self.keys = [-1, -1, -1, -1, -1, -1, -1, -1, -1]
+        self.keys = unshown()
         self.hull_batches.append(hulls.batch())
         self.around = around
 
@@ -96,6 +102,13 @@ pub class ViewportBatches:
         if self.changed(service, 4, outside, false):
             self.hull_batches.clear()
             self.hull_batches.append(service.hulls(outside))
+        var checks = false
+        for which in 5..<10:
+            checks = self.changed(service, which, outside, false) or checks
+        if checks:
+            self.check_batches.clear()
+            for group in 0..<5:
+                self.check_batches.append(service.check_batch(group, outside))
         var around = false
         for which in [0, 2, 3, 4]:
             around = self.changed(service, which, outside, true) or around
@@ -106,7 +119,10 @@ pub class ViewportBatches:
     ## differs from the one shown (and note the new one).
     func changed(self, service: ComputeService, which: int, outside: list[int], around: bool) -> bool!:
         let key = service.batch_key(which, outside, around)
-        let slot = which + (5 if around else 0) - (1 if around and which > 1 else 0)
+        # Context 0 to 4, around 5 to 8 (no normals), checks 9 to 13.
+        var slot = which + (5 if around else 0) - (1 if around and which > 1 else 0)
+        if which >= 5:
+            slot = which + 4
         if self.keys[slot] == key:
             return false
         self.keys[slot] = key
@@ -126,3 +142,10 @@ pub class ViewportBatches:
                     lines.append(helper)
                 self.helper_lines.append(lines)
         return self.helper_lines[at]
+
+## The worker batch keys of nothing shown yet (changed's slots).
+func unshown() -> list[int]:
+    let keys: list[int] = []
+    for _ in 0..<14:
+        keys.append(-1)
+    return keys

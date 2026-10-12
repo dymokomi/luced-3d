@@ -1,0 +1,83 @@
+## The Check node: Alias's continuity check and curvature combs, and its
+## deviation map, as a node of a CAD network (luce-cad's CadMeasure). It
+## changes nothing: its input passes through (or, with Deviation, its
+## tessellation colored by how far it lies from the second input), and the
+## viewport draws what it measured over the result: each checked edge green
+## when it meets the continuity asked for, yellow one order short, red
+## further; a tick per order met at the edge's middle; curvature combs on
+## curved edges; and each side's curvature across the edge as a quill.
+## The node's line in the inspector reports how many edges passed and the
+## worst of each measure.
+from luce_cad.measure import CadMeasure
+from luce_cad.model import CadModel
+from luce_geocore.geocore import GeometrySet
+from geometry_data import GeometryData
+from parameter_rows import Parameter, number, whole, toggle, menu
+from luce_ui import ui
+
+pub let kind_name = "Check"
+
+## Value slots.
+pub let level_slot = 0
+pub let stations_slot = 1
+pub let distance_slot = 2
+pub let angle_slot = 3
+pub let curvature_slot = 4
+pub let rate_slot = 5
+pub let combs_slot = 6
+pub let samples_slot = 7
+pub let quills_slot = 8
+pub let scale_slot = 9
+pub let deviation_slot = 10
+pub let acceptable_slot = 11
+pub let ramp_slot = 12
+pub let sharp_slot = 13
+
+## The node's parameters.
+pub func fields() -> list[Parameter]:
+    let distance = number("Distance", distance_slot, 0.001, 0.0000001, 1000.0, 0.001, "G0: the largest gap between the two faces that still counts as touching.", soft = 0.1)
+    distance.length = true
+    let samples = whole("Comb samples", samples_slot, 48.0, 2.0, 1000.0, "Quills along each curved edge.")
+    samples.hide_when = "{ combs == 0 }"
+    let acceptable = number("Acceptable", acceptable_slot, 0.01, 0.0, 1000.0, 0.01, "Deviation: within this distance of the reference the map is green.", soft = 1.0)
+    acceptable.length = true
+    acceptable.hide_when = "{ deviation == 0 }"
+    let ramp = number("Ramp", ramp_slot, 0.1, 0.0000001, 1000.0, 0.01, "Deviation: the distance at which the colors saturate (red outside the reference, blue inside).", soft = 10.0)
+    ramp.length = true
+    ramp.hide_when = "{ deviation == 0 }"
+    return [menu("Continuity", level_slot, "G0 Position|G1 Tangent|G2 Curvature|G3 Curvature rate", 2.0, "The continuity each edge should have. Edges meeting it draw green, one order short yellow, further short red; the ticks at an edge's middle count the orders it meets."),
+            toggle("Sharp edges", sharp_slot, 0.0, "Check creases too: edges whose faces meet at more than 10° all along them. Off, they are left out (their combs stay)."),
+            whole("Stations", stations_slot, 12.0, 1.0, 1000.0, "Where along each edge the faces are compared, evenly spaced."),
+            distance,
+            number("Angle", angle_slot, 0.1, 0.000001, 90.0, 0.05, "G1: the largest angle between the faces' normals that still counts as tangent.", suffix = "°"),
+            number("Curvature", curvature_slot, 0.5, 0.000001, 100.0, 0.1, "G2: the largest difference of the faces' curvatures across the edge, relative to the larger.", suffix = "%"),
+            number("Curvature rate", rate_slot, 1.0, 0.000001, 100.0, 0.1, "G3: the largest difference of how fast those curvatures change across the edge, relative to the larger.", suffix = "%"),
+            toggle("Combs", combs_slot, 1.0, "Curvature combs on curved edges: quills away from the center of curvature, as long as the curvature."),
+            samples,
+            toggle("Cross quills", quills_slot, 1.0, "Each face's curvature across the edge as a quill at every station: equal quills are G2, a jump shows as two lengths."),
+            number("Comb scale", scale_slot, 1.0, 0.001, 1000.0, 0.1, "How long quills draw: at 1 the longest is a tenth of the body.", soft = 10.0),
+            toggle("Deviation", deviation_slot, 0.0, "Color the body by how far it lies from the second input's surfaces (green within Acceptable, red outside the reference, blue inside)."),
+            acceptable, ramp]
+
+## What the Edges text shows.
+pub func edges_summary(text: str) -> str:
+    if text.trim() == "":
+        return "All edges"
+    let count = text.split(";").length
+    return "1 edge" if count == 1 else f"{count} edges"
+
+## The Check of `body` (from `data`) by values `v`, its edges `edges`
+## (references; empty: all), against `reference` for Deviation.
+pub func evaluate(v: list[float], edges: str, data: GeometryData, body: CadModel, reference: CadModel?) -> GeometryData!:
+    let check = CadMeasure.check(body, edges, int(v[level_slot]), int(v[stations_slot]), v[distance_slot], v[angle_slot], v[curvature_slot], v[rate_slot],
+                                 v[combs_slot] != 0.0, int(v[samples_slot]), v[quills_slot] != 0.0, v[scale_slot], v[sharp_slot] != 0.0)
+    var result = GeometryData(geometry = data.geometry)
+    var report = check.summary()
+    if v[deviation_slot] != 0.0:
+        let other = reference else error(ui.invalid, "Deviation: wire the reference body into the second input")
+        let spread = CadMeasure.deviation(body, other, v[acceptable_slot], v[ramp_slot])
+        result = GeometryData(geometry = GeometrySet.of_mesh(spread.mesh()))
+        report = f"deviation {spread.smallest:.4f} to {spread.largest:.4f}, RMS {spread.rms:.4f}, {spread.within * 100.0:.1f}% within {v[acceptable_slot]}; {report}"
+    result.check = check
+    result.report = report
+    return result

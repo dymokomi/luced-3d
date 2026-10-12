@@ -1,0 +1,127 @@
+## The captures of the surfacing plan's Stage 0, measuring
+## (docs/research/SURFACING-ALIAS-PLASTICITY.md; preview_parity2.luc hands
+## these scenes here):
+##   surf_check: a box's front top edge filleted 6 at G2, checked for G2:
+##     the fillet's contacts green with three ticks, the sharp edges red
+##     with one, combs on the fillet's end arcs, cross quills equal.
+##   surf_check_g1: the same fillet at G1, checked for G2: its contacts one
+##     order short (yellow, two ticks), the quills jumping from 0 to 1/r.
+##   surf_check_g3: a G3 fillet checked for G3, only its contacts picked
+##     (zebra shading shows it best: --mode 7).
+##   surf_combs: a cylinder and its rims' combs, uniform at 1/r.
+##   surf_deviation: the G2 filleted box against the box it was made from:
+##     green where they agree, blue where the fillet lies inside.
+##   surf_band: the G2 filleted box in Curvature (--mode 9) with a least
+##     radius of 8: the fillet's middle, tighter than 8, magenta.
+##   surf_draft: a frustum (radius 10 to 6) in Draft (--mode 10), pulled
+##     up with 3° asked for: its side (11.3°) and top green, its bottom red,
+##     and the shading menu open on Draft's rows.
+from luce_3d.graphics import Vector3
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.modeling import CadModeling
+from app import Luce3D
+from workspace import Workspace
+import node_commands
+import cad_blends
+import cad_check
+from luce_std import math
+
+pub func scenes() -> list[str]:
+    return ["surf_check", "surf_check_g1", "surf_check_g3", "surf_combs", "surf_deviation", "surf_band", "surf_draft"]
+
+func look(editor: Luce3D, yaw: float, pitch: float, distance: float, target: Vector3) -> unit!:
+    let w = editor.workspace
+    w.view.yaw = yaw
+    w.view.pitch = pitch
+    w.view.distance = distance
+    w.view.target = target
+    w.view.update_camera()
+
+## A new CAD node, entered and empty.
+func cad(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 40.0, 40.0)
+    node_commands.enter_group(w, w.network.selected)
+
+## The references of node `id`'s first body's edges whose start and middle
+## `keep` takes.
+func references_where(w: Workspace, id: int, keep: func(Vector3, Vector3) -> bool) -> str!:
+    let model = CadGeometry.model(w.network.evaluate_data(id).geometry, 0)
+    let found: list[int] = []
+    for face in 0..<model.face_count():
+        for use in 0..<model.face_edge_count(face):
+            let edge = model.face_edge_id(face, use)
+            if keep(model.face_edge_point(face, use, 0.0), model.face_edge_point(face, use, 0.5)) and not (edge in found):
+                found.append(edge)
+    return CadModeling.edge_references(model, found)
+
+## A 20 box (its id) with its front top edge filleted 6 at `continuity`
+## (1 to 3) after it (the fillet's id).
+func filleted_box(editor: Luce3D, continuity: int) -> (int, int)!:
+    let w = editor.workspace
+    cad(editor)
+    node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+    let box = w.network.selected
+    let front_top = func (a: Vector3, b: Vector3) -> bool:
+        return a.y > 9.99 and b.y > 9.99 and a.z > 9.99 and b.z > 9.99
+    node_commands.add_node(w, "Fillet", 40.0, 140.0)
+    node_commands.set_text(w, 0, references_where(w, box, front_top))
+    node_commands.set_parameter(w, cad_blends.size_slot, 6.0)
+    node_commands.set_parameter(w, cad_blends.continuity_slot, float(continuity - 1))
+    return (box, w.network.selected)
+
+## A Check node after the selected one, shown, asking for `level`.
+func check(editor: Luce3D, level: int) -> int!:
+    let w = editor.workspace
+    node_commands.add_node(w, cad_check.kind_name, 40.0, 240.0)
+    node_commands.display_selected(w)
+    node_commands.set_parameter(w, cad_check.level_slot, float(level))
+    return w.network.selected
+
+## Scene `scene` before its first frame.
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    let w = editor.workspace
+    if scene == "surf_check":
+        _ = filleted_box(editor, 2)
+        _ = check(editor, 2)
+        look(editor, 0.62, 0.42, 58.0, Vector3(0.0, 4.0, 2.0))
+    elif scene == "surf_band":
+        _ = filleted_box(editor, 2)
+        node_commands.display_selected(w)
+        w.view.curvature_kind = 4
+        w.view.curvature_band_low = 8.0
+        look(editor, 0.62, 0.42, 58.0, Vector3(0.0, 4.0, 2.0))
+    elif scene == "surf_draft":
+        cad(editor)
+        node_commands.add_node(w, "Solid Cone", 40.0, 40.0)
+        node_commands.set_parameter(w, 2, 6.0)
+        node_commands.display_selected(w)
+        w.view.draft_axis = 1
+        w.view.draft_angle = 3.0
+        look(editor, 0.5, 0.25, 70.0, Vector3(0.0, 0.0, 0.0))
+    elif scene == "surf_check_g1":
+        _ = filleted_box(editor, 1)
+        _ = check(editor, 2)
+        look(editor, 0.62, 0.42, 58.0, Vector3(0.0, 4.0, 2.0))
+    elif scene == "surf_check_g3":
+        let (_, fillet) = filleted_box(editor, 3)
+        _ = check(editor, 3)
+        # The fillet's contacts: lengthwise, off the box's own edges.
+        let contacts = func (a: Vector3, b: Vector3) -> bool:
+            return math.abs(a.x - b.x) > 1.0 and a.y > 0.0 and a.z > 0.0 and not (a.y > 9.99 and a.z > 9.99)
+        node_commands.set_text(w, 0, references_where(w, fillet, contacts))
+        look(editor, 0.62, 0.42, 58.0, Vector3(0.0, 4.0, 2.0))
+    elif scene == "surf_combs":
+        cad(editor)
+        node_commands.add_node(w, "Solid Cylinder", 40.0, 40.0)
+        _ = check(editor, 2)
+        look(editor, 0.5, 0.5, 70.0, Vector3(0.0, 0.0, 0.0))
+    elif scene == "surf_deviation":
+        let (box, _) = filleted_box(editor, 2)
+        let id = check(editor, 2)
+        w.network.connect(box, id, 1)
+        node_commands.set_parameter(w, cad_check.deviation_slot, 1.0)
+        node_commands.set_parameter(w, cad_check.acceptable_slot, 0.05)
+        node_commands.set_parameter(w, cad_check.ramp_slot, 1.5)
+        look(editor, 0.62, 0.42, 58.0, Vector3(0.0, 4.0, 2.0))

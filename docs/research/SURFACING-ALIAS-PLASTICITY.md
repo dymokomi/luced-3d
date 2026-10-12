@@ -90,7 +90,7 @@ remaining blend options on solids come last.
 
 | Stage | What it delivers |
 |---|---|
-| 0 | Measuring: exact curvature combs, continuity checks, deviation (Base: third derivatives) |
+| 0 | Measuring: exact curvature combs, continuity checks, deviation (Base: third derivatives). **Done** (§8) |
 | 1 | The NURBS toolkit in luce-cad, and CV editing at Edit CAD's CVs level |
 | 2 | 3D CAD curves and curves on surfaces; Blend Curve in 3D, G0–G4 |
 | 3 | Project, Intersect, Trim, Untrim, Divide, Trim Convert, Stitch; open surface bodies throughout |
@@ -261,7 +261,7 @@ Isophotes, and Curvature (mean, Gaussian, k1, k2, largest |k|). All three read t
 
 | # | Gap | Where it is needed |
 |---|---|---|
-| S1 | No third derivatives; no exact continuity measure along an edge (G0 gap, G1 angle, G2 and G3 differences); no curvature combs on curves, edges or isoparms; no deviation map. | Every tool's check; Stage 0 |
+| S1 | **Closed by Stage 0** (§8). Was: no third derivatives; no exact continuity measure along an edge (G0 gap, G1 angle, G2 and G3 differences); no curvature combs on curves, edges or isoparms; no deviation map. | Every tool's check; Stage 0 |
 | S2 | No public NURBS toolkit: insert and remove knots, raise and lower degree, split, extract a span, make knot vectors compatible, reparameterize, fit within tolerance, rebuild, reduce spans, remove multiple knots, convert analytic faces to B-splines. Degree is capped at 8: Alias builds to degree 9, Rhino rebuilds to 11. | Every stage |
 | S3 | CV editing has only world-space moves. Missing: moves along the normal and U and V (NUV); sliding along the hull; picking a whole hull row; falloff counted in CV rows rather than 3D distance; a proxy of the original hull; step size and drag strength; locked rows that keep continuity. | Stage 1 |
 | S4 | No 3D CAD curves outside sketches, and no curves on surfaces. No isoparms as objects, and no duplicating an edge or isoparm as a curve. | Stages 2–7 |
@@ -1328,9 +1328,8 @@ As The NURBS Book's algorithms (Piegl and Tiller), for curves and for surfaces i
   (−5 to 5) and preceding and succeeding counts. Plasticity measures distance along the hull. Both
   are offered beside today's 3D soft radius.
 - **Kept continuity.** A face aligned by a node keeps its continuity because the Align node
-  re-cooks after any change upstream. In Edit CAD, a CV move on a row an earlier step constrained
-  either is refused for that row, or re-runs that step's row solve afterward (Align 2008's Lock
-  rows), by a toggle.
+  re-cooks after any change upstream. In Edit CAD, a CV move on a row an earlier Align step
+  constrained re-runs that step's row solve afterward (the owner's answer, §10).
 - **Proxy.** The hull before the drag, drawn as a ghost.
 - **Steps.** Step size, Drag strength (Rhino's), arrow-key nudges.
 
@@ -1448,6 +1447,45 @@ do, and check geometry with Stage 0's measures. Where a closed form exists (a cy
 a Coons patch of four lines), they check against it.
 
 **Stage 0: measuring** (S1).
+
+**Stage 0: done** (2026-10-12). What was built:
+
+- **luce-cad** `measure/` (public `CadMeasure`):
+  - `basis_jet` and third-order jets of every curve and surface kind, with one-sided limits at
+    knot lines (`geometry/jets.lucb`);
+  - `check` (the continuity, combs and the lines that draw them, as `CadCheck`);
+  - `deviation` (a colored tessellation and its statistics).
+- **luce-gpu and luce-3d**: Draft shading (mesh shading 7), and the curvature map's radius band.
+- **luced-3d**:
+  - the **Check** node (`cad_check.luc`), with Check continuity on selected edges;
+  - its lines published through the worker and drawn in four colors;
+  - Draft and the radius band in the shading menu.
+
+Captures: `tools/preview.py --scene` with `surf_check`, `surf_check_g1`, `surf_check_g3`
+(`--mode 7`), `surf_combs`, `surf_deviation`, `surf_band` (`--mode 9`) and `surf_draft`
+(`--mode 10`).
+
+Tests run against closed forms:
+
+- a rational ellipse's curvature rate;
+- G1, G2 and G3 fillets;
+- split faces;
+- a cylinder's combs;
+- concentric spheres, and a G1 fillet's depth against its box.
+
+Left for later:
+
+- **Combs.** No combs on isoparms or on curves on surfaces (curves arrive in Stage 2). No
+  inflection marks, torsion quills or comb radius band.
+- **Surface-relative combs** for edges.
+- **Edges without a shared face.** No checks between faces that share no edge (Stage 3's
+  stitching).
+- **Labels.** The continuity labels on the model are ticks, not text.
+- **Deviation's precision.** It resolves single precision tessellation points: about 1e-7 of the
+  model's size.
+
+The plan as first written:
+
 
 - luce-cad:
   - third derivatives in `nurbs.lucb`;
@@ -1598,7 +1636,21 @@ a Coons patch of four lines), they check against it.
   N-sided at 3, Rhino's Patch at 3) becomes our degree 5 with the spans the continuity needs.
   Explicit Control can still ask for theirs.
 
-## 10. Open questions for the owner
+## 10. Questions answered by the owner
+
+The owner's answers (2026-10-12):
+
+1. **Curves and sheets as first-class objects: yes.** CAD geometry sets gain free 3D curves,
+   curves on surfaces and open surface bodies as objects, beside sketches.
+2. **Single spans: yes, on request.** The default is the multi-span quintic. Explicit Control
+   offers a single span of degree 7.
+3. **G4: on blend curves only.**
+4. **Order: as planned.** Stages 0 to 8, in order.
+5. **CV edits on aligned rows: re-run the Align.** In Edit CAD, a CV drag on a row that an Align
+   step constrained re-runs that Align afterwards (§6.10's toggle is not needed).
+6. **Alias's production extras come after Stage 8.**
+
+The questions as asked:
 
 1. **Curves and sheets as first-class objects.** Alias's workflow needs free 3D curves, curves on
    surfaces and open surface bodies in CAD networks and in Edit CAD (Stages 2–3). Agreed that CAD

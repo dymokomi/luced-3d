@@ -145,9 +145,13 @@ pub class SceneViewport: Widget:
         let editing = w.editing() or w.prompt != none or w.selected_count() > 0
         let wired = w.view.display_mode in [0, 1, 4]
         renderer.set_flat(w.view.display_mode in [1, 2])
-        renderer.set_shading(2 if w.view.display_mode == 7 else (3 if w.view.display_mode == 8 else (6 if w.view.display_mode == 9 else 0)), float(w.view.zebra_stripes), w.view.zebra_duty,
-                             self.zebra_axis(), w.view.zebra_planar, w.view.zebra_stripes_only)
-        renderer.set_curvature(w.view.curvature_kind, w.view.curvature_range)
+        # Draft (mode 10) measures against its pull direction where zebra's
+        # stripes take their axis.
+        let draft = w.view.display_mode == 10
+        renderer.set_shading(2 if w.view.display_mode == 7 else (3 if w.view.display_mode == 8 else (6 if w.view.display_mode == 9 else (7 if draft else 0))), float(w.view.zebra_stripes), w.view.zebra_duty,
+                             self.pull() if draft else self.zebra_axis(), w.view.zebra_planar, w.view.zebra_stripes_only)
+        renderer.set_curvature(w.view.curvature_kind, w.view.curvature_range, w.view.curvature_band_low, w.view.curvature_band_high)
+        renderer.set_draft(w.view.draft_angle)
         # Selected faces are tinted in the surface pass: one bit per face.
         let accent = theme.accent()
         let tinted = w.selecting() and not w.picking_brep() and w.selection != none and w.on_domain(Domain.face)
@@ -195,6 +199,12 @@ pub class SceneViewport: Widget:
         if not sketching:
             for batch in w.batches.curve_batches:
                 batch.draw(w.view.camera, target, theme.grey(225.0), 1.5)
+        # Check nodes' lines over the body: edges by how they did, then the
+        # combs and the cross quills (cad_check.luc).
+        if not sketching:
+            for at in 0..<w.batches.check_batches.length:
+                let group = at % 5
+                w.batches.check_batches[at].draw(w.view.camera, target, theme.check_group(group), 2.5 if group < 3 else 1.25)
         # The rest of the scene's lines around a context: as they are, dim,
         # or not at all.
         if w.view.context_mode != context_display.hidden and not sketching:
@@ -335,6 +345,13 @@ pub class SceneViewport: Widget:
         self.typing = typing
         self.layout().set_text_input(typing, tabs = true)
         self.layout().set_accepts_tab(true)
+
+    ## Draft's pull direction: +X, +Y, +Z, -X, -Y or -Z.
+    func pull(self) -> Vector3:
+        let axis = self.workspace.view.draft_axis
+        let sign = 1.0 if axis < 3 else -1.0
+        let at = axis % 3
+        return Vector3(sign if at == 0 else 0.0, sign if at == 1 else 0.0, sign if at == 2 else 0.0)
 
     ## The world axis zebra and isophote stripes run around: X, Y, Z or the view's up.
     func zebra_axis(self) -> Vector3!:

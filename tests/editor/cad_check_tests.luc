@@ -1,0 +1,135 @@
+## The Check node (cad_check.luc), Stage 0 of the surfacing plan
+## (docs/research/SURFACING-ALIAS-PLASTICITY.md): a G2 fillet's contacts
+## pass G2 and fail G3, the box's sharp edges fail; picked edges narrow it;
+## its report stands for the description; its lines reach the viewport's
+## batches (local and from the worker); Deviation against a wired body
+## colors the tessellation; Check continuity from selected edges, and the
+## S menu offers Check.
+from workspace import Workspace
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.modeling import CadModeling
+import node_commands
+import cad_blends
+import cad_check
+import marking_items
+from sketch_support import render
+from app import Luce3D
+from luce_std import math
+import time
+
+pub func cad_check_tests() -> unit!:
+    fillet_checked()
+    print("PASS Check node: a G2 fillet's contacts pass G2 and fail G3, sharp edges fail, picked edges narrow it, its report, lines in the viewport's batches, a deviation map against a wired body, and the S menu's Check")
+
+## A box with its front top edge filleted G2 (radius 3) inside a CAD node:
+## the box's id and the fillet's.
+func filleted(w: Workspace) -> (int, int)!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let box = w.network.selected
+    node_commands.add_node(w, "Fillet", 0.0, 120.0)
+    let fillet = w.network.selected
+    let model = CadGeometry.model(w.network.evaluate_data(box).geometry, 0)
+    let found: list[int] = []
+    for face in 0..<model.face_count():
+        for use in 0..<model.face_edge_count(face):
+            let a = model.face_edge_point(face, use, 0.0)
+            let b = model.face_edge_point(face, use, 1.0)
+            let edge = model.face_edge_id(face, use)
+            if a.y > 9.99 and b.y > 9.99 and a.z > 9.99 and b.z > 9.99 and not (edge in found):
+                found.append(edge)
+    node_commands.set_text(w, 0, CadModeling.edge_references(model, found))
+    node_commands.set_parameter(w, cad_blends.size_slot, 3.0)
+    node_commands.set_parameter(w, cad_blends.continuity_slot, 1.0)
+    return (box, fillet)
+
+func fillet_checked() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let (box, fillet) = filleted(w)
+    node_commands.add_node(w, cad_check.kind_name, 0.0, 240.0)
+    let check_id = w.network.selected
+    node_commands.display_selected(w)
+    let data = w.network.evaluate_data(check_id)
+    let shown_check = data.check else trap("the Check node measured nothing")
+    # Creases are left out by default: only the fillet's two contacts.
+    assert(shown_check.edge_count() == 2 and shown_check.creases_left_out() > 0, shown_check.summary())
+    node_commands.set_parameter(w, cad_check.sharp_slot, 1.0)
+    let check = w.network.evaluate_data(check_id).check else trap("no check")
+    # Every edge between two faces: the fillet's two contacts smooth, the
+    # rest sharp.
+    var smooth = 0
+    for index in 0..<check.edge_count():
+        let edge = check.edge(index)
+        if edge.angle < 1e-6:
+            smooth += 1
+            assert(edge.level == 2, f"a G2 contact measured G{edge.level}")
+        else:
+            assert(edge.level == 0)
+    assert(smooth == 2)
+    assert(check.passed() == 2)
+    let report = w.network.evaluate_data(check_id).report
+    assert(report.starts_with("2 of 15 edges") and data.description() == data.report, report)
+    # The body passes through unchanged.
+    assert(CadGeometry.model_count(data.geometry) == 1)
+    # Asked for G3, the contacts fall one order short (yellow).
+    node_commands.set_parameter(w, cad_check.level_slot, 3.0)
+    let strict = w.network.evaluate_data(check_id).check else trap("no check")
+    assert(strict.passed() == 0 and strict.line_count(1) > 0)
+    node_commands.set_parameter(w, cad_check.level_slot, 2.0)
+    # Picked edges narrow it to those.
+    let model = CadGeometry.model(w.network.evaluate_data(fillet).geometry, 0)
+    let contacts: list[int] = []
+    for face in 0..<model.face_count():
+        if model.face_surface_kind(face) == 3:
+            for use in 0..<model.face_edge_count(face):
+                let a = model.face_edge_point(face, use, 0.0)
+                let b = model.face_edge_point(face, use, 1.0)
+                # The contacts run along X; the fillet's ends across it.
+                if math.abs(a.x - b.x) > 1.0 and contacts.length == 0:
+                    contacts.append(model.face_edge_id(face, use))
+    node_commands.set_text(w, 0, CadModeling.edge_references(model, contacts))
+    let narrowed = w.network.evaluate_data(check_id).check else trap("no check")
+    assert(narrowed.edge_count() == 1 and narrowed.passed() == 1)
+    node_commands.set_text(w, 0, "")
+    # The viewport draws its groups: the local cook's batches.
+    render(editor)
+    assert(w.batches.check_batches.length == 5, f"{w.batches.check_batches.length} check batches")
+    # Deviation against the box before the fillet, made G1: zero on the
+    # flat faces, down to r (1 - 1/√2) inside them at the fillet's middle.
+    node_commands.select_node(w, fillet)
+    node_commands.set_parameter(w, cad_blends.continuity_slot, 0.0)
+    node_commands.select_node(w, check_id)
+    w.network.connect(box, check_id, 1)
+    node_commands.set_parameter(w, cad_check.deviation_slot, 1.0)
+    let mapped = w.network.evaluate_data(check_id)
+    assert(CadGeometry.model_count(mapped.geometry) == 0)
+    let shown = mapped.mesh else trap("no deviation mesh")
+    assert(shown.find_attribute("Cd", 0) >= 0)
+    let depth = (1.0 - 1.0 / math.sqrt(2.0)) * 3.0
+    assert(mapped.report.starts_with("deviation -"), mapped.report)
+    var deepest = 0.0
+    let column = shown.find_attribute("deviation", 0)
+    for point in 0..<shown.point_count():
+        deepest = math.min(deepest, shown.attribute_value(column, point))
+    assert(math.abs(deepest + depth) < 0.05 * depth, f"deepest {deepest}, expected {-depth}")
+    # The S menu offers Check in a CAD network.
+    node_commands.set_parameter(w, cad_check.deviation_slot, 0.0)
+    var offered = false
+    for item in marking_items.modify_items(w, editor.panels.actions, no_add, editor.panels.view.sketch.editor):
+        offered = offered or item.name == cad_check.kind_name
+    assert(offered)
+    # On the worker, the lines come back as the five group batches.
+    w.enable_compute()
+    let session = w.compute else trap("compute")
+    let deadline = time.now() + 20000000000
+    while session.busy and time.now() < deadline:
+        _ = w.poll_compute()
+    assert(not session.busy)
+    # (The fillet is G1 by now: its contacts one order short, the creases red.)
+    assert(w.batches.check_batches.length == 5 and w.batches.check_batches[1].count() > 0 and w.batches.check_batches[2].count() > 0 and w.batches.check_batches[3].count() > 0)
+
+func no_add(kind: str) -> unit!:
+    _ = kind
