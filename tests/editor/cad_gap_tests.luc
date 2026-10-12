@@ -1,7 +1,9 @@
 ## The last Fusion parity gaps of stages 6-8 (docs/research/FUSION-CAD-UX.md,
 ## "Gaps closed"): Delete Face healing a top chain beside rounded uprights,
-## Split Body with Extend splitting tool off, and the Move node's whole
-## manipulator, dragged along an arrow and round a ring, following the body.
+## Split Body and Split Face with Extend splitting tool off, Replace Face
+## onto a body of several surfaces, and the Move node's whole
+## manipulator, dragged along an arrow and round a ring, following the body
+## and turning with it.
 from app import Luce3D
 from workspace import Workspace
 from luce_ui.ui import Event
@@ -15,14 +17,17 @@ import node_commands
 import handle_lines
 import cad_modify
 import cad_moves
+from move_manipulator import frame
 import edit_cad_faces
 from luce_std import math
 
 pub func cad_gap_tests() -> unit!:
     top_chain_deleted()
     split_unextended()
-    move_manipulator()
-    print("PASS CAD parity gaps: Delete Face of a G3 cube's filleted and chamfered top chain heals back to the rounded cube; Split Body by a face that misses with Extend splitting tool off is refused, extended it splits; the Move node's manipulator dragged along X and round Y sets Translate and Rotate and stands where the body went")
+    split_face_unextended()
+    replaced_onto_quilt()
+    manipulator_drags()
+    print("PASS CAD parity gaps: Delete Face of a G3 cube's filleted and chamfered top chain heals back to the rounded cube; Split Body by a face that misses with Extend splitting tool off is refused, extended it splits; Split Face by a face right across the top halves it unextended, one part way across is refused naming the option; Replace Face of a top's tangent chain onto an overlapping copy's top, fillet and side; the Move node's manipulator dragged along X and round Y sets Translate and Rotate and stands where the body went, its axes turned with the body: dragged along the turned X arrow and round the turned X ring")
 
 func models(w: Workspace, id: int) -> list[CadModel]!:
     return w.network.evaluate_data(id).models()
@@ -152,11 +157,85 @@ func drag(editor: Luce3D, first: list[float], last: list[float]) -> unit!:
     editor.app.dispatch(Event(kind = EventKind.pointer_up, x = bounds.x + last[0], y = bounds.y + last[1], button = 0))
     render(editor)
 
+## A copy of the box moved by `by` (a Move node, Translate, Create copy)
+## after node `after`: the node's id and the copy.
+func moved_copy(w: Workspace, after: int, faces: str, by: Vector3) -> (int, CadModel)!:
+    node_commands.select_node(w, after)
+    node_commands.add_node(w, "Move", 0.0, 0.0)
+    let move = w.network.selected
+    node_commands.set_text(w, cad_modify.first_text, faces)
+    node_commands.set_parameter(w, cad_moves.type_slot, 1.0)
+    node_commands.set_parameter(w, 0, by.x)
+    node_commands.set_parameter(w, 1, by.y)
+    node_commands.set_parameter(w, 2, by.z)
+    node_commands.set_parameter(w, cad_moves.copy_slot, 1.0)
+    return (move, models(w, move)[1])
+
+## Split Face node with Extend splitting tool off: the box's top (y = 10)
+## by a copy's -X side standing at x = 0 right across it (the copy moved
+## 10 along X and Y): halved, the box's volume kept. A copy also moved 15
+## along Z stands only part way across: refused naming the option;
+## extended, its plane halves the top.
+func split_face_unextended() -> unit!:
+    let w = Workspace()
+    let solid = box(w)
+    let top = face_facing(models(w, solid)[0], Vector3(0.0, 1.0, 0.0))
+    for (shift, reaches) in [(0.0, true), (15.0, false)]:
+        let (move, copy) = moved_copy(w, solid, top, Vector3(10.0, 10.0, shift))
+        node_commands.select_node(w, move)
+        node_commands.add_node(w, "Split Face", 0.0, 0.0)
+        let split = w.network.selected
+        node_commands.set_text(w, cad_modify.first_text, top)
+        node_commands.set_text(w, cad_modify.second_text, face_facing(copy, Vector3(-1.0, 0.0, 0.0)))
+        node_commands.set_parameter(w, edit_cad_faces.split_extend_slot, 0.0)
+        var why = ""
+        _ = w.network.evaluate_data(split) catch failure:
+            why = failure.message
+        if reaches:
+            let halved = models(w, split)[0]
+            assert(why == "" and halved.face_count() == 7, why)
+            assert(math.abs(volume(halved) - 8000.0) < 1.0)
+        else:
+            assert(why.contains("Extend splitting tool") and w.network.require(split).failure.contains("Extend splitting tool"), why)
+            node_commands.set_parameter(w, edit_cad_faces.split_extend_slot, 1.0)
+            assert(models(w, split)[0].face_count() == 7)
+
+## Replace Face node onto a body of several surfaces: the box's +X top
+## edge filleted 3, a copy raised 5 (overlapping the box); the box's top
+## (Tangent chain: with its fillet and the +X side) replaced onto the
+## copy's top, fillet and +X side, two planes and a cylinder, face for
+## face: the filleted box 5 taller, 20 × (20 × 25 - 9 + 9π/4).
+func replaced_onto_quilt() -> unit!:
+    let w = Workspace()
+    let cube = models(w, box(w))[0]
+    node_commands.add_node(w, "Fillet", 0.0, 0.0)
+    let round = w.network.selected
+    node_commands.set_parameter(w, 0, 3.0)
+    node_commands.set_text(w, 0, CadModeling.edge_references(cube, edges_where(cube, func (a: Vector3, b: Vector3) -> bool: return a.x > 9.99 and b.x > 9.99 and a.y > 9.99 and b.y > 9.99)))
+    let rounded = models(w, round)[0]
+    let top = face_facing(rounded, Vector3(0.0, 1.0, 0.0))
+    let (move, copy) = moved_copy(w, round, top, Vector3(0.0, 5.0, 0.0))
+    var quilt = face_facing(copy, Vector3(0.0, 1.0, 0.0)) + ";" + face_facing(copy, Vector3(1.0, 0.0, 0.0))
+    for f in 0..<copy.face_count():
+        if copy.face_surface_kind(f) == 1:
+            quilt = quilt + ";" + CadModeling.face_name_of(copy, f)
+    assert(quilt.split(";").length == 3, quilt)
+    node_commands.select_node(w, move)
+    node_commands.add_node(w, "Replace Face", 0.0, 0.0)
+    let replace = w.network.selected
+    node_commands.set_text(w, cad_modify.first_text, top)
+    node_commands.set_text(w, cad_modify.second_text, quilt)
+    let replaced = models(w, replace)
+    assert(w.network.require(replace).failure == "", w.network.require(replace).failure)
+    let expected = 20.0 * (20.0 * 25.0 - 9.0 + 9.0 * math.pi / 4.0)
+    let got = volume(replaced[0])
+    assert(math.abs(got - expected) < expected * 1e-3, f"{got}, expected {expected}")
+
 ## The Move node's manipulator: grabbed on the X arrow and dragged along
 ## it, Translate X follows (Y and Z stay); grabbed on the Y ring and turned
 ## a quarter of the way round, Rotate Y about 45°; the manipulator then
 ## stands at the pivot moved by Translate (it follows the body).
-func move_manipulator() -> unit!:
+func manipulator_drags() -> unit!:
     let editor = Luce3D()
     let w = editor.workspace
     let solid = box(w)
@@ -192,6 +271,27 @@ func move_manipulator() -> unit!:
     drag(editor, from_ring, to_ring)
     let turned = w.network.require(move).values
     assert(math.abs(math.abs(turned[4]) - 45.0) < 1.0 and math.abs(turned[0] - moved[0]) < 1e-9, f"{turned[4]}")
+    # The manipulator turned with the body, as Fusion's does: its X arrow
+    # now lies along X turned about Y; dragged along it, the translation
+    # goes that way (X and Z both change).
+    let axes = frame(turned, true)
+    assert(math.abs(axes[0].y) < 1e-9 and math.abs(math.abs(axes[0].z) - math.sqrt(0.5)) < 0.02, f"{axes[0].x} {axes[0].y} {axes[0].z}")
+    let there = pivot.add(Vector3(turned[0], turned[1], turned[2]))
+    let step = pixel(w, there, bounds.width, bounds.height)
+    drag(editor, project(w, there.add(axes[0].multiply_scalar(70.0 * step)), bounds.width, bounds.height), project(w, there.add(axes[0].multiply_scalar(70.0 * step + 10.0)), bounds.width, bounds.height))
+    let slid = w.network.require(move).values
+    let by = Vector3(slid[0] - turned[0], slid[1] - turned[1], slid[2] - turned[2])
+    assert(math.abs(by.length() - 10.0) < 0.1 and by.cross(axes[0]).length() < 0.05 and math.abs(slid[4] - turned[4]) < 1e-9, f"{by.x} {by.y} {by.z}")
+    # A turn about the turned X ring composes with the Y turn: the new
+    # frame's X arrow stays where it was, its Y arrow leaves the world's Y.
+    let r2 = 64.0 * pixel(w, pivot.add(Vector3(slid[0], slid[1], slid[2])), bounds.width, bounds.height)
+    let middle = pivot.add(Vector3(slid[0], slid[1], slid[2]))
+    drag(editor, project(w, middle.add(axes[1].add(axes[2]).multiply_scalar(r2 * math.sqrt(0.5))), bounds.width, bounds.height), project(w, middle.add(axes[1].multiply_scalar(r2)), bounds.width, bounds.height))
+    let rolled = frame(w.network.require(move).values, true)
+    assert(rolled[0].subtract(axes[0]).length() < 1e-6 and rolled[1].y < 0.9, f"{rolled[1].x} {rolled[1].y} {rolled[1].z}")
+    w.undo()
+    w.undo()
+    assert(math.abs(w.network.require(move).values[0] - turned[0]) < 1e-9)
     # One undo step per drag.
     w.undo()
     assert(math.abs(w.network.require(move).values[4]) < 1e-9)

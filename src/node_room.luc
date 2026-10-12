@@ -1,0 +1,58 @@
+## Room for a node the editor adds: it never lands on another node. A node
+## made after another (a feature from the viewport, a menu or a marking
+## menu) goes one row below its input; whatever it would cover is pushed a
+## row down, and what that covers in turn, so a node inserted mid-chain
+## shifts the chain below it down instead of sitting on it.
+##   A node's footprint is its box and the caption beside it (the network
+##     view draws the name and kind to the right of the box), as wide as
+##     its name.
+##   Only nodes of the added node's scope move, and only downward.
+from network import Network
+from node import Node
+from luce_std import math
+
+## A row of the chain: the vertical step between a node and the next.
+pub let row: float = 90.0
+## A node's footprint down: its box and a gap.
+let footprint_height: float = 60.0
+
+## Node `node`'s footprint across: its box, then its caption (the network
+## view draws it 109 to the right, about 8 a character at zoom 1, cut at 25).
+func footprint_width(node: Node) -> float:
+    return 109.0 + 8.0 * math.min(float(node.name.length), 25.0)
+
+## Whether nodes `a` and `b` would be drawn over each other.
+pub func overlap(a: Node, b: Node) -> bool:
+    return a.x < b.x + footprint_width(b) and b.x < a.x + footprint_width(a) and a.y < b.y + footprint_height and b.y < a.y + footprint_height
+
+## Put node `id` one row below node `source` (its input) and make room.
+pub func place_below(g: Network, id: int, source: int) -> unit!:
+    let node = g.require(id)
+    let upstream = g.require(source)
+    node.x = upstream.x
+    node.y = upstream.y + row
+    make_room(g, id)
+
+## Clear node `id`'s place: a node it covers at or below its row goes a row
+## below it; one above it pushes it down instead (the added node itself is
+## never pushed by one it moved). Repeated for every node
+## moved until nothing of the scope overlaps what moved.
+pub func make_room(g: Network, id: int) -> unit!:
+    let added = g.require(id)
+    let scope = g.children(added.parent)
+    let moved: list[int] = [id]
+    var next = 0
+    while next < moved.length and next < 4096:
+        let at = g.require(moved[next])
+        next += 1
+        for other in scope:
+            if other.id == at.id or not overlap(at, other):
+                continue
+            if other.y >= at.y and other.id != id:
+                other.y = at.y + row
+                moved.append(other.id)
+            else:
+                # Above it (or the added node itself): this one goes below.
+                at.y = other.y + row
+                moved.append(at.id)
+                break

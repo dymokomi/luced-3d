@@ -611,12 +611,27 @@ Translate shows Fusion's whole manipulator (`move_manipulator.luc`): arrows
 along X, Y and Z, a square in each plane between them, the middle square
 moving in the view's plane and, for Free move, rings turning about each
 axis. It stands at the pivot moved by Translate, so it follows the body as
-it is dragged; drags snap to the grid and to whole degrees (Cmd or Ctrl
-frees them), one undo step each. **Split Body** has Fusion's **Extend
-splitting tool** (on): off, a picked face cuts only where it reaches.
+it is dragged, and for Free move its arrows, squares and rings turn with the
+body as Fusion's do: an arrow drags along the body's turned axis, a ring
+turns it about that axis (the turn composed with the rotation it had, written
+back as the X, Y and Z angles). Drags snap to the grid along the
+manipulator's axes and to whole degrees (Cmd or Ctrl frees them), one undo
+step each. **Split Body** and **Split Face** have Fusion's **Extend
+splitting tool** (on): off, a picked face cuts only where it reaches (Split
+Face: right across each face it meets, or refused naming the option).
 **Delete Face** heals a rounded or chamfered top chain beside rounded
 uprights (G1, G2, G3), and **Replace Face** takes an open surface body's
-faces on several surfaces as its target.
+faces on several surfaces as its target, or another body's faces matching
+the replaced ones one for one (a top's tangent chain onto a copy's), that
+body free to overlap.
+
+**Where an added node goes** (`node_room.luc`): a node made after another
+(a feature from the viewport, a menu or a marking menu) goes one row below
+its input; whatever it would cover is pushed a row down, and what that
+covers in turn, so a node inserted mid-chain (a sketch on a face with the
+marker rolled back) shifts the chain below it down. No added node lands on
+another; a node placed at the pointer on the network keeps its place and
+pushes what it covers down.
 The nodes keep the names **Move** and **Delete Face**, Fusion's own names
 for these timeline features (its API's MoveFeature and DeleteFaceFeature):
 Fusion's dialog title Move/Copy cannot be a node's name (no `/` in names),

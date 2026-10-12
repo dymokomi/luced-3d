@@ -7,7 +7,8 @@
 ## the bottom; an outer top edge chamfered 1; a boss revolved about a
 ## sketch line from the pocket's floor; the body copied 45 along X; the two
 ## combined. Then the timeline strip's buttons roll back to the first
-## sketch, its width dimension is made 70, and they roll forward: everything downstream
+## sketch, its width dimension's label is clicked and 70 typed in the box
+## that opens on it, and they roll forward: everything downstream
 ## cooks again without a failure, the pocket and the copy following.
 ## tools/preview_tutorial.luc captures each stage from the same builders.
 from app import Luce3D
@@ -21,6 +22,8 @@ from luce_cad.modeling import CadModeling
 from view_projection import project
 from sketch_support import render
 from node import Node
+from network import kinds
+import node_room
 import node_commands
 import selection_commands
 import sketch_commands
@@ -28,6 +31,7 @@ import sketch_source
 import cad_modify
 import cad_moves
 import cad_features
+import cad_chain
 import edit_cad_commands
 import edit_cad_picks
 import edit_cad_sketches
@@ -43,7 +47,7 @@ pub let direct_stages = 10
 pub func cad_tutorial_tests() -> unit!:
     let made = parametric()
     direct(made)
-    print("PASS a Fusion tutorial's part end to end: as a timeline (an XZ sketch with typed dimensions, Extrude, a face sketch's projected loop offset, Extrude cut, uprights and a floor's tangent chain filleted, Shell, Chamfer, a boss revolved about a sketch line, Move with Create copy, Combine), its first sketch's width changed after the marker rolled back and everything downstream cooking again with the pocket and the copy following; and as Edit CAD steps, the same body")
+    print("PASS a Fusion tutorial's part end to end: as a timeline (an XZ sketch with typed dimensions, Extrude, a face sketch's projected loop offset, Extrude cut, uprights and a floor's tangent chain filleted, Shell, Chamfer, a boss revolved about a sketch line, Move with Create copy, Combine), its first sketch's width changed after the marker rolled back (its label clicked, 70 typed in the box on it) and everything downstream cooking again with the pocket and the copy following, and no two nodes on each other (a sketch inserted mid-chain pushing the rest down); and as Edit CAD steps, the same body")
 
 # -- What both builds share.
 
@@ -69,6 +73,19 @@ func hover_at(editor: Luce3D, p: Vector3) -> unit!:
     let bounds = view.layout().bounds()
     let s = project(editor.workspace, p, bounds.width, bounds.height)
     editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + s[0], y = bounds.y + s[1]))
+
+## Add a `kind` node from the top Create menu: below the selected node,
+## wired to it.
+func create(editor: Luce3D, kind: str) -> unit!:
+    let index = kinds().index_of(kind) else trap(f"no {kind} in the Create menu")
+    editor.panels.actions.add[index].trigger()
+
+## No two nodes of the scope shown are drawn over each other.
+pub func apart(w: Workspace) -> unit!:
+    let shown = w.network.local_nodes()
+    for a in 0..<shown.length:
+        for b in a + 1..<shown.length:
+            assert(not node_room.overlap(shown[a], shown[b]), f"{shown[a].name} at ({shown[a].x}, {shown[a].y}) lies on {shown[b].name} at ({shown[b].x}, {shown[b].y})")
 
 func look(w: Workspace, yaw: float, pitch: float, distance: float, target: Vector3) -> unit!:
     w.view.yaw = yaw
@@ -196,7 +213,7 @@ pub func build_parametric(editor: Luce3D, stage: int) -> Built!:
     node_commands.add_node(w, "CAD", 0.0, 0.0)
     node_commands.enter_group(w, w.network.selected)
     # 0: a Sketch on XZ, a 2-Point Rectangle typed 60, Tab, 40.
-    node_commands.add_node(w, "Sketch", 0.0, 0.0)
+    create(editor, "Sketch")
     let sketch = w.network.selected
     built.ids.append(sketch)
     node_commands.set_parameter(w, 0, 1.0)
@@ -307,7 +324,7 @@ pub func build_parametric(editor: Luce3D, stage: int) -> Built!:
         return built
     # 6: Shell 1 thick, the bottom opened.
     let rounded = models(w, floor)[0]
-    node_commands.add_node(w, "Shell", 0.0, 0.0)
+    create(editor, "Shell")
     let shell = w.network.selected
     built.ids.append(shell)
     node_commands.set_text(w, cad_modify.first_text, face_toward(rounded, up.multiply_scalar(-1.0)))
@@ -333,7 +350,7 @@ pub func build_parametric(editor: Luce3D, stage: int) -> Built!:
         return built
     # 8: a Sketch on XY: the boss's rectangle from the pocket's floor up to
     # the top, 5 out from the Y axis.
-    node_commands.add_node(w, "Sketch", 0.0, 0.0)
+    create(editor, "Sketch")
     let boss = w.network.selected
     built.ids.append(boss)
     node_commands.set_parameter(w, 0, 0.0)
@@ -346,7 +363,7 @@ pub func build_parametric(editor: Luce3D, stage: int) -> Built!:
     if stage == 8:
         return built
     # 9: Revolve, Full, about the rectangle's side on the axis: Auto joins.
-    node_commands.add_node(w, "Revolve", 0.0, 0.0)
+    create(editor, "Revolve")
     let revolve = w.network.selected
     built.ids.append(revolve)
     node_commands.set_text(w, cad_features.axis_text, f"line {axis}")
@@ -358,7 +375,7 @@ pub func build_parametric(editor: Luce3D, stage: int) -> Built!:
         return built
     # 10: Move, Translate 45 along X, Create copy.
     let body = models(w, revolve)[0]
-    node_commands.add_node(w, "Move", 0.0, 0.0)
+    create(editor, "Move")
     let move = w.network.selected
     built.ids.append(move)
     node_commands.set_text(w, cad_modify.first_text, face_toward(body, Vector3(1.0, 0.0, 0.0)))
@@ -372,7 +389,7 @@ pub func build_parametric(editor: Luce3D, stage: int) -> Built!:
         return built
     # 11: Combine: the copy joined to the original.
     let pair = models(w, move)
-    node_commands.add_node(w, "Combine", 0.0, 0.0)
+    create(editor, "Combine")
     let combine = w.network.selected
     built.ids.append(combine)
     node_commands.set_text(w, cad_modify.first_text, face_toward(pair[0], Vector3(-1.0, 0.0, 0.0)))
@@ -380,6 +397,18 @@ pub func build_parametric(editor: Luce3D, stage: int) -> Built!:
     node_commands.display_selected(w)
     render(editor)
     return built
+
+## A click on dimension `constraint`'s label where the sketch editor drew
+## it.
+func click_label(editor: Luce3D, constraint: int) -> unit!:
+    render(editor)
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    let shown = view.sketch.editor.dimensions.find(constraint) else trap("the dimension's label is not drawn")
+    let x = bounds.x + shown.box.x + shown.box.width * 0.5
+    let y = bounds.y + shown.box.y + shown.box.height * 0.5
+    for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+        editor.app.dispatch(Event(kind = kind, x = x, y = y, button = 0))
 
 ## A click on the timeline strip's playback button `button` (0 to the
 ## start, 1 a feature back, 2 a feature on, 3 to the end).
@@ -413,6 +442,11 @@ func parametric() -> float!:
     let ids = built.ids
     assert(ids.length == parametric_stages, f"{ids.length} nodes")
     all_clean(w, ids)
+    # Every node made from the viewport and the menus found free space:
+    # none on another, each below its input.
+    apart(w)
+    for at in 1..<ids.length:
+        assert(w.network.require(ids[at]).y > w.network.require(ids[at - 1]).y, f"{w.network.require(ids[at]).name} above its input")
     # The sketch's typed sizes are its two dimensions.
     let dims = sketch_commands.dimensions(w.network.require(ids[0]).texts[0])
     assert(dims.length == 2 and math.abs(dims[0].value - 60.0) < 1e-9 and math.abs(dims[1].value - 40.0) < 1e-9)
@@ -436,12 +470,20 @@ func parametric() -> float!:
     # The timeline: the marker rolled back to the first sketch (it shows
     # alone), the width dimension made 70, rolled forward again.
     strip_button(editor, 0)
-    assert(w.network.display == ids[0])
-    let s = CadSketch.parse(w.network.require(ids[0]).texts[0])
-    s.set_value(dims[0].constraint, 70.0)
-    _ = s.solve()
-    node_commands.select_node(w, ids[0])
-    node_commands.set_text(w, 0, s.text())
+    assert(w.network.display == ids[0] and w.network.selected == ids[0])
+    # The sketch is edited where it lies: its width's label clicked (it is
+    # selected), clicked again (its value box opens on the label), 70
+    # typed, Enter.
+    look(w, 0.0, 1.5, 160.0, Vector3())
+    click_label(editor, dims[0].constraint)
+    assert(editor.panels.view.sketch.editor.constraint_selection == [dims[0].constraint])
+    click_label(editor, dims[0].constraint)
+    assert(editor.panels.sketch_value.is_open())
+    type_text(editor, "70")
+    key(editor, Key.enter)
+    assert(not editor.panels.sketch_value.is_open())
+    let edited = sketch_commands.dimensions(w.network.require(ids[0]).texts[0])
+    assert(math.abs(edited[0].value - 70.0) < 1e-9 and math.abs(edited[1].value - 40.0) < 1e-9, f"{edited[0].value} {edited[1].value}")
     strip_button(editor, 3)
     assert(w.network.display == ids[-1])
     all_clean(w, ids)
@@ -450,6 +492,17 @@ func parametric() -> float!:
     assert(math.abs(volume(models(w, ids[1])[0]) - 56000.0) < 56.0)
     assert(math.abs(volume(models(w, ids[3])[0]) - (56000.0 - 60.0 * 30.0 * 8.0)) < 50.0)
     assert(math.abs(width_of(models(w, ids[-1])) - 115.0) < 0.01, f"{width_of(models(w, ids[-1]))}")
+    # A sketch on the plate's top face with the marker rolled back to the
+    # Extrude goes in after it: below it, the rest of the chain pushed down.
+    cad_chain.roll_to(w, 1)
+    let up = built.up
+    select_face(editor, w.level_of(2), func (c: Vector3, n: Vector3) -> bool: return n.dot(up) > 0.99 and c.dot(up) > 19.99)
+    editor.panels.refresh()
+    editor.panels.actions.sketch_on_face.trigger()
+    let inserted = w.network.require(w.network.selected)
+    assert(inserted.kind == "Sketch" and inserted.inputs[0] == ids[1] and w.network.require(ids[2]).inputs[0] == inserted.id)
+    apart(w)
+    assert(inserted.y > w.network.require(ids[1]).y and w.network.require(ids[2]).y > inserted.y)
     editor.close()
     return made
 
