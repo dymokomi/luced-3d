@@ -14,10 +14,13 @@
 ## Sketch Dimension takes one entity or two, then a click in empty space.
 ## Select picks entities (Shift adds, Ctrl or Cmd takes away) and drags
 ## points, which snap and are held where they are let go; a drag from
-## empty space draws a box selecting what it holds at the level (points
-## inside it, curves meeting it, at Shapes their whole chains), the same
-## modifiers, a plain box over nothing selecting nothing. Delete removes the selection, X makes
-## it construction, Q is Select.
+## empty space draws a box selecting what lies wholly inside it at the level
+## (either way it is dragged; at Shapes, chains wholly inside), the same
+## modifiers, a plain box over nothing selecting nothing. A click on a
+## constraint's glyph or a dimension's label selects that constraint
+## (sketch_glyphs.luc; they win over geometry under the pointer). Delete
+## removes the selection, constraints and entities in one undo step (the
+## viewport's right-click menu too); X makes it construction, Q is Select.
 ##
 ## The editor works on a live CadSketch read from the node; each finished
 ## action writes it back as one undo step (commit), and an undo or a change
@@ -39,6 +42,7 @@ import sketch_constrain
 import sketch_kinds
 from sketch_kinds import coincident, on_curve, horizontal, vertical, midpoint, point_kind, line_kind
 import marquee
+import sketch_glyphs
 
 ## How near the cursor snaps, in points on screen.
 let snap_reach = 9.0
@@ -80,6 +84,10 @@ pub class SketchEditor:
     pub var free_placing: bool = false
     pub var hover: int = -1
     pub var selection: list[int]
+    ## Constraints selected by their glyphs, and the one whose glyph is
+    ## under the pointer (-1: none).
+    pub var constraint_selection: list[int]
+    pub var hover_glyph: int = -1
     ## A constraint or dimension tool's picks so far.
     pub var picks: list[int]
     ## A point being dragged by Select.
@@ -135,6 +143,7 @@ pub class SketchEditor:
         self.made = []
         self.cursor = [0.0, 0.0]
         self.selection = []
+        self.constraint_selection = []
         self.picks = []
         self.box = []
 
@@ -166,10 +175,12 @@ pub class SketchEditor:
         if node.id != self.node and self.node >= 0:
             self.reset_tool()
             self.selection = []
+            self.constraint_selection = []
             self.set_tool("Select")
         # What the pointer was over, and a tool's clicks and picks, belong to
         # the sketch read before (an undo, another node).
         self.hover = -1
+        self.hover_glyph = -1
         self.snap = -1
         self.reset_tool()
         self.node = node.id
@@ -192,6 +203,11 @@ pub class SketchEditor:
             if at < sketch.entity_count():
                 kept.append(at)
         self.selection = kept
+        let constraints: list[int] = []
+        for at in self.constraint_selection:
+            if at < sketch.constraint_count():
+                constraints.append(at)
+        self.constraint_selection = constraints
         self.revision += 1
 
     ## Look straight at the sketch plane (x right, y up, as its frame
@@ -352,9 +368,18 @@ pub class SketchEditor:
         if let clicked = self.on_click:
             clicked()
         if event.button == 1:
-            # A right click ends what is being drawn.
-            self.reset_tool()
-            return true
+            # A right click ends what is being drawn; otherwise the
+            # viewport's menu opens for what is under the pointer (a glyph
+            # there is selected first).
+            if self.clicks.length > 0 or self.picks.length > 0:
+                self.reset_tool()
+                return true
+            self.track(event.x, event.y, false)
+            if self.hover_glyph >= 0 and not (self.hover_glyph in self.constraint_selection):
+                self.selection = []
+                self.constraint_selection = [self.hover_glyph]
+                self.revision += 1
+            return false
         if event.button != 0:
             return false
         self.track(event.x, event.y, event.meta or event.control)
@@ -384,6 +409,7 @@ pub class SketchEditor:
                 self.choose("Select")
             else:
                 self.selection = []
+                self.constraint_selection = []
             self.revision += 1
             return true
         if event.key == Key.enter:
@@ -429,6 +455,12 @@ pub class SketchEditor:
         self.snap_kind = 0
         self.snap_other = -1
         self.hover = sketch.pick(self.cursor[0], self.cursor[1], self.reach, self.pick_filter())
+        # Select: a glyph or label under the pointer wins over geometry.
+        self.hover_glyph = -1
+        if self.tool == "Select" and self.dragging < 0:
+            self.hover_glyph = sketch_glyphs.glyph_at(sketch_glyphs.glyphs(self.w, sketch, self.frame, self.width, self.height), x, y)
+            if self.hover_glyph >= 0:
+                self.hover = -1
         # Tools that place, and a dragged point, snap; tools that pick (Trim,
         # the constraints) read the pointer as it is.
         let places = sketch_tools.places(self.tool) or self.dragging >= 0
@@ -619,6 +651,9 @@ pub class SketchEditor:
     ## On nothing it starts a box (a click when it is not dragged).
     func select_at(self, operation: int) -> unit!:
         let sketch = self.sketch else return
+        if self.hover_glyph >= 0:
+            self.select_constraint(self.hover_glyph, operation)
+            return
         let at = self.hover
         if at < 0:
             self.boxing = true
@@ -631,11 +666,25 @@ pub class SketchEditor:
         let picked = chain_of(sketch, at) if self.w.sketch_level == face_level and sketch.kind(at) != point_kind else [at]
         self.change_selection(picked, 2 if operation == 1 and at in self.selection else operation)
 
-    ## The selection with `picked` alone (`operation` 0), added (1) or
-    ## taken away (2).
+    ## Constraint `constraint` (its glyph clicked) alone (`operation` 0,
+    ## the entities let go), added or taken away again (1, Shift) or taken
+    ## away (2, Ctrl or Cmd).
+    func select_constraint(self, constraint: int, operation: int):
+        if operation == 0:
+            self.selection = []
+            self.constraint_selection = [constraint]
+        elif operation == 2 or constraint in self.constraint_selection:
+            self.constraint_selection = without(self.constraint_selection, constraint)
+        else:
+            self.constraint_selection.append(constraint)
+        self.revision += 1
+
+    ## The selection with `picked` alone (`operation` 0; selected
+    ## constraints let go), added (1) or taken away (2).
     func change_selection(self, picked: list[int], operation: int):
         if operation == 0:
             self.selection = picked
+            self.constraint_selection = []
         elif operation == 2:
             for each in picked:
                 self.selection = without(self.selection, each)
@@ -646,9 +695,10 @@ pub class SketchEditor:
         self.revision += 1
 
     ## Select's box let go: a click on nothing selects nothing (Shift or
-    ## Ctrl: changes nothing); a drag selects what the box holds at the
-    ## level, as the view casts its corners onto the plane (CadSketch.
-    ## select_box), at Shapes each curve's chain.
+    ## Ctrl: changes nothing); a drag, either way, selects what lies wholly
+    ## inside the box at the level (the owner's CAD rule, Fusion's window),
+    ## as the view casts its corners onto the plane (CadSketch.select_box),
+    ## at Shapes the chains wholly inside.
     func finish_box(self) -> unit!:
         let sketch = self.sketch else return
         let operation = self.box_operation
@@ -662,13 +712,21 @@ pub class SketchEditor:
             let place = self.frame.coordinates(view_projection.plane(self.w, x, y, self.width, self.height, self.frame.origin, normal))
             corners.append(place[0])
             corners.append(place[1])
-        let picked: list[int] = []
+        let held: list[int] = []
         for at in 0..<sketch.select_box(corners, self.pick_filter()):
-            let entity = sketch.boxed(at)
-            let whole = chain_of(sketch, entity) if self.w.sketch_level == face_level and sketch.kind(entity) != point_kind else [entity]
+            held.append(sketch.boxed(at))
+        let picked: list[int] = []
+        for entity in held:
+            if self.w.sketch_level != face_level or sketch.kind(entity) == point_kind:
+                picked.append(entity)
+                continue
+            # Shapes: a chain is taken when every curve of it is inside.
+            let whole = chain_of(sketch, entity)
+            var inside = true
             for each in whole:
-                if not (each in picked):
-                    picked.append(each)
+                inside = inside and each in held
+            if inside and not (entity in picked):
+                picked.append(entity)
         self.change_selection(picked, operation)
 
     ## A constraint or dimension tool's click.
@@ -743,21 +801,32 @@ pub class SketchEditor:
             if let open = self.on_value:
                 open(made, self.pointer_x, self.pointer_y)
 
-    ## Delete: the selected entities (and what is drawn on them).
-    func remove_selection(self) -> unit!:
+    ## Delete: the selected constraints, then the selected entities (and
+    ## what is drawn on them), as one undo step.
+    pub func remove_selection(self) -> unit!:
         let sketch = self.sketch else return
-        if self.selection.length == 0:
+        if self.selection.length == 0 and self.constraint_selection.length == 0:
             return
+        let label = "Delete sketch entities" if self.selection.length > 0 else ("Delete constraint" if self.constraint_selection.length == 1 else "Delete constraints")
         # Highest first, as removing renumbers what follows.
+        let constraints = self.constraint_selection.copy()
+        constraints.sort()
+        var at = constraints.length
+        while at > 0:
+            at -= 1
+            if constraints[at] < sketch.constraint_count():
+                sketch.unconstrain(constraints[at])
         let chosen = self.selection.copy()
         chosen.sort()
-        var at = chosen.length
+        at = chosen.length
         while at > 0:
             at -= 1
             if chosen[at] < sketch.entity_count():
                 sketch.remove(chosen[at])
         self.selection = []
-        self.commit("Delete sketch entities")
+        self.constraint_selection = []
+        self.hover_glyph = -1
+        self.commit(label)
 
 ## The letter key `key` types, upper case, or "".
 func key_letter(key: Key) -> str:

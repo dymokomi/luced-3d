@@ -1,0 +1,146 @@
+## Stage 0 of the Fusion CAD plan (docs/research/FUSION-CAD-UX.md): a new
+## Sketch's Face row reads "None picked" and Plane: Face without a face
+## asks for one; constraint glyphs are picked where they show, lit when
+## selected, and deleted with Delete or the viewport's right-click menu,
+## each one undo step; two glyphs on one line stand side by side.
+from app import Luce3D
+from luce_ui.ui import Event, Command
+from luce_window.input import EventKind, Key
+from luce_cad.sketch import CadSketch
+import node_commands
+from geometry_data import GeometryData
+import sketch_glyphs
+from sketch_glyphs import Glyph
+import sketch_kinds as names
+from sketch_support import open_sketch, render, sketch_of
+from luce_std import math
+
+pub func sketch_glyph_tests() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let id = open_sketch(editor, 10.0, 5.0, 80.0)
+    let w = editor.workspace
+    let e = editor.panels.view.sketch.editor
+    # A new Sketch names no face: its Face row says so, and Plane: Face
+    # asks for one.
+    assert(w.network.require(id).texts[1] == "")
+    assert(editor.panels.inspector.shown_text("face") == "None picked", editor.panels.inspector.shown_text("face"))
+    node_commands.set_parameter(w, 0, 3.0)
+    var asked = ""
+    _ = w.network.evaluate_data(id) catch failure:
+        asked = failure.message
+        recover GeometryData()
+    assert(asked.contains("Pick the face"), asked)
+    node_commands.set_parameter(w, 0, 1.0)
+    # Two lines, the second made parallel to the first (level): its glyph
+    # and the first line's H stand side by side.
+    let s = CadSketch.parse("")
+    let first = s.add_line(s.add_point(0.0, 0.0), s.add_point(20.0, 0.0))
+    let second = s.add_line(s.add_point(0.0, 10.0), s.add_point(20.0, 14.0))
+    _ = s.constrain(names.horizontal, first)
+    let parallel = s.constrain(names.parallel, second, first)
+    assert(s.solve())
+    node_commands.set_text(w, 0, s.text())
+    render(editor)
+    let placed = glyphs_now(editor)
+    let mark = glyph_of(placed, parallel)
+    assert(not overlapping(placed))
+    # Clicked: the constraint is selected (not the line under it).
+    click_at(editor, mark, 0)
+    assert(e.constraint_selection == [parallel] and e.selection.length == 0, f"{e.constraint_selection}")
+    render(editor)
+    # Delete removes it, one undo step; the lines then drag apart.
+    let before = sketch_of(editor, id).constraint_count()
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.delete))
+    assert(sketch_of(editor, id).constraint_count() == before - 1 and e.constraint_selection.length == 0)
+    assert(w.history.undo_label().contains("Delete constraint"), w.history.undo_label())
+    let loose = sketch_of(editor, id)
+    let end = loose.part(second, 1)
+    assert(loose.drag(end, 20.0, 25.0))
+    assert(slope(loose, second) > 0.3 and slope(loose, first) < 1e-6)
+    w.undo()
+    assert(sketch_of(editor, id).constraint_count() == before)
+    render(editor)
+    # Right-clicked: the glyph is selected and the menu offers Delete
+    # constraint, which removes it.
+    click_at(editor, glyph_of(glyphs_now(editor), parallel), 1)
+    let menu = editor.panels.viewport_menu
+    assert(menu.is_open() and e.constraint_selection == [parallel])
+    assert(menu.delete_sketch.text() == "Delete constraint")
+    choose(editor, "delete_sketch_selection")
+    assert(sketch_of(editor, id).constraint_count() == before - 1)
+    # A right click on nothing in the sketch: its Create tools.
+    w.undo()
+    render(editor)
+    let bounds = editor.panels.view.layout().bounds()
+    right_click(editor, bounds.x + 60.0, bounds.y + bounds.height - 80.0)
+    assert(menu.is_open() and menu.commands.length == 1 and menu.commands[0].id() == "sketch_create")
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.escape))
+    editor.close()
+    print("PASS sketch glyphs: a new Sketch names no face (Pick the face); glyphs side by side, clicked to select a constraint, Delete and the right-click menu's Delete constraint each one undo step, the lines then dragged apart; the sketch's right-click Create")
+
+## The glyphs as the view places them now.
+func glyphs_now(editor: Luce3D) -> list[Glyph]!:
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    let e = view.sketch.editor
+    let sketch = e.sketch else trap("no sketch")
+    return sketch_glyphs.glyphs(editor.workspace, sketch, e.frame, bounds.width, bounds.height)
+
+func glyph_of(placed: list[Glyph], constraint: int) -> Glyph:
+    for g in placed:
+        if g.constraint == constraint:
+            return g
+    trap("no glyph for the constraint")
+
+## Whether any two glyph boxes overlap.
+func overlapping(placed: list[Glyph]) -> bool:
+    for a in 0..<placed.length:
+        for b in a + 1..<placed.length:
+            let p = placed[a].box
+            let q = placed[b].box
+            if p.x < q.x + q.width and q.x < p.x + p.width and p.y < q.y + q.height and q.y < p.y + p.height:
+                return true
+    return false
+
+## A click (`button` 0) or right click (1) in the middle of glyph `g`.
+func click_at(editor: Luce3D, g: Glyph, button: int) -> unit!:
+    let bounds = editor.panels.view.layout().bounds()
+    let x = bounds.x + g.box.x + g.box.width * 0.5
+    let y = bounds.y + g.box.y + g.box.height * 0.5
+    if button == 1:
+        right_click(editor, x, y)
+        return
+    for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+        editor.app.dispatch(Event(kind = kind, x = x, y = y, button = 0))
+
+func right_click(editor: Luce3D, x: float, y: float) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = x, y = y))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = x, y = y, button = 1))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = x, y = y, button = 1))
+    editor.app.layout(1600.0, 1000.0)
+
+## Choose the open viewport menu's entry `id` by keyboard from its first
+## row, then Enter.
+func choose(editor: Luce3D, id: str) -> unit!:
+    let menu = editor.panels.viewport_menu
+    var rows: list[Command] = []
+    for command in menu.commands:
+        if not command.is_divider() and command.is_enabled():
+            rows.append(command)
+    var target = -1
+    for at in 0..<rows.length:
+        if rows[at].id() == id:
+            target = at
+    assert(target >= 0, id)
+    for _ in 0..<target:
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.down))
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    assert(not menu.is_open(), id)
+    editor.panels.refresh()
+
+## How steep line `line` of `s` is (rise over run).
+func slope(s: CadSketch, line: int) -> float:
+    let a = s.part(line, 0)
+    let b = s.part(line, 1)
+    return math.abs(s.y(b) - s.y(a)) / math.max(1e-9, math.abs(s.x(b) - s.x(a)))

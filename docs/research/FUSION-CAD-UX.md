@@ -644,9 +644,11 @@ capture for the docs, and luced-3d's docs/MODELING.md updated. Tests drive the w
 existing `sketch_node_tests` and `cad_node_tests` do: events into the editor, then the node's
 texts, values and the result's volume checked.
 
-**Stage 0: fixes found here.**
-- The Sketch's second text starts empty (G15). Test: a new Sketch's Face row reads "None picked". Plane: Face with no face fails with "Pick the face".
+**Stage 0: fixes found here.** Done 2026-10-11 (`sketch_glyph_tests`, `selection_rules_tests`).
+- The Sketch's second text starts empty (G15): CAD nodes start with empty texts. Test: a new Sketch's Face row reads "None picked". Plane: Face with no face fails with "Pick the face".
 - Constraint glyphs pickable and deletable (G7). Test: two lines, Parallel, click its glyph, Delete. The constraint count drops and the lines can be dragged apart.
+  - Built: `sketch_glyphs.luc` places glyphs and labels once for drawing and picking; glyphs on one place stand side by side. A click on a glyph selects its constraint (lit, what it holds lit); Delete removes selected constraints and entities as one undo step. A right click on a glyph selects it and opens the viewport's right-click menu (`viewport_menu.luc`) with Delete constraint.
+- Box selection in a sketch takes only what lies wholly inside the box, either way it is dragged (owner's answer 5; luce-cad `boxing.lucb`); at Shapes, chains wholly inside.
 
 **Stage 1: see a profile, extrude it** (G1–G4; luce-cad 1–3).
 - The Sketch passes its input through, with tagged curves. Extrude and Revolve read the nearest sketch and combine with the chain's body, Auto by default. The second input stays as an explicit target.

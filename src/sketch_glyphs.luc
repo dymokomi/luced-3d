@@ -1,0 +1,143 @@
+## Where the sketch's constraint glyphs and dimension labels sit on the
+## screen: what sketch_view.luc draws and what Select picks, so a glyph is
+## clicked where it shows. Labels and glyphs win over geometry under the
+## pointer, as in Fusion. Glyphs that would sit on one place (a line's
+## Horizontal and its Parallel) stand side by side instead of over each
+## other.
+from luce_gpu.gpu import Rect
+from luce_cad.sketch import CadSketch
+from sketch_node import SketchFrame
+from workspace import Workspace
+from view_projection import project
+import sketch_kinds as names
+import units
+from luce_std import math
+
+## A constraint's glyph or a dimension's label, placed: the constraint, the
+## text shown and the box it is drawn in (viewport points).
+pub class Glyph:
+    pub let constraint: int
+    pub let label: str
+    pub let box: Rect
+    pub let dimension: bool
+
+    pub func init(self, constraint: int, label: str, box: Rect, dimension: bool):
+        self.constraint = constraint
+        self.label = label
+        self.box = box
+        self.dimension = dimension
+
+## Every glyph and label of `sketch` on plane `f`, on a viewport `width`
+## by `height` (those behind the camera left out).
+pub func glyphs(w: Workspace, sketch: CadSketch, f: SketchFrame, width: float, height: float) -> list[Glyph]!:
+    let shown_unit = units.document_unit(w)
+    let placed: list[Glyph] = []
+    # How far along each anchor's row the next glyph goes.
+    let anchors: list[str] = []
+    let reaches: list[float] = []
+    for at in 0..<sketch.constraint_count():
+        let kind = sketch.constraint_kind(at)
+        let first = sketch.constraint_entity(at, 0)
+        let second = sketch.constraint_entity(at, 1)
+        var label = ""
+        var where = [0.0, 0.0]
+        if kind in [names.distance, names.line_distance, names.horizontal_distance, names.vertical_distance]:
+            where = middle(sketch, first, second)
+            label = units.length_text(sketch.constraint_value(at), shown_unit)
+        elif kind == names.radius or kind == names.diameter:
+            let c = sketch.part(first, 0)
+            let r = sketch.radius(first)
+            where = [sketch.x(c) + r * 0.7071, sketch.y(c) + r * 0.7071]
+            label = ("R " if kind == names.radius else "Ø ") + units.length_text(sketch.constraint_value(at), shown_unit)
+        elif kind == names.angle:
+            where = middle(sketch, first, -1)
+            label = units.angle_text(math.abs(sketch.constraint_value(at)))
+        else:
+            label = glyph(kind)
+            if label == "":
+                continue
+            where = middle(sketch, first, -1)
+        if sketch.driven(at):
+            label = f"({label})"
+        let s = project(w, f.at(where[0], where[1]), width, height)
+        if s[2] < 0.0:
+            continue
+        let dimension = names.is_dimension(kind)
+        if dimension:
+            placed.append(Glyph(at, label, Rect(s[0] - 4.0, s[1] - 22.0, float(label.length) * 8.0 + 8.0, 20.0), true))
+            continue
+        # Beside what it holds, after the glyphs already there.
+        let anchor = f"{math.round(s[0])},{math.round(s[1])}"
+        var along = 0.0
+        if let index = anchors.index_of(anchor):
+            along = reaches[index]
+        let box = Rect(s[0] + 6.0 + along, s[1] + 4.0, float(label.length) * 8.0 + 6.0, 18.0)
+        if let index = anchors.index_of(anchor):
+            reaches[index] = along + box.width + 3.0
+        else:
+            anchors.append(anchor)
+            reaches.append(box.width + 3.0)
+        placed.append(Glyph(at, label, box, false))
+    return placed
+
+## The constraint whose glyph or label is under (`x`, `y`), the last drawn
+## (on top) first; -1 for none.
+pub func glyph_at(placed: list[Glyph], x: float, y: float) -> int:
+    var at = placed.length
+    while at > 0:
+        at -= 1
+        let b = placed[at].box
+        if x >= b.x and x <= b.x + b.width and y >= b.y and y <= b.y + b.height:
+            return placed[at].constraint
+    return -1
+
+## Where a constraint on entities `first` (and `second`) shows: a line's
+## middle, a curve's center offset, a point, or between two points.
+func middle(sketch: CadSketch, first: int, second: int) -> list[float]:
+    let a = place_of(sketch, first)
+    if second < 0:
+        return a
+    let b = place_of(sketch, second)
+    return [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
+
+func place_of(sketch: CadSketch, at: int) -> list[float]:
+    let kind = sketch.kind(at)
+    if kind == names.point_kind:
+        return [sketch.x(at), sketch.y(at)]
+    if kind == names.line_kind:
+        let a = sketch.part(at, 0)
+        let b = sketch.part(at, 1)
+        return [(sketch.x(a) + sketch.x(b)) * 0.5, (sketch.y(a) + sketch.y(b)) * 0.5]
+    if kind == names.spline_kind or kind == names.conic_kind or kind == names.text_kind:
+        # Its first point (a text's anchor).
+        let first = sketch.part(at, 0)
+        return [sketch.x(first), sketch.y(first)]
+    let c = sketch.part(at, 0)
+    let r = sketch.radius(at)
+    return [sketch.x(c), sketch.y(c) + r]
+
+## A constraint's glyph (none for those drawn by the points themselves).
+func glyph(kind: int) -> str:
+    if kind == names.horizontal:
+        return "H"
+    if kind == names.vertical:
+        return "V"
+    if kind == names.parallel:
+        return "//"
+    if kind == names.perpendicular:
+        return "⊥"
+    if kind == names.tangent:
+        return "T"
+    if kind == names.equal:
+        return "="
+    if kind == names.fix:
+        return "Fix"
+    if kind == names.midpoint:
+        return "Mid"
+    if kind == names.concentric:
+        return "◎"
+    if kind == names.collinear:
+        return "Col"
+    if kind == names.symmetric:
+        return "Sym"
+    return ""

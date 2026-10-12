@@ -1,0 +1,88 @@
+## The viewport's right-click menu, Fusion's way: it offers what applies to
+## what is under the pointer or selected (a click without dragging; Alt and
+## the right button still zoom the camera).
+##   In a sketch: Delete for selected entities or constraints (a glyph
+##     right-clicked is selected first), Create with the sketch's CREATE
+##     tools.
+##   Elsewhere: Create with the nodes the Tab menu offers here.
+## The menu is a ContextMenu anchored on an empty label in the footer, its
+## entries chosen as it opens.
+from luce_ui.ui import Text, Font, Command, ContextMenu
+from interop import Connection
+from workspace import Workspace
+from actions import Actions
+from sketch_editor import SketchEditor
+from top_menus import node_categories
+import sketch_tools
+
+pub class ViewportMenu:
+    let w: Workspace
+    let actions: Actions
+    let editor: SketchEditor
+    let anchor: Text
+    pub let menu: ContextMenu
+    ## The entries as last opened.
+    pub let commands: list[Command]
+    ## Delete in a sketch: its selected entities and constraints.
+    pub let delete_sketch: Command
+    ## The sketch's CREATE tools, one command each.
+    let sketch_create: Command
+    let create: Command
+    let connections: list[Connection]
+
+    pub func init(self, w: Workspace, actions: Actions, editor: SketchEditor, font: Font) -> unit!:
+        self.w = w
+        self.actions = actions
+        self.editor = editor
+        self.connections = []
+        self.delete_sketch = Command("Delete", id = "delete_sketch_selection")
+        self.connections.append(self.delete_sketch.on_trigger(func () -> unit!: editor.remove_selection()))
+        self.sketch_create = Command("Create", id = "sketch_create")
+        let tools: list[Command] = []
+        for tool in sketch_tools.tools(0):
+            for each in (tool.variants if tool.variants.length > 0 else [tool]):
+                if not each.ready:
+                    continue
+                let name = each.name
+                let command = Command(name, id = "sketch_tool_" + name.lower().replace(" ", "_"), icon = each.icon)
+                tools.append(command)
+                self.connections.append(command.on_trigger(func () -> unit!: editor.choose(name)))
+        self.sketch_create.set_items(tools)
+        self.create = Command("Create", id = "viewport_create")
+        self.anchor = Text("", font = font)
+        self.commands = self.entries()
+        self.menu = ContextMenu(self.anchor, self.commands, font = font)
+
+    ## What applies now: in a sketch, to its selection; elsewhere, Create.
+    pub func entries(self) -> list[Command]!:
+        let result: list[Command] = []
+        if self.w.sketching():
+            let e = self.editor
+            if e.selection.length > 0 or e.constraint_selection.length > 0:
+                self.delete_sketch.set_text("Delete constraint" if e.selection.length == 0 and e.constraint_selection.length == 1 else "Delete")
+                result.append(self.delete_sketch)
+                result.append(Command("", divider = true))
+            result.append(self.sketch_create)
+            return result
+        self.create.set_items(node_categories(self.w, self.actions))
+        result.append(self.create)
+        return result
+
+    ## Open at (`x`, `y`) in window points.
+    pub func open(self, x: float, y: float) -> unit!:
+        self.actions.refresh()
+        let entries = self.entries()
+        # The new entries reach the menu before the old ones are let go.
+        self.menu.set_commands(entries)
+        self.commands.clear()
+        self.commands.extend(entries)
+        let origin = self.anchor.layout().bounds()
+        self.menu.open_at(x - origin.x, y - origin.y)
+
+    pub func is_open(self) -> bool:
+        return self.menu.is_open()
+
+    pub func close(self):
+        for connection in self.connections:
+            connection.disconnect()
+        self.connections.clear()

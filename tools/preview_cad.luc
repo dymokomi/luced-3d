@@ -1,0 +1,83 @@
+## The CAD captures of preview.py (docs/research/FUSION-CAD-UX.md's stages),
+## each a scene set up before the first frame and driven as a user would
+## over the next ones:
+##   cad_glyphs: a sketch's Parallel glyph clicked (selected, what it holds
+##     lit) and right-clicked, the viewport menu open on Delete constraint.
+##   cad_window: a box dragged right to left over a plate's corner and its
+##     hole at the Lines level: only the hole, wholly inside, is taken.
+from luce_ui.ui import Event
+from luce_window.input import EventKind
+from app import Luce3D
+from luce_cad.sketch import CadSketch
+from view_projection import project
+import node_commands
+import sketch_commands
+import selection_commands
+import sketch_glyphs
+import sketch_kinds as names
+
+pub func scenes() -> list[str]:
+    return ["cad_glyphs", "cad_window"]
+
+## A Sketch on the ground in a new CAD node holding `text`, edited and
+## looked at from above round sketch point (x, y), `distance` away.
+func open_sketch(editor: Luce3D, text: str, x: float, y: float, distance: float) -> unit!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 40.0, 40.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Sketch", 40.0, 40.0)
+    node_commands.set_text(w, 0, text)
+    w.view.yaw = 0.0
+    w.view.pitch = 1.5
+    w.view.distance = distance
+    w.view.target = editor.panels.view.sketch.editor.frame.at(x, y)
+    w.view.update_camera()
+    editor.panels.view.sketch.editor.sync()
+    editor.panels.refresh()
+
+## Scene `scene` before its first frame.
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    if scene == "cad_glyphs":
+        let s = CadSketch.parse(sketch_commands.rectangle_text(20.0, -10.0, 40.0, 20.0))
+        var bottom = -1
+        for at in 0..<s.entity_count():
+            if bottom < 0 and s.kind(at) == names.line_kind:
+                bottom = at
+        let slant = s.add_line(s.add_point(5.0, -14.0), s.add_point(35.0, -6.0))
+        _ = s.constrain(names.parallel, slant, bottom)
+        _ = s.solve()
+        open_sketch(editor, s.text(), 20.0, -2.0, 80.0)
+    elif scene == "cad_window":
+        let plate = CadSketch.parse(sketch_commands.rectangle_text(20.0, -10.0, 40.0, 20.0))
+        _ = plate.add_circle(plate.add_point(12.0, -10.0), 5.0)
+        open_sketch(editor, plate.text(), 20.0, -10.0, 80.0)
+        selection_commands.set_mode(editor.workspace, 2)
+        editor.panels.refresh()
+
+## Frame `frame` of scene `scene` (from 2; `last` is the frame captured).
+pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
+    let w = editor.workspace
+    let view = editor.panels.view
+    let area = view.layout().bounds()
+    let e = view.sketch.editor
+    if scene == "cad_glyphs" and frame == last - 1:
+        let sketch = e.sketch else trap("no sketch")
+        for g in sketch_glyphs.glyphs(w, sketch, e.frame, area.width, area.height):
+            if sketch.constraint_kind(g.constraint) == names.parallel:
+                let x = area.x + g.box.x + g.box.width * 0.5
+                let y = area.y + g.box.y + g.box.height * 0.5
+                editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = x, y = y))
+                editor.app.dispatch(Event(kind = EventKind.pointer_down, x = x, y = y, button = 1))
+                editor.app.dispatch(Event(kind = EventKind.pointer_up, x = x, y = y, button = 1))
+    if scene == "cad_window" and frame == last - 1:
+        # Right to left over the top-left corner and the whole hole.
+        let a = project(w, e.frame.at(19.0, -17.0), area.width, area.height)
+        let b = project(w, e.frame.at(-3.0, 3.0), area.width, area.height)
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + a[0], y = area.y + a[1]))
+        editor.app.dispatch(Event(kind = EventKind.pointer_down, x = area.x + a[0], y = area.y + a[1], button = 0))
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + b[0], y = area.y + b[1]))
+        editor.app.dispatch(Event(kind = EventKind.pointer_up, x = area.x + b[0], y = area.y + b[1], button = 0))
+        # And again, held, to show the box over what it took.
+        editor.app.dispatch(Event(kind = EventKind.pointer_down, x = area.x + a[0], y = area.y + a[1], button = 0, shift = true))
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + b[0], y = area.y + b[1], shift = true))

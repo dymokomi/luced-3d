@@ -16,8 +16,7 @@ import sketch_create
 from view_projection import project
 import sketch_kinds as names
 import sketch_tools
-from luce_cad.sketch import CadSketch
-import units
+import sketch_glyphs
 from snapping import grid_step
 from marquee import draw_box, dragged
 import theme
@@ -89,6 +88,17 @@ pub class SketchView:
         let hovered = OverlayLines.make()
         if e.hover >= 0 and e.tool != "Trim":
             hovered.add_sketch(sketch, f.origin, f.u, f.v, 3, e.hover)
+        # What a selected or hovered glyph holds, lit.
+        let glyphed = e.constraint_selection.copy()
+        if e.hover_glyph >= 0:
+            glyphed.append(e.hover_glyph)
+        for c in glyphed:
+            if c >= sketch.constraint_count():
+                continue
+            for which in 0..<3:
+                let held = sketch.constraint_entity(c, which)
+                if held >= 0 and held < sketch.entity_count():
+                    hovered.add_sketch(sketch, f.origin, f.u, f.v, 3, held)
         self.rubber_band(hovered)
         if hovered.count() > 0:
             hovered.batch().draw(camera, target, theme.grey(245.0), 2.0)
@@ -157,97 +167,21 @@ pub class SketchView:
             draw_box(p, e.box)
 
     ## Each constraint's glyph beside what it holds, each dimension's value
-    ## (driven ones in parentheses).
+    ## (driven ones in parentheses), where sketch_glyphs places them: the
+    ## selected ones in the accent, the one under the pointer lit.
     func glyphs(self, p: Painter, width: float, height: float) -> unit!:
         let e = self.editor
         let sketch = e.sketch else return
-        let f = e.frame
-        let shown_unit = units.document_unit(self.w)
-        for at in 0..<sketch.constraint_count():
-            let kind = sketch.constraint_kind(at)
-            let first = sketch.constraint_entity(at, 0)
-            let second = sketch.constraint_entity(at, 1)
-            var label = ""
-            var where = [0.0, 0.0]
-            if kind in [names.distance, names.line_distance, names.horizontal_distance, names.vertical_distance]:
-                where = middle(sketch, first, second)
-                label = units.length_text(sketch.constraint_value(at), shown_unit)
-            elif kind == names.radius or kind == names.diameter:
-                let c = sketch.part(first, 0)
-                let r = sketch.radius(first)
-                where = [sketch.x(c) + r * 0.7071, sketch.y(c) + r * 0.7071]
-                label = ("R " if kind == names.radius else "Ø ") + units.length_text(sketch.constraint_value(at), shown_unit)
-            elif kind == names.angle:
-                where = middle(sketch, first, -1)
-                label = units.angle_text(math.abs(sketch.constraint_value(at)))
+        for g in sketch_glyphs.glyphs(self.w, sketch, e.frame, width, height):
+            let chosen = g.constraint in e.constraint_selection
+            let lit = g.constraint == e.hover_glyph
+            let b = g.box
+            if g.dimension:
+                p.rounded_rectangle(b, theme.accent() if chosen else (theme.grey(80.0) if lit else theme.surface()), 3.0)
+                p.text(g.label, b.x + 4.0, b.y + 2.0, theme.text())
             else:
-                label = glyph(kind)
-                if label == "":
-                    continue
-                where = middle(sketch, first, -1)
-            if sketch.driven(at):
-                label = f"({label})"
-            let s = project(self.w, f.at(where[0], where[1]), width, height)
-            if s[2] < 0.0:
-                continue
-            let dimension = names.is_dimension(kind)
-            if dimension:
-                p.rounded_rectangle(Rect(s[0] - 4.0, s[1] - 22.0, float(label.length) * 8.0 + 8.0, 20.0), theme.surface(), 3.0)
-                p.text(label, s[0], s[1] - 20.0, theme.text())
-            else:
-                p.rounded_rectangle(Rect(s[0] + 6.0, s[1] + 4.0, float(label.length) * 8.0 + 6.0, 18.0), theme.grey(60.0), 3.0)
-                p.text(label, s[0] + 9.0, s[1] + 5.0, theme.text_muted())
-
-## Where a constraint on entities `first` (and `second`) shows: a line's
-## middle, a curve's center offset, a point, or between two points.
-func middle(sketch: CadSketch, first: int, second: int) -> list[float]:
-    let a = place_of(sketch, first)
-    if second < 0:
-        return a
-    let b = place_of(sketch, second)
-    return [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
-
-func place_of(sketch: CadSketch, at: int) -> list[float]:
-    let kind = sketch.kind(at)
-    if kind == names.point_kind:
-        return [sketch.x(at), sketch.y(at)]
-    if kind == names.line_kind:
-        let a = sketch.part(at, 0)
-        let b = sketch.part(at, 1)
-        return [(sketch.x(a) + sketch.x(b)) * 0.5, (sketch.y(a) + sketch.y(b)) * 0.5]
-    if kind == names.spline_kind or kind == names.conic_kind or kind == names.text_kind:
-        # Its first point (a text's anchor).
-        let first = sketch.part(at, 0)
-        return [sketch.x(first), sketch.y(first)]
-    let c = sketch.part(at, 0)
-    let r = sketch.radius(at)
-    return [sketch.x(c), sketch.y(c) + r]
-
-## A constraint's glyph (none for those drawn by the points themselves).
-func glyph(kind: int) -> str:
-    if kind == names.horizontal:
-        return "H"
-    if kind == names.vertical:
-        return "V"
-    if kind == names.parallel:
-        return "//"
-    if kind == names.perpendicular:
-        return "⊥"
-    if kind == names.tangent:
-        return "T"
-    if kind == names.equal:
-        return "="
-    if kind == names.fix:
-        return "Fix"
-    if kind == names.midpoint:
-        return "Mid"
-    if kind == names.concentric:
-        return "◎"
-    if kind == names.collinear:
-        return "Col"
-    if kind == names.symmetric:
-        return "Sym"
-    return ""
+                p.rounded_rectangle(b, theme.accent() if chosen else (theme.grey(95.0) if lit else theme.grey(60.0)), 3.0)
+                p.text(g.label, b.x + 3.0, b.y + 1.0, theme.text() if chosen or lit else theme.text_muted())
 
 ## A rectangle's outline.
 func outline(p: Painter, r: Rect, color: Color) -> unit!:
