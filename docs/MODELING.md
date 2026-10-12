@@ -445,9 +445,10 @@ the top left choose what Select picks: Points, Lines or Shapes.
   waits for splines.
 - **Select** picks entities (Shift adds, Ctrl/Cmd takes away) and drags
   points, the sketch solving as they move (one undo when released). A drag
-  from empty space boxes what lies wholly inside it at the level, either way
-  dragged (the owner's rule for CAD, Fusion's window): the points inside it,
-  whole curves, at Shapes whole chains (luce-cad's `CadSketch.select_box`
+  from empty space boxes at the level, as Fusion's: dragged left to right a
+  window, what lies wholly inside it (the points inside it, whole curves, at
+  Shapes whole chains); right to left a crossing, drawn dashed, what it
+  touches too (at Shapes every chain it touches) (luce-cad's `CadSketch.select_box`
   on the box cast onto the plane), with the same modifiers; a plain box over
   nothing clears the selection. A click on a constraint's glyph or a
   dimension selects the constraint (they win over geometry,

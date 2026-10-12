@@ -3,10 +3,11 @@
 ##     picked profiles) and Finish Sketch (A), MODIFY (S) and CONSTRAINTS
 ##     (D);
 ##   an Edit node: its primitives (A) and its tools (S), steps inside it;
-##   inside a CAD node: sketches, extrusions and solids (A, Sketch on face
-##     and Extrude face first with a face selected), features (S: Press
-##     Pull on what is selected, Offset Face of selected faces, Fillet and
-##     Chamfer of selected edges);
+##   inside a CAD node: both lead with Repeat and the CAD tool used last
+##     (Fusion's marking menu puts Repeat first); sketches, extrusions and
+##     solids (A, Sketch on face and Extrude face first with a face
+##     selected), features (S: Press Pull on what is selected, Offset Face
+##     of selected faces, Fillet and Chamfer of selected edges);
 ##   elsewhere: primitives, lights, containers and Edit nodes (A), and the
 ##   modeling tools on the displayed mesh's selection, each a new node (S).
 ## Node entries add the node after the selected one (`add`).
@@ -31,8 +32,8 @@ pub func create_items(w: Workspace, actions: Actions, add: func(str) -> unit!, s
     if context == "cad":
         let items = node_items([sketch_node.kind_name, "Extrude", "Revolve"] + cad_nodes.solid_kinds(), add)
         if actions.sketch_on_face.is_enabled():
-            return command_items([actions.sketch_on_face, actions.extrude_face]) + items
-        return items
+            return repeat_items(w, actions, add) + command_items([actions.sketch_on_face, actions.extrude_face]) + items
+        return repeat_items(w, actions, add) + items
     if context == "shading":
         return no_items()
     return node_items(["Cube", "Sphere", "Cylinder", "Cone", "Torus", "Grid", "Light", "Camera", "Group", "Null", "Code", "CAD", "Edit Mesh", "Edit SDF", "File"], add)
@@ -50,10 +51,29 @@ pub func modify_items(w: Workspace, actions: Actions, add: func(str) -> unit!, s
         let blends = command_items([actions.fillet_edges, actions.chamfer_edges]) if actions.fillet_edges.is_enabled() else node_items(["Fillet", "Chamfer"], add)
         let faces = command_items([actions.offset_face]) if actions.offset_face.is_enabled() else no_items()
         let pull = command_items([actions.press_pull]) if actions.press_pull.is_enabled() else no_items()
-        return pull + blends + faces + rest
+        return repeat_items(w, actions, add) + pull + blends + faces + rest
     if context == "shading":
         return no_items()
     return command_items(actions.modify_commands()) + node_items(["Transform", "Mirror", "CopyTransform"], add)
+
+## Repeat the CAD tool used last (none yet: no item): a node kind is added
+## again, a command triggered again (enabled as it is now).
+func repeat_items(w: Workspace, actions: Actions, add: func(str) -> unit!) -> list[MarkItem]:
+    let result = no_items()
+    let id = w.last_cad_tool
+    if id == "":
+        return result
+    let label = f"Repeat {w.last_cad_name}"
+    if id.starts_with("add_"):
+        let kind = id[4..]
+        result.append(MarkItem(label, asset_name(kind), true, func () -> unit!: add(kind)))
+        return result
+    for command in actions.all:
+        if command.id() == id:
+            let chosen = command
+            let icon = command.icon() if command.icon() != "" else asset_name(w.last_cad_name)
+            result.append(MarkItem(label, icon, command.is_enabled(), func () -> unit!: chosen.trigger()))
+    return result
 
 ## Constraints (D, in a sketch).
 pub func constraint_items(sketch: SketchEditor) -> list[MarkItem]:

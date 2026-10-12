@@ -25,7 +25,7 @@ from luce_std import math
 pub func cad_flow_tests() -> unit!:
     profiles_and_extrude()
     chain_and_rollback()
-    print("PASS CAD flow: a plate's two profiles shaded and picked by a click; Extrude of the plate's profile after the sketch (its key, the plate's area × 10), its distance box and arrow (one undo each); a box's top face selected, Sketch on face from the right-click menu, a circle extruded down by Auto into a Cut and up into a Join, its diameter changed with the key kept; the sketch passes the body on; selecting the sketch rolls the display back, Finish Sketch forward; edges right-clicked to Fillet; the A and S marking menus' CAD entries")
+    print("PASS CAD flow: a plate's two profiles shaded and picked by a click; Extrude of the plate's profile after the sketch (its key, the plate's area × 10), its distance box and arrow (one undo each); a box's top face selected, Sketch on face from the right-click menu, a circle extruded down by Auto into a Cut and up into a Join, its diameter changed with the key kept; the sketch passes the body on; selecting the sketch rolls the display back, Finish Sketch forward; edges right-clicked to Fillet; the A and S marking menus' CAD entries, led by Repeat of the CAD tool used last")
 
 ## Whether `model`'s tessellated volume is `expected` (to 0.3%).
 func volume_near(model: CadModel, expected: float) -> bool!:
@@ -167,6 +167,7 @@ func chain_and_rollback() -> unit!:
     assert(w.selected_count() > 0 and menu.is_open(), f"{w.selected_count()}")
     assert(menu.commands[0].id() == "sketch_on_face" and menu.commands[0].is_enabled() and menu.commands[2].id() == "press_pull" and menu.commands[2].is_enabled())
     let a_items = marking_items.create_items(w, editor.panels.actions, no_add, editor.panels.view.sketch.editor)
+    # No CAD tool used yet: no Repeat.
     assert(a_items[0].name == "Sketch on face" and a_items[0].enabled)
     assert(face_at_height(mesh, 10.0) >= 0)
     editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.escape))
@@ -245,13 +246,41 @@ func chain_and_rollback() -> unit!:
     selection_commands.choose_component(w, rim, false)
     render(editor)
     let s_items = marking_items.modify_items(w, editor.panels.actions, no_add, e)
-    assert(s_items[0].name == "Press Pull" and s_items[1].name == "Fillet" and s_items[1].enabled)
+    # Both menus lead with Repeat of the CAD tool used last (Extrude).
+    assert(s_items[0].name == "Repeat Extrude" and s_items[1].name == "Press Pull" and s_items[2].name == "Fillet" and s_items[2].enabled)
     assert(menu_offers(editor, "fillet_edges") and menu_offers(editor, "chamfer_edges"))
     let faces = body(editor, extrude).face_count()
     editor.panels.actions.fillet_edges.trigger()
     let fillet = w.network.require(w.network.selected)
     assert(fillet.kind == "Fillet" and fillet.inputs[0] == extrude and fillet.texts[0] != "" and w.network.display == fillet.id)
     assert(body(editor, fillet.id).face_count() == faces + 1)
+    # Repeat Fillet now leads; with the Extrude's rim picked again it makes
+    # a second Fillet. A node added in the CAD network is repeated too.
+    selection_commands.set_mode(w, w.level_of(4))
+    render(editor)
+    let rounded = w.geometry else trap("no edges")
+    let references = rounded.find_attribute("cad_edge_reference", 4)
+    var other = -1
+    for edge in 0..<rounded.edge_count():
+        let p = rounded.point(rounded.edge_point(edge, 0))
+        if other < 0 and rounded.attribute_text(references, edge) != "" and math.abs(p.y - 10.0) < 1e-6 and math.abs(p.z) > 9.99 and math.abs(p.x) < 9.0:
+            other = edge
+    assert(other >= 0)
+    selection_commands.choose_component(w, other, false)
+    render(editor)
+    editor.panels.actions.refresh()
+    let again = marking_items.modify_items(w, editor.panels.actions, no_add, e)
+    assert(again[0].name == "Repeat Fillet" and again[0].enabled)
+    again[0].run()
+    assert(w.network.require(w.network.selected).kind == "Fillet" and w.network.selected != fillet.id)
+    var added = ""
+    let remember = func (kind: str) -> unit!:
+        added = kind
+    editor.panels.add_from_viewport("Solid Sphere")
+    let repeat = marking_items.create_items(w, editor.panels.actions, remember, e)
+    assert(repeat[0].name == "Repeat Solid Sphere", repeat[0].name)
+    repeat[0].run()
+    assert(added == "Solid Sphere")
     editor.close()
 
 ## Whether the viewport's menu, opened now, offers command `id`, enabled.
