@@ -324,7 +324,8 @@ Edit CAD's levels are Object (a whole model), Faces (a B-rep face), Edges (a
 B-rep edge), CVs (control vertices) and Patch. Object, Faces and Edges pick on
 the models' display tessellations, tagged with their model, face and edge
 (luce-cad's `CadEdits.pick_mesh`), so a pick selects a whole model, face or
-edge; CVs pick on the control-vertex cloud. A step that meshes the faces again
+edge; CVs pick on the control-vertex cloud, and show every face's control
+net (a modeled face's too, hidden at the other levels). A step that meshes the faces again
 keeps them selected (`CadEdits.carried`).
 
 Edit CAD is Fusion 360's direct modeling ("Do not capture design history"):
@@ -529,11 +530,16 @@ a flat face of the body takes that face itself as an Extrude's profile.
 **A finished sketch shown** (`sketch_shown.luc`): with its node displayed but
 not edited, its profiles are shaded among the body's faces, and at the Faces
 level and Smart a click inside one picks it over the face beneath (Shift adds);
-at Smart its points and curves near the pointer win too. Extrude and Revolve
+at Smart its points and curves near the pointer win too. Its points show as
+small squares, a picked one (and the one under the pointer) as the editor's
+larger accent square. Extrude and Revolve
 then take those profiles as in the editor; a line picked with them is the
 Revolve's axis. A CAD network's sketches never show their curves' control
 polygons (`cad_nodes.shows_curve_hulls`), nor its B-rep bodies their faces'
-control nets (luce-cad's `hull_lines`), as Fusion draws neither.
+control nets (luce-cad's `hull_lines`), as Fusion draws neither; but Edit
+CAD's CVs level, where those control vertices are edited, shows the nets of
+the faces a feature made (a G2 strip's, a setback patch's) as well
+(`Network.cv_nets`).
 
 **Selection in a CAD network**, Fusion's: a box dragged left to right is a
 window (what lies wholly inside), right to left a crossing (what it touches),
@@ -641,11 +647,14 @@ between), **Rule fillet** (All edges, or Between faces of two sets picked
 with Pick faces and Pick other faces; Rounds, Fillets or both), its edges
 found again on every cook so they follow the body, or **Full round** (a
 center face picked with Pick center face rounded away whole, tangent to it
-and to the faces across its longest parallel edges). Radius type: Constant,
+and to the faces across its longest pair of parallel or concentric edges:
+flat, tapered or bulging sides, and curved ribs). Radius type: Constant,
 **Chord length** (the distance between where the fillet leaves its two
-faces), or **Variable** (Radius at the edge's start, End radius at its end,
-Points between as "position radius" pairs, Smooth transition or straight;
-one straight edge between flat faces ending at faces square to it, G1).
+faces), or **Variable** (Radius at the start of the edge or its tangent
+chain, End radius at its end, Points between as "position radius" pairs,
+positions fractions of the chain's length, Smooth transition or straight; G1,
+G2 or G3; a straight edge ending at any flat faces, a chain round a flat face
+running out where it stops, a loop between curved faces).
 **Corner type** (G1): Rolling ball, or Setback (the fillets stop short of the
 corner and a patch blends them, as G2 and G3 corners always are). Continuity is G1
 (Fusion's Tangent), G2 (Curvature) or G3; Tangent chain as Fusion's.

@@ -1,0 +1,195 @@
+## The captures of the second Fusion parity round (preview_parity.luc hands
+## these scenes here):
+##   cad_variable_chain: a box's uprights rounded 6, then its top loop
+##     filleted with a variable radius along the chain (1 at its start, 4
+##     halfway round, 1 at its end), G2.
+##   cad_variable_slanted: a prism's top edge, ending on a face leaning 45°,
+##     filleted 1 to 4 (G2): the strip runs on and the slanted face trims
+##     it.
+##   cad_round_rib: a curved rib (a quarter ring extruded) rounded whole
+##     (Full round of its top), G1.
+##   cad_cv_nets: Edit CAD on a box, an edge filleted G2, at the CVs level:
+##     the strip's control net shows (hidden at every other level).
+##   cad_sketch_point: a finished sketch on a box's top, shown, at Smart:
+##     its point picked (the accent square), its line under the pointer.
+from luce_ui.ui import Event
+from luce_window.input import EventKind
+from luce_3d.graphics import Vector3
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.modeling import CadModeling
+from luce_cad.sketch import CadSketch
+from app import Luce3D
+from view_projection import project
+from edit_types import smart_level
+from workspace import Workspace
+import node_commands
+import selection_commands
+import modeling_commands
+import cad_blends
+from luce_std import math
+
+pub func scenes() -> list[str]:
+    return ["cad_variable_chain", "cad_variable_slanted", "cad_round_rib", "cad_cv_nets", "cad_sketch_point"]
+
+func look(editor: Luce3D, yaw: float, pitch: float, distance: float, target: Vector3) -> unit!:
+    let w = editor.workspace
+    w.view.yaw = yaw
+    w.view.pitch = pitch
+    w.view.distance = distance
+    w.view.target = target
+    w.view.update_camera()
+
+## A new CAD node, entered and empty.
+func cad(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 40.0, 40.0)
+    node_commands.enter_group(w, w.network.selected)
+
+## The screen point (window coordinates) of world point `p`.
+func screen(editor: Luce3D, p: Vector3) -> list[float]!:
+    let area = editor.panels.view.layout().bounds()
+    let s = project(editor.workspace, p, area.width, area.height)
+    return [area.x + s[0], area.y + s[1]]
+
+## The ids of node `id`'s first body's edges whose start and middle `keep`
+## takes.
+func edges_where(w: Workspace, id: int, keep: func(Vector3, Vector3) -> bool) -> list[int]!:
+    let model = CadGeometry.model(w.network.evaluate_data(id).geometry, 0)
+    let found: list[int] = []
+    for face in 0..<model.face_count():
+        for use in 0..<model.face_edge_count(face):
+            let edge = model.face_edge_id(face, use)
+            if keep(model.face_edge_point(face, use, 0.0), model.face_edge_point(face, use, 0.5)) and not (edge in found):
+                found.append(edge)
+    return found
+
+## The references of `edges` on node `id`'s first body.
+func references(w: Workspace, id: int, edges: list[int]) -> str!:
+    return CadModeling.edge_references(CadGeometry.model(w.network.evaluate_data(id).geometry, 0), edges)
+
+## The name of the flat face of node `id`'s first body facing `normal`.
+func facing(w: Workspace, id: int, normal: Vector3) -> str!:
+    let model = CadGeometry.model(w.network.evaluate_data(id).geometry, 0)
+    for face in 0..<model.face_count():
+        let name = CadModeling.face_name_of(model, face)
+        let at = CadModeling.face_point(model, name)
+        if model.face_surface_kind(face) == 0 and at.found and at.normal.dot(normal) > 0.999:
+            return name
+    return ""
+
+## A sketch node on plane `plane` (0 XY, 1 XZ) holding `s`.
+func sketch_of(w: Workspace, plane: float, s: CadSketch) -> int!:
+    node_commands.add_node(w, "Sketch", 40.0, 140.0)
+    node_commands.set_parameter(w, 0, plane)
+    node_commands.set_text(w, 0, s.text())
+    return w.network.selected
+
+## Scene `scene` before its first frame.
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    let w = editor.workspace
+    if scene == "cad_variable_chain":
+        cad(editor)
+        node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+        let box = w.network.selected
+        let upright = func (a: Vector3, b: Vector3) -> bool:
+            return math.abs(a.x - b.x) < 1e-9 and math.abs(a.z - b.z) < 1e-9
+        node_commands.add_node(w, "Fillet", 40.0, 140.0)
+        node_commands.set_text(w, 0, references(w, box, edges_where(w, box, upright)))
+        node_commands.set_parameter(w, cad_blends.size_slot, 6.0)
+        let rounded = w.network.selected
+        let top_line = func (a: Vector3, b: Vector3) -> bool:
+            return a.y > 9.99 and b.y > 9.99 and math.abs(a.z - 10.0) < 1e-9 and math.abs(b.z - 10.0) < 1e-9
+        let line = edges_where(w, rounded, top_line)
+        node_commands.add_node(w, "Fillet", 40.0, 240.0)
+        node_commands.display_selected(w)
+        node_commands.set_text(w, 0, references(w, rounded, line))
+        node_commands.set_parameter(w, cad_blends.radius_type_slot, 2.0)
+        node_commands.set_parameter(w, cad_blends.size_slot, 1.0)
+        node_commands.set_parameter(w, cad_blends.end_radius_slot, 1.0)
+        node_commands.set_text(w, cad_blends.points_text, "0.5 4")
+        node_commands.set_parameter(w, cad_blends.continuity_slot, 1.0)
+        look(editor, 0.75, 0.62, 62.0, Vector3(0.0, 4.0, 0.0))
+    elif scene == "cad_variable_slanted":
+        cad(editor)
+        let s = CadSketch.parse("")
+        let p = [s.add_point(0.0, 0.0), s.add_point(30.0, 0.0), s.add_point(20.0, 10.0), s.add_point(0.0, 10.0)]
+        for at in 0..<4:
+            _ = s.add_line(p[at], p[(at + 1) % 4])
+        _ = sketch_of(w, 0.0, s)
+        node_commands.add_node(w, "Extrude", 40.0, 240.0)
+        node_commands.set_parameter(w, 0, 16.0)
+        let prism = w.network.selected
+        let ridge = func (a: Vector3, b: Vector3) -> bool:
+            return math.abs(a.y - 10.0) < 1e-9 and math.abs(b.y - 10.0) < 1e-9 and math.abs(a.z - 16.0) < 1e-6 and math.abs(b.z - 16.0) < 1e-6
+        node_commands.add_node(w, "Fillet", 40.0, 340.0)
+        node_commands.display_selected(w)
+        node_commands.set_text(w, 0, references(w, prism, edges_where(w, prism, ridge)))
+        node_commands.set_parameter(w, cad_blends.chain_slot, 0.0)
+        node_commands.set_parameter(w, cad_blends.radius_type_slot, 2.0)
+        node_commands.set_parameter(w, cad_blends.smooth_slot, 0.0)
+        node_commands.set_parameter(w, cad_blends.size_slot, 1.0)
+        node_commands.set_parameter(w, cad_blends.end_radius_slot, 4.0)
+        node_commands.set_parameter(w, cad_blends.continuity_slot, 1.0)
+        look(editor, 1.25, 0.5, 48.0, Vector3(18.0, 6.0, 10.0))
+    elif scene == "cad_round_rib":
+        cad(editor)
+        let s = CadSketch.parse("")
+        let o = s.add_point(0.0, 0.0)
+        let p = [s.add_point(16.0, 0.0), s.add_point(22.0, 0.0), s.add_point(0.0, 22.0), s.add_point(0.0, 16.0)]
+        _ = s.add_line(p[0], p[1])
+        _ = s.add_arc(o, p[1], p[2])
+        _ = s.add_line(p[2], p[3])
+        _ = s.add_arc(o, p[0], p[3])
+        _ = sketch_of(w, 0.0, s)
+        node_commands.add_node(w, "Extrude", 40.0, 240.0)
+        node_commands.set_parameter(w, 0, 12.0)
+        let rib = w.network.selected
+        let top = facing(w, rib, Vector3(0.0, 0.0, 1.0))
+        node_commands.add_node(w, "Fillet", 40.0, 340.0)
+        node_commands.display_selected(w)
+        node_commands.set_parameter(w, cad_blends.type_slot, 2.0)
+        node_commands.set_text(w, cad_blends.faces_text, top)
+        look(editor, 0.6, 0.55, 75.0, Vector3(10.0, 10.0, 6.0))
+    elif scene == "cad_cv_nets":
+        cad(editor)
+        node_commands.add_node(w, "Edit CAD", 40.0, 40.0)
+        modeling_commands.create(w, "Box")
+        selection_commands.set_mode(w, 2)
+        let mesh = w.geometry else trap("edges")
+        let tag = mesh.find_attribute("cad_edge", 4)
+        var edge = -1
+        for at in 0..<(mesh.edge_count()):
+            if edge < 0 and mesh.attribute_value(tag, at) >= 0.0: edge = at
+        selection_commands.choose_component(w, edge, false)
+        modeling_commands.model(w, "Fillet")
+        modeling_commands.set_last_step(w, 0, 0.5, 0.0001, 100000.0)
+        modeling_commands.set_last_step(w, 1, 1.0, 0.0, 2.0)
+        selection_commands.set_mode(w, 1)
+        look(editor, 0.9, -0.45, 4.2, Vector3(-0.4, -0.6, 0.2))
+    elif scene == "cad_sketch_point":
+        cad(editor)
+        node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+        let s = CadSketch.parse("")
+        _ = s.add_point(4.0, -3.0)
+        _ = s.add_line(s.add_point(-6.0, -6.0), s.add_point(-6.0, 6.0))
+        _ = s.add_circle(s.add_point(3.0, 2.0), 3.0)
+        let sketch = sketch_of(w, 1.0, s)
+        node_commands.set_parameter(w, 1, 10.0)
+        node_commands.select_nothing(w)
+        w.network.set_display(sketch)
+        look(editor, 0.4, 0.8, 50.0, Vector3(0.0, 6.0, 0.0))
+        selection_commands.set_mode(w, smart_level)
+    editor.panels.refresh()
+
+## Frame `frame` of scene `scene` (from 2; `last` is the frame captured).
+pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
+    if frame != last - 1:
+        return
+    if scene == "cad_sketch_point":
+        # The point clicked, then the pointer on the line (lit).
+        let point = screen(editor, Vector3(4.0, 10.0, 3.0))
+        for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+            editor.app.dispatch(Event(kind = kind, x = point[0], y = point[1], button = 0))
+        let line = screen(editor, Vector3(-6.0, 10.0, 2.0))
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = line[0], y = line[1]))
