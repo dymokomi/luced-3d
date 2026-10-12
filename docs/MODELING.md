@@ -700,9 +700,15 @@ flat, tapered or bulging sides, and curved ribs). Radius type: Constant,
 **Chord length** (the distance between where the fillet leaves its two
 faces), or **Variable** (Radius at the start of the edge or its tangent
 chain, End radius at its end, Points between as "position radius" pairs,
-positions fractions of the chain's length, Smooth transition or straight; G1,
-G2 or G3; a straight edge ending at any flat faces, a chain round a flat face
-running out where it stops, a loop between curved faces).
+positions fractions of the chain's length; G1, G2 or G3; a straight edge
+ending at any flat faces, a chain round a flat face running out where it
+stops, a loop between curved faces). Between the radii the law is Fusion's
+(Smooth transition off, the default): straight between two, a natural spline
+through more, held flat at an extreme and along equal radii; a closed loop's
+runs through its Points only, round the loop, as Fusion's. Smooth transition
+on holds each radius a moment at its point (Inventor's; Fusion has none). At
+G1 with a Tangency weight of 1 a straight edge's fillet rolls a ball, as
+Fusion's (a cone along a straight law, the balls' envelope along another).
 **Corner type** (G1): Rolling ball, or Setback (the fillets stop short of the
 corner and a patch blends them, as G2 and G3 corners always are). Continuity is G1
 (Fusion's Tangent), G2 (Curvature: Fusion's own curve, its faces' B-spline
