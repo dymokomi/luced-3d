@@ -1,0 +1,133 @@
+## What the Sketch editor edits (sketch_editor.luc): a Sketch node's text
+## on its plane, or a sketch object of an Edit CAD node (Fusion's sketches
+## in direct modeling, edit_cad_sketches.luc), whichever is being edited;
+## and writing the edited text back as one undo step.
+##   A Sketch node: its first text, as its last cook cast it again when
+##     projections moved; its plane as sketch_frames knows it.
+##   An Edit CAD sketch: the text the recipe last gave it (the step that
+##     made it, or its last Edit Sketch), or as its cook solved it; its
+##     plane from the cook, or at once for an origin plane. Writing it
+##     changes the step that made it while that is the recipe's last (the
+##     sketch just made, being drawn), else adds an Edit Sketch step.
+from workspace import Workspace
+from node import Node
+from edit_operations import EditStep
+from sketch_node import SketchFrame, frame, face_plane
+from sketch_frames import FrameCache
+from edit_cad_sketches import SketchObject, parse_objects, named, sketch_verb, edit_sketch_verb, edit_step, text_slot, name_slot
+
+## The sketch being edited, as read.
+pub class SketchSource:
+    pub let node: int
+    ## The Edit CAD sketch's name ("" for a Sketch node).
+    pub let name: str
+    pub let text: str
+    pub let plane: SketchFrame
+    ## The curves whose links the last cook lost.
+    pub let lost: list[int]
+
+    pub func init(self, node: int, name: str, text: str, plane: SketchFrame, lost: list[int]):
+        self.node = node
+        self.name = name
+        self.text = text
+        self.plane = plane
+        self.lost = lost
+
+## An Edit CAD node's sketches as its last cook reported them, parsed once
+## per report; and the last plane known of each sketch (a face's comes with
+## the cook).
+pub class ModelSketches:
+    var read_from: str = ""
+    var read: list[SketchObject]
+    let planes: map[str, SketchFrame]
+
+    pub func init(self):
+        self.read = []
+        self.planes = {}
+
+    ## The sketches of node `node`'s last cook (none of them while it has
+    ## not reported).
+    pub func of(self, node: Node) -> list[SketchObject]!:
+        let key = f"{node.id}|{node.sketch_state}"
+        if key != self.read_from:
+            self.read_from = key
+            self.read = parse_objects(node.sketch_state)
+            for s in self.read:
+                self.planes[f"{node.id}/{s.name}"] = s.plane
+        return self.read
+
+    ## The plane last known of sketch `name` of node `node`.
+    pub func plane(self, node: Node, name: str) -> SketchFrame?!:
+        _ = self.of(node)
+        return self.planes[f"{node.id}/{name}"]
+
+## The sketch the editor works on in `w`: the selected Sketch node's, or
+## the edited sketch of the selected Edit CAD node.
+pub func source_of(w: Workspace, frames: FrameCache, models: ModelSketches, node: Node) -> SketchSource!:
+    if w.edit_sketch == "" or node.id != w.edit_sketch_node:
+        var text = node.texts[0]
+        var lost: list[int] = []
+        if let state = frames.state(node):
+            lost = state.lost
+            if state.text != "":
+                text = state.text
+        return SketchSource(node.id, "", text, frames.frame(node), lost)
+    let name = w.edit_sketch
+    let made = making_step(node, name) else return SketchSource(node.id, name, "", frame(0, 0.0), [])
+    var text = last_text(node, name)
+    var plane = frame(int(made.numbers[0]), made.numbers[1] if made.numbers.length > 1 else 0.0)
+    if not node.dirty:
+        if let cooked = named(models.of(node), name):
+            text = cooked.text
+    if int(made.numbers[0]) == face_plane:
+        plane = models.plane(node, name) else frame(1, 0.0)
+    return SketchSource(node.id, name, text, plane, [])
+
+## The step of `node`'s recipe that makes sketch `name`.
+pub func making_step(node: Node, name: str) -> EditStep?:
+    for step in node.edits:
+        if step.verb == sketch_verb and step.text(name_slot) == name:
+            return step
+    return none
+
+## The text of the sketch edited on `node`: its first text (a Sketch
+## node's, `name` ""), else what the recipe last gives sketch `name`.
+pub func edited_text(node: Node, name: str) -> str:
+    return node.texts[0] if name == "" else last_text(node, name)
+
+## The text the recipe last gives sketch `name`.
+func last_text(node: Node, name: str) -> str:
+    var text = ""
+    for step in node.edits:
+        if (step.verb == sketch_verb or step.verb == edit_sketch_verb) and step.text(name_slot) == name:
+            text = step.text(text_slot)
+    return text
+
+## Write `text` as the edited sketch's (Sketch node `node`'s first text, or
+## Edit CAD sketch `name`'s), as one undo step labelled `label`; whether it
+## changed anything.
+pub func write(w: Workspace, node: Node, name: str, text: str, label: str) -> bool!:
+    if name == "":
+        if text == node.texts[0]:
+            return false
+        w.perform(label, func () -> unit!:
+            node.texts[0] = text
+            w.network.invalidate(node.id)
+            w.rebuild())
+        return true
+    if text == last_text(node, name):
+        return false
+    w.perform(label, func () -> unit!:
+        var replaced = false
+        if node.edits.length > 0:
+            let step = node.edits[-1]
+            if (step.verb == sketch_verb or step.verb == edit_sketch_verb) and step.text(name_slot) == name:
+                let texts = [step.text(0), step.text(1), step.text(2)]
+                texts[text_slot] = text
+                node.edits[-1] = step.with_texts(texts)
+                replaced = true
+        if not replaced:
+            node.edits.append(edit_step(name, text))
+        w.network.invalidate(node.id)
+        w.rebuild())
+    return true

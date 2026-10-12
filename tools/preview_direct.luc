@@ -1,0 +1,209 @@
+## Stage 6's captures for preview.py (docs/research/FUSION-CAD-UX.md):
+## Edit CAD as Fusion's direct modeling.
+##   direct_sketch: a sketch of the model on the ground plane, a 30 × 20
+##     plate with a hole, being edited (the same Sketch editor), the pointer
+##     over the plate's region.
+##   direct_extrude: its plate extruded from the sketch: the step's arrow,
+##     its distance box and its tool bar.
+##   direct_menu: the plate model with nothing selected, right-clicked:
+##     Create Sketch, Edit Sketch, Show/Hide Sketch, Create.
+##   direct_face_menu: its top face selected and right-clicked: Create
+##     Sketch on it, Extrude face, Press Pull and the face tools.
+##   direct_marking: that face, S held: Press Pull first, then the tools.
+##   direct_face_sketch: a sketch on the top face (its loop projected once,
+##     purple) with a circle in it.
+##   direct_move_face: an L-bracket's inner wall moved 3 by the gizmo: the
+##     Move tool on the face, the Move/Copy tool bar.
+##   direct_offset: the top face Press Pulled: Offset Face's arrow and box.
+##   direct_shell: shelled with the top open: the thickness arrow (in).
+##   direct_failed: the shell too thick: the step's tool bar and the node
+##     say why; the model before it shows.
+##   direct_combine: two plates, Combine waiting for the tool bodies.
+##   direct_axis: a Revolve of a sketch waiting for its axis, the sketch's
+##     lines offered.
+##   direct_sketches: two sketches of the model shown, not edited.
+##   direct_sketch_menu: one of them right-clicked on its curve: Edit and
+##     Hide it.
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3
+from luce_cad.sketch import CadSketch
+from app import Luce3D
+from view_projection import project
+from node import Node
+import node_commands
+import sketch_commands
+import selection_commands
+import modeling_commands
+import component_moves
+import edit_cad_commands
+import edit_cad_sketches
+import sketch_source
+import cad_features
+from luce_std import math
+
+pub func scenes() -> list[str]:
+    return ["direct_sketch", "direct_extrude", "direct_menu", "direct_face_menu", "direct_marking", "direct_face_sketch", "direct_move_face", "direct_offset",
+            "direct_shell", "direct_failed", "direct_combine", "direct_axis", "direct_sketches", "direct_sketch_menu"]
+
+func look(editor: Luce3D, yaw: float, pitch: float, distance: float, target: Vector3) -> unit!:
+    let w = editor.workspace
+    w.view.yaw = yaw
+    w.view.pitch = pitch
+    w.view.distance = distance
+    w.view.target = target
+    w.view.update_camera()
+
+## A CAD node with an Edit CAD node, edited.
+func model(editor: Luce3D) -> Node!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 40.0, 40.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 40.0, 40.0)
+    return w.selected() else trap("Edit CAD")
+
+## A 30 × 20 plate with a 6 mm hole as sketch text.
+func plate_text() -> str!:
+    let s = CadSketch.parse(sketch_commands.rectangle_text(0.0, 0.0, 30.0, 20.0))
+    _ = s.add_circle(s.add_point(6.0, 0.0), 3.0)
+    return s.text()
+
+## A closed polygon through `corners` as sketch text.
+func polygon_text(corners: list[float]) -> str!:
+    let s = CadSketch.parse("")
+    let points: list[int] = []
+    for at in 0..<corners.length // 2:
+        points.append(s.add_point(corners[at * 2], corners[at * 2 + 1]))
+    for at in 0..<points.length:
+        _ = s.add_line(points[at], points[(at + 1) % points.length])
+    return s.text()
+
+## Sketch on the ground with `text`, still edited.
+func sketched(editor: Luce3D, node: Node, text: str) -> unit!:
+    let w = editor.workspace
+    edit_cad_commands.create_sketch(w, 1)
+    _ = sketch_source.write(w, node, w.edit_sketch, text, "Draw")
+    editor.panels.view.sketch.editor.sync()
+
+## The plate extruded 8 (its region picked, not the hole's).
+func plate(editor: Luce3D, node: Node) -> unit!:
+    let w = editor.workspace
+    sketched(editor, node, plate_text())
+    edit_cad_commands.feature_from_sketch(w, "Extrude")
+    modeling_commands.set_last_step(w, cad_features.distance_slot, 8.0, -100000.0, 100000.0)
+    w.ask_value = false
+
+## Level `level` (3 Faces) with the polygon `keep` takes selected (its
+## whole face, or model at the Object level).
+func select_face(editor: Luce3D, keep: func(Vector3, Vector3) -> bool, level: int = 3) -> unit!:
+    let w = editor.workspace
+    selection_commands.set_mode(w, level)
+    let mesh = w.geometry else trap("pick geometry")
+    for polygon in 0..<mesh.face_count():
+        if keep(mesh.face_center(polygon), mesh.face_normal(polygon)):
+            selection_commands.choose_component(w, polygon, false)
+            return
+
+func top(c: Vector3, n: Vector3) -> bool:
+    return n.y > 0.99
+
+## Scene `scene` before its first frame.
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    let w = editor.workspace
+    let node = model(editor)
+    if scene == "direct_sketch":
+        sketched(editor, node, plate_text())
+        look(editor, 0.0, 1.5, 70.0, Vector3())
+    elif scene == "direct_extrude":
+        sketched(editor, node, plate_text())
+        edit_cad_commands.feature_from_sketch(w, "Extrude")
+        look(editor, 0.5, 0.55, 80.0, Vector3(0.0, 4.0, 0.0))
+    elif scene in ["direct_menu", "direct_face_menu", "direct_marking", "direct_face_sketch", "direct_offset", "direct_shell", "direct_failed"]:
+        plate(editor, node)
+        look(editor, 0.5, 0.6, 85.0, Vector3(0.0, 4.0, 0.0))
+        if scene in ["direct_face_menu", "direct_marking", "direct_face_sketch", "direct_offset", "direct_shell", "direct_failed"]:
+            select_face(editor, top)
+        if scene == "direct_face_sketch":
+            edit_cad_commands.create_sketch(w)
+            let e = editor.panels.view.sketch.editor
+            e.sync()
+            let found = edit_cad_sketches.named(edit_cad_sketches.parse_objects(node.sketch_state), w.edit_sketch) else trap("face sketch")
+            let s = CadSketch.parse(found.text)
+            let middle = found.plane.coordinates(Vector3(-5.0, 8.0, 2.0))
+            _ = s.add_circle(s.add_point(middle[0], middle[1]), 4.0)
+            _ = sketch_source.write(w, node, w.edit_sketch, s.text(), "Draw")
+            e.sync()
+            look(editor, 0.5, 0.75, 70.0, Vector3(0.0, 8.0, 0.0))
+        elif scene == "direct_offset":
+            edit_cad_commands.press_pull(w)
+            modeling_commands.set_last_step(w, 0, 5.0, -100000.0, 100000.0)
+        elif scene in ["direct_shell", "direct_failed"]:
+            edit_cad_commands.tool(w, "Shell")
+            modeling_commands.set_last_step(w, 0, 2.0 if scene == "direct_shell" else 12.0, 0.0001, 100000.0)
+            w.ask_value = false
+    elif scene == "direct_move_face":
+        sketched(editor, node, polygon_text([0.0, 0.0, 40.0, 0.0, 40.0, 5.0, 5.0, 5.0, 5.0, 30.0, 0.0, 30.0]))
+        edit_cad_commands.feature_from_sketch(w, "Extrude")
+        modeling_commands.set_last_step(w, cad_features.distance_slot, -20.0, -100000.0, 100000.0)
+        w.ask_value = false
+        let wall = func (c: Vector3, n: Vector3) -> bool:
+            return n.x > 0.99 and math.abs(c.x - 5.0) < 1e-6
+        select_face(editor, wall)
+        edit_cad_commands.move_copy(w)
+        component_moves.move_selection(w, Vector3(3.0, 0.0, 0.0))
+        look(editor, 0.9, 0.5, 110.0, Vector3(18.0, 8.0, 10.0))
+    elif scene == "direct_combine":
+        plate(editor, node)
+        sketched(editor, node, sketch_commands.rectangle_text(14.0, 10.0, 16.0, 16.0))
+        edit_cad_commands.feature_from_sketch(w, "Extrude")
+        modeling_commands.set_last_step(w, cad_features.operation_slot, 1.0, 0.0, 4.0)
+        modeling_commands.set_last_step(w, cad_features.distance_slot, 14.0, -100000.0, 100000.0)
+        w.ask_value = false
+        let first = func (c: Vector3, n: Vector3) -> bool:
+            return c.x < -14.9
+        select_face(editor, first, 0)
+        edit_cad_commands.tool(w, "Combine")
+        look(editor, 0.5, 0.6, 95.0, Vector3(4.0, 5.0, 4.0))
+    elif scene == "direct_axis":
+        let s = CadSketch.parse(polygon_text([6.0, 0.0, 14.0, 0.0, 14.0, 10.0, 6.0, 10.0]))
+        _ = s.add_line(s.add_point(0.0, -4.0), s.add_point(0.0, 16.0), construction = true)
+        edit_cad_commands.create_sketch(w, 0)
+        _ = sketch_source.write(w, node, w.edit_sketch, s.text(), "Draw")
+        edit_cad_commands.feature_from_sketch(w, "Revolve")
+        look(editor, 0.3, 0.4, 60.0, Vector3(6.0, 5.0, 0.0))
+    elif scene in ["direct_sketches", "direct_sketch_menu"]:
+        sketched(editor, node, plate_text())
+        edit_cad_commands.finish_sketch(w)
+        edit_cad_commands.create_sketch(w, 0)
+        _ = sketch_source.write(w, node, w.edit_sketch, sketch_commands.rectangle_text(0.0, 10.0, 24.0, 16.0), "Draw")
+        edit_cad_commands.finish_sketch(w)
+        look(editor, 0.6, 0.45, 80.0, Vector3(0.0, 4.0, 0.0))
+    editor.panels.refresh()
+
+## Frame `frame` of scene `scene` (from 2; `last` is the frame captured).
+pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
+    let w = editor.workspace
+    let view = editor.panels.view
+    let area = view.layout().bounds()
+    if frame != last - 1:
+        return
+    if scene == "direct_sketch":
+        let at = project(w, Vector3(-10.0, 0.0, -5.0), area.width, area.height)
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + at[0], y = area.y + at[1]))
+    if scene in ["direct_menu", "direct_face_menu"]:
+        let at = project(w, Vector3(-8.0, 8.0, 4.0) if scene == "direct_face_menu" else Vector3(-30.0, 0.0, 25.0), area.width, area.height)
+        for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+            editor.app.dispatch(Event(kind = kind, x = area.x + at[0], y = area.y + at[1], button = 1))
+    if scene == "direct_marking":
+        let at = project(w, Vector3(-8.0, 8.0, 4.0), area.width, area.height)
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + at[0], y = area.y + at[1]))
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.s))
+    if scene == "direct_sketch_menu":
+        let at = project(w, Vector3(12.0, 10.0, 0.0), area.width, area.height)
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + at[0], y = area.y + at[1]))
+        for kind in [EventKind.pointer_down, EventKind.pointer_up]:
+            editor.app.dispatch(Event(kind = kind, x = area.x + at[0], y = area.y + at[1], button = 1))
+    if scene == "direct_axis":
+        let at = project(w, Vector3(0.0, 8.0, 0.0), area.width, area.height)
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + at[0], y = area.y + at[1]))

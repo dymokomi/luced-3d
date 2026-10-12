@@ -11,6 +11,7 @@ from luce_geocore.geocore import Mesh, Domain, GroupType, Vector3
 from geometry_data import GeometryData
 from edit_operations import EditStep
 from parameter_rows import Parameter
+from luce_ui import ui
 
 ## The viewport's selection levels, the same in every context (keys 1-5):
 ## Object, Point (vertices, CVs), Edge (edges, isoparms), Face, and Smart,
@@ -112,8 +113,9 @@ pub class EditKind:
     ## The geometry level `level` of `data` picks on (the worker publishes
     ## it for the viewport); none when there is nothing to pick.
     pub let pick: func(GeometryData, int) -> Mesh?!
-    ## One recipe step on `data`.
-    pub let run: func(EditStep, GeometryData) -> GeometryData!
+    ## Recipe step number `at` on `data` (the number names what the step
+    ## makes, so later steps can refer to it).
+    pub let run: func(EditStep, int, GeometryData) -> GeometryData!
     ## The step creating primitive `name`, with its default numbers.
     pub let create: func(str) -> EditStep?!
     ## Whether the selection also shows through surfaces: for pick geometry
@@ -132,11 +134,14 @@ pub class EditKind:
     ## selected (Edit GSplats): no point markers, and a drag selects by the
     ## splats' footprints with a box, a lasso or a brush.
     pub let tints: bool
+    ## Steps the kind runs that no tool makes: commands make them (Edit
+    ## CAD's sketches, and the Extrude and Revolve of their profiles).
+    pub let steps: list[str]
 
     pub func init(self, name: str, levels: list[EditLevel], tools: list[EditTool], primitives: list[str], start: func(GeometryData) -> GeometryData!,
-                  pick: func(GeometryData, int) -> Mesh?!, run: func(EditStep, GeometryData) -> GeometryData!, create: func(str) -> EditStep?!,
+                  pick: func(GeometryData, int) -> Mesh?!, run: func(EditStep, int, GeometryData) -> GeometryData!, create: func(str) -> EditStep?!,
                   see_through: bool = false, draw_tools: list[str] = [], drawn: func(str, list[Vector3]) -> EditStep?!? = none, smart: list[int]? = none,
-                  tints: bool = false):
+                  tints: bool = false, steps: list[str] = []):
         self.name = name
         self.levels = levels
         self.tools = tools
@@ -150,12 +155,13 @@ pub class EditKind:
         self.drawn = drawn
         self.smart = smart else [point_level, edge_level, face_level]
         self.tints = tints
+        self.steps = steps
 
     ## Whether a recipe step of `verb` is one this kind makes: a geometry
     ## verb (luce-geocore's), a primitive's (its create's), a tool's or a
     ## draw tool's step, or a move (Transform Components).
     pub func knows(self, verb: str) -> bool:
-        if Verbs.index_of(verb) >= 0 or verb == "Transform Components" or verb in self.draw_tools:
+        if Verbs.index_of(verb) >= 0 or verb == "Transform Components" or verb in self.draw_tools or verb in self.steps:
             return true
         # A primitive's step is named by its create ("Box" makes Create
         # Box).
@@ -203,18 +209,38 @@ pub let keep_slot = 3
 ## and true. A step that cannot be built leaves `data` as it was, with a
 ## warning saying which step failed and why, and false: the recipe stops
 ## there, so the viewport keeps what the steps before it made (a cancelled
-## computation still stops the cook).
-pub func run_step(kind: EditKind, step: EditStep, at: int, data: GeometryData) -> (GeometryData, bool)!:
+## computation still stops the cook). While a drag sets the step's values
+## (`dragged`), its failure fails the node instead, so the viewport keeps
+## the drag's last good result, as a feature node's does; let go, the
+## warning stands.
+pub func run_step(kind: EditKind, step: EditStep, at: int, data: GeometryData, dragged: bool = false) -> (GeometryData, bool)!:
     var failed = ""
     var made: GeometryData? = none
-    made = kind.run(step, data) catch failure:
+    made = kind.run(step, at, data) catch failure:
         if failure.message == "Computation superseded":
             error(failure.code, failure.message)
         failed = failure.message
         recover none
     if let result = made:
         return (result, true)
+    if dragged:
+        error(ui.invalid, f"Step {at + 1} ({step.verb}) could not be built: {failed}")
+    # A step waiting for a pick (Replace Face's target, Revolve's axis)
+    # says what it waits for.
+    if failed.starts_with("Pick "):
+        return (data.passed(f"Step {at + 1} ({step.verb}) waits: {failed}."), false)
     return (data.passed(f"Step {at + 1} ({step.verb}) could not be built: {failed}. It and the steps after it are left out: undo it, or change its values."), false)
+
+## Why a step's warning (run_step's) says it was not built: the reason
+## alone, for the step's own tool bar.
+pub func step_reason(warning: str) -> str:
+    var text = warning
+    for marker in [" could not be built: ", " waits: "]:
+        if let at = text.index_of(marker):
+            text = text[at + marker.length..]
+    if let end = text.index_of(". It and the steps after it"):
+        text = text[..<end]
+    return text
 
 # -- Helpers kinds share.
 

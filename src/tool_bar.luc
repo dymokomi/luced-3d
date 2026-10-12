@@ -3,14 +3,18 @@
 ## chain), the step running again live as they change. What the tool works
 ## on was picked before it ran, so its selection rows are not here: these
 ## are the node's own rows less those (node_catalog.tool_rows), or the
-## kind's for its own verbs (Edit SDF's Blend). A tool run outside an Edit
+## kind's for its own verbs (Edit SDF's Blend); a step a command made (Edit
+## CAD's Extrude and Revolve of a sketch) shows its node's rows. A step that
+## could not be built says why under its rows. A tool run outside an Edit
 ## node makes a node, and its parameters are the inspector's.
 from luce_ui.ui import VStack, Text, Font, ParameterPanel, ParameterSpec, Pane, Size
 from luce_gpu.gpu import Rect
 from interop import Connection
 from workspace import Workspace
 from parameter_rows import Parameter
-from edit_types import EditTool
+import cad_features
+import edit_cad_commands
+import edit_types
 import node_catalog
 import modeling_commands
 import units
@@ -23,6 +27,8 @@ pub class ToolBar:
     pub let body: Pane
     let title: Text
     pub let panel: ParameterPanel
+    ## Why the step could not be built ("" when it was).
+    pub let problem: Text
     var rows: list[Parameter]
     ## The step shown (node, its place in the recipe, its verb): rows are
     ## made again only when it changes.
@@ -37,38 +43,44 @@ pub class ToolBar:
         self.placed = []
         self.title = Text("", font = font, muted = true)
         self.panel = ParameterPanel([], font = font)
-        self.body = Pane(VStack([self.title, self.panel], spacing = 2.0, padding = 6.0), minimum = Size(bar_width, 52.0))
+        self.problem = Text("", font = font)
+        self.problem.layout().set_visible(false)
+        self.body = Pane(VStack([self.title, self.panel, self.problem], spacing = 2.0, padding = 6.0), minimum = Size(bar_width, 52.0))
         # Floating, not modal: the viewport keeps its clicks around it.
         self.body.layout().set_popup(true)
         self.body.layout().set_modal(false)
         self.body.layout().set_visible(false)
         self.connections = [self.panel.on_begin(func (index: int) -> unit!: w.begin("Change " + self.title.text())),
                             self.panel.on_change(self.changed),
-                            self.panel.on_commit(func (index: int) -> unit!: w.commit())]
+                            self.panel.on_commit(self.committed)]
 
     pub func is_open(self) -> bool:
         return self.body.layout().is_visible()
 
     ## Show the last tool step's rows; hide without one.
     pub func refresh(self) -> unit!:
-        let found = self.last_tool()
+        let found = self.last_rows()
         if found == none:
             self.shown = ""
             self.body.layout().set_visible(false)
             return
-        let tool = found else return
+        let (name, rows) = found else return
         let node = self.w.selected() else return
         let step = node.edits[-1]
         let key = f"{node.id}/{node.edits.length}/{step.verb}/{units.document_unit(self.w).suffix}"
         if key != self.shown:
             self.shown = key
-            self.rows = tool.rows else node_catalog.tool_rows(tool.verb)
+            self.rows = rows
             let specs: list[ParameterSpec] = []
             let shown_unit = units.document_unit(self.w)
             for row in self.rows:
                 specs.append(row.spec(shown_unit))
             self.panel.set_specs(specs)
-            self.title.set_text(tool.name)
+            self.title.set_text(name)
+        # The step's own failure, under its rows (the node says it too).
+        let failed = node.warning.starts_with(f"Step {node.edits.length} (")
+        self.problem.set_text(edit_types.step_reason(node.warning) if failed else "")
+        self.problem.layout().set_visible(failed)
         for index in 0..<self.rows.length:
             let row = self.rows[index]
             for component in 0..<row.components:
@@ -92,9 +104,10 @@ pub class ToolBar:
             self.placed = point
             self.body.layout().set_popup_point(point[0], point[1])
 
-    ## The tool the displayed Edit node's last step is, when it has rows.
-    func last_tool(self) -> EditTool?!:
-        if not self.w.editing():
+    ## The name and rows of the displayed Edit node's last step, when it has
+    ## rows: its tool's, or a command's step's node rows.
+    func last_rows(self) -> (str, list[Parameter])?!:
+        if not self.w.editing() or self.w.sketching():
             return none
         let node = self.w.selected() else return none
         let kind = self.w.active_kind() else return none
@@ -105,8 +118,30 @@ pub class ToolBar:
             if tool.verb != verb:
                 continue
             let rows = tool.rows else node_catalog.tool_rows(verb)
-            return tool if rows.length > 0 else none
+            return (tool.name, rows) if rows.length > 0 else none
+        # A command's feature step (a sketch's step has no rows here: its
+        # plane is set when it is made).
+        if verb in kind.steps and verb in ["Extrude", "Revolve"]:
+            let rows = node_catalog.tool_rows(verb)
+            return (verb, rows) if rows.length > 0 else none
         return none
+
+    ## Row `index`'s change is one undo step; then what it may start.
+    func committed(self, index: int) -> unit!:
+        self.w.commit()
+        self.picks_after(index)
+
+    ## After row `index` was set: an Edit CAD Extrude's extent turned To
+    ## object waits for the face to run to (Fusion's selection field).
+    func picks_after(self, index: int) -> unit!:
+        if index < 0 or index >= self.rows.length or self.rows[index].slot != cad_features.extent_slot:
+            return
+        let node = self.w.selected() else return
+        if node.edits.length == 0:
+            return
+        let step = node.edits[-1]
+        if step.verb == "Extrude" and int(step.numbers[cad_features.extent_slot]) == 1 and step.text(cad_features.face_text) == "":
+            edit_cad_commands.pick_extent_face(self.w)
 
     func changed(self, index: int) -> unit!:
         let row = self.rows[index]

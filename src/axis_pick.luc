@@ -2,7 +2,9 @@
 ## (tool_prompts.pick_axis), its sketch's lines, construction ones too,
 ## are drawn over the body; the one under the pointer is lit, and a click on
 ## it is the axis (kept by its index, so it follows the line as the sketch
-## changes). A click elsewhere falls through to the body's edges.
+## changes). A click elsewhere falls through to the body's edges. An Edit
+## CAD Revolve step waiting for its axis (edit_cad_picks.luc) picks the
+## lines of the sketch it revolves the same way.
 from luce_cad.sketch import CadSketch
 from luce_gpu.gpu import Color
 from luce_ui.ui import Event, Painter, Point
@@ -12,6 +14,9 @@ from sketch_frames import FrameCache
 from sketch_node import SketchFrame
 import sketch_node
 import tool_prompts
+import edit_cad_picks
+import edit_cad_sketches
+from sketch_source import ModelSketches
 import cad_features
 import view_projection
 import theme
@@ -22,21 +27,33 @@ let reach = 8.0
 pub class AxisPick:
     let w: Workspace
     let frames: FrameCache
+    let models: ModelSketches
     ## The line under the pointer (an entity of the sketch), -1 none.
     pub var hover: int = -1
 
     pub func init(self, w: Workspace):
         self.w = w
         self.frames = FrameCache()
+        self.models = ModelSketches()
 
     pub func active(self) -> bool:
         let prompt = self.w.prompt else return false
-        return prompt.label == tool_prompts.axis_label
+        return prompt.label == tool_prompts.axis_label or prompt.label == edit_cad_picks.axis_label
 
     ## The Revolve's sketch, solved, and its plane; none without one.
     func sketch(self) -> (CadSketch, SketchFrame)?!:
         let prompt = self.w.prompt else return none
         let input = self.w.network.find(prompt.input) else return none
+        if prompt.label == edit_cad_picks.axis_label:
+            # The sketch the waiting Revolve step takes, as the model's cook
+            # reported it.
+            if input.edits.length == 0:
+                return none
+            let name = input.edits[-1].text(edit_cad_sketches.feature_sketch_slot)
+            let found = edit_cad_sketches.named(self.models.of(input), name) else return none
+            let s = CadSketch.parse(found.text)
+            _ = s.solve()
+            return (s, found.plane)
         if input.kind != sketch_node.kind_name:
             return none
         let s = CadSketch.parse(input.texts[0])
@@ -83,9 +100,12 @@ pub class AxisPick:
             return false
         let prompt = self.w.prompt else return false
         let node = self.w.network.find(prompt.node) else return false
+        self.hover = -1
+        if prompt.label == edit_cad_picks.axis_label:
+            edit_cad_picks.set_axis(self.w, node, cad_features.line_axis(line))
+            return true
         node.texts[cad_features.axis_text] = cad_features.line_axis(line)
         node.values[cad_features.axis_slot] = 0.0
-        self.hover = -1
         tool_prompts.finish_pick(self.w, node.id)
         return true
 

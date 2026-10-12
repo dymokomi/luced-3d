@@ -28,6 +28,7 @@ from shader_nodes import is_shader
 from luce_cad.cad_edits import CadEdits
 from render_geometry import render_geometry
 import sketch_node
+import edit_cad_sketches
 import slice_view
 from slice_view import Slicer
 
@@ -139,17 +140,21 @@ class Computation:
     ## either fails (the tool then says there is no body).
     func shadows(self) -> (str, int)!:
         let node = self.graph.find(self.graph.projecting) else return ("", 0)
-        let input = self.graph.find(node.inputs[0]) else return ("", 0)
-        let body = self.evaluate(input) catch failure:
-            if failure.message == "Computation superseded":
-                error(failure.code, failure.message)
-            return ("", 0)
         let made = self.evaluate(node) catch failure:
             if failure.message == "Computation superseded":
                 error(failure.code, failure.message)
             return ("", 0)
-        let state = sketch_node.parse_state(made.sketch_state) else return ("", 0)
-        return (sketch_node.shadows_text(body, state.plane), node.stamp)
+        # An Edit CAD sketch casts its own model's edges; a Sketch node its
+        # input body's.
+        var body = made
+        if self.graph.sketch_object == "":
+            let input = self.graph.find(node.inputs[0]) else return ("", 0)
+            body = self.evaluate(input) catch failure:
+                if failure.message == "Computation superseded":
+                    error(failure.code, failure.message)
+                return ("", 0)
+        let plane = edit_cad_sketches.edited_plane(made, self.graph.sketch_object) else return ("", 0)
+        return (sketch_node.shadows_text(body, plane), node.stamp)
 
     ## Stored result for the node's stamp, or cook it. Failures from inputs
     ## propagate without being stored under this node's stamp.
@@ -257,7 +262,7 @@ class Computation:
                     start = count
             count -= 1
         for at in start..<node.edits.length:
-            let (next, built) = run_step(kind, node.edits[at], at, result)
+            let (next, built) = run_step(kind, node.edits[at], at, result, self.graph.gesture and at == node.edits.length - 1)
             result = next
             self.recipes += 1
             self.channel.check()

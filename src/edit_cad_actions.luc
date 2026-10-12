@@ -1,0 +1,82 @@
+## Edit CAD's own commands for the menus (edit_cad_commands.luc does the
+## work): Create Sketch on the selected face or an origin plane, Edit Sketch
+## and Show/Hide of the model's sketches (submenus, one entry a sketch,
+## rebuilt as the sketches change), and the selection's tools in Edit CAD
+## (the Edit kind's own commands, Actions.modeling, routed here).
+from luce_ui.ui import Command
+from interop import Connection
+from workspace import Workspace
+from tool_icons import asset_name
+import edit_cad_commands
+
+pub class EditCadActions:
+    let w: Workspace
+    ## Create Sketch on XY, XZ or YZ, and the submenu holding them with
+    ## Sketch on face.
+    pub let planes: list[Command]
+    pub let create_sketch: Command
+    ## The model's sketches: edit one, show or hide one.
+    pub let edit_sketch: Command
+    pub let show_sketch: Command
+    ## What the sketch submenus were last built for.
+    var built: str = ""
+    let connections: list[Connection]
+    ## The submenus' entries' connections, made again with them.
+    let entry_connections: list[Connection]
+
+    pub func init(self, w: Workspace, on_face: Command) -> unit!:
+        self.w = w
+        self.connections = []
+        self.entry_connections = []
+        self.planes = []
+        for (label, plane) in [("On XY plane", 0), ("On XZ plane", 1), ("On YZ plane", 2)]:
+            let chosen = plane
+            let command = Command(label, id = f"edit_cad_sketch_{plane}", icon = asset_name("Sketch"))
+            self.planes.append(command)
+            self.connections.append(command.on_trigger(func () -> unit!: edit_cad_commands.create_sketch(w, chosen)))
+        self.create_sketch = Command("Create Sketch", id = "edit_cad_create_sketch", icon = asset_name("Sketch"))
+        self.create_sketch.set_items([on_face] + self.planes)
+        self.edit_sketch = Command("Edit Sketch", id = "edit_cad_edit_sketch", icon = "pencil-tool")
+        self.show_sketch = Command("Show/Hide Sketch", id = "edit_cad_show_sketch", icon = "visible")
+
+    ## Follow the edited model: the commands apply while one is edited (not
+    ## one of its sketches); the sketch submenus list its sketches.
+    pub func refresh(self) -> unit!:
+        let modeling = edit_cad_commands.active(self.w) and not edit_cad_commands.sketching(self.w)
+        for command in self.planes:
+            command.set_enabled(modeling)
+        self.create_sketch.set_enabled(modeling)
+        let sketches = edit_cad_commands.sketches(self.w) if modeling else []
+        let names: list[str] = []
+        for s in sketches:
+            names.append(f"{s.name}{"" if s.visible else " (hidden)"}")
+        let key = names.join("|")
+        self.edit_sketch.set_enabled(sketches.length > 0)
+        self.show_sketch.set_enabled(sketches.length > 0)
+        if key == self.built:
+            return
+        self.built = key
+        for connection in self.entry_connections:
+            connection.disconnect()
+        self.entry_connections.clear()
+        let edits: list[Command] = []
+        let shows: list[Command] = []
+        for s in sketches:
+            let name = s.name
+            let edit = Command("Edit " + name, id = "edit_cad_edit_" + name, icon = "pencil-tool")
+            self.entry_connections.append(edit.on_trigger(func () -> unit!: edit_cad_commands.edit_sketch(self.w, name)))
+            edits.append(edit)
+            let show = Command(("Hide " if s.visible else "Show ") + name, id = "edit_cad_show_" + name, icon = "hidden" if s.visible else "visible")
+            self.entry_connections.append(show.on_trigger(func () -> unit!: edit_cad_commands.toggle_sketch(self.w, name)))
+            shows.append(show)
+        self.edit_sketch.set_items(edits)
+        self.show_sketch.set_items(shows)
+
+    pub func all(self) -> list[Command]:
+        return self.planes + [self.create_sketch, self.edit_sketch, self.show_sketch]
+
+    pub func close(self):
+        for connection in self.connections + self.entry_connections:
+            connection.disconnect()
+        self.connections.clear()
+        self.entry_connections.clear()

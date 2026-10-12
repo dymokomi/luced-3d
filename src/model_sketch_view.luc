@@ -1,0 +1,100 @@
+## The sketches of a displayed Edit CAD model in the viewport, as Fusion
+## shows a design's visible sketches: each sketch shown and not being edited
+## draws its curves on its plane (free ones blue, fully constrained ones
+## light, construction orange, projected purple), lifted a hair toward the
+## camera as the editor's are. Its curves come from the model's cook
+## (Node.sketch_state, edit_cad_sketches.state_of), drawn as line batches
+## made again only when that changes. The sketch under the pointer is lit
+## (`hovered`): the right-click menu then offers to edit or hide it, as
+## Fusion's does on a sketch's curve.
+from luce_gpu.gpu import RenderTarget
+from luce_cad.sketch import CadSketch
+from overlay_lines import OverlayLines
+from workspace import Workspace
+from sketch_source import ModelSketches
+import edit_cad
+import theme
+
+pub class ModelSketchView:
+    let w: Workspace
+    let models: ModelSketches
+    ## The batches (per sketch: free, fixed, construction, projected) and
+    ## what they were made from.
+    var batches: list[OverlayLines]
+    var drawn: str = ""
+    ## Each shown sketch's lines and name, for picking.
+    var picks: list[OverlayLines]
+    var pick_names: list[str]
+    ## The sketch under the pointer ("" none).
+    pub var hovered: str = ""
+
+    pub func init(self, w: Workspace):
+        self.w = w
+        self.models = ModelSketches()
+        self.batches = []
+        self.picks = []
+        self.pick_names = []
+
+    ## Draw the displayed Edit CAD node's visible sketches (but the one
+    ## edited).
+    pub func draw(self, target: RenderTarget) -> unit!:
+        let node = self.w.network.find(self.w.network.display) else return
+        if node.kind != edit_cad.kind_name or not node.enabled or node.sketch_state == "":
+            return
+        let edited = self.w.edit_sketch if node.id == self.w.edit_sketch_node else ""
+        let lift = self.w.view.distance * 0.0006
+        # Each sketch lifted toward the side of its plane the camera is on.
+        let eye = self.w.view.camera.projection(1.0).position
+        let sketches = self.models.of(node)
+        let sides: list[float] = []
+        for s in sketches:
+            sides.append(1.0 if eye.subtract(s.plane.origin).dot(s.plane.normal()) >= 0.0 else -1.0)
+        let key = f"{node.id}|{edited}|{lift}|{sides}|{node.sketch_state}"
+        if key != self.drawn:
+            self.drawn = key
+            self.batches = []
+            self.picks = []
+            self.pick_names = []
+            for which in 0..<4:
+                self.batches.append(OverlayLines.make())
+            for at in 0..<sketches.length:
+                let s = sketches[at]
+                if not s.visible or s.name == edited or s.text == "":
+                    continue
+                let sketch = CadSketch.parse(s.text)
+                sketch.analyze()
+                let origin = s.plane.origin.add(s.plane.normal().multiply_scalar(sides[at] * lift))
+                for which in 0..<3:
+                    self.batches[which].add_sketch(sketch, origin, s.plane.u, s.plane.v, which, unlinked = true)
+                for entity in 0..<sketch.entity_count():
+                    if sketch.linked(entity):
+                        self.batches[3].add_sketch(sketch, origin, s.plane.u, s.plane.v, 3, entity)
+                let all = OverlayLines.make()
+                for which in 0..<4:
+                    all.add_sketch(sketch, origin, s.plane.u, s.plane.v, which, unlinked = which < 3)
+                self.picks.append(all)
+                self.pick_names.append(s.name)
+        let colors = [theme.sketch_free(), theme.sketch_fixed(), theme.sketch_construction(), theme.sketch_projected()]
+        for which in 0..<self.batches.length:
+            if self.batches[which].count() > 0:
+                self.batches[which].batch().draw(self.w.view.camera, target, colors[which], 1.5)
+        if let at = self.pick_names.index_of(self.hovered):
+            self.picks[at].batch().draw(self.w.view.camera, target, theme.grey(245.0), 2.5)
+
+    ## The pointer at (`x`, `y`) of a viewport `width` by `height`: the
+    ## shown sketch nearest the camera within reach of it is hovered (only
+    ## while the model, not a sketch, is edited); whether that changed.
+    pub func hover(self, x: float, y: float, width: float, height: float) -> bool!:
+        var found = ""
+        let node = self.w.network.find(self.w.network.display)
+        if node != none and not self.w.sketching() and self.w.prompt == none:
+            var nearest = -1.0
+            for at in 0..<self.picks.length:
+                let depth = self.picks[at].pick(self.w.view.camera, x, y, width, height)
+                if depth >= 0.0 and (nearest < 0.0 or depth < nearest):
+                    nearest = depth
+                    found = self.pick_names[at]
+        let changed = found != self.hovered
+        self.hovered = found
+        self.w.hovered_sketch = found
+        return changed

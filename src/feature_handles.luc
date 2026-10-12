@@ -2,14 +2,18 @@
 ## manipulators, where its cook put them (handle_lines.luc, Node.handles):
 ## Extrude's arrow per side and its taper rings, Revolve's angle rings, the
 ## arrow of an Offset Face (Press Pull on a face) and of a Fillet's or
-## Chamfer's radius. Dragging one sets its value: an arrow's tip where the
-## pointer's ray passes nearest its line, snapped to the grid's 1, 2 or
+## Chamfer's radius. An arrow is drawn at least least_arrow points long, as
+## Fusion's manipulators keep their size on screen. Dragging one sets its
+## value: an arrow by how far along its line the pointer's ray passes since
+## the press, snapped to the grid's 1, 2 or
 ## 5 × 10ⁿ for the zoom; a taper ring's angle by how far it is pulled
 ## sideways (out: positive, Fusion's sign); an angle ring round its axis;
 ## whole degrees (Cmd or Ctrl drags freely). One undo step each; the worker
 ## cooks each step as the parameter panel's drags do. A click on a handle
 ## without dragging opens its value box there (panels.luc), the panel's
-## row, the box and the handle being one value.
+## row, the box and the handle being one value. In Edit CAD the same
+## handles drag the last step's values (its Extrude, Revolve, Offset Face,
+## Fillet, Chamfer or Shell), the step's tool bar and box being that value.
 from luce_ui.ui import Painter, Point, Event
 from luce_gpu.gpu import Rect, Color
 from luce_window.input import EventKind, Key
@@ -21,6 +25,7 @@ from snapping import grid_step, stepped
 from angles import radians, degrees
 import handle_lines
 import node_catalog
+from edit_kinds import is_edit
 import view_projection
 import theme
 from luce_std import math
@@ -29,6 +34,28 @@ from luce_std import math
 let reach = 12.0
 ## How far a taper ring stands beside its arrow, in points.
 let taper_gap = 36.0
+## The shortest an arrow is drawn, in points: Fusion's manipulators keep
+## their size on screen, so a small radius's arrow stays one to grab.
+let least_arrow = 44.0
+
+## What the handles set: the selected feature node's values, or the
+## displayed Edit CAD node's last step's numbers (`step`). `kind` names the
+## rows (the node's kind, the step's verb).
+pub class HandleTarget:
+    pub let node: Node
+    pub let kind: str
+    pub let values: list[float]
+    pub let step: bool
+
+    pub func init(self, node: Node, kind: str, values: list[float], step: bool):
+        self.node = node
+        self.kind = kind
+        self.values = values
+        self.step = step
+
+## The steps whose handles show in Edit CAD.
+pub func step_verbs() -> list[str]:
+    return ["Extrude", "Revolve", "Offset Face", "Fillet", "Chamfer", "Shell"]
 
 pub class FeatureHandles:
     let w: Workspace
@@ -41,6 +68,11 @@ pub class FeatureHandles:
     pub var dragging: bool = false
     ## Whether the drag moved (a press and release in place is a click).
     var moved: bool = false
+    ## Where along its line an arrow was pressed, and its value then: a drag
+    ## moves the value by how far the pointer goes (the arrow may be drawn
+    ## longer than its value).
+    var pressed_along: float = 0.0
+    var pressed_value: float = 0.0
     var pressed_x: float = 0.0
     var pressed_y: float = 0.0
     ## A handle clicked: its value box is wanted (panels reads and clears).
@@ -50,15 +82,24 @@ pub class FeatureHandles:
         self.w = w
         self.parsed = []
 
-    ## The selected feature, when its handles show: enabled, no prompt open.
-    func feature(self) -> Node?:
+    ## What the handles set, when they show: the selected feature (enabled,
+    ## no prompt open), or the edited Edit CAD model's last step.
+    pub func feature(self) -> HandleTarget?:
         let node = self.w.selected() else return none
-        if not (node.kind in ["Extrude", "Revolve", "Offset Face", "Fillet", "Chamfer"]) or not node.enabled or self.w.prompt != none:
+        if not node.enabled or self.w.prompt != none:
             return none
-        return node
+        if node.kind in ["Extrude", "Revolve", "Offset Face", "Fillet", "Chamfer"]:
+            return HandleTarget(node, node.kind, node.values, false)
+        if not is_edit(node.kind) or node.edits.length == 0 or node.id != self.w.network.display or self.w.sketching():
+            return none
+        let last = node.edits[-1]
+        if not (last.verb in step_verbs()):
+            return none
+        return HandleTarget(node, last.verb, last.numbers, true)
 
     ## Its handles, parsed once per report.
-    func handles(self, node: Node) -> list[HandleLine]!:
+    func handles(self, target: HandleTarget) -> list[HandleLine]!:
+        let node = target.node
         if node.handles != self.parsed_from:
             self.parsed = handle_lines.parse(node.handles)
             self.parsed_from = node.handles
@@ -72,7 +113,7 @@ pub class FeatureHandles:
         return self.handles(node).length > 0
 
     ## Handle `h`'s grip (the arrow's tip, the ring) in the world.
-    func grip(self, node: Node, h: HandleLine, width: float, height: float) -> Vector3!:
+    func grip(self, node: HandleTarget, h: HandleLine, width: float, height: float) -> Vector3!:
         let value = node.values[h.slot]
         if h.kind == "angle":
             let r = h.side.length()
@@ -82,14 +123,28 @@ pub class FeatureHandles:
         if h.kind == "taper":
             let (base, sideways, length, shift) = self.taper_frame(node, h, width, height)
             return base.add(sideways.multiply_scalar(shift + length * math.tan(radians(math.max(-80.0, math.min(80.0, value))))))
-        return h.foot.add(h.way.multiply_scalar(value * h.scale))
+        return h.foot.add(h.way.multiply_scalar(self.arrow_length(node.values[h.slot] * h.scale, h.foot, width, height)))
+
+    ## An arrow's length in the world for `length` (its value times its
+    ## scale), at least least_arrow points on screen at `foot`, its sign kept.
+    func arrow_length(self, length: float, foot: Vector3, width: float, height: float) -> float!:
+        let least = least_arrow * self.pixel(foot, width, height)
+        if math.abs(length) >= least:
+            return length
+        return -least if length < 0.0 else least
+
+    ## A point's size in the world at `at` on a viewport `width` by `height`.
+    func pixel(self, at: Vector3, width: float, height: float) -> float!:
+        let lens = self.w.view.camera.projection(math.max(1.0, width) / math.max(1.0, height))
+        let depth = math.max(lens.near, -at.subtract(lens.position).dot(lens.backward))
+        return 2.0 * depth / (lens.focal * math.max(1.0, height))
 
     ## A taper ring's frame: the arrow's tip it leans from, the way out
     ## (square to the arrow, toward the screen's right), the arrow's length,
     ## and the gap that keeps the ring beside the arrow (in world units).
-    func taper_frame(self, node: Node, h: HandleLine, width: float, height: float) -> (Vector3, Vector3, float, float)!:
+    func taper_frame(self, node: HandleTarget, h: HandleLine, width: float, height: float) -> (Vector3, Vector3, float, float)!:
         let lens = self.w.view.camera.projection(math.max(1.0, width) / math.max(1.0, height))
-        let length = math.abs(node.values[h.reference]) * h.scale
+        let length = math.abs(self.arrow_length(node.values[h.reference] * h.scale, h.foot, width, height))
         let base = h.foot.add(h.way.multiply_scalar(length))
         var sideways = lens.right.subtract(h.way.multiply_scalar(lens.right.dot(h.way)))
         if sideways.length() < 1e-6:
@@ -117,7 +172,7 @@ pub class FeatureHandles:
         return slot
 
     ## The handle near (`x`, `y`), or -1.
-    func near(self, node: Node, x: float, y: float, width: float, height: float) -> int!:
+    func near(self, node: HandleTarget, x: float, y: float, width: float, height: float) -> int!:
         let shown = self.handles(node)
         var best = -1
         var nearest = reach
@@ -171,27 +226,28 @@ pub class FeatureHandles:
             if at < 0:
                 return false
             self.hovered = at
-            self.w.begin(f"{node.kind} {self.label(node, shown[at]).lower()}")
+            self.w.begin(f"{node.kind} {self.row_name(node.kind, shown[at].slot).lower()}")
             self.dragging = true
             self.moved = false
+            let pressed = shown[at]
+            self.pressed_value = node.values[pressed.slot]
+            self.pressed_along = self.along(pressed, event.x, event.y, width, height)
             self.pressed_x = event.x
             self.pressed_y = event.y
             return true
         return false
 
-    ## The name of the row handle `h` sets.
-    pub func label(self, node: Node, h: HandleLine) -> str!:
-        return self.row_name(node, h.slot)
-
-    ## The name of `node`'s row on value slot `slot`.
-    pub func row_name(self, node: Node, slot: int) -> str!:
-        for row in node_catalog.parameters(node.kind):
+    ## The name of `kind`'s row on value slot `slot` (a node's or a step's).
+    pub func row_name(self, kind: str, slot: int) -> str!:
+        for row in node_catalog.parameters(kind):
             if row.slot == slot and row.valued():
                 return row.name
         return "Value"
 
-    ## Whether `node`'s value on `slot` is an angle (its handle a ring).
-    pub func is_angle(self, node: Node, slot: int) -> bool!:
+    ## Whether the value on `slot` of what the handles set is an angle (its
+    ## handle a ring).
+    pub func is_angle(self, slot: int) -> bool!:
+        let node = self.feature() else return false
         for h in self.handles(node):
             if h.slot == slot:
                 return h.kind != "arrow"
@@ -204,21 +260,13 @@ pub class FeatureHandles:
         return shown[0].slot if shown.length > 0 else -1
 
     ## Handle `h` dragged to the pointer at (`x`, `y`).
-    func drag_to(self, node: Node, h: HandleLine, x: float, y: float, width: float, height: float, snap: bool) -> unit!:
+    func drag_to(self, node: HandleTarget, h: HandleLine, x: float, y: float, width: float, height: float, snap: bool) -> unit!:
         var value = node.values[h.slot]
         if h.kind == "arrow":
-            let lens = self.w.view.camera.projection(math.max(1.0, width) / math.max(1.0, height))
-            let n = h.way
-            let r = view_projection.ray(self.w, x, y, width, height)
-            let gap = h.foot.subtract(lens.position)
-            let b = n.dot(r)
-            let c = r.dot(r)
-            let denominator = c - b * b
-            if math.abs(denominator) < 1e-9:
-                return
-            # The parameter along the arrow from its foot (n is a unit vector).
-            let t = (b * gap.dot(r) - c * n.dot(gap)) / denominator
-            value = stepped(t / h.scale, grid_step(self.w.view.distance), snap)
+            # Moved by how far along its line the pointer went since the
+            # press.
+            let t = self.along(h, x, y, width, height)
+            value = stepped(self.pressed_value + (t - self.pressed_along) / h.scale, grid_step(self.w.view.distance), snap)
         elif h.kind == "taper":
             let (base, sideways, length, shift) = self.taper_frame(node, h, width, height)
             let q = view_projection.plane(self.w, x, y, width, height, base, h.way.cross(sideways))
@@ -234,10 +282,35 @@ pub class FeatureHandles:
             value = stepped(turn, 1.0, snap)
         let values = node.values.copy()
         values[h.slot] = self.clamped(node, h.slot, value)
-        self.w.preview_parameters(values)
+        if node.step:
+            self.w.preview_step(values)
+        else:
+            self.w.preview_parameters(values)
+
+    ## Where along arrow `h`'s line (from its foot) the pointer's ray at
+    ## (`x`, `y`) passes nearest it.
+    func along(self, h: HandleLine, x: float, y: float, width: float, height: float) -> float!:
+        let lens = self.w.view.camera.projection(math.max(1.0, width) / math.max(1.0, height))
+        let n = h.way
+        let r = view_projection.ray(self.w, x, y, width, height)
+        let gap = h.foot.subtract(lens.position)
+        let b = n.dot(r)
+        let c = r.dot(r)
+        let denominator = c - b * b
+        if math.abs(denominator) < 1e-9:
+            return 0.0
+        # The parameter along the arrow from its foot (n is a unit vector).
+        return (b * gap.dot(r) - c * n.dot(gap)) / denominator
+
+    ## The least and most the row on `slot` of `kind` takes.
+    pub func range(self, kind: str, slot: int) -> (float, float)!:
+        for row in node_catalog.parameters(kind):
+            if row.slot == slot and row.valued():
+                return (row.minimum, row.maximum)
+        return (-1.0e12, 1.0e12)
 
     ## `value` within the range of the row on `slot`.
-    func clamped(self, node: Node, slot: int, value: float) -> float!:
+    func clamped(self, node: HandleTarget, slot: int, value: float) -> float!:
         for row in node_catalog.parameters(node.kind):
             if row.slot == slot and row.valued():
                 return math.max(row.minimum, math.min(row.maximum, value))
@@ -258,7 +331,7 @@ pub class FeatureHandles:
                 self.draw_angle(p, node, h, color, width, height)
 
     ## A shaft from the foot to the tip, a head, and the tip's handle.
-    func draw_arrow(self, p: Painter, node: Node, h: HandleLine, color: Color, width: float, height: float) -> unit!:
+    func draw_arrow(self, p: Painter, node: HandleTarget, h: HandleLine, color: Color, width: float, height: float) -> unit!:
         let foot = view_projection.project(self.w, h.foot, width, height)
         let tip = view_projection.project(self.w, self.grip(node, h, width, height), width, height)
         if foot[2] < 0.0 or tip[2] < 0.0:
@@ -277,7 +350,7 @@ pub class FeatureHandles:
 
     ## A thin line from beside the arrow's tip leaning by the angle, and a
     ## ring at its end.
-    func draw_taper(self, p: Painter, node: Node, h: HandleLine, color: Color, width: float, height: float) -> unit!:
+    func draw_taper(self, p: Painter, node: HandleTarget, h: HandleLine, color: Color, width: float, height: float) -> unit!:
         let (base, sideways, length, shift) = self.taper_frame(node, h, width, height)
         if length < 1e-9:
             return
@@ -291,7 +364,7 @@ pub class FeatureHandles:
         ring_at(p, ring[0], ring[1], color)
 
     ## An arc round the axis from the profiles to the ring.
-    func draw_angle(self, p: Painter, node: Node, h: HandleLine, color: Color, width: float, height: float) -> unit!:
+    func draw_angle(self, p: Painter, node: HandleTarget, h: HandleLine, color: Color, width: float, height: float) -> unit!:
         let r = h.side.length()
         let along = h.side.multiply_scalar(1.0 / math.max(r, 1e-12))
         let across = h.way.cross(along)

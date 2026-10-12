@@ -1,0 +1,113 @@
+## Edit CAD steps waiting for a pick (edit_cad_commands.luc starts them):
+## Replace Face's target face, Combine's tool bodies, Split Body's
+## splitting face, Revolve's axis (an edge here; a sketch line through
+## axis_pick.luc) and Extrude's To object face. The step is already the
+## recipe's last, failing until it has what it needs, so the model as the
+## steps before it left it shows to pick on; the pick goes into the step and
+## the prompt with the step is one undo step (Esc takes both away).
+from luce_geocore.geocore import Domain, Mesh, Selection
+from workspace import Workspace
+from node import Node
+from tool_prompt import ToolPrompt
+import edit_cad_faces
+import cad_features
+
+## The prompts Edit CAD's steps wait in.
+pub let target_label = "Pick target face"
+pub let tools_label = "Pick tool bodies"
+pub let splitting_label = "Pick splitting face"
+pub let axis_label = "Pick revolve axis"
+pub let object_label = "Pick extent face"
+
+## The last step waits for prompt `label` at level `level`: the model as
+## the steps before it left it shows, and what is picked goes into it.
+pub func wait_for(w: Workspace, node: Node, label: str, level: int, hint: str) -> unit!:
+    w.prompt = ToolPrompt(node.id, node.id, label, true)
+    w.adopt_level(level)
+    w.selection = none
+    w.pending_changed = true
+    say(w, hint)
+    w.rebuild()
+
+## Whether prompt `label` is one of Edit CAD's.
+pub func waits(label: str) -> bool:
+    return label in [target_label, tools_label, splitting_label, axis_label, object_label]
+
+## The selection changed while the last step waits: what was picked goes
+## into it (a face's name, the tool bodies' group, an edge as the axis);
+## a single pick finishes the prompt.
+pub func follow_pick(w: Workspace, node: Node, mesh: Mesh, chosen: Selection) -> unit!:
+    let prompt = w.prompt else return
+    if node.edits.length == 0:
+        return
+    let step = node.edits[-1]
+    let first = chosen.next(-1)
+    if prompt.label == tools_label:
+        if not w.on_domain(Domain.face):
+            return
+        node.edits[-1] = step.with_texts([chosen.expression(mesh) if chosen.count() > 0 else ""])
+        w.network.invalidate(node.id)
+        w.pending_changed = true
+        w.rebuild()
+        return
+    if first < 0:
+        return
+    if prompt.label == axis_label:
+        let references = mesh.find_attribute("cad_edge_reference", 4)
+        if references < 0 or not w.on_domain(Domain.edge):
+            return
+        let reference = mesh.attribute_text(references, first)
+        if reference == "":
+            say(w, "This edge has no name to keep")
+            return
+        set_axis(w, node, cad_features.edge_axis(reference))
+        return
+    let names = mesh.find_attribute("cad_face_name", 2)
+    if names < 0 or not w.on_domain(Domain.face):
+        return
+    let name = mesh.attribute_text(names, first)
+    if name == "":
+        say(w, "This face has no name to keep")
+        return
+    if prompt.label == object_label:
+        let texts = [step.text(0), step.text(1), step.text(2), step.text(3)]
+        texts[cad_features.face_text] = name
+        node.edits[-1] = step.with_texts(texts)
+    else:
+        node.edits[-1] = step.with_texts([name])
+        if step.verb == "Split Body":
+            let numbers = step.numbers.copy()
+            numbers[edit_cad_faces.split_tool_slot] = 0.0
+            node.edits[-1] = node.edits[-1].with_numbers(numbers)
+    finish_pick(w, node)
+
+## The waiting Revolve's axis: `axis` (a picked sketch line's or edge's).
+pub func set_axis(w: Workspace, node: Node, axis: str) -> unit!:
+    let step = node.edits[-1]
+    let texts = [step.text(0), step.text(1), step.text(2), step.text(3)]
+    texts[cad_features.axis_text] = axis
+    let numbers = step.numbers.copy()
+    numbers[cad_features.axis_slot] = 0.0
+    node.edits[-1] = step.with_texts(texts).with_numbers(numbers)
+    w.ask_value = false
+    finish_pick(w, node)
+
+## Enter while a step waits: kept as it stands (Combine's tools, a Split
+## Body by an origin plane chosen in the tool bar).
+pub func accept_pick(w: Workspace, node: Node) -> unit!:
+    finish_pick(w, node)
+
+## The pick is made: one undo step with the step it completes.
+func finish_pick(w: Workspace, node: Node) -> unit!:
+    w.network.invalidate(node.id)
+    w.prompt = none
+    w.peeking = false
+    w.selection = none
+    w.notice = ""
+    w.pending_changed = true
+    w.commit()
+    w.rebuild()
+
+func say(w: Workspace, text: str):
+    w.notice = text
+    w.revision += 1

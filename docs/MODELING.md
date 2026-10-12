@@ -321,18 +321,53 @@ Cone, Torus, Grid, Plane) as recipe steps: each new piece gets its own `path`
 Unconnected, an Edit Mesh starts from nothing.
 
 Edit CAD's levels are Object (a whole model), Faces (a B-rep face), Edges (a
-B-rep edge) and CVs (control vertices). Object, Faces and Edges pick on the
-models' display tessellations, tagged with their model, face and edge
+B-rep edge), CVs (control vertices) and Patch. Object, Faces and Edges pick on
+the models' display tessellations, tagged with their model, face and edge
 (luce-cad's `CadEdits.pick_mesh`), so a pick selects a whole model, face or
-edge; CVs pick on the control-vertex cloud. Whole models move, rotate, scale
-and delete; faces delete (a model losing every face goes); CVs move with the
-gizmo, Rotate, Scale, Noise, Flatten and Snap, and only the moved ones
-change. A moved boundary CV takes its trims along: they are re-projected
-onto the edited surface, and a face whose trims fold is left out with a
-warning instead of failing the node. Edges are filleted and chamfered by the
-Fillet and Chamfer nodes' own code, the tool bar holding the step's radius,
-continuity and Tangent chain. Its primitives
-are luce-cad's analytic solids: Box, Cylinder, Cone, Sphere and Torus.
+edge; CVs pick on the control-vertex cloud. A step that meshes the faces again
+keeps them selected (`CadEdits.carried`).
+
+Edit CAD is Fusion 360's direct modeling ("Do not capture design history"):
+every tool is a step on the model the steps before it made, nothing earlier
+changes when something later does, and each step is one undo that gives the
+model back exactly.
+
+- **Sketches are objects of the model** (luce-cad's `CadSketches`, a component
+  of the geometry set: name, text, plane, visibility; the Outliner lists them).
+  **Create Sketch** (right-click, A, Create) makes one on the selected flat
+  face, its loops projected once when it is made, or on an origin plane, and
+  edits it at once with the Sketch node's editor; **Finish Sketch** leaves it,
+  **Edit Sketch** edits one again, **Show/Hide Sketch** shows it or not.
+  Drawing changes the step that made the sketch while it is the recipe's last,
+  else adds an Edit Sketch step. Extrude and Revolve from the sketch (its
+  picked profiles, else its closed shapes) are steps with the nodes' rows,
+  arrows and value box; Auto cuts into a model, else joins the models it
+  touches, else makes a body. A feature hides its sketch, as Fusion's does,
+  and editing the sketch later leaves the feature as it was.
+- **Faces and bodies**: the gizmo's Move at the Faces level moves and turns
+  faces, the faces around following (whole models are placed at Object);
+  **Move/Copy**'s tool bar holds the distances, angles and Create copy;
+  **Press Pull** is Extrude in a sketch, Offset Face on faces and Fillet on
+  edges; **Offset Face**; **Delete** removes whole models and heals faces (a
+  hole, a boss, a fillet's or chamfer's strip, a corner: the faces around
+  extended to close the gap; refused with why otherwise); **Remove Faces**
+  leaves the model open; **Replace Face**, **Combine** and **Split Body** wait
+  for their target face, tool bodies or splitting face (Split Body may take an
+  origin plane from its tool bar); **Shell** opens the faces picked (a whole
+  model: a closed void), Inside, Outside or Both.
+- **Fillet and Chamfer** of picked edges run the nodes' own code, their radius
+  arrow and tool bar as the nodes'. CVs move with the gizmo, Rotate, Scale,
+  Noise, Flatten and Snap; a moved boundary CV takes its trims along.
+- Primitives are luce-cad's analytic solids: Box, Cylinder, Cone, Sphere and
+  Torus. Faces a step makes are named for its place in the recipe, so later
+  steps find them; an imported model's unnamed faces are named when the recipe
+  starts.
+
+The last step's handles, value box and tool bar rows are the nodes'; a step
+that cannot be built says why under its rows and on the node, while the model
+before it shows. The viewport's right-click menu offers what applies to what
+is selected; the A and S marking menus and Modify › CAD features hold the same
+tools (no plain key is taken for them).
 
 Edit SDF's one level, Object, picks whole primitives of the SDF program. It
 picks on proxies: each primitive's own shape placed by the transforms around
@@ -509,7 +544,8 @@ Z origin axis; the axis is projected onto the sketch's plane, as Fusion's
 Project Axis does. Type Partial or Full; Direction One side (toward the
 sketch's normal; a negative angle the other way), Two sides (an angle each
 way) or Symmetric (the angle each way, Fusion's). A Revolve made from the
-sketch (right-click, A, Create) asks for its axis at once.
+sketch (right-click, A, Create) asks for its axis at once; while it waits the
+node warns, showing the sketch, rather than failing.
 
 **Press Pull** (right-click, the S menu, Modify › CAD features) dispatches
 on the selection as Fusion's does: in a sketch it is Extrude; on faces an
@@ -540,7 +576,9 @@ Auto's choice, so the viewport never cooks to draw them): an arrow per
 Distance side of an Extrude, from its start along the normal, with a taper
 ring beside its tip (pulled sideways it sets the angle, out positive); an
 angle ring round a Revolve's axis per side; Offset Face's arrow on the
-face; a blend's radius arrow on its first edge, out of the corner. A drag
+face; a blend's radius arrow on its first edge, out of the corner. An arrow
+is drawn at least 44 points long, as Fusion's manipulators keep their size on
+screen, and a drag moves its value by how far the pointer goes along it. A drag
 sets the value (lengths snapped to the grid's 1, 2, 5 × 10ⁿ, angles to whole
 degrees; Cmd frees them), one undo step; a click on a handle opens its value
 box there, which a feature just made from the viewport opens by itself.

@@ -1,0 +1,313 @@
+## Edit CAD's sketches and the features made from them, Fusion 360's
+## direct modeling ("Do not capture design history"): a sketch is an object
+## of the model (luce-cad's CadSketches component), not a step's
+## parameters, and the steps make and change it.
+##   Sketch: a new sketch on an origin plane (moved Offset along its
+##     normal) or a flat face; on a face, the face's loops are projected
+##     once, when it is made (nothing re-cooks a direct model's sketch, so
+##     the projection is not live).
+##   Edit Sketch: the sketch's text replaced; its plane stays.
+##   Sketch Visibility: the sketch shown or hidden.
+##   Extrude, Revolve: the node's own code (cad_features.luc) on the
+##     sketch's profiles as the step finds them, combined with the models
+##     its Operation says (Auto: Fusion's, inside a model it cuts). A
+##     feature hides its sketch, as Fusion's does; editing the sketch later
+##     leaves the feature as it was.
+## The model's sketches travel to the editor as text (state_of), since the
+## compute worker holds the model, not the viewport.
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.cad_sketches import CadSketches
+from luce_cad.cad_edits import CadEdits
+from luce_cad.sketch import CadSketch
+from luce_cad.modeling import CadModeling
+from luce_cad.model import CadModel
+from luce_3d.graphics import Vector3
+from luce_geocore.geocore import GeometrySet
+from geometry_data import GeometryData
+from edit_operations import EditStep
+from handle_lines import HandleLine
+from sketch_node import SketchFrame, frame, face_plane, parse_state
+import cad_features
+import handle_lines
+from luce_ui import ui
+
+pub let sketch_verb = "Sketch"
+pub let edit_sketch_verb = "Edit Sketch"
+pub let visibility_verb = "Sketch Visibility"
+
+## A sketch step's texts: its CadSketch text, the face it is on (Face
+## plane), its name; its numbers: the plane (sketch_node's plane names)
+## and the offset.
+pub let text_slot = 0
+pub let face_slot = 1
+pub let name_slot = 2
+## Extrude's and Revolve's steps: the node's three texts, then the name of
+## the sketch whose profiles they take.
+pub let feature_sketch_slot = 3
+
+## A sketch of the model as the editor sees it.
+pub class SketchObject:
+    pub let name: str
+    pub let plane: SketchFrame
+    pub let text: str
+    pub let visible: bool
+
+    pub func init(self, name: str, plane: SketchFrame, text: str, visible: bool):
+        self.name = name
+        self.plane = plane
+        self.text = text
+        self.visible = visible
+
+## The sketches of `geometry`.
+pub func objects(geometry: GeometrySet) -> list[SketchObject]!:
+    let found: list[SketchObject] = []
+    for at in 0..<CadSketches.count(geometry):
+        let plane = SketchFrame(CadSketches.origin(geometry, at), CadSketches.u(geometry, at), CadSketches.v(geometry, at))
+        found.append(SketchObject(CadSketches.name(geometry, at), plane, CadSketches.text(geometry, at), CadSketches.visible(geometry, at)))
+    return found
+
+## The sketches of `data` as text for the editor (Node.sketch_state of an
+## Edit CAD node): per sketch a header line (`sketch <visible> <lines>
+## <name>`), its plane's line, then its text's lines.
+pub func state_of(data: GeometryData) -> str!:
+    let lines: list[str] = []
+    for s in objects(data.geometry):
+        let text_lines = s.text.split("\n") if s.text != "" else []
+        let f = s.plane
+        lines.append(f"sketch {1 if s.visible else 0} {text_lines.length} {s.name}")
+        lines.append(f"frame {f.origin.x} {f.origin.y} {f.origin.z} {f.u.x} {f.u.y} {f.u.z} {f.v.x} {f.v.y} {f.v.z}")
+        lines.extend(text_lines)
+    return lines.join("\n")
+
+## The sketches `text` (state_of's) describes; those that do not read are
+## left out.
+pub func parse_objects(text: str) -> list[SketchObject]!:
+    let found: list[SketchObject] = []
+    let lines = text.split("\n")
+    var at = 0
+    while at + 1 < lines.length:
+        let head = lines[at].split(" ")
+        if head.length < 4 or head[0] != "sketch":
+            return found
+        let count = int(head[2])
+        let name = head[3..].join(" ")
+        let numbers: list[float] = []
+        for word in lines[at + 1].split(" ")[1..]:
+            numbers.append(float(word))
+        if numbers.length != 9 or at + 2 + count > lines.length:
+            return found
+        let plane = SketchFrame(Vector3(numbers[0], numbers[1], numbers[2]), Vector3(numbers[3], numbers[4], numbers[5]), Vector3(numbers[6], numbers[7], numbers[8]))
+        found.append(SketchObject(name, plane, lines[at + 2..<at + 2 + count].join("\n"), head[1] == "1"))
+        at += 2 + count
+    return found
+
+## The sketch named `name` among `sketches`, or none.
+pub func named(sketches: list[SketchObject], name: str) -> SketchObject?:
+    for s in sketches:
+        if s.name == name:
+            return s
+    return none
+
+## The plane of the sketch edited in the node that made `data`: Edit CAD
+## sketch `name`'s (from its state), or a Sketch node's (`name` ""); none
+## when the cook says nothing of it.
+pub func edited_plane(data: GeometryData, name: str) -> SketchFrame?!:
+    if name == "":
+        let state = parse_state(data.sketch_state) else return none
+        return state.plane
+    let found = named(parse_objects(data.sketch_state), name) else return none
+    return found.plane
+
+## The name the next sketch of a recipe takes: Sketch1, Sketch2, … after
+## the sketches its steps made.
+pub func next_name(steps: list[EditStep]) -> str:
+    let taken: list[str] = []
+    for step in steps:
+        if step.verb == sketch_verb:
+            taken.append(step.text(name_slot))
+    var n = 1
+    while f"Sketch{n}" in taken:
+        n += 1
+    return f"Sketch{n}"
+
+## The step making sketch `name` on plane `plane` (an origin plane, or
+## Face: the face named `face`) moved `offset` along its normal.
+pub func sketch_step(name: str, plane: int, offset: float, face: str) -> EditStep:
+    return EditStep(sketch_verb, "", 0, [float(plane), offset], 0, texts = ["", face, name])
+
+## The step giving sketch `name` the text `text`.
+pub func edit_step(name: str, text: str) -> EditStep:
+    return EditStep(edit_sketch_verb, "", 0, [0.0], 0, texts = [text, "", name])
+
+## The step showing or hiding sketch `name`.
+pub func visibility_step(name: str, visible: bool) -> EditStep:
+    return EditStep(visibility_verb, "", 0, [1.0 if visible else 0.0], 0, texts = ["", "", name])
+
+## Extrude's or Revolve's step from sketch `name`'s profiles `keys` (none:
+## its closed shapes), with the node's starting `values`.
+pub func feature_step(kind: str, name: str, keys: str, values: list[float]) -> EditStep:
+    return EditStep(kind, "", 0, values, 0, texts = [keys, "", "", name])
+
+## Whether `verb` is one of the steps here.
+pub func is_sketch_step(verb: str) -> bool:
+    return verb in [sketch_verb, edit_sketch_verb, visibility_verb]
+
+pub func is_feature_step(verb: str) -> bool:
+    return verb in ["Extrude", "Revolve"]
+
+## A Sketch, Edit Sketch or Sketch Visibility step on `data`.
+pub func sketched(step: EditStep, data: GeometryData) -> GeometryData!:
+    let name = step.text(name_slot)
+    if name == "":
+        error(ui.invalid, "the sketch has no name")
+    let index = CadSketches.find(data.geometry, name)
+    if step.verb == sketch_verb:
+        if index >= 0:
+            error(ui.invalid, f"the model already has a sketch named {name}")
+        let plane = int(step.numbers[0])
+        let offset = step.numbers[1] if step.numbers.length > 1 else 0.0
+        let face = step.text(face_slot).trim()
+        let sketch = CadSketch.parse(step.text(text_slot))
+        var f = frame(plane, offset)
+        if plane == face_plane:
+            let (model, found) = face_frame(data, face)
+            f = SketchFrame(found.origin.add(found.normal().multiply_scalar(offset)), found.u, found.v)
+            # The face's loops, once: a direct model's sketch is not cast
+            # again (what is drawn on them names them by index).
+            if not sketch.projects_face(face):
+                _ = sketch.project_face(model, face, found.origin, found.u, found.v)
+        if sketch.entity_count() > 0 and not sketch.solve():
+            error(ui.invalid, "The sketch's constraints cannot all hold: remove one that conflicts")
+        return GeometryData(geometry = CadSketches.with_sketch(data.geometry, name, sketch.text(), f.origin, f.u, f.v))
+    if index < 0:
+        error(ui.invalid, f"the sketch {name} is not in the model")
+    if step.verb == visibility_verb:
+        return GeometryData(geometry = CadSketches.with_visible(data.geometry, name, step.numbers[0] != 0.0))
+    let sketch = CadSketch.parse(step.text(text_slot))
+    if sketch.entity_count() > 0 and not sketch.solve():
+        error(ui.invalid, "The sketch's constraints cannot all hold: remove one that conflicts")
+    return GeometryData(geometry = CadSketches.with_sketch(data.geometry, name, sketch.text(), CadSketches.origin(data.geometry, index), CadSketches.u(data.geometry, index), CadSketches.v(data.geometry, index)))
+
+## The model holding flat face `name` and the face's plane.
+func face_frame(data: GeometryData, name: str) -> (CadModel, SketchFrame)!:
+    if name == "":
+        error(ui.invalid, "Pick the face the sketch is on")
+    for model in data.models():
+        let found = CadModeling.face_frame(model, name)
+        if found.found:
+            return (model, SketchFrame(found.origin, found.u, found.v))
+    error(ui.invalid, "The sketch's face is not in the model, or not flat")
+
+## Extrude or Revolve step number `at` on `data`: from its sketch's
+## profiles, combined with the models by its Operation (Auto: Fusion's);
+## its handles stand where the node's do, and its sketch is hidden.
+pub func featured(step: EditStep, at: int, data: GeometryData) -> GeometryData!:
+    let name = step.text(feature_sketch_slot)
+    let index = CadSketches.find(data.geometry, name)
+    if index < 0:
+        error(ui.invalid, f"{step.verb} takes a sketch's profiles: the sketch {name} is not in the model")
+    let text = CadSketches.text(data.geometry, index)
+    let sketch = CadSketch.parse(text)
+    let curves = sketch.curves(CadSketches.origin(data.geometry, index), CadSketches.u(data.geometry, index), CadSketches.v(data.geometry, index))
+    let tag = f"#s{at}"
+    let v = step.numbers
+    let texts = [step.text(0), step.text(1), step.text(2)]
+    let bodies: GeometryData? = GeometryData(geometry = data.geometry) if data.has_cad() else none
+    var made: CadModel? = none
+    var probe: Vector3? = none
+    var handles: list[HandleLine] = []
+    if step.verb == "Extrude":
+        let profiles = GeometryData(geometry = curves)
+        made = cad_features.extruded(v, texts, profiles, tag, bodies)
+        let anchor = CadModeling.profile_anchor(curves, texts[0])
+        if anchor.found:
+            probe = cad_features.extrude_probe(v, texts, anchor)
+            handles = cad_features.extrude_handles(v, texts, anchor)
+    else:
+        # A body edge as the axis: the model it is on goes with the curves.
+        let profiles = revolve_input(curves, texts, data)
+        let (solid, middle) = cad_features.revolved(v, texts, profiles, tag, text)
+        made = solid
+        probe = middle
+        handles = cad_features.revolve_handles(v, texts, profiles, text)
+    let body = made else error(ui.invalid, f"{step.verb} made nothing")
+    var operation = int(v[cad_features.operation_slot]) - 1
+    var chosen = ""
+    if int(v[cad_features.operation_slot]) == 0:
+        operation = 0
+        if let point = probe:
+            operation = automatic(data, point)
+        chosen = ["New body", "Join", "Cut", "Intersect"][operation]
+    if operation != 0 and not data.has_cad():
+        error(ui.invalid, "Join, Cut and Intersect need a model to act on: make one first, or choose New body")
+    let result = GeometryData(geometry = CadSketches.with_visible(operated(body, data, operation).geometry, name, false))
+    result.automatic = chosen
+    result.handles = handle_lines.encode(handles)
+    return result
+
+## What Revolve reads: the sketch's curves, with the model whose edge is the
+## axis when a body edge is.
+func revolve_input(curves: GeometrySet, texts: list[str], data: GeometryData) -> GeometryData!:
+    let profiles = GeometryData(geometry = curves)
+    let axis = texts[cad_features.axis_text].trim()
+    if not axis.starts_with("edge "):
+        return profiles
+    for model in data.models():
+        if CadModeling.edge_axis(model, axis[5..<axis.length]).found:
+            return profiles.merged(GeometryData(geometry = CadGeometry.of_model(model)))
+    error(ui.invalid, "The axis edge is no longer in the model: pick the axis again")
+
+## Auto's choice: inside a model at `probe` it cuts, else it joins when
+## there are models, else it is a new body (0 new, 1 join, 2 cut).
+func automatic(data: GeometryData, probe: Vector3) -> int!:
+    if not data.has_cad():
+        return 0
+    for model in data.models():
+        if CadModeling.inside(model, probe):
+            return 2
+    return 1
+
+## `made` combined with `data`'s models by `operation` (0 a new body, 1
+## join, 2 cut, 3 intersect), Fusion's way: Join merges it with the models
+## it touches into one, the others stay apart; Cut cuts every model it
+## reaches; Intersect keeps what it shares with the models it reaches.
+## Models it does not reach stay as they were.
+pub func operated(made: CadModel, data: GeometryData, operation: int) -> GeometryData!:
+    if operation == 0:
+        return GeometryData(geometry = CadEdits.with_model(data.geometry, made))
+    let models = data.models()
+    let kept: list[CadModel] = []
+    if operation == 1:
+        var merged = made
+        var joined_at = -1
+        for at in 0..<models.length:
+            let union = CadModeling.combined(models[at], merged, 0)
+            if CadModeling.lump_count(union) < CadModeling.lump_count(models[at]) + CadModeling.lump_count(merged):
+                merged = union
+                if joined_at < 0:
+                    joined_at = kept.length
+                continue
+            kept.append(models[at])
+        if joined_at < 0:
+            return with_models(data, kept + [merged])
+        return with_models(data, kept[..<joined_at] + [merged] + kept[joined_at..])
+    var reached = false
+    for model in models:
+        let union = CadModeling.combined(model, made, 0)
+        if CadModeling.lump_count(union) == CadModeling.lump_count(model) + CadModeling.lump_count(made):
+            kept.append(model)
+            continue
+        reached = true
+        let piece = CadModeling.combined(model, made, operation - 1)
+        if piece.face_count() > 0:
+            kept.append(piece)
+    if not reached:
+        error(ui.invalid, "Cut and Intersect: the new body does not reach any model")
+    return with_models(data, kept)
+
+## `data` with `models` in place of its models (its sketches kept).
+pub func with_models(data: GeometryData, models: list[CadModel]) -> GeometryData!:
+    var geometry = data.geometry.without("cad")
+    for model in models:
+        geometry = CadEdits.with_model(geometry, model)
+    return GeometryData(geometry = geometry)

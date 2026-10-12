@@ -3,6 +3,8 @@
 ##     picked profiles) and Finish Sketch (A), MODIFY (S) and CONSTRAINTS
 ##     (D);
 ##   an Edit node: its primitives (A) and its tools (S), steps inside it;
+##     Edit CAD's A leads with Create Sketch (on the selected face, or an
+##     origin plane) and Extrude face, its S with Press Pull;
 ##   inside a CAD node: both lead with Repeat and the CAD tool used last
 ##     (Fusion's marking menu puts Repeat first); sketches, extrusions and
 ##     solids (A, Sketch on face and Extrude face first with a face
@@ -20,12 +22,21 @@ from luce_ui.ui import Command
 import sketch_tools
 from sketch_tools import SketchTool
 import cad_nodes
+import edit_cad_commands
 import sketch_node
 
 ## Create (A).
 pub func create_items(w: Workspace, actions: Actions, add: func(str) -> unit!, sketch: SketchEditor) -> list[MarkItem]:
     if w.sketching():
         return sketch_items(sketch, 0) + command_items([actions.extrude_profiles, actions.revolve_profiles, actions.finish_sketch])
+    if edit_cad_commands.active(w):
+        # Edit CAD: sketches first (Sketch on face with a face selected),
+        # then its primitives.
+        let model = actions.model
+        let first = command_items([actions.sketch_on_face]) if actions.sketch_on_face.is_enabled() else command_items([model.planes[1]])
+        let sketching = MarkItem("Create Sketch", first[0].icon, true, first[0].run, variants = command_items([actions.sketch_on_face] + model.planes))
+        let rest = command_items([actions.extrude_face]) if actions.extrude_face.is_enabled() else no_items()
+        return model_repeat(w, actions, add) + [sketching] + rest + command_items(actions.create_commands())
     if w.editing():
         return command_items(actions.create_commands())
     let context = w.network.context()
@@ -42,6 +53,17 @@ pub func create_items(w: Workspace, actions: Actions, add: func(str) -> unit!, s
 pub func modify_items(w: Workspace, actions: Actions, add: func(str) -> unit!, sketch: SketchEditor) -> list[MarkItem]:
     if w.sketching():
         return sketch_items(sketch, 1)
+    if edit_cad_commands.active(w):
+        # Edit CAD: Press Pull on what is selected, then the model's tools
+        # the level takes.
+        let pull = command_items([actions.press_pull]) if actions.press_pull.is_enabled() else no_items()
+        let offered: list[Command] = []
+        for command in actions.modify_commands():
+            let available = w.tool_available(command.text()) catch failure:
+                recover false
+            if available:
+                offered.append(command)
+        return model_repeat(w, actions, add) + pull + command_items(offered)
     if w.editing():
         return command_items(actions.modify_commands())
     let context = w.network.context()
@@ -74,6 +96,13 @@ func repeat_items(w: Workspace, actions: Actions, add: func(str) -> unit!) -> li
             let icon = command.icon() if command.icon() != "" else asset_name(w.last_cad_name)
             result.append(MarkItem(label, icon, command.is_enabled(), func () -> unit!: chosen.trigger()))
     return result
+
+## Repeat in an Edit CAD model: the last tool or command (a node added in
+## the network is no step, so it is not offered here).
+func model_repeat(w: Workspace, actions: Actions, add: func(str) -> unit!) -> list[MarkItem]:
+    if w.last_cad_tool.starts_with("add_"):
+        return no_items()
+    return repeat_items(w, actions, add)
 
 ## Constraints (D, in a sketch).
 pub func constraint_items(sketch: SketchEditor) -> list[MarkItem]:

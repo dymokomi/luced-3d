@@ -1,0 +1,202 @@
+## Edit CAD's direct modeling steps on faces and bodies, Fusion 360's
+## Modify tools with "Do not capture design history": each is one luce-cad
+## operation on the model as the steps before it left it, on what the step's
+## group names on that model's pick geometry (picked faces by their names,
+## models by their index).
+##   Move (the gizmo, Move/Copy): models named whole are placed; faces of a
+##     model named in part are moved and turned, the faces around following
+##     (Move Face); Create copy leaves the models where they were and adds
+##     the moved copies.
+##   Offset Face (Press Pull on faces): along their normals, tangent faces
+##     following.
+##   Delete: whole models go; faces are deleted and healed, the faces around
+##     extended to close the gap (Fusion's Delete); Remove Faces takes them
+##     away and leaves the model open.
+##   Replace Face: the faces moved onto a target face's surface.
+##   Shell: hollowed, the faces named opened (a whole model: a closed void).
+##   Combine: the target model joined with, cut by or intersected with the
+##     tool models (kept with Keep tools).
+##   Split Body: a model split by a picked face's surface or an origin
+##     plane, each piece a model of its own.
+from luce_cad.cad_edits import CadEdits
+from luce_cad.modeling import CadModeling, CadDirect
+from luce_cad.model import CadModel
+from luce_geocore.geocore import Mesh
+from luce_3d.graphics import Vector3
+from geometry_data import GeometryData
+from edit_operations import EditStep
+from handle_lines import HandleLine
+from edit_cad_sketches import with_models
+import handle_lines
+from luce_ui import ui
+
+## The direct modeling steps here, by verb.
+pub func face_verbs() -> list[str]:
+    return ["Offset Face", "Delete", "Remove Faces", "Replace Face", "Shell", "Combine", "Split Body"]
+
+## Transform Components' number after its fifteen that says Create copy.
+pub let copy_slot = 15
+## Replace Face's and Split Body's texts: the face picked as the target or
+## splitting tool (by name); Combine's: the tool models' group.
+pub let target_text = 0
+## Shell's numbers: thickness, direction (0 inside, 1 outside, 2 both).
+pub let thickness_slot = 0
+pub let shell_side_slot = 1
+## Combine's numbers: operation (0 join, 1 cut, 2 intersect), keep tools.
+pub let combine_slot = 0
+pub let keep_tools_slot = 1
+## Split Body's numbers: the tool (0 the picked face, 1 XY, 2 XZ, 3 YZ)
+## and an origin plane's offset along its normal.
+pub let split_tool_slot = 0
+pub let split_offset_slot = 1
+
+## The pick geometry step `step` was selected on: `data`'s, when the
+## models are as they were then.
+pub func picked(step: EditStep, data: GeometryData, pick: func(GeometryData) -> Mesh!) -> Mesh!:
+    let shown = pick(data)
+    if step.topology != 0 and step.topology != shown.topology_hash():
+        error(ui.invalid, "The CAD input changed. Undo the upstream change or clear this node's edits.")
+    return shown
+
+## A face step (face_verbs, or a move) number `at` on `data`; `shown` is
+## the pick geometry its group was selected on.
+pub func run_face_step(step: EditStep, at: int, data: GeometryData, shown: Mesh) -> GeometryData!:
+    if step.verb == "Transform Components":
+        return moved(step, data, shown)
+    if step.verb == "Combine":
+        return combined(step, data, shown)
+    if step.verb == "Remove Faces":
+        return GeometryData(geometry = CadEdits.without_parts(data.geometry, shown, step.group))
+    let models = data.models()
+    let result: list[CadModel] = []
+    var any = false
+    var handles: list[HandleLine] = []
+    for index in 0..<models.length:
+        let model = models[index]
+        let share = CadEdits.model_share(shown, step.group, index)
+        if share == 0:
+            result.append(model)
+            continue
+        any = true
+        let names = CadEdits.model_faces(shown, step.group, index)
+        if step.verb == "Delete":
+            # A whole model goes; faces are healed over.
+            if share == 1:
+                result.append(CadDirect.deleted_faces(model, names))
+            continue
+        if step.verb == "Offset Face":
+            if share == 2:
+                error(ui.invalid, "Offset Face moves faces: pick them at the Faces level")
+            result.append(CadDirect.offset_faces(model, names, step.numbers[0], true))
+            if handles.length == 0:
+                handles = arrow(model, names, 0, 1.0)
+            continue
+        if step.verb == "Replace Face":
+            let target = step.text(target_text).trim()
+            if target == "":
+                error(ui.invalid, "Pick the target face to replace the faces with")
+            result.append(CadDirect.replaced_faces(model, names, target_model(models, target), target))
+            continue
+        if step.verb == "Shell":
+            let removed = names if share == 1 else ""
+            let side = int(step.numbers[shell_side_slot])
+            result.append(CadModeling.shelled(model, removed, step.numbers[thickness_slot], f"#s{at}", side))
+            if handles.length == 0 and removed != "":
+                handles = arrow(model, removed, thickness_slot, -1.0 if side == 0 else 1.0)
+            continue
+        if step.verb == "Split Body":
+            result.extend(split(step, at, model, models))
+            continue
+        error(ui.invalid, f"{step.verb} does not apply to CAD models or faces")
+    if not any:
+        error(ui.invalid, f"{step.verb}: pick what it works on first")
+    let made = with_models(data, result)
+    made.handles = handle_lines.encode(handles)
+    return made
+
+## An arrow on the first of faces `names` of `model`, along its outward
+## normal (`scale` -1: into the model), for the value in `slot`.
+func arrow(model: CadModel, names: str, slot: int, scale: float) -> list[HandleLine]!:
+    let at = CadModeling.face_point(model, names.split(";")[0].trim())
+    if not at.found:
+        return []
+    return [HandleLine("arrow", slot, scale, at.point, at.normal, -1, Vector3())]
+
+## The model holding face `name`.
+func target_model(models: list[CadModel], name: str) -> CadModel!:
+    for model in models:
+        if CadModeling.face_point(model, name).found:
+            return model
+    error(ui.invalid, "The target face is no longer in the model: pick it again")
+
+## Split Body: `model` split by the picked face's surface or an origin
+## plane, each lump a model of its own.
+func split(step: EditStep, at: int, model: CadModel, models: list[CadModel]) -> list[CadModel]!:
+    let tool = int(step.numbers[split_tool_slot])
+    let tag = f"#s{at}"
+    var made = model
+    if tool == 0:
+        let face = step.text(target_text).trim()
+        if face == "":
+            error(ui.invalid, "Pick the splitting face, or choose an origin plane as the splitting tool")
+        made = CadModeling.split_by_face(model, target_model(models, face), face, tag)
+    else:
+        let normal = [Vector3(0.0, 0.0, 1.0), Vector3(0.0, 1.0, 0.0), Vector3(1.0, 0.0, 0.0)][tool - 1]
+        made = CadModeling.split_by_plane(model, normal.multiply_scalar(step.numbers[split_offset_slot]), normal, tag)
+    let pieces: list[CadModel] = []
+    for lump in 0..<CadModeling.lump_count(made):
+        pieces.append(CadModeling.lump(made, lump))
+    if pieces.length < 2:
+        error(ui.invalid, "The splitting tool does not cut through the body")
+    return pieces
+
+## A move: models named whole placed, faces of models named in part moved
+## and turned (luce-cad's CadEdits.transformed_faces); with Create copy the
+## moved models are copies beside the originals (faces are not copied).
+func moved(step: EditStep, data: GeometryData, shown: Mesh) -> GeometryData!:
+    let copying = step.numbers.length > copy_slot and step.numbers[copy_slot] != 0.0
+    let numbers = step.numbers[..<copy_slot] if step.numbers.length > copy_slot else step.numbers
+    let placed = GeometryData(geometry = CadEdits.transformed_faces(data.geometry, shown, step.group, numbers))
+    if not copying:
+        return placed
+    let before = data.models()
+    let after = placed.models()
+    let copies: list[CadModel] = []
+    for index in 0..<before.length:
+        let share = CadEdits.model_share(shown, step.group, index)
+        if share == 1:
+            error(ui.invalid, "Create copy copies bodies: pick them at the Object level")
+        if share == 2:
+            copies.append(CadModeling.prefixed(after[index], f"#copy{before.length + copies.length}:"))
+    if copies.length == 0:
+        error(ui.invalid, "Move/Copy: pick the bodies first")
+    return with_models(data, before + copies)
+
+## Combine: the target model (the step's group) with the tool models (its
+## target text's group) by the operation; the tools go unless kept.
+func combined(step: EditStep, data: GeometryData, shown: Mesh) -> GeometryData!:
+    let models = data.models()
+    var target = -1
+    let tools: list[int] = []
+    for index in 0..<models.length:
+        if CadEdits.model_share(shown, step.group, index) > 0:
+            if target < 0:
+                target = index
+        elif step.text(target_text) != "" and CadEdits.model_share(shown, step.text(target_text), index) > 0:
+            tools.append(index)
+    if target < 0:
+        error(ui.invalid, "Combine: pick the target body first")
+    if tools.length == 0:
+        error(ui.invalid, "Pick the tool bodies to combine with the target")
+    var body = models[target]
+    for index in tools:
+        body = CadModeling.combined(body, models[index], int(step.numbers[combine_slot]))
+    let keep = step.numbers.length > keep_tools_slot and step.numbers[keep_tools_slot] != 0.0
+    let result: list[CadModel] = []
+    for index in 0..<models.length:
+        if index == target:
+            if body.face_count() > 0:
+                result.append(body)
+        elif keep or not (index in tools):
+            result.append(models[index])
+    return with_models(data, result)

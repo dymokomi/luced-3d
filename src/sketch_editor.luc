@@ -46,6 +46,8 @@ from workspace import Workspace
 from sketch_node import SketchFrame, node_frame
 from sketch_frames import FrameCache, look_at
 from sketch_projecting import SketchProjecting
+from sketch_source import ModelSketches
+import sketch_source
 import sketch_tools
 import sketch_kinds
 from sketch_kinds import on_curve, midpoint, point_kind, line_kind
@@ -61,10 +63,14 @@ pub let snap_reach = 9.0
 
 pub class SketchEditor:
     pub let w: Workspace
-    ## The node edited and the text the live sketch was read from.
+    ## The node edited, the Edit CAD sketch's name ("" a Sketch node's),
+    ## both as one key, and the text the live sketch was read from.
     pub var node: int = -1
+    pub var name: str = ""
+    var edited: str = ""
     var text: str = ""
-    var values: list[float]
+    ## An Edit CAD node's sketches as its cook reported them.
+    pub let models: ModelSketches
     pub var sketch: CadSketch? = none
     pub var frame: SketchFrame
     pub let frames: FrameCache
@@ -159,7 +165,7 @@ pub class SketchEditor:
     pub var landed: list[float]
     ## A click in the viewport (an open value box closes).
     pub var on_click: func() -> unit!? = none
-    var node_was: int = -1
+    var edited_was: str = ""
     pub var pointer_x: float = 0.0
     pub var pointer_y: float = 0.0
     ## Screen size of the last event, and the reach of a snap in sketch units.
@@ -171,7 +177,7 @@ pub class SketchEditor:
         self.text_at = []
         self.lost = []
         self.w = w
-        self.values = []
+        self.models = ModelSketches()
         self.frame = node_frame([1.0, 0.0])
         self.frames = FrameCache()
         self.projecting = SketchProjecting()
@@ -198,34 +204,25 @@ pub class SketchEditor:
     pub func active(self) -> bool:
         return self.w.sketching()
 
-    ## Read the node again when it is another node, or its text or plane
-    ## changed (an undo, the parameter panel).
+    ## Read the sketch again when it is another sketch, or its text or plane
+    ## changed (an undo, the parameter panel, a cook casting it again).
     pub func sync(self) -> unit!:
         let node = self.w.selected() else return
+        let source = sketch_source.source_of(self.w, self.frames, self.models, node)
+        let which = f"{node.id}/{source.name}"
         # The plane follows its face as the body upstream changes.
-        let frame = self.frames.frame(node)
-        if not frame.equals(self.frame):
-            let moved = self.sketch != none and node.id == self.node
-            self.frame = frame
+        if not source.plane.equals(self.frame):
+            let moved = self.sketch != none and which == self.edited
+            self.frame = source.plane
             self.revision += 1
             # A new plane (a face picked): look straight at it.
             if moved:
                 self.look_at()
-        # The text edited: the node's, or as its cook cast it again
-        # (projections following the body, a face's loops projected); the
-        # curves whose links were lost.
-        var source = node.texts[0]
-        if node.id != self.node:
-            self.lost = []
-        if let state = self.frames.state(node):
-            self.lost = state.lost
-            if state.text != "":
-                source = state.text
-        let same = node.id == self.node and source == self.text and node.values[0] == (self.values + [0.0])[0] and node.values[1] == (self.values + [0.0, 0.0])[1]
-        if same and self.sketch != none:
+        self.lost = source.lost
+        if which == self.edited and source.text == self.text and self.sketch != none:
             return
         # Another sketch than the one edited: its tool and selection go.
-        if node.id != self.node and self.node >= 0:
+        if which != self.edited and self.edited != "":
             self.reset_tool()
             self.selection = []
             self.constraint_selection = []
@@ -240,13 +237,14 @@ pub class SketchEditor:
         self.snap = -1
         self.reset_tool()
         self.node = node.id
-        self.text = source
-        self.values = [node.values[0], node.values[1]]
+        self.name = source.name
+        self.text = source.text
         let sketch = CadSketch.parse(self.text)
         _ = sketch.solve()
         sketch.analyze()
-        let entering = self.sketch == none or self.node_was != node.id
-        self.node_was = node.id
+        let entering = self.sketch == none or self.edited_was != which
+        self.edited_was = which
+        self.edited = which
         self.sketch = sketch
         if entering:
             self.look_at()
@@ -293,18 +291,15 @@ pub class SketchEditor:
         self.w.notice = text
         self.w.revision += 1
 
-    ## Write the live sketch to the node as one undo step.
+    ## Write the live sketch back as one undo step (the Sketch node's text,
+    ## or the Edit CAD sketch's step: sketch_source.write).
     pub func commit(self, label: str) -> unit!:
         let sketch = self.sketch else return
         let node = self.w.network.find(self.node) else return
         let text = sketch.text()
         self.conflicts = []
-        if text == node.texts[0]:
+        if not sketch_source.write(self.w, node, self.name, text, label):
             return
-        self.w.perform(label, func () -> unit!:
-            node.texts[0] = text
-            self.w.network.invalidate(node.id)
-            self.w.rebuild())
         self.text = text
         sketch.analyze()
         self.revision += 1

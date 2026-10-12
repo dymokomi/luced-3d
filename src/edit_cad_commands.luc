@@ -1,0 +1,249 @@
+## Edit CAD's commands, Fusion 360's direct modeling from the viewport: the
+## right-click menu, the A and S marking menus and Modify › CAD features run
+## these while an Edit CAD node is edited (cad_commands.luc sends them
+## here). Each adds a step to the node's recipe as one undo step and says
+## why when it does not apply.
+##   Create Sketch: on the selected flat face (its loops projected once),
+##     else on an origin plane; the sketch is edited at once (the same
+##     Sketch editor), Finish Sketch leaves it. Edit Sketch edits a sketch
+##     of the model again, Show or Hide sketch shows it or not.
+##   Extrude, Revolve (in a sketch): a step taking the picked profiles (none:
+##     the closed shapes); Extrude's distance box opens by its arrow,
+##     Revolve waits for its axis.
+##   Press Pull dispatches as Fusion's: profiles in a sketch Extrude, faces
+##     Offset Face, edges Fillet. Extrude face: a sketch on the face and an
+##     Extrude of its loops.
+##   Offset Face, Fillet, Chamfer, Shell: a step on the selection, its value
+##     box by its arrow. Replace Face, Combine and Split Body then wait for
+##     what they need: the target face, the tool bodies (Enter finishes),
+##     the splitting face (or an origin plane from the tool bar).
+##   Move/Copy: the Move tool on the selection; its tool bar holds the
+##     distances, the angles and Create copy.
+from luce_geocore.geocore import Domain
+from workspace import Workspace
+from node import Node
+from edit_types import object_level, edge_level, face_level
+from edit_cad_sketches import SketchObject, sketch_step, feature_step, visibility_step, next_name
+from edit_cad_picks import wait_for, target_label, tools_label, splitting_label, axis_label, object_label
+from sketch_node import face_plane
+import edit_cad
+import edit_cad_sketches
+import modeling_commands
+import node_catalog
+
+## The Edit CAD node being edited in the viewport (its model, or one of
+## its sketches), or none.
+pub func model_node(w: Workspace) -> Node?:
+    let node = w.selected() else return none
+    if node.kind != edit_cad.kind_name or not node.enabled or node.id != w.network.display:
+        return none
+    return node
+
+## Whether the commands here apply: an Edit CAD node is edited.
+pub func active(w: Workspace) -> bool:
+    return model_node(w) != none
+
+## Whether one of its sketches is being edited.
+pub func sketching(w: Workspace) -> bool:
+    let node = model_node(w) else return false
+    return w.sketching_model(node)
+
+## The model's sketches as its last cook reported them.
+pub func sketches(w: Workspace) -> list[SketchObject]!:
+    let node = model_node(w) else return []
+    return edit_cad_sketches.parse_objects(node.sketch_state)
+
+# -- Sketches.
+
+## Create Sketch: on the selected flat face, else on origin plane `plane`
+## (sketch_node's: 0 XY, 1 XZ, 2 YZ); edited at once.
+pub func create_sketch(w: Workspace, plane: int = 1) -> unit!:
+    let node = model_node(w) else return
+    let faces = selected_faces(w)
+    let name = next_name(node.edits)
+    let face = faces[0] if faces.length > 0 else ""
+    w.perform("Create Sketch", func () -> unit!:
+        node.edits.append(sketch_step(name, face_plane if face != "" else plane, 0.0, face))
+        w.network.invalidate(node.id)
+        start_editing(w, node, name)
+        w.rebuild())
+
+## Edit sketch `name` of the model again (the editor looks straight at it).
+pub func edit_sketch(w: Workspace, name: str) -> unit!:
+    let node = model_node(w) else return
+    start_editing(w, node, name)
+    w.rebuild()
+
+func start_editing(w: Workspace, node: Node, name: str):
+    w.edit_sketch = name
+    w.edit_sketch_node = node.id
+    w.selection = none
+    w.sketch_profiles = []
+    w.end_modal_tool()
+    w.revision += 1
+
+## Finish Sketch: back to the model.
+pub func finish_sketch(w: Workspace) -> unit!:
+    w.edit_sketch = ""
+    w.edit_sketch_node = -1
+    w.sketch_profiles = []
+    w.selection = none
+    w.revision += 1
+    w.rebuild()
+
+## Show or hide sketch `name` (one undo step).
+pub func toggle_sketch(w: Workspace, name: str) -> unit!:
+    let node = model_node(w) else return
+    var visible = true
+    for s in sketches(w):
+        if s.name == name:
+            visible = s.visible
+    w.perform(("Hide " if visible else "Show ") + name, func () -> unit!:
+        node.edits.append(visibility_step(name, not visible))
+        w.network.invalidate(node.id)
+        w.rebuild())
+
+## Extrude or Revolve (`kind`) of the edited sketch's picked profiles (none
+## picked: its closed shapes); the sketch is finished. Extrude's distance
+## box opens by its arrow; Revolve waits for its axis.
+pub func feature_from_sketch(w: Workspace, kind: str) -> unit!:
+    let node = model_node(w) else return
+    if not w.sketching_model(node):
+        return
+    let name = w.edit_sketch
+    let keys = w.sketch_profiles.join(";")
+    if kind == "Revolve":
+        w.begin("Revolve")
+    w.perform(kind, func () -> unit!:
+        node.edits.append(feature_step(kind, name, keys, node_catalog.starting_values(kind)))
+        w.network.invalidate(node.id)
+        w.edit_sketch = ""
+        w.edit_sketch_node = -1
+        w.sketch_profiles = []
+        w.selection = none
+        w.ask_value = kind == "Extrude"
+        w.rebuild())
+    if kind == "Revolve":
+        wait_for(w, node, axis_label, edge_level, "Click the axis: a line of the sketch, or a straight or round edge; Esc cancels")
+
+## Extrude face: a sketch on the selected flat face (its loops projected)
+## and an Extrude of its closed shapes, one undo step.
+pub func extrude_face(w: Workspace) -> unit!:
+    let node = model_node(w) else return
+    let faces = selected_faces(w)
+    if faces.length == 0:
+        say(w, "Extrude face: select a flat face (the Faces level) first")
+        return
+    let name = next_name(node.edits)
+    w.perform("Extrude face", func () -> unit!:
+        node.edits.append(sketch_step(name, face_plane, 0.0, faces[0]))
+        node.edits.append(feature_step("Extrude", name, "", node_catalog.starting_values("Extrude")))
+        w.network.invalidate(node.id)
+        w.selection = none
+        w.ask_value = true
+        w.rebuild())
+
+# -- Steps on the selection.
+
+## Edit CAD's tool `name` on the selection (the Modify commands): those
+## with a value open its box, those that need a second pick wait for it.
+pub func tool(w: Workspace, name: str) -> unit!:
+    if name in ["Offset Face", "Fillet", "Chamfer", "Shell"]:
+        valued_step(w, name)
+    elif name in ["Replace Face", "Combine", "Split Body"]:
+        waiting_step(w, name)
+    elif name == "Move/Copy":
+        move_copy(w)
+    else:
+        modeling_commands.model(w, name)
+
+## Press Pull: profiles in a sketch Extrude, faces Offset Face, edges a
+## Fillet, as Fusion's dispatches.
+pub func press_pull(w: Workspace) -> unit!:
+    if sketching(w):
+        feature_from_sketch(w, "Extrude")
+        return
+    if selected_faces(w).length > 0:
+        valued_step(w, "Offset Face")
+        return
+    if selected_edges(w):
+        valued_step(w, "Fillet")
+        return
+    say(w, "Press Pull: select faces or edges of the model, or edit a sketch and pick its profiles")
+
+## Tool `name` on the selection, its value box opening by its arrow.
+pub func valued_step(w: Workspace, name: str) -> unit!:
+    let node = model_node(w) else return
+    let count = node.edits.length
+    modeling_commands.model(w, name)
+    if node.edits.length > count:
+        w.selection = none
+        w.ask_value = true
+        w.rebuild()
+
+## Replace Face, Combine or Split Body (`name`) on the selection, then the
+## prompt for what it needs; Esc takes the step away again.
+pub func waiting_step(w: Workspace, name: str) -> unit!:
+    let node = model_node(w) else return
+    if w.in_transaction():
+        return
+    w.begin(name)
+    let count = node.edits.length
+    modeling_commands.model(w, name)
+    if node.edits.length == count:
+        w.cancel()
+        return
+    if name == "Replace Face":
+        wait_for(w, node, target_label, face_level, "Click the face whose surface the faces move onto; Esc cancels")
+    elif name == "Combine":
+        wait_for(w, node, tools_label, object_level, "Click the tool bodies (Shift adds), then Enter; Esc cancels")
+    else:
+        wait_for(w, node, splitting_label, face_level, "Click the face to split with (or choose an origin plane in the tool bar, then Enter); Esc cancels")
+
+## Move/Copy: the Move tool on the selection, its tool bar Fusion's dialog
+## (a step of no move, which the gizmo's moves then merge into).
+pub func move_copy(w: Workspace) -> unit!:
+    let node = model_node(w) else return
+    let count = node.edits.length
+    modeling_commands.model(w, "Move/Copy")
+    if node.edits.length > count:
+        modeling_commands.choose_tool(w, "Move")
+
+## The selected faces' names (Faces or Patch level) of the edited model.
+pub func selected_faces(w: Workspace) -> list[str]!:
+    if not active(w) or sketching(w) or not w.selecting() or not w.on_domain(Domain.face) or w.level_index() == object_level:
+        return []
+    let mesh = w.geometry else return []
+    let column = mesh.find_attribute("cad_face_name", 2)
+    let chosen = w.current_selection() else return []
+    let found: list[str] = []
+    if column < 0:
+        return found
+    var at = chosen.next(-1)
+    while at >= 0:
+        let text = mesh.attribute_text(column, at)
+        if text != "" and not (text in found):
+            found.append(text)
+        at = chosen.next(at)
+    return found
+
+## Whether edges of the edited model are selected.
+pub func selected_edges(w: Workspace) -> bool:
+    return active(w) and not sketching(w) and w.selecting() and w.on_domain(Domain.edge) and w.selected_count() > 0
+
+## Whether whole models are selected (the Object level).
+pub func selected_models(w: Workspace) -> bool:
+    return active(w) and not sketching(w) and w.selecting() and w.level_index() == object_level and w.selected_count() > 0
+
+## To object picked in the tool bar: the last Extrude step waits for the
+## face it runs to.
+pub func pick_extent_face(w: Workspace) -> unit!:
+    let node = model_node(w) else return
+    if w.in_transaction() or node.edits.length == 0 or node.edits[-1].verb != "Extrude":
+        return
+    w.begin(object_label)
+    wait_for(w, node, object_label, face_level, "Click the face to extrude to; Esc cancels")
+
+func say(w: Workspace, text: str):
+    w.notice = text
+    w.revision += 1

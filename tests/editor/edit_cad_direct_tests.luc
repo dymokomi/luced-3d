@@ -1,0 +1,488 @@
+## Stage 6 of the Fusion CAD plan (docs/research/FUSION-CAD-UX.md): Edit
+## CAD as Fusion's direct modeling. Sketches are objects of the model, made
+## and edited by steps; Extrude and Revolve take their profiles; faces move,
+## offset, heal when deleted, are replaced; bodies shell, combine, split and
+## copy. Each step is one undo that restores the model exactly, and a step
+## that cannot be built says why on the node while the model before it
+## stays shown.
+from workspace import Workspace
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from view_projection import project
+from sketch_support import render
+import handle_lines
+from luce_prism.prism import Document, Encoding
+from project_graph import write_graph, read_graph
+from luce_cad.cad_geometry import CadGeometry
+from node import Node
+from luce_3d.graphics import Vector3
+from luce_cad.cad_sketches import CadSketches
+from luce_cad.model import CadModel
+from luce_cad.sketch import CadSketch
+from luce_cad.modeling import CadModeling
+from geometry_data import GeometryData
+import edit_cad_commands
+import edit_cad_sketches
+import edit_cad_picks
+import edit_cad_faces
+import sketch_source
+import sketch_commands
+import sketch_kinds as names
+import node_commands
+import selection_commands
+import modeling_commands
+import component_moves
+import cad_features
+from luce_std import math
+
+pub func edit_cad_direct_tests() -> unit!:
+    sketch_and_extrude()
+    l_bracket_wall()
+    fillet_face_healed()
+    undo_exactness()
+    face_tools()
+    body_tools()
+    revolve_axis()
+    step_handles()
+    print("PASS Edit CAD direct modeling: sketches as objects (on a plane and on a face, its loops projected once), Extrude of their profiles (Auto cut into the model), a sketch edited after its extrude leaving the extrude as it was; an L-bracket's inner wall moved 3 (3 × its area), a fillet's face deleted and healed to the sharp box, Press Pull, Offset Face, Remove Faces, Replace Face, Shell; Combine, Split Body, Move/Copy with Create copy; Revolve waiting for its axis; the last step's arrow dragged in the viewport (one undo) and its value box typed; every step's undo restoring the model exactly; failures said on the step and node with the model before shown")
+
+# -- Helpers.
+
+## A CAD node holding an Edit CAD node, edited.
+func model_node(w: Workspace) -> Node!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    assert(w.editing())
+    return w.selected() else trap("Edit CAD")
+
+## `node` as the network holds it now (an undo puts in a copy).
+func fresh(w: Workspace, node: Node) -> Node!:
+    return w.network.find(node.id) else trap("the node")
+
+func data_of(w: Workspace, node: Node) -> GeometryData!:
+    return w.network.evaluate_data(node.id)
+
+## The tessellated volume of `model`.
+func volume(model: CadModel) -> float!:
+    let mesh = model.tessellate(32)
+    var total = 0.0
+    for triangle in 0..<mesh.index_count() // 3:
+        let a = mesh.vertex(mesh.index(triangle * 3)).position
+        let b = mesh.vertex(mesh.index(triangle * 3 + 1)).position
+        let c = mesh.vertex(mesh.index(triangle * 3 + 2)).position
+        total += a.dot(b.cross(c)) / 6.0
+    return total
+
+## The volume of every model of `node`'s result.
+func total_volume(w: Workspace, node: Node) -> float!:
+    var total = 0.0
+    for model in data_of(w, node).models():
+        total += volume(model)
+    return total
+
+func near(got: float, expected: float, tolerance: float, what: str):
+    if math.abs(got - expected) > tolerance:
+        print(f"{what}: {got}, expected {expected}")
+    assert(math.abs(got - expected) <= tolerance)
+
+## A closed polygon through `corners` (x, y pairs), its sides level or
+## upright where they are, as sketch text.
+func polygon_text(corners: list[float]) -> str!:
+    let s = CadSketch.parse("")
+    let points: list[int] = []
+    for at in 0..<corners.length // 2:
+        points.append(s.add_point(corners[at * 2], corners[at * 2 + 1]))
+    for at in 0..<points.length:
+        let line = s.add_line(points[at], points[(at + 1) % points.length])
+        let a = at * 2
+        let b = ((at + 1) % points.length) * 2
+        if math.abs(corners[a + 1] - corners[b + 1]) < 1e-9:
+            _ = s.constrain(names.horizontal, line)
+        elif math.abs(corners[a] - corners[b]) < 1e-9:
+            _ = s.constrain(names.vertical, line)
+    return s.text()
+
+## A circle of `radius` about (`x`, `y`) as sketch text.
+func circle_text(x: float, y: float, radius: float) -> str!:
+    let s = CadSketch.parse("")
+    _ = s.add_circle(s.add_point(x, y), radius)
+    return s.text()
+
+## Draw `text` into the sketch being edited, as the editor's commit does.
+func draw(w: Workspace, node: Node, text: str) -> unit!:
+    assert(sketch_source.write(w, node, w.edit_sketch, text, "Draw"))
+
+## A sketch on origin plane `plane` holding `text`, extruded `distance`:
+## the steps of a new model.
+func sketched_extrude(w: Workspace, node: Node, plane: int, text: str, distance: float) -> unit!:
+    edit_cad_commands.create_sketch(w, plane)
+    assert(w.sketching() and w.edit_sketch != "")
+    draw(w, node, text)
+    edit_cad_commands.feature_from_sketch(w, "Extrude")
+    assert(not w.sketching() and node.edits[-1].verb == "Extrude")
+    modeling_commands.set_last_step(w, cad_features.distance_slot, distance, -100000.0, 100000.0)
+
+## Select, at level `level` (3 faces, 0 models), the first polygon of the
+## pick geometry `keep` takes (its whole face or model), alone.
+func select_where(w: Workspace, level: int, keep: func(Vector3, Vector3) -> bool) -> unit!:
+    selection_commands.set_mode(w, level)
+    let mesh = w.geometry else trap("pick geometry")
+    for polygon in 0..<mesh.face_count():
+        if keep(mesh.face_center(polygon), mesh.face_normal(polygon)):
+            selection_commands.choose_component(w, polygon, false)
+            return
+    assert(false, "nothing to select there")
+
+## The polygons of faces named like `part` selected (Faces level).
+func select_named(w: Workspace, part: str) -> unit!:
+    selection_commands.set_mode(w, 3)
+    let mesh = w.geometry else trap("pick geometry")
+    let names = mesh.find_attribute("cad_face_name", 2)
+    for polygon in 0..<mesh.face_count():
+        if mesh.attribute_text(names, polygon).contains(part):
+            selection_commands.choose_component(w, polygon, false)
+            return
+    assert(false, f"no face named like {part}")
+
+## Undo until `node`'s recipe has `steps` steps (and the selection made
+## before the step undone too).
+func undo_to(w: Workspace, node: Node, steps: int) -> unit!:
+    while (w.network.find(node.id) else trap("node")).edits.length > steps:
+        w.undo()
+    w.undo()
+
+## What identifies a model exactly: its node's stamp, and its models'
+## edges (their curves and placements).
+func fingerprint(w: Workspace, node: Node) -> (int, int)!:
+    let data = data_of(w, node)
+    return (node.stamp, data.edges_key())
+
+# -- Sketches and features.
+
+## A 10 mm square on XY extruded 5; a circle sketched on its top face (its
+## loops projected once) extruded 3 into it: Auto cuts. The square's sketch
+## edited to 20 mm after: its extrude stays as it was, the sketch holds the
+## new square.
+func sketch_and_extrude() -> unit!:
+    let w = Workspace()
+    let node = model_node(w)
+    sketched_extrude(w, node, 0, sketch_commands.rectangle_text(0.0, 0.0, 10.0, 10.0), 5.0)
+    near(total_volume(w, node), 500.0, 1.0, "the square block")
+    # The sketch hides once used, as Fusion's does; its curves stay in it.
+    let data = data_of(w, node)
+    assert(CadSketches.count(data.geometry) == 1 and not CadSketches.visible(data.geometry, 0))
+    assert(node.automatic == "New body")
+    # Its handles: the Extrude step's arrow and taper ring.
+    assert(node.handles.split("\n").length == 2)
+    # A sketch on the top face: its loops projected (four linked lines).
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.z > 0.99)
+    edit_cad_commands.create_sketch(w)
+    assert(w.edit_sketch == "Sketch2" and w.sketching())
+    let face_sketch = edit_cad_sketches.named(edit_cad_sketches.parse_objects(data_of(w, node).sketch_state), "Sketch2") else trap("face sketch")
+    let projected = CadSketch.parse(face_sketch.text)
+    assert(projected.link_count() == 4 and math.abs(face_sketch.plane.origin.z - 5.0) < 1e-9)
+    # A circle at the face's middle, in the face sketch's own coordinates.
+    let middle = face_sketch.plane.coordinates(Vector3(0.0, 0.0, 5.0))
+    _ = projected.add_circle(projected.add_point(middle[0], middle[1]), 2.0)
+    draw(w, node, projected.text())
+    # The circle's profile picked, as a click inside it does.
+    let drawn = CadSketch.parse(sketch_source.edited_text(node, "Sketch2"))
+    w.sketch_profiles = [CadModeling.profile_at(drawn.curves(face_sketch.plane.origin, face_sketch.plane.u, face_sketch.plane.v), Vector3(0.0, 0.0, 5.0))]
+    edit_cad_commands.feature_from_sketch(w, "Extrude")
+    modeling_commands.set_last_step(w, cad_features.distance_slot, -3.0, -100000.0, 100000.0)
+    near(total_volume(w, node), 500.0 - math.pi * 4.0 * 3.0, 1.0, "the hole cut")
+    assert(node.automatic == "Cut")
+    # The first sketch edited after its extrude: the extrude is as it was.
+    let before = total_volume(w, node)
+    edit_cad_commands.edit_sketch(w, "Sketch1")
+    assert(w.sketching() and w.edit_sketch == "Sketch1")
+    draw(w, node, sketch_commands.rectangle_text(0.0, 0.0, 20.0, 20.0))
+    assert(node.edits[-1].verb == edit_cad_sketches.edit_sketch_verb)
+    near(total_volume(w, node), before, 1e-6, "the extrude after its sketch was edited")
+    let edited = edit_cad_sketches.named(edit_cad_sketches.parse_objects(data_of(w, node).sketch_state), "Sketch1") else trap("edited sketch")
+    let square = CadSketch.parse(edited.text)
+    assert(math.abs(square.x(0) + 10.0) < 1e-9 and edited.visible)
+    # Drawing again replaces that Edit Sketch step: one step per sketch edit.
+    let steps = node.edits.length
+    draw(w, node, sketch_commands.rectangle_text(0.0, 0.0, 30.0, 30.0))
+    assert(node.edits.length == steps)
+    edit_cad_commands.finish_sketch(w)
+    assert(not w.sketching())
+    # Hidden (its editing showed it; one undo step), then the recipe
+    # through a project file:
+    # the sketches' texts with it, the same model.
+    edit_cad_commands.toggle_sketch(w, "Sketch1")
+    let shown = edit_cad_sketches.named(edit_cad_sketches.parse_objects(data_of(w, node).sketch_state), "Sketch1") else trap("shown")
+    assert(not shown.visible)
+    let doc = Document()
+    write_graph(doc, w.network)
+    let restored = read_graph(Document.parse((doc.encode(Encoding.text).bytes()).text()))
+    let again = restored.require(node.id)
+    assert(again.edits.length == fresh(w, node).edits.length and again.edits[0].text(edit_cad_sketches.name_slot) == "Sketch1")
+    near(volume(CadGeometry.model(restored.evaluate_data(node.id).geometry, 0)), volume(CadGeometry.model(data_of(w, node).geometry, 0)), 1e-9, "the model read back")
+
+## An L-bracket (40 × 5 foot, 5 × 30 upright, 20 deep): its inner wall
+## (the upright's face toward the foot, 25 × 20) moved 3 mm out by the
+## gizmo's Move at the Faces level: the volume grows by 3 × 500.
+func l_bracket_wall() -> unit!:
+    let w = Workspace()
+    let node = model_node(w)
+    sketched_extrude(w, node, 0, polygon_text([0.0, 0.0, 40.0, 0.0, 40.0, 5.0, 5.0, 5.0, 5.0, 30.0, 0.0, 30.0]), 20.0)
+    let start = total_volume(w, node)
+    near(start, 325.0 * 20.0, 2.0, "the L-bracket")
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.x > 0.99 and math.abs(c.x - 5.0) < 1e-6)
+    component_moves.move_selection(w, Vector3(3.0, 0.0, 0.0))
+    assert(node.edits[-1].verb == "Transform Components" and node.warning == "")
+    near(total_volume(w, node) - start, 3.0 * 25.0 * 20.0, 2.0, "the inner wall moved 3")
+    assert(data_of(w, node).models().length == 1)
+
+## A 2 mm box's edge filleted 0.4; the fillet's face deleted (Fusion's
+## Delete): healed back to the sharp box, the unfilleted volume.
+func fillet_face_healed() -> unit!:
+    let w = Workspace()
+    let node = model_node(w)
+    modeling_commands.create(w, "Box")
+    near(total_volume(w, node), 8.0, 1e-3, "the box")
+    selection_commands.set_mode(w, 2)
+    let mesh = w.geometry else trap("edges")
+    let tag = mesh.find_attribute("cad_edge", 4)
+    var edge = -1
+    for at in 0..<mesh.edge_count():
+        if edge < 0 and mesh.attribute_value(tag, at) >= 0.0: edge = at
+    selection_commands.choose_component(w, edge, false)
+    edit_cad_commands.tool(w, "Fillet")
+    assert(node.edits[-1].verb == "Fillet" and w.ask_value)
+    modeling_commands.set_last_step(w, 0, 0.4, 0.0001, 100000.0)
+    let rounded = total_volume(w, node)
+    near(rounded, 8.0 - (0.16 - math.pi * 0.04) * 2.0, 0.01, "the filleted box")
+    # The fillet's radius arrow is the step's handle.
+    assert(node.handles != "")
+    select_named(w, "blend[")
+    edit_cad_commands.tool(w, "Delete")
+    assert(node.edits[-1].verb == "Delete" and node.warning == "")
+    near(total_volume(w, node), 8.0, 1e-3, "the fillet's face deleted and healed")
+    assert(data_of(w, node).models()[0].face_count() == 6)
+
+## Each step's undo gives back exactly the model before it (the node's
+## stamp and its models' edges), and redo the one after: each action below
+## is one undo step (a selection made first another), its model recorded.
+func undo_exactness() -> unit!:
+    let w = Workspace()
+    let node = model_node(w)
+    let prints: list[(int, int)] = [fingerprint(w, node)]
+    for index in 0..<8:
+        let before = w.history.cursor
+        act(w, node, index)
+        # A selection made first is an undo step of its own, the model as
+        # it was.
+        assert(w.history.cursor > before, f"action {index} is no undo step")
+        for _ in before + 1..<w.history.cursor:
+            prints.append(prints[-1])
+        let now = w.network.find(node.id) else trap("node")
+        prints.append(fingerprint(w, now))
+    # Back through every step: each undo gives the model before it, exactly.
+    for at in 1..<prints.length:
+        w.undo()
+        let now = w.network.find(node.id) else trap("node")
+        let got = fingerprint(w, now)
+        let expected = prints[prints.length - 1 - at]
+        assert(got.0 == expected.0 and got.1 == expected.1, f"undo {at} gave another model")
+    for at in 1..<prints.length:
+        w.redo()
+        let now = w.network.find(node.id) else trap("node")
+        let got = fingerprint(w, now)
+        assert(got.0 == prints[at].0 and got.1 == prints[at].1, f"redo {at} gave another model")
+
+## Action `index` of undo_exactness, each one undo step.
+func act(w: Workspace, node: Node, index: int) -> unit!:
+    if index == 0:
+        modeling_commands.create(w, "Box")
+    elif index == 1:
+        select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
+        edit_cad_commands.press_pull(w)
+    elif index == 2:
+        modeling_commands.set_last_step(w, 0, 0.5, -100000.0, 100000.0)
+    elif index == 3:
+        select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.x > 0.99)
+        component_moves.move_selection(w, Vector3(0.25, 0.0, 0.0))
+    elif index == 4:
+        edit_cad_commands.create_sketch(w, 1)
+    elif index == 5:
+        draw(w, node, circle_text(0.0, 0.0, 0.4))
+    elif index == 6:
+        edit_cad_commands.feature_from_sketch(w, "Extrude")
+    else:
+        modeling_commands.set_last_step(w, cad_features.distance_slot, 3.0, -100000.0, 100000.0)
+
+# -- Faces.
+
+## On a 2 mm box: Press Pull on the top (Offset Face) by 1 adds its area;
+## Remove Faces leaves it open; Replace Face moves the +X side onto a
+## second, slanted box's face; Shell hollows with the top open; a failure
+## (a shell too thick) says why on the step and node and the model before it
+## stays.
+func face_tools() -> unit!:
+    let w = Workspace()
+    let node = model_node(w)
+    modeling_commands.create(w, "Box")
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
+    edit_cad_commands.press_pull(w)
+    assert(fresh(w, node).edits[-1].verb == "Offset Face" and w.ask_value)
+    modeling_commands.set_last_step(w, 0, 1.0, -100000.0, 100000.0)
+    near(total_volume(w, node), 12.0, 1e-3, "the top pulled 1")
+    assert(fresh(w, node).handles != "")
+    # Shell with the top open, 0.2 thick: outside minus the hollow.
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
+    edit_cad_commands.tool(w, "Shell")
+    assert(fresh(w, node).edits[-1].verb == "Shell")
+    modeling_commands.set_last_step(w, edit_cad_faces.thickness_slot, 0.2, 0.0001, 100000.0)
+    near(total_volume(w, node), 12.0 - 1.6 * 1.6 * 2.8, 0.01, "the shell")
+    # Too thick: the step says why; the model before it stays.
+    modeling_commands.set_last_step(w, edit_cad_faces.thickness_slot, 5.0, 0.0001, 100000.0)
+    assert(fresh(w, node).warning.starts_with(f"Step {fresh(w, node).edits.length} (Shell) could not be built"))
+    near(total_volume(w, node), 12.0, 1e-3, "the model before the failed shell")
+    undo_to(w, node, 2)
+    # Remove Faces: the top taken away, the box open.
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
+    edit_cad_commands.tool(w, "Remove Faces")
+    assert(data_of(w, node).models()[0].face_count() == 5)
+    undo_to(w, node, 2)
+    # Replace Face: the +X side onto the -X side of a box standing 3 to the
+    # right; the step waits for its target, which a click gives.
+    modeling_commands.create(w, "Box")
+    component_moves.move_selection(w, Vector3(3.0, 0.0, 0.0))
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.x > 0.99 and math.abs(c.x - 1.0) < 1e-6)
+    edit_cad_commands.tool(w, "Replace Face")
+    let prompt = w.prompt else trap("Replace Face waits for its target")
+    assert(prompt.label == edit_cad_picks.target_label)
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.x < -0.99 and math.abs(c.x - 2.0) < 1e-6)
+    assert(w.prompt == none and fresh(w, node).edits[-1].text(0) != "")
+    near(total_volume(w, node), 18.0 + 8.0, 1e-3, "the side replaced onto the other box's face")
+
+## Bodies: Combine two overlapping boxes (Join, then Cut), Split Body by
+## the YZ plane, Move/Copy with Create copy.
+func body_tools() -> unit!:
+    let w = Workspace()
+    let node = model_node(w)
+    modeling_commands.create(w, "Box")
+    modeling_commands.create(w, "Box")
+    component_moves.move_selection(w, Vector3(1.0, 0.0, 0.0))
+    assert(data_of(w, node).models().length == 2)
+    # Combine: the first box the target, the moved one the tool.
+    selection_commands.set_mode(w, 0)
+    select_where(w, 0, func (c: Vector3, n: Vector3) -> bool: return c.x < -0.9)
+    edit_cad_commands.tool(w, "Combine")
+    let prompt = w.prompt else trap("Combine waits for its tools")
+    assert(prompt.label == edit_cad_picks.tools_label and fresh(w, node).warning.contains("waits"))
+    select_where(w, 0, func (c: Vector3, n: Vector3) -> bool: return c.x > 1.9)
+    edit_cad_picks.accept_pick(w, node)
+    assert(w.prompt == none)
+    near(total_volume(w, node), 12.0, 1e-3, "the boxes joined")
+    assert(data_of(w, node).models().length == 1)
+    modeling_commands.set_last_step(w, edit_cad_faces.combine_slot, 1.0, 0.0, 2.0)
+    near(total_volume(w, node), 4.0, 1e-3, "the second box cut from the first")
+    # Split Body by the YZ plane: two models.
+    undo_to(w, node, 3)
+    selection_commands.set_mode(w, 0)
+    select_where(w, 0, func (c: Vector3, n: Vector3) -> bool: return c.x < -0.9)
+    edit_cad_commands.tool(w, "Split Body")
+    assert(w.prompt != none)
+    modeling_commands.set_last_step(w, edit_cad_faces.split_tool_slot, 3.0, 0.0, 3.0)
+    edit_cad_picks.accept_pick(w, node)
+    assert(data_of(w, node).models().length == 3 and fresh(w, node).warning == "")
+    near(total_volume(w, node), 16.0, 1e-3, "the split boxes")
+    undo_to(w, node, 3)
+    # Move/Copy with Create copy: a third box beside the two.
+    selection_commands.set_mode(w, 0)
+    select_where(w, 0, func (c: Vector3, n: Vector3) -> bool: return c.x < -0.9)
+    edit_cad_commands.move_copy(w)
+    assert(w.edit_tool == "Move" and fresh(w, node).edits[-1].verb == "Transform Components")
+    modeling_commands.set_last_step(w, edit_cad_faces.copy_slot, 1.0, 0.0, 1.0)
+    modeling_commands.set_last_step(w, 2, 5.0, -100000.0, 100000.0)
+    assert(data_of(w, node).models().length == 3)
+    near(total_volume(w, node), 24.0, 1e-3, "the copy beside the boxes")
+
+## Revolve from a sketch waits for its axis (a warning on the step, not a
+## failure of the node); an axis given, it builds.
+func revolve_axis() -> unit!:
+    let w = Workspace()
+    let node = model_node(w)
+    edit_cad_commands.create_sketch(w, 0)
+    draw(w, node, polygon_text([2.0, 0.0, 4.0, 0.0, 4.0, 3.0, 2.0, 3.0]))
+    edit_cad_commands.feature_from_sketch(w, "Revolve")
+    let prompt = w.prompt else trap("Revolve waits for its axis")
+    assert(prompt.label == edit_cad_picks.axis_label)
+    assert(fresh(w, node).failure == "" and fresh(w, node).warning.contains("waits"))
+    # The sketch's y axis: Y as the origin axis.
+    modeling_commands.set_last_step(w, cad_features.axis_slot, 2.0, 0.0, 3.0)
+    edit_cad_picks.accept_pick(w, node)
+    near(total_volume(w, node), math.pi * (16.0 - 4.0) * 3.0, 0.5, "the ring revolved")
+
+## The last step's handle in the viewport: a 2 mm box's top Press Pulled,
+## its arrow dragged out 1 more (one undo step, the step's own number), its
+## value box typed; dragged so far the face cannot follow, the node fails
+## while the drag lasts and the viewport keeps the last good result.
+func step_handles() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let node = model_node(w)
+    modeling_commands.create(w, "Box")
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
+    edit_cad_commands.press_pull(w)
+    w.ask_value = false
+    w.view.yaw = 0.5
+    w.view.pitch = 0.4
+    w.view.distance = 8.0
+    w.view.target = Vector3(0.0, 1.5, 0.0)
+    w.view.update_camera()
+    render(editor)
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    let target = view.arrow.feature() else trap("the step's handles")
+    assert(target.step and target.kind == "Offset Face")
+    let handles = handle_lines.parse(fresh(w, node).handles)
+    assert(handles.length == 1)
+    let tip = view.arrow.tip(bounds.width, bounds.height) else trap("no arrow")
+    let foot = handles[0].foot
+    let near_end = project(w, foot.add(handles[0].way.multiply_scalar(1.0)), bounds.width, bounds.height)
+    let to = project(w, foot.add(handles[0].way.multiply_scalar(2.0)), bounds.width, bounds.height)
+    let before = w.history.cursor
+    let x0 = bounds.x + tip[0]
+    let y0 = bounds.y + tip[1]
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = x0, y = y0))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = x0, y = y0, button = 0))
+    # The pointer moved by what one more mm along the arrow is on screen.
+    let x1 = x0 + to[0] - near_end[0]
+    let y1 = y0 + to[1] - near_end[1]
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = (x0 + x1) * 0.5, y = (y0 + y1) * 0.5, meta = true))
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = x1, y = y1, meta = true))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = x1, y = y1, button = 0))
+    let pulled = fresh(w, node).edits[-1].numbers[0]
+    assert(math.abs(pulled - 2.0) < 0.05, f"{pulled}")
+    assert(w.history.cursor == before + 1)
+    near(total_volume(w, node), 4.0 * (2.0 + pulled), 1e-3, "the top pulled by the arrow")
+    # A click on the arrow: its box, 3 typed.
+    render(editor)
+    let at = view.arrow.tip(bounds.width, bounds.height) else trap("no arrow")
+    for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+        editor.app.dispatch(Event(kind = kind, x = bounds.x + at[0], y = bounds.y + at[1], button = 0))
+    render(editor)
+    assert(editor.panels.sketch_value.is_open())
+    editor.app.dispatch(Event(kind = EventKind.text_input, codepoint = 51))
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    assert(math.abs(fresh(w, node).edits[-1].numbers[0] - 3.0) < 1e-9)
+    # Pushed in past the bottom mid-drag: the node fails, the viewport keeps
+    # the drag's last good model; let go, the step says why.
+    let numbers = fresh(w, node).edits[-1].numbers.copy()
+    numbers[0] = -10.0
+    w.begin("Offset Face distance")
+    w.preview_step(numbers)
+    assert(fresh(w, node).failure != "")
+    render(editor)
+    assert(w.notice.contains("keeps its last good result"), w.notice)
+    w.commit()
+    assert(fresh(w, node).failure == "" and fresh(w, node).warning.contains("could not be built"))
+    editor.close()

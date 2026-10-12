@@ -7,6 +7,7 @@
 ## (viewport_batches.luc). Commands on it live beside it: node_commands,
 ## selection_commands, modeling_commands and placing_commands.
 import sketch_node
+import edit_cad_sketches
 from stamps import stamp_graph
 from luce_geocore.geocore import Mesh, Selection, Domain
 from luce_3d.graphics import Scene, Group, Vector3, AmbientLight, DirectionalLight, SurfaceHits, SurfaceHit
@@ -47,6 +48,8 @@ pub class Workspace:
     ## Components of `geometry` (a luce-geocore Selection), on any displayed
     ## node; none when nothing is selected.
     pub var selection: Selection? = none
+    ## The pick geometry the selection was last checked on.
+    var selected_on: Mesh? = none
     ## The selection level (edit_types: Object, Point, Edge, Face, Smart),
     ## an index into levels() but for Smart. Node selection and display are
     ## independent.
@@ -76,6 +79,13 @@ pub class Workspace:
     ## While a Sketch is edited, the node displayed before it was (-1:
     ## none): Finish Sketch shows it again, as Fusion rolls forward.
     pub var sketch_return: int = -1
+    ## The sketch of an Edit CAD node edited in the viewport (its name, ""
+    ## none) and that node: Fusion's sketches in direct modeling, objects of
+    ## the model (edit_cad_sketches.luc), edited by the same editor.
+    pub var edit_sketch: str = ""
+    pub var edit_sketch_node: int = -1
+    ## The Edit CAD model's shown sketch under the pointer ("" none).
+    pub var hovered_sketch: str = ""
     ## The Project tool's cast of the edited sketch's input body
     ## (sketch_node.shadows_text), made by the cook (off the UI thread with
     ## the worker), and the Sketch stamp it is for.
@@ -517,7 +527,19 @@ pub class Workspace:
     ## displayed, enabled, and no tool prompt open (sketch_editor.luc).
     pub func sketching(self) -> bool:
         let node = self.selected() else return false
-        return node.kind == sketch_node.kind_name and node.enabled and node.id == self.network.display and self.prompt == none
+        if node.id != self.network.display or not node.enabled or self.prompt != none:
+            return false
+        return node.kind == sketch_node.kind_name or self.sketching_model(node)
+
+    ## Whether Edit CAD node `node` has a sketch of its own being edited:
+    ## the one named edit_sketch, which a step of its recipe makes.
+    pub func sketching_model(self, node: Node) -> bool:
+        if self.edit_sketch == "" or node.id != self.edit_sketch_node or not is_edit(node.kind):
+            return false
+        for step in node.edits:
+            if step.verb == edit_cad_sketches.sketch_verb and step.text(edit_cad_sketches.name_slot) == self.edit_sketch:
+                return true
+        return false
 
     ## The Sketch the Project tool works in (-1: none): its body's edges are
     ## cast by the cook.
@@ -531,13 +553,17 @@ pub class Workspace:
         self.shadows = ""
         self.shadows_stamp = 0
         let node = self.network.find(self.network.projecting) else return
-        let input = self.network.find(node.inputs[0]) else return
-        let body = self.network.evaluate_data(input.id) catch failure:
-            recover GeometryData()
         let made = self.network.evaluate_data(node.id) catch failure:
             recover GeometryData()
-        let state = sketch_node.parse_state(made.sketch_state) else return
-        self.shadows = sketch_node.shadows_text(body, state.plane)
+        # An Edit CAD sketch casts its own model's edges; a Sketch node its
+        # input body's.
+        var body = made
+        if self.network.sketch_object == "":
+            let input = self.network.find(node.inputs[0]) else return
+            body = self.network.evaluate_data(input.id) catch failure:
+                recover GeometryData()
+        let plane = edit_cad_sketches.edited_plane(made, self.network.sketch_object) else return
+        self.shadows = sketch_node.shadows_text(body, plane)
         self.shadows_stamp = node.stamp
 
     ## Whether the viewport picks on a CAD body (its B-rep edges show, not
@@ -601,6 +627,20 @@ pub class Workspace:
         self.network.invalidate(node.id)
         self.rebuild()
 
+    ## An Edit node's last step's numbers dragged (a handle in the
+    ## viewport): live, one undo step with the drag that began it.
+    pub func preview_step(self, numbers: list[float]) -> unit!:
+        let before = self.pending else return
+        let node = self.selected() else return
+        if node.edits.length == 0:
+            return
+        self.dragging = true
+        let original = before.graph.require(node.id)
+        node.edits[-1] = node.edits[-1].with_numbers(numbers)
+        self.pending_changed = original.edits.length != node.edits.length or original.edits[-1].numbers != numbers
+        self.network.invalidate(node.id)
+        self.rebuild()
+
     pub func snapshot(self) -> Snapshot!:
         return Snapshot(self.network, self.selection, self.component_mode)
 
@@ -619,9 +659,13 @@ pub class Workspace:
         self.pending = none
         self.pending_changed = false
         self.revision += 1
-        # A drag's frames were previews: the released result is cooked in full.
+        # A drag's frames were previews: the released result is cooked in full
+        # (an Edit node's again: its last step failing is a warning now).
         if self.dragging:
             self.dragging = false
+            if let node = self.selected():
+                if is_edit(node.kind):
+                    self.network.invalidate(node.id)
             self.rebuild()
 
     pub func cancel(self) -> unit!:
@@ -686,9 +730,13 @@ pub class Workspace:
             self.selection = none
         self.network.projecting = self.projecting()
         self.network.slicing = self.network.display if self.slice and self.sketching() else -1
+        self.network.sketch_object = ""
+        if let shown = self.selected():
+            if self.sketching_model(shown):
+                self.network.sketch_object = self.edit_sketch
+        self.network.gesture = self.dragging
         if let session = self.compute:
             self.network.level = self.component_mode
-            self.network.gesture = self.dragging
             self.network.cad_quality = self.view.cad_quality
             self.network.picking_cad = self.prompt != none
             self.network.picking = self.picking()
@@ -841,3 +889,11 @@ pub class Workspace:
         if let chosen = self.selection:
             if chosen.domain() != self.domain() or not chosen.fits(mesh):
                 self.selection = none
+                # B-rep faces or edges meshed again (a face moved, a value
+                # changed): the same faces or edges stay selected.
+                if let before = self.selected_on:
+                    if chosen.domain() == self.domain() and self.picking_brep():
+                        let carried = CadEdits.carried(before, chosen, mesh)
+                        if carried != "":
+                            self.selection = Selection.of(mesh, carried, chosen.domain())
+        self.selected_on = mesh
