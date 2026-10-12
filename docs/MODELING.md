@@ -435,10 +435,54 @@ model back exactly.
     spans the ends need, Extra spans, each end's tangent, curvature, rate
     and G4 shape), **Attach** (Blend at Blend bias with G0–G3, or Connect),
     **Detach** (at a parameter), **Close** (Preserve shape), **Stretch**
-    (the start's and end's moves; Locked or Floating), **Reverse**, Delete.
+    (Locked or Floating; its handles stand on the curve, two at its ends:
+    dragged in the plane facing the view, Shift-click on the curve adds one
+    anywhere, up to degree + 1, Shift-click on a handle takes it away,
+    `stretch_handles.luc`), **Reverse**, Delete.
+  - **Blend Curve's handles** (Alias's blend point handles,
+    `edit_cad_curves.blend_handles`, drawn and dragged by
+    `feature_handles.luc` on the step and on the Blend Curve node): at each
+    end an arrow along the way the blend leaves it, its length the tangent
+    (a third of the chord at 1), and at G2 or more a second arrow on from
+    its tip, the curvature's lean; a click opens the value box.
+  - **Isoparms picked** (Alias's isoparm pick): at the Curves level a
+    double-click on a surface makes the isoparm through the point a curve
+    of the model, selected (the Isoparm step: Direction U or V, the point),
+    its source kept ("isoparm <face> u 0.37"), ready for Blend Curve,
+    Project or Trim.
   - At **Edges**: **Duplicate Curve** (each picked edge as a curve, exactly)
     and **Blend Curve** between two picked edges; at **Faces** and
     **Patch**: Duplicate Curve of the face's isoparm (Direction, Parameter).
+  - Curves show their own icon in the outliner (Node.curve_paths, carried
+    from the worker), and the **Check** node combs them (Alias's Curve
+    Curvature, `CadMeasure.with_curve_combs`), curves alone too.
+- **Surfacing Stage 3** (`edit_cad_surfaces.luc`, `surface_ops.luc`;
+  luce-cad's `CadSurfacing`), one step and one undo each, from the
+  right-click, S and Modify menus (Modify › Surfaces in CAD networks):
+  - **Project** (at Curves): the picked curves cast onto a face clicked next
+    (Pick projection face), Along a Vector, the View (its direction kept
+    from when the step was made) or the Normal (Pull); Both ways; Match
+    original. Each piece is a curve on the face.
+  - **Intersect** (at Faces, Patch): two picked faces (Curves on both), or
+    one With a plane (origin, normal): the meeting curves on the faces.
+  - **Trim** (at Faces, Patch): the face cut by its curves; a marker stands
+    in each region (`trim_regions.luc`), a click keeps (Keep) or takes away
+    (Discard) that region and a second click lets it go; Divide makes every
+    region its own face; Show intersections marks the crossings green and
+    the loose ends of curves that cut nothing red. A trimmed solid is an
+    open body; each trim keeps the face as it was as a stage.
+  - **Untrim** (Last or All of the stages; a face with none back to its
+    natural surface), **Trim Convert** (degrees, spans, Switch U/V, Keep
+    originals; the tool bar's last line reports the surface and edge
+    deviations) and **Shrink** (the B-spline's net cut to its trims).
+  - **Stitch** (at Object: the picked bodies joined within Gap; joined
+    edges keep the gap as their precision; a body closed all round becomes
+    a solid) and **Unstitch** (every face of a body a body of its own).
+  - The same eight are nodes of CAD networks (`cad_surface_nodes.luc`,
+    category Surfaces), their faces, curves and bodies picked as the Modify
+    features' are (`modify_picks.luc`); a Trim node shows its markers while
+    it is selected and displayed and keeps the clicked points, so its trim
+    follows the body upstream.
   - The sketch's Blend Curve takes its control points from the same 3D
     kernel (luce-cad's Blend Curve in the sketch's plane), its continuity
     then kept by the sketch's constraints.

@@ -1,0 +1,158 @@
+## Alias's Trim region markers (Surface Edit › Trim): while an Edit CAD
+## node's last step is Trim, or a Trim node is selected and displayed, a
+## marker stands inside each region the face's curves cut it into; a click
+## on one keeps it (Keep) or takes it away (Discard), a second click lets
+## it go, and with Show intersections the curves' crossings show green and
+## the ends of curves that cut nothing red. Divide needs no clicks. The
+## markers come from the step's or node's cook (surface_ops.trim's state
+## lines), so the viewport needs no model and the worker's results serve.
+from luce_ui.ui import Painter, Rect, Point
+from workspace import Workspace
+from node import Node
+from luce_3d.graphics import Vector3
+import edit_cad
+import edit_cad_surfaces
+import surface_ops
+import view_projection as gm
+import theme
+from luce_std import math
+
+## The Trim node's kind (cad_surface_nodes.luc).
+pub let node_kind = "Trim"
+## Screen pixels within which the pointer is on a marker.
+let reach = 16.0
+
+pub class TrimMarkers:
+    let w: Workspace
+    ## The marker under the pointer (-1: none).
+    pub var hovered: int = -1
+    ## The step or node Esc let go of: clicks select again until another.
+    var dismissed: str = ""
+
+    pub func init(self, w: Workspace):
+        self.w = w
+
+    ## The node whose Trim the markers belong to, and whether it is an Edit
+    ## CAD step (else a Trim node); none when nothing trims.
+    func target(self) -> (Node, bool)?:
+        let node = self.w.selected() else return none
+        if node.id != self.w.network.display or self.w.sketching():
+            return none
+        if node.kind == edit_cad.kind_name:
+            if node.edits.length == 0 or not self.w.editing() or node.edits[-1].verb != edit_cad_surfaces.trim_verb:
+                return none
+            if self.dismissed == f"{node.id}/{node.edits.length}":
+                return none
+            return (node, true)
+        if node.kind == node_kind and self.dismissed != f"{node.id}/node":
+            return (node, false)
+        return none
+
+    ## The markers, picks and mode of the target's cook.
+    func state(self) -> str:
+        let found = self.target() else return ""
+        let (node, _) = found
+        return node.sketch_state
+
+    ## Whether markers show (the viewport routes the pointer here).
+    pub func active(self) -> bool:
+        return surface_ops.points_of(self.state(), surface_ops.markers_head).length > 0
+
+    ## Esc: clicks go back to selecting until another Trim.
+    pub func dismiss(self) -> bool:
+        let found = self.target() else return false
+        let (node, step) = found
+        self.dismissed = f"{node.id}/{node.edits.length}" if step else f"{node.id}/node"
+        self.hovered = -1
+        return true
+
+    ## The pointer at (`x`, `y`): the marker under it; whether that changed.
+    pub func hover(self, x: float, y: float, width: float, height: float) -> bool!:
+        let was = self.hovered
+        self.hovered = -1
+        let markers = surface_ops.points_of(self.state(), surface_ops.markers_head)
+        var least = reach
+        for k in 0..<markers.length:
+            let s = gm.project(self.w, markers[k], width, height)
+            if s[2] <= 0.0:
+                continue
+            let d = math.hypot(s[0] - x, s[1] - y)
+            if d < least:
+                least = d
+                self.hovered = k
+        return self.hovered != was
+
+    ## A click on a marker: its region picked, or let go (one undo).
+    pub func click(self, x: float, y: float, width: float, height: float) -> bool!:
+        _ = self.hover(x, y, width, height)
+        if self.hovered < 0:
+            return false
+        let found = self.target() else return false
+        let (node, step) = found
+        let state = node.sketch_state
+        if surface_ops.number_of(state, surface_ops.mode_head) == surface_ops.divide_mode:
+            self.w.notice = "Divide makes every region a face: no regions to click"
+            self.w.revision += 1
+            return true
+        let marker = surface_ops.points_of(state, surface_ops.markers_head)[self.hovered]
+        let picks = self.picks(node, step)
+        let kept: list[Vector3] = []
+        var removed = false
+        for p in picks:
+            if p.subtract(marker).length() < 1e-9 * (1.0 + marker.length()):
+                removed = true
+            else:
+                kept.append(p)
+        if not removed:
+            kept.append(marker)
+        self.w.perform("Pick region" if not removed else "Let region go", func () -> unit!:
+            if step:
+                node.edits[-1] = node.edits[-1].with_numbers(edit_cad_surfaces.with_picks(node.edits[-1].numbers, kept))
+            else:
+                node.texts[1] = surface_ops.points_text(kept)
+            self.w.network.invalidate(node.id)
+            self.w.rebuild())
+        return true
+
+    ## The picks the target holds now.
+    func picks(self, node: Node, step: bool) -> list[Vector3]!:
+        if step:
+            return edit_cad_surfaces.picks_of(node.edits[-1].numbers)
+        return surface_ops.parse_points(node.texts[1])
+
+    ## The markers (picked ones filled and named Keep or Discard), and with
+    ## Show intersections the crossings and loose ends.
+    pub func draw(self, painter: Painter, width: float, height: float) -> unit!:
+        let state = self.state()
+        let markers = surface_ops.points_of(state, surface_ops.markers_head)
+        if markers.length == 0:
+            return
+        let picked = surface_ops.points_of(state, surface_ops.picked_head)
+        let mode = surface_ops.number_of(state, surface_ops.mode_head)
+        for p in surface_ops.points_of(state, surface_ops.crossings_head):
+            let s = gm.project(self.w, p, width, height)
+            if s[2] > 0.0:
+                painter.rounded_rectangle(Rect(s[0] - 3.5, s[1] - 3.5, 7.0, 7.0), theme.check_group(0), 3.5)
+        for p in surface_ops.points_of(state, surface_ops.loose_head):
+            let s = gm.project(self.w, p, width, height)
+            if s[2] > 0.0:
+                painter.rounded_rectangle(Rect(s[0] - 4.5, s[1] - 4.5, 9.0, 9.0), theme.check_group(2), 4.5)
+        for k in 0..<markers.length:
+            let s = gm.project(self.w, markers[k], width, height)
+            if s[2] <= 0.0:
+                continue
+            var chosen = false
+            for p in picked:
+                chosen = chosen or p.subtract(markers[k]).length() < 1e-9 * (1.0 + markers[k].length())
+            let size = 13.0 if k == self.hovered else 10.0
+            let box = Rect(s[0] - size * 0.5, s[1] - size * 0.5, size, size)
+            # A diamond's look on a square plate: dark edge, accent when
+            # picked, light grey when not.
+            painter.rectangle(Rect(box.x - 1.5, box.y - 1.5, box.width + 3.0, box.height + 3.0), theme.grey(20.0))
+            painter.rectangle(box, theme.accent() if chosen else theme.grey(200.0))
+            if chosen or k == self.hovered:
+                let label = ("Keep" if mode == surface_ops.keep_mode else ("Discard" if mode == surface_ops.discard_mode else "Divide")) if chosen else "click to pick"
+                let plate = Rect(s[0] + 10.0, s[1] - 26.0, float(label.length) * 7.5 + 12.0, 20.0)
+                painter.line(Point(s[0], s[1]), Point(plate.x, plate.y + plate.height), 1.0, theme.accent() if chosen else theme.grey(200.0))
+                painter.rounded_rectangle(plate, theme.grey(24.0), 3.0)
+                painter.text(label, plate.x + 6.0, plate.y + 3.0, theme.accent() if chosen else theme.text())

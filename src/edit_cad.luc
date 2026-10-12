@@ -21,6 +21,9 @@
 ##     re-projecting its trims (luce-cad), and the CV moves and structure
 ##     steps of edit_cad_nets.luc;
 ##   curves drawn, duplicated, blended and edited (edit_cad_curves.luc);
+##   curves projected onto faces and faces intersected, trimmed, untrimmed,
+##     converted and shrunk, bodies stitched and unstitched
+##     (edit_cad_surfaces.luc);
 ##   luce-cad's analytic solids, created named.
 ## The faces a step makes are named for the node and the step's place in
 ## the recipe (`#<node>s<n>`), so later steps find them by name and two Edit
@@ -44,6 +47,7 @@ import edit_cad_sketches
 import edit_cad_faces
 import edit_cad_nets
 import edit_cad_curves
+import edit_cad_surfaces
 from luce_cad.cad_curves import CadCurves
 from luce_ui import ui
 
@@ -99,6 +103,9 @@ func tool_list() -> list[EditTool]:
     # (edit_cad_curves.luc).
     result.extend(edit_cad_nets.tools(cv_level, face_level, patch_level))
     result.extend(edit_cad_curves.tools(curve_level, edge_level, face_level, patch_level))
+    # Project, Intersect, Trim, Untrim, Trim Convert, Shrink, Stitch and
+    # Unstitch (edit_cad_surfaces.luc).
+    result.extend(edit_cad_surfaces.tools(curve_level, face_level, patch_level, object_level))
     return result
 
 ## The CAD nodes that are Edit CAD tools on picked edges.
@@ -148,7 +155,11 @@ func start(data: GeometryData, tag: str) -> GeometryData!:
 
 func pick(data: GeometryData, level: int) -> Mesh?!:
     if level == curve_level:
-        return CadCurves.pick_mesh(data.geometry) if data.has_curves() else Mesh.empty()
+        if not data.has_curves():
+            return Mesh.empty()
+        # A curve the last step made (an isoparm picked) is selected.
+        let made = CadCurves.pick_mesh(data.geometry)
+        return Groups.with_group(made, ".selection", 4, data.created) if data.created.starts_with("@cad_curve") else made
     if level == cv_level and (data.has_cad() or data.has_curves()):
         return CadGeometry.cv_cloud(data.geometry)
     if not data.has_cad():
@@ -171,13 +182,17 @@ pub func pick_mesh(data: GeometryData) -> Mesh!:
 ## Step number `at` of a recipe on `data`, with the model's sketches told
 ## to the editor (Node.sketch_state); after Insert Knot or Remove Knot, the
 ## surface it works on too (edit_cad_nets.probe_line: the viewport draws
-## the isoparm under the pointer from it, knot_place.luc).
+## the isoparm under the pointer from it, knot_place.luc), and after Trim
+## its region markers (surface_ops: trim_regions.luc draws them).
 func run(step: EditStep, at: int, data: GeometryData, tag: str) -> GeometryData!:
     let made = ran(step, f"{tag}s{at}", data)
-    let probe = made.sketch_state if made.sketch_state.starts_with(edit_cad_nets.probe_head) else ""
+    let kept: list[str] = []
+    for line in made.sketch_state.split("\n"):
+        if line.starts_with(edit_cad_nets.probe_head) or line.starts_with("trim_") or line.starts_with("stretch_"):
+            kept.append(line)
     let result = stated(made)
-    if probe != "":
-        result.sketch_state = result.sketch_state + "\n" + probe if result.sketch_state != "" else probe
+    if kept.length > 0:
+        result.sketch_state = result.sketch_state + "\n" + kept.join("\n") if result.sketch_state != "" else kept.join("\n")
     return result
 
 ## `data` with its sketches as the editor reads them.
@@ -200,6 +215,12 @@ func ran(step: EditStep, name: str, data: GeometryData) -> GeometryData!:
         return moved_cvs(step, data)
     if not data.has_cad():
         error(ui.invalid, "Edit CAD has no models to edit yet: create one, sketch and extrude, or connect CAD")
+    if step.verb == edit_cad_curves.isoparm_verb:
+        return edit_cad_curves.picked_isoparm(step, data)
+    # Surfacing (edit_cad_surfaces.luc): Project on curves, the rest on
+    # faces or bodies.
+    if step.verb in edit_cad_surfaces.verbs():
+        return edit_cad_surfaces.run(step, name, data, none if step.verb == edit_cad_surfaces.project_verb else edit_cad_faces.picked(step, data, pick_mesh))
     if step.verb == edit_cad_nets.move_verb:
         return edit_cad_nets.run_move(step, data)
     if step.verb in edit_cad_nets.structure_verbs():

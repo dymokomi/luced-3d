@@ -41,6 +41,29 @@
 ##     curve's last one picked with the gizmo.
 ##   surf_blend_node: a CAD network's Blend Curve node between two of a
 ##     box's top edges, its parameters.
+## Stage 2's follow-ups:
+##   surf_blend_handles: the blend's handles close up: each end's tangent
+##     arrow and, at G2, its curvature arrow (drag to change them).
+##   surf_stretch: Stretch on the CV curve with a third handle mid-curve,
+##     pulled up: the handles on the curve.
+##   surf_isoparm: an isoparm picked by a double-click on a cylinder at the
+##     Curves level, selected.
+##   surf_curve_combs: a CAD network's Check node combing a curve.
+## Stage 3, projection, trims and stitching (edit_cad_surfaces.luc,
+## cad_surface_nodes.luc), on an Edit CAD box with a curve above its top:
+##   surf_project: the curve projected onto the top (a curve on it).
+##   surf_trim_markers: Trim on the top, waiting: a region marker in each
+##     region, the crossings green (Show intersections).
+##   surf_trim_keep: a marker clicked: its region kept, the box opened.
+##   surf_divide: Divide: both regions faces of their own.
+##   surf_surface_menu: the right-click menu on the top face: the surface
+##     tools.
+##   surf_intersect: a cylinder through the box, the faces intersected:
+##     the curves on both.
+##   surf_stitch: a CAD network's box unstitched and stitched again,
+##     checked: every edge G0 across the stitched edges.
+##   surf_project_node: a CAD network's Curve, Project and Trim nodes: a
+##     region of the box's top kept, the Trim node's markers.
 import preview_support
 from luce_3d.graphics import Vector3
 from luce_cad.cad_geometry import CadGeometry
@@ -54,6 +77,9 @@ import edit_cad_commands
 import edit_cad_nets
 import edit_cad_curves
 import cad_curve_nodes
+import cad_surface_nodes
+import edit_cad_surfaces
+import surface_ops
 import placing_commands
 import component_moves
 from view_projection import project
@@ -65,7 +91,9 @@ from luce_std import math
 
 pub func scenes() -> list[str]:
     return ["surf_check", "surf_check_g1", "surf_check_g3", "surf_combs", "surf_deviation", "surf_band", "surf_draft", "surf_cv_nuv", "surf_cv_row", "surf_rebuild", "surf_insert", "surf_convert",
-            "surf_insert_click", "surf_curves", "surf_curve_menu", "surf_blend", "surf_blend_g4", "surf_curve_cvs", "surf_blend_node"]
+            "surf_insert_click", "surf_curves", "surf_curve_menu", "surf_blend", "surf_blend_g4", "surf_curve_cvs", "surf_blend_node",
+            "surf_blend_handles", "surf_stretch", "surf_isoparm", "surf_curve_combs", "surf_project", "surf_trim_markers", "surf_trim_keep", "surf_divide",
+            "surf_surface_menu", "surf_intersect", "surf_stitch", "surf_project_node"]
 
 func look(editor: Luce3D, yaw: float, pitch: float, distance: float, target: Vector3) -> unit!:
     let w = editor.workspace
@@ -207,6 +235,40 @@ func pick_two(w: Workspace) -> unit!:
     selection_commands.choose_component(w, curve_edge(w, 1), true)
     preview_support.settle(w)
 
+## An Edit CAD box with a curve above its top along x, projected onto the
+## top (Stage 3's scenes), at the Curves level.
+func projected_box(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    cad(editor)
+    node_commands.add_node(w, "Edit CAD", 40.0, 40.0)
+    preview_support.settle(w)
+    modeling_commands.create(w, "Box")
+    preview_support.settle(w)
+    draw(w, edit_cad_curves.cv_verb, [Vector3(-1.8, 2.2, 0.3), Vector3(-0.7, 2.2, -0.4), Vector3(0.4, 2.2, 0.6), Vector3(1.8, 2.2, -0.1)])
+    selection_commands.set_mode(w, 6)
+    preview_support.settle(w)
+    selection_commands.choose_component(w, curve_edge(w, 0), false)
+    edit_cad_commands.tool(w, edit_cad_surfaces.project_verb)
+    preview_support.settle(w)
+    selection_commands.set_mode(w, 3)
+    preview_support.settle(w)
+    pick_face(w, func (c: Vector3) -> bool: return c.y > 0.99)
+    preview_support.settle(w)
+
+## The top face picked and a Trim step on it, waiting for clicks.
+func trimming(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    projected_box(editor)
+    selection_commands.set_mode(w, 3)
+    preview_support.settle(w)
+    pick_face(w, func (c: Vector3) -> bool: return c.y > 0.99)
+    edit_cad_commands.tool(w, edit_cad_surfaces.trim_verb)
+    preview_support.settle(w)
+
+## The Stage 3 scenes' camera.
+func box_look(editor: Luce3D) -> unit!:
+    look(editor, 0.6, 0.62, 6.5, Vector3(0.0, 0.6, 0.0))
+
 ## Frame `frame` of scene `scene` (`last` is the frame captured).
 pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
     let w = editor.workspace
@@ -223,6 +285,39 @@ pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
         editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + s[0], y = area.y + s[1]))
         editor.app.dispatch(Event(kind = EventKind.pointer_down, x = area.x + s[0], y = area.y + s[1], button = 1))
         editor.app.dispatch(Event(kind = EventKind.pointer_up, x = area.x + s[0], y = area.y + s[1], button = 1))
+    elif scene == "surf_trim_keep":
+        # A click on the marker in front (+z): its region kept.
+        let node = w.selected() else trap("no Edit CAD node")
+        let markers = surface_ops.points_of(node.sketch_state, surface_ops.markers_head)
+        if markers.length < 2:
+            trap(f"no markers: {node.warning}")
+        let front = markers[0] if markers[0].z > markers[1].z else markers[1]
+        let area = editor.panels.view.layout().bounds()
+        let s = project(w, front, area.width, area.height)
+        for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+            editor.app.dispatch(Event(kind = kind, x = area.x + s[0], y = area.y + s[1], button = 0))
+        preview_support.settle(w)
+        editor.panels.refresh()
+    elif scene == "surf_surface_menu":
+        let area = editor.panels.view.layout().bounds()
+        let s = project(w, Vector3(0.6, 1.0, 0.6), area.width, area.height)
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + s[0], y = area.y + s[1]))
+        editor.app.dispatch(Event(kind = EventKind.pointer_down, x = area.x + s[0], y = area.y + s[1], button = 1))
+        editor.app.dispatch(Event(kind = EventKind.pointer_up, x = area.x + s[0], y = area.y + s[1], button = 1))
+    elif scene == "surf_isoparm":
+        # A double-click on the side, as a user picks the isoparm there.
+        let area = editor.panels.view.layout().bounds()
+        let s = project(w, Vector3(math.sin(0.4), 0.3, math.cos(0.4)), area.width, area.height)
+        for _ in 0..<2:
+            for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+                editor.app.dispatch(Event(kind = kind, x = area.x + s[0], y = area.y + s[1], button = 0))
+        preview_support.settle(w)
+        editor.panels.refresh()
+    elif scene == "surf_blend_handles":
+        # The pointer on the start's tangent handle: lit.
+        let area = editor.panels.view.layout().bounds()
+        let tip = editor.panels.view.arrow.tip(area.width, area.height, edit_cad_curves.start_tangent_slot) else trap("no blend handle")
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + tip[0], y = area.y + tip[1]))
     elif scene == "surf_cv_nuv":
         # Held mid-drag: the frame fixed at the press, the ghost kept.
         let frame_axes = component_moves.cv_axes(w) else trap("no NUV frame")
@@ -362,6 +457,150 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
         selection_commands.set_mode(w, 1)
         preview_support.settle(w)
         look(editor, 0.7, 0.3, 7.5, Vector3(0.0, 1.0, 0.0))
+        editor.panels.refresh()
+    elif scene == "surf_blend_handles":
+        three_curves(editor)
+        pick_two(w)
+        edit_cad_commands.tool(w, edit_cad_curves.blend_verb)
+        preview_support.settle(w)
+        look(editor, 0.9, 0.45, 4.0, Vector3(3.4, 1.4, 2.0))
+        editor.panels.refresh()
+    elif scene == "surf_stretch":
+        three_curves(editor)
+        selection_commands.choose_component(w, curve_edge(w, 0), false)
+        edit_cad_commands.tool(w, edit_cad_curves.stretch_verb)
+        let node = w.selected() else trap("no Edit CAD node")
+        let numbers = edit_cad_curves.stretch_with(node.edits[-1].numbers, [0.0, 1.0, 0.5], [Vector3(), Vector3(), Vector3(0.0, 0.8, -0.4)])
+        w.perform("Stretch handle", func () -> unit!:
+            node.edits[-1] = node.edits[-1].with_numbers(numbers)
+            w.network.invalidate(node.id)
+            w.rebuild())
+        preview_support.settle(w)
+        curves_look(editor)
+        editor.panels.refresh()
+    elif scene == "surf_isoparm":
+        cad(editor)
+        node_commands.add_node(w, "Edit CAD", 40.0, 40.0)
+        preview_support.settle(w)
+        modeling_commands.create(w, "Cylinder")
+        preview_support.settle(w)
+        selection_commands.set_mode(w, 6)
+        preview_support.settle(w)
+        look(editor, 0.4, 0.35, 6.0, Vector3(0.0, 0.0, 0.0))
+        editor.panels.refresh()
+    elif scene == "surf_curve_combs":
+        cad(editor)
+        node_commands.add_node(w, "Solid Box", 40.0, 0.0)
+        for slot in 0..<3:
+            node_commands.set_parameter(w, slot, 4.0)
+        node_commands.add_node(w, "Curve", 40.0, 40.0)
+        node_commands.set_text(w, 0, "-10 12 0; -5 18 0; 0 14 0; 5 8 0; 10 15 0")
+        _ = check(editor, 2)
+        preview_support.settle(w)
+        look(editor, 0.0, 0.15, 34.0, Vector3(0.0, 11.0, 0.0))
+        editor.panels.refresh()
+    elif scene == "surf_project":
+        projected_box(editor)
+        selection_commands.set_mode(w, 6)
+        preview_support.settle(w)
+        box_look(editor)
+        editor.panels.refresh()
+    elif scene in ["surf_trim_markers", "surf_trim_keep", "surf_divide"]:
+        trimming(editor)
+        if scene == "surf_divide":
+            modeling_commands.set_last_step(w, edit_cad_surfaces.mode_slot, 2.0, 0.0, 2.0)
+            preview_support.settle(w)
+            selection_commands.set_mode(w, 3)
+            preview_support.settle(w)
+            pick_face(w, func (c: Vector3) -> bool: return c.y > 0.99)
+        preview_support.settle(w)
+        box_look(editor)
+        editor.panels.refresh()
+    elif scene == "surf_surface_menu":
+        projected_box(editor)
+        selection_commands.set_mode(w, 3)
+        preview_support.settle(w)
+        pick_face(w, func (c: Vector3) -> bool: return c.y > 0.99)
+        preview_support.settle(w)
+        box_look(editor)
+        editor.panels.refresh()
+    elif scene == "surf_intersect":
+        cad(editor)
+        node_commands.add_node(w, "Edit CAD", 40.0, 40.0)
+        preview_support.settle(w)
+        modeling_commands.create(w, "Box")
+        preview_support.settle(w)
+        modeling_commands.create(w, "Cylinder")
+        preview_support.settle(w)
+        component_moves.move_selection(w, Vector3(0.9, 0.0, 0.3))
+        preview_support.settle(w)
+        selection_commands.set_mode(w, 3)
+        preview_support.settle(w)
+        # The box's front (z = 1) clear of the cylinder, and the cylinder's side.
+        let mesh = preview_support.shown(w) else trap("no pick mesh")
+        let models = mesh.find_attribute("cad_model", 2)
+        var front = -1
+        var side = -1
+        for face in 0..<mesh.face_count():
+            let c = mesh.face_center(face)
+            let n = mesh.face_normal(face)
+            let model = int(mesh.attribute_value(models, face))
+            if front < 0 and model == 0 and n.z > 0.99:
+                front = face
+            if side < 0 and model == 1 and math.abs(n.y) < 0.2 and c.z > 1.0:
+                side = face
+        if front < 0 or side < 0:
+            trap(f"faces to intersect not found: {front} {side}")
+        selection_commands.choose_component(w, front, false)
+        selection_commands.choose_component(w, side, true)
+        edit_cad_commands.tool(w, edit_cad_surfaces.intersect_verb)
+        modeling_commands.set_last_step(w, edit_cad_surfaces.both_faces_slot, 1.0, 0.0, 1.0)
+        preview_support.settle(w)
+        selection_commands.set_mode(w, 6)
+        preview_support.settle(w)
+        look(editor, -0.5, 0.35, 6.0, Vector3(0.3, 0.2, 0.6))
+        editor.panels.refresh()
+    elif scene == "surf_stitch":
+        cad(editor)
+        node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+        let box = w.network.selected
+        let model = CadGeometry.model(preview_support.cooked(w, box).geometry, 0)
+        node_commands.add_node(w, cad_surface_nodes.unstitch_kind, 40.0, 120.0)
+        node_commands.set_text(w, 0, CadModeling.face_name_of(model, 0))
+        node_commands.add_node(w, cad_surface_nodes.stitch_kind, 40.0, 200.0)
+        _ = check(editor, 0)
+        node_commands.set_parameter(w, cad_check.sharp_slot, 1.0)
+        preview_support.settle(w)
+        look(editor, 0.62, 0.42, 58.0, Vector3(0.0, 4.0, 2.0))
+        editor.panels.refresh()
+    elif scene == "surf_project_node":
+        cad(editor)
+        node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+        let box = w.network.selected
+        let model = CadGeometry.model(preview_support.cooked(w, box).geometry, 0)
+        var top = ""
+        for f in 0..<model.face_count():
+            let name = CadModeling.face_name_of(model, f)
+            let frame = CadModeling.face_frame(model, name)
+            if frame.found and frame.u.cross(frame.v).y > 0.999:
+                top = name
+        node_commands.add_node(w, "Curve", 40.0, 120.0)
+        let curve = w.network.selected
+        node_commands.set_text(w, 0, "-15 15 2; -5 15 -4; 5 15 5; 15 15 -1")
+        node_commands.add_node(w, cad_surface_nodes.project_kind, 40.0, 200.0)
+        node_commands.set_text(w, 0, f"Curve{curve}")
+        node_commands.set_text(w, 1, top)
+        node_commands.add_node(w, cad_surface_nodes.trim_kind, 40.0, 280.0)
+        let trim = w.network.selected
+        node_commands.set_text(w, 0, top)
+        node_commands.display_selected(w)
+        preview_support.settle(w)
+        let state = (w.network.find(trim) else trap("no Trim")).sketch_state
+        let markers = surface_ops.points_of(state, surface_ops.markers_head)
+        if markers.length > 0:
+            node_commands.set_text(w, 1, surface_ops.points_text([markers[0]]))
+        preview_support.settle(w)
+        look(editor, 0.62, 0.55, 75.0, Vector3(0.0, 5.0, 0.0))
         editor.panels.refresh()
     elif scene == "surf_deviation":
         let (box, _) = filleted_box(editor, 2)

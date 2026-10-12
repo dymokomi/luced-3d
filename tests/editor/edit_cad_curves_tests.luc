@@ -28,12 +28,20 @@ import modeling_commands
 import node_commands
 import placing_commands
 import selection_commands
+import handle_lines
+from luce_ui.ui import Event
+from luce_window.input import EventKind
+from view_projection import project
+from sketch_support import render
 from luce_std import math
 
 pub func edit_cad_curves_tests() -> unit!:
     in_edit_cad()
     in_a_network()
-    print("PASS Edit CAD curves: CV, EP and on-face curves drawn, an edge duplicated, Blend Curve G2 and G4 measured, Attach, Detach, Close, Stretch, Reverse and Delete as one undo each, in the menus, curve CVs moved; a Blend Curve node follows its edges")
+    blend_handles()
+    stretch_handles()
+    isoparm_pick()
+    print("PASS Edit CAD curves: CV, EP and on-face curves drawn, an edge duplicated, Blend Curve G2 and G4 measured, Attach, Detach, Close, Stretch, Reverse and Delete as one undo each, in the menus, curve CVs moved; a Blend Curve node follows its edges; the blend's tangent handle dragged to twice the chord; a Stretch handle added mid-curve by Shift-click and dragged, the curve passing through it, the ends kept; a double-click on a cylinder picks the isoparm through the point, selected")
 
 ## The displayed Edit CAD node's result.
 func result(w: Workspace) -> Node!:
@@ -157,7 +165,7 @@ func in_edit_cad() -> unit!:
     w.undo()
     pick_curves(w, [0])
     edit_cad_commands.tool(w, edit_cad_curves.stretch_verb)
-    modeling_commands.set_last_step(w, 4, 2.0, -1000.0, 1000.0)
+    modeling_commands.set_last_step(w, edit_cad_curves.stretch_first_slot + 4 + 2, 2.0, -1000.0, 1000.0)
     let stretched = CadCurves.curve(w.network.evaluate_data(result(w).id).geometry, 0)
     assert(stretched.at(stretched.high()).subtract(Vector3(5.0, 3.0, 1.0)).length() < 1e-9 and stretched.at(stretched.low()).subtract(Vector3(2.0, 0.0, 0.0)).length() < 1e-9, result(w).warning)
     w.undo()
@@ -234,3 +242,116 @@ func in_a_network() -> unit!:
 
 func no_add(kind: str) -> unit!:
     _ = kind
+
+## Alias's blend handles: a G2 blend between two curves shows four arrows
+## (each end's tangent and curvature); the start's tangent arrow dragged to
+## two chords makes the blend leave its first curve twice as fast.
+func blend_handles() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    draw(w, edit_cad_curves.cv_verb, [Vector3(-4.0, 0.0, 0.0), Vector3(-3.0, 1.0, 0.0), Vector3(-2.0, 1.0, 0.0)])
+    draw(w, edit_cad_curves.cv_verb, [Vector3(2.0, 1.0, 0.0), Vector3(3.0, 1.0, 0.0), Vector3(4.0, 0.0, 0.0)])
+    pick_curves(w, [0, 1])
+    edit_cad_commands.tool(w, edit_cad_curves.blend_verb)
+    let node = result(w)
+    let held = w.network.evaluate_data(node.id).geometry
+    let blend = CadCurves.curve(held, 2)
+    let lines = handle_lines.parse(node.handles)
+    assert(lines.length == 4, f"{lines.length} handles")
+    let start = blend.at(blend.low())
+    assert(lines[0].slot == edit_cad_curves.start_tangent_slot and lines[0].foot.subtract(start).length() < 1e-9)
+    let chord = blend.at(blend.high()).subtract(start).length()
+    assert(math.abs(CadCurveTools.derivative(blend, blend.low(), 1).length() - chord) < 1e-6)
+    w.view.yaw = 0.0
+    w.view.pitch = 0.0
+    w.view.distance = 12.0
+    w.view.target = Vector3(0.0, 1.0, 0.0)
+    w.view.update_camera()
+    render(editor)
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    let tip = view.arrow.tip(bounds.width, bounds.height, edit_cad_curves.start_tangent_slot) else trap("no tangent handle")
+    let to = project(w, lines[0].foot.add(lines[0].way.multiply_scalar(lines[0].scale * 2.0)), bounds.width, bounds.height)
+    for (kind, x, y) in [(EventKind.pointer_moved, tip[0], tip[1]), (EventKind.pointer_down, tip[0], tip[1]), (EventKind.pointer_moved, (tip[0] + to[0]) * 0.5, (tip[1] + to[1]) * 0.5), (EventKind.pointer_moved, to[0], to[1]), (EventKind.pointer_up, to[0], to[1])]:
+        editor.app.dispatch(Event(kind = kind, x = bounds.x + x, y = bounds.y + y, button = 0, meta = kind == EventKind.pointer_moved))
+    let tangent = node.edits[-1].numbers[edit_cad_curves.start_tangent_slot]
+    assert(math.abs(tangent - 2.0) < 1e-6, f"tangent {tangent}")
+    let longer = CadCurves.curve(w.network.evaluate_data(node.id).geometry, 2)
+    assert(math.abs(CadCurveTools.derivative(longer, longer.low(), 1).length() - 2.0 * chord) < 1e-6)
+
+## Stretch's handles anywhere: on a cubic along x, Shift-click at its middle
+## adds a third handle; dragged up 1 in the view's plane, the curve passes
+## through the moved point and keeps its ends.
+func stretch_handles() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    draw(w, edit_cad_curves.cv_verb, [Vector3(-3.0, 0.0, 0.0), Vector3(-1.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0), Vector3(3.0, 0.0, 0.0)])
+    pick_curves(w, [0])
+    edit_cad_commands.tool(w, edit_cad_curves.stretch_verb)
+    let node = result(w)
+    w.view.yaw = 0.0
+    w.view.pitch = 0.0
+    w.view.distance = 10.0
+    w.view.target = Vector3(0.0, 0.0, 0.0)
+    w.view.update_camera()
+    render(editor)
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    assert(view.stretch.active())
+    let mid = project(w, Vector3(0.0, 0.0, 0.0), bounds.width, bounds.height)
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + mid[0], y = bounds.y + mid[1]))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = bounds.x + mid[0], y = bounds.y + mid[1], button = 0, shift = true))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = bounds.x + mid[0], y = bounds.y + mid[1], button = 0, shift = true))
+    let (fractions, _) = edit_cad_curves.stretch_handles_of(node.edits[-1].numbers)
+    assert(fractions.length == 3 and math.abs(fractions[2] - 0.5) < 0.02, f"{fractions}")
+    render(editor)
+    let up = project(w, Vector3(0.0, 1.0, 0.0), bounds.width, bounds.height)
+    for (kind, x, y) in [(EventKind.pointer_moved, mid[0], mid[1]), (EventKind.pointer_down, mid[0], mid[1]), (EventKind.pointer_moved, (mid[0] + up[0]) * 0.5, (mid[1] + up[1]) * 0.5), (EventKind.pointer_moved, up[0], up[1]), (EventKind.pointer_up, up[0], up[1])]:
+        editor.app.dispatch(Event(kind = kind, x = bounds.x + x, y = bounds.y + y, button = 0))
+    let curve = CadCurves.curve(w.network.evaluate_data(node.id).geometry, 0)
+    let (now, moves) = edit_cad_curves.stretch_handles_of(node.edits[-1].numbers)
+    let at = curve.at(curve.low() + (curve.high() - curve.low()) * now[2])
+    let source = Vector3(-3.0 + 6.0 * now[2], 0.0, 0.0)
+    assert(at.subtract(source.add(moves[2])).length() < 1e-9 and math.abs(moves[2].y - 1.0) < 0.05, f"{at} {moves[2]}")
+    assert(curve.at(curve.low()).subtract(Vector3(-3.0, 0.0, 0.0)).length() < 1e-9 and curve.at(curve.high()).subtract(Vector3(3.0, 0.0, 0.0)).length() < 1e-9)
+
+## Alias's isoparm pick: at the Curves level a double-click on a cylinder's
+## side makes the isoparm (U: the ruling) through the point clicked a curve
+## of the model, selected.
+func isoparm_pick() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    modeling_commands.create(w, "Cylinder")
+    selection_commands.set_mode(w, 6)
+    w.view.yaw = 0.0
+    w.view.pitch = 0.0
+    w.view.distance = 6.0
+    w.view.target = Vector3(0.0, 0.0, 0.0)
+    w.view.update_camera()
+    render(editor)
+    let bounds = editor.panels.view.layout().bounds()
+    let on = project(w, Vector3(0.0, 0.3, 1.0), bounds.width, bounds.height)
+    for _ in 0..<2:
+        for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+            editor.app.dispatch(Event(kind = kind, x = bounds.x + on[0], y = bounds.y + on[1], button = 0))
+    let node = result(w)
+    assert(node.edits[-1].verb == edit_cad_curves.isoparm_verb, f"{node.edits[-1].verb}")
+    let held = w.network.evaluate_data(node.id).geometry
+    assert(CadCurves.count(held) == 1 and CadCurves.source(held, 0).starts_with("isoparm "), node.warning)
+    let ruling = CadCurves.curve(held, 0)
+    let a = ruling.at(ruling.low())
+    let b = ruling.at(ruling.high())
+    assert(math.abs(a.x - b.x) < 1e-9 and math.abs(a.z - b.z) < 1e-9 and math.abs(a.z - 1.0) < 0.01, f"{a} {b}")
+    assert(w.selected_count() > 0)

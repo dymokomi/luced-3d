@@ -1,0 +1,210 @@
+## Surfacing Stage 3's operations on a CAD result (docs/research/
+## SURFACING-ALIAS-PLASTICITY.md §4.3, §7.1), shared by Edit CAD's steps
+## (edit_cad_surfaces.luc) and the CAD network's nodes (cad_surface_nodes.luc):
+##   Project: curves cast onto a face along a vector, the view or its
+##     normals, as curves on the face (Alias's Project, Rhino's Pull);
+##   Intersect: where two faces meet, or a face and a plane, as curves on
+##     the face (and on the other with Both);
+##   Trim: the face cut by its curves, the regions picked kept or discarded,
+##     or every region a face of its own (Divide); its region markers, the
+##     crossings and the loose ends go to the viewport (trim_regions.luc)
+##     as lines of the result's state;
+##   Untrim (Last or All of the trim stages), Trim Convert, Shrink;
+##   Stitch (bodies joined within a gap, tolerant edges) and Unstitch.
+## Each is luce-cad's CadSurfacing on the result's geometry set; a body is
+## found by one of its faces' names, which trims keep.
+from luce_cad.surfacing import CadSurfacing
+from luce_3d.graphics import Vector3
+from geometry_data import GeometryData
+from luce_ui import ui
+
+## The state lines Trim publishes (trim_regions.luc reads them).
+pub let markers_head = "trim_markers "
+pub let picked_head = "trim_picked "
+pub let loose_head = "trim_loose "
+pub let crossings_head = "trim_crossings "
+pub let mode_head = "trim_mode "
+
+## Trim's modes, Alias's.
+pub let keep_mode = 0
+pub let discard_mode = 1
+pub let divide_mode = 2
+
+## Project's directions.
+pub let along_vector = 0
+pub let along_view = 1
+pub let along_normal = 2
+
+## The index of the body holding the face named `face`.
+pub func body_with(data: GeometryData, face: str) -> int!:
+    let models = data.models()
+    for index in 0..<models.length:
+        let model = models[index]
+        for f in 0..<model.face_count():
+            if model.face_name(f) == face:
+                return index
+    error(ui.invalid, f"The face {face} is no longer in the model: pick it again")
+
+## Project: curves `curves` cast onto face `face` along `along` (a vector,
+## the view's direction given as `vector`, or the normal).
+pub func project(data: GeometryData, curves: list[str], face: str, along: int, vector: Vector3, both: bool, original: bool) -> GeometryData!:
+    if curves.length == 0:
+        error(ui.invalid, "Project: pick the curves to project")
+    if face == "":
+        error(ui.invalid, "Project: pick the face to project onto")
+    let body = body_with(data, face)
+    let normal = along == along_normal
+    if not normal and vector.length() == 0.0:
+        error(ui.invalid, "Project along a vector needs a direction")
+    let made = CadSurfacing.projected(data.geometry, body, face, curves.join(";"), vector, normal = normal, both = both, original = original)
+    let result = GeometryData(geometry = made.geometry())
+    result.report = f"{made.count} curve{"" if made.count == 1 else "s"} on {face}, fitted within {made.deviation:.2e}"
+    return result
+
+## Intersect: face `face` with face `other` (or, with `plane`, the plane
+## through `origin` square to `normal`).
+pub func intersect(data: GeometryData, face: str, other: str, plane: bool, origin: Vector3, normal: Vector3, both: bool) -> GeometryData!:
+    if face == "":
+        error(ui.invalid, "Intersect: pick a face")
+    let body = body_with(data, face)
+    if plane:
+        let made = CadSurfacing.intersected_plane(data.geometry, body, face, origin, normal)
+        let result = GeometryData(geometry = made.geometry())
+        result.report = f"{made.count} curve{"" if made.count == 1 else "s"} where {face} meets the plane"
+        return result
+    if other == "":
+        error(ui.invalid, "Intersect: pick the second face")
+    let made = CadSurfacing.intersected(data.geometry, body, face, body_with(data, other), other, both = both)
+    let result = GeometryData(geometry = made.geometry())
+    result.report = f"{made.count} curve{"" if made.count == 1 else "s"} where the faces meet"
+    return result
+
+## Trim: face `face` cut by its curves (or `curves`), the regions holding
+## `picks` kept or discarded by `mode`, or divided. Without picks (Keep or
+## Discard) the input passes through, waiting for them. The face's region
+## markers, the picks and, with `show`, the crossings and loose ends are
+## the result's state lines.
+pub func trim(data: GeometryData, face: str, picks: list[Vector3], mode: int, show: bool, curves: list[str], tag: str) -> GeometryData!:
+    if face == "":
+        error(ui.invalid, "Trim: pick the face to trim")
+    let body = body_with(data, face)
+    let names = curves.join(";")
+    let regions = CadSurfacing.trim_regions(data.geometry, body, face, curves = names)
+    let lines: list[str] = []
+    let markers: list[Vector3] = []
+    for k in 0..<regions.marker_count():
+        markers.append(regions.marker(k))
+    lines.append(markers_head + words(markers))
+    lines.append(picked_head + words(picks))
+    lines.append(mode_head + str(mode))
+    if show:
+        let loose: list[Vector3] = []
+        for k in 0..<regions.loose_count():
+            loose.append(regions.loose(k))
+        let crossings: list[Vector3] = []
+        for k in 0..<regions.crossing_count():
+            crossings.append(regions.crossing(k))
+        lines.append(loose_head + words(loose))
+        lines.append(crossings_head + words(crossings))
+    var result = data.passed("")
+    if markers.length < 2:
+        result = data.passed("Trim: the curves on the face cut it into no regions; each must cross it or close on it (Show intersections marks loose ends)")
+    elif mode != divide_mode and picks.length == 0:
+        result = data.passed(f"Trim: click the regions to {"keep" if mode == keep_mode else "discard"}")
+    else:
+        result = GeometryData(geometry = CadSurfacing.trimmed(data.geometry, body, face, picks, mode, curves = names, tag = tag))
+        result.report = "every region a face of its own" if mode == divide_mode else f"{picks.length} region{"" if picks.length == 1 else "s"} {"kept" if mode == keep_mode else "discarded"}"
+    result.sketch_state = lines.join("\n")
+    return result
+
+## Untrim: face `face` back as it was before its last trim (`all`: its
+## first), or its natural surface.
+pub func untrim(data: GeometryData, face: str, all: bool) -> GeometryData!:
+    if face == "":
+        error(ui.invalid, "Untrim: pick the face")
+    let stages = CadSurfacing.stages(data.geometry, face)
+    let result = GeometryData(geometry = CadSurfacing.untrimmed(data.geometry, body_with(data, face), face, all = all))
+    result.report = "its natural surface (no trim stages kept)" if stages == 0 else f"{"every" if all else "the last"} trim stage undone"
+    return result
+
+## Trim Convert: face `face` an untrimmed B-spline of degrees and spans `du`,
+## `dv`, `su`, `sv`.
+pub func convert(data: GeometryData, face: str, du: int, dv: int, su: int, sv: int, swap: bool, keep: bool) -> GeometryData!:
+    if face == "":
+        error(ui.invalid, "Trim Convert: pick the face")
+    let made = CadSurfacing.trim_converted(data.geometry, body_with(data, face), face, du, dv, su, sv, swap = swap, keep = keep)
+    let result = GeometryData(geometry = made.geometry())
+    result.report = f"surface deviation {made.deviation:.2e}, edge deviation {made.edge_deviation:.2e}"
+    return result
+
+## Shrink: face `face`'s surface cut down to its trims.
+pub func shrink(data: GeometryData, face: str) -> GeometryData!:
+    if face == "":
+        error(ui.invalid, "Shrink: pick the face")
+    return GeometryData(geometry = CadSurfacing.shrunk(data.geometry, body_with(data, face), face))
+
+## Stitch: bodies `bodies` (indices; empty: all) joined within `gap`.
+pub func stitch(data: GeometryData, bodies: list[int], gap: float) -> GeometryData!:
+    let made = CadSurfacing.stitched(data.geometry, bodies, gap)
+    let result = GeometryData(geometry = made.geometry())
+    result.report = f"{made.count} edge{"" if made.count == 1 else "s"} joined, the widest gap {made.widest:.2e}; {"a closed solid" if made.closed else "open"}"
+    return result
+
+## Unstitch: body `body`'s faces each a body of its own.
+pub func unstitch(data: GeometryData, body: int) -> GeometryData!:
+    return GeometryData(geometry = CadSurfacing.unstitched(data.geometry, body))
+
+## Points as words: x y z apart by spaces.
+pub func words(points: list[Vector3]) -> str:
+    let parts: list[str] = []
+    for p in points:
+        parts.append(f"{p.x} {p.y} {p.z}")
+    return parts.join(" ")
+
+## The points a state line holds after its head.
+pub func points_of(state: str, head: str) -> list[Vector3]:
+    let found: list[Vector3] = []
+    for line in state.split("\n"):
+        if not line.starts_with(head):
+            continue
+        let values: list[float] = []
+        for word in line[head.length..].split(" "):
+            if word != "":
+                let value = float(word) catch failure:
+                    recover 0.0
+                values.append(value)
+        var at = 0
+        while at + 2 < values.length:
+            found.append(Vector3(values[at], values[at + 1], values[at + 2]))
+            at += 3
+    return found
+
+## The integer a state line holds after its head (-1 when none).
+pub func number_of(state: str, head: str) -> int:
+    for line in state.split("\n"):
+        if line.starts_with(head):
+            let value = int(line[head.length..].trim()) catch failure:
+                recover -1
+            return value
+    return -1
+
+## Points typed as x y z apart by `;` (a node's text).
+pub func parse_points(text: str) -> list[Vector3]!:
+    let points: list[Vector3] = []
+    for part in text.split(";"):
+        let values: list[float] = []
+        for word in part.trim().split(" "):
+            if word != "":
+                values.append(float(word))
+        if values.length == 3:
+            points.append(Vector3(values[0], values[1], values[2]))
+        elif values.length != 0:
+            error(ui.invalid, f"A point is x y z: \"{part.trim()}\" is not")
+    return points
+
+## Points as a node's text.
+pub func points_text(points: list[Vector3]) -> str:
+    let parts: list[str] = []
+    for p in points:
+        parts.append(f"{p.x} {p.y} {p.z}")
+    return parts.join(";")

@@ -20,11 +20,17 @@
 ##   Move/Copy: the Move tool on the selection; its tool bar holds the
 ##     distances, the angles and Create copy.
 from luce_geocore.geocore import Domain
+from luce_3d.graphics import Vector3
+from luce_std import math
 from workspace import Workspace
 from node import Node
 from edit_types import object_level, edge_level, face_level, curve_level
 from edit_cad_sketches import SketchObject, sketch_step, feature_step, visibility_step, plane_step, next_name
-from edit_cad_picks import wait_for, target_label, tools_label, splitting_label, axis_label, object_label, plane_label
+from edit_cad_picks import wait_for, target_label, tools_label, splitting_label, axis_label, object_label, plane_label, projection_label
+import edit_cad_surfaces
+from edit_operations import EditStep
+import view_projection
+import edit_cad_curves
 from sketch_node import face_plane
 import edit_cad
 import edit_cad_sketches
@@ -176,8 +182,54 @@ pub func tool(w: Workspace, name: str) -> unit!:
         waiting_step(w, name)
     elif name == "Move/Copy":
         move_copy(w)
+    elif name == edit_cad_surfaces.project_verb:
+        project_step(w)
     else:
         modeling_commands.model(w, name)
+
+## A double-click at (`x`, `y`) on a surface at the Curves level with no
+## curve under it: the isoparm through the point picked (Alias's), a step,
+## the curve selected. Whether it took the click.
+pub func pick_isoparm(w: Workspace, x: float, y: float, width: float, height: float) -> bool!:
+    if not active(w) or sketching(w) or w.level_index() != curve_level or w.prompt != none or w.placing != none:
+        return false
+    let node = model_node(w) else return false
+    let hit = w.surface_at(w.view.camera.position(), view_projection.ray(w, x, y, width, height).normalized())
+    if not hit.found:
+        return false
+    let p = hit.point
+    w.perform(edit_cad_curves.isoparm_verb, func () -> unit!:
+        node.edits.append(EditStep(edit_cad_curves.isoparm_verb, "", 0, [0.0, p.x, p.y, p.z], 0))
+        w.network.invalidate(node.id)
+        w.adopt_output = true
+        w.pending_level = curve_level
+        w.rebuild())
+    return true
+
+## Project on the picked curves: the step takes the view's direction (for
+## Along: View), then waits for the face to cast onto; Esc takes it away.
+pub func project_step(w: Workspace) -> unit!:
+    let node = model_node(w) else return
+    if w.in_transaction():
+        return
+    w.begin(edit_cad_surfaces.project_verb)
+    let count = node.edits.length
+    modeling_commands.model(w, edit_cad_surfaces.project_verb)
+    if node.edits.length == count:
+        w.cancel()
+        return
+    let step = node.edits[-1]
+    let numbers = step.numbers.copy()
+    # From the eye to the target (view_state.luc's orbit).
+    let v = w.view
+    let look = Vector3(-math.sin(v.yaw) * math.cos(v.pitch), -math.sin(v.pitch), -math.cos(v.yaw) * math.cos(v.pitch))
+    # The view's direction is kept, so the step replays as made.
+    if int(numbers[edit_cad_surfaces.along_slot]) == 1:
+        numbers[edit_cad_surfaces.direction_slot] = look.x
+        numbers[edit_cad_surfaces.direction_slot + 1] = look.y
+        numbers[edit_cad_surfaces.direction_slot + 2] = look.z
+        node.edits[-1] = step.with_numbers(numbers)
+    wait_for(w, node, projection_label, face_level, "Click the face to project the curves onto; Esc cancels")
 
 ## Press Pull: profiles in a sketch Extrude, faces Offset Face, edges a
 ## Fillet, as Fusion's dispatches.

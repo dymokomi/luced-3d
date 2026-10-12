@@ -16,6 +16,7 @@ from edit_types import object_level, edge_level, face_level, curve_level
 from edit_steps import show
 import cad_modify
 import cad_curve_nodes
+import cad_surface_nodes
 from luce_cad.cad_curves import CadCurves
 import cad_moves
 import cad_names
@@ -31,6 +32,8 @@ pub let point = 5
 ## A curve of the input (the Curves level) or, without curves, an edge: a
 ## blend's end ("curve <name>" or "edge <reference>").
 pub let curve_or_edge = 6
+## Curves of the input, by name (Project's), several (Enter finishes).
+pub let curves = 7
 
 ## A selection input: its label in the panel, the node's text (or for a
 ## point, the value slots) it writes, what it takes, when it shows (a
@@ -90,6 +93,22 @@ pub func inputs(kind: str) -> list[PickInput]:
     if kind == cad_curve_nodes.curve_kind:
         return [PickInput("Edge", cad_curve_nodes.source_text, edge, "{ type != 2 }", "From edge: the body's edge the curve is, kept by its reference."),
                 PickInput("Face", cad_curve_nodes.source_text, face, "{ type < 3 }", "Isoparm and On face: the face, kept by its name.")]
+    # Surfacing (cad_surface_nodes.luc).
+    let s_first = cad_surface_nodes.first_text
+    let s_second = cad_surface_nodes.second_text
+    if kind == cad_surface_nodes.project_kind:
+        return [PickInput("Curves", s_first, curves, "", "The curves cast onto the face, kept by their names."),
+                PickInput("Projection face", s_second, face, "", "The face the curves are cast onto, kept by its name.")]
+    if kind == cad_surface_nodes.intersect_kind:
+        return [PickInput("Face", s_first, face, "", "The face the meeting curves lie on."),
+                PickInput("Second face", s_second, face, "{ with == 1 }", "The face it meets.")]
+    if kind in [cad_surface_nodes.trim_kind, cad_surface_nodes.untrim_kind, cad_surface_nodes.convert_kind, cad_surface_nodes.shrink_kind]:
+        let doc = "The face trimmed by its curves; then click its region markers in the viewport." if kind == cad_surface_nodes.trim_kind else "The face, kept by its name."
+        return [PickInput("Face", s_first, face, "", doc)]
+    if kind == cad_surface_nodes.stitch_kind:
+        return [PickInput("Bodies", s_first, bodies, "", "The bodies joined (none picked: every body of the input).")]
+    if kind == cad_surface_nodes.unstitch_kind:
+        return [PickInput("Body", s_first, body, "", "The body whose faces each become a body.")]
     return []
 
 ## The input of `kind` whose prompt is `label`, or none.
@@ -111,6 +130,9 @@ pub func summary(node: Node, input: PickInput) -> str:
         return "An edge"
     if input.takes == curve_or_edge:
         return text if text.starts_with("curve ") else "An edge"
+    if input.takes == curves:
+        let named = text.split(";").length
+        return "1 curve" if named == 1 else f"{named} curves"
     let count = text.split(";").length
     var noun = "face" if input.takes in [faces, face] else "body"
     if node.kind == "Move" and input.slot == cad_modify.first_text:
@@ -137,10 +159,12 @@ func begin_waiting(w: Workspace, node: Node, input: PickInput) -> unit!:
     # A blend's end: the input's curves when it has any, else its edges.
     if input.takes == curve_or_edge:
         level = curve_level if input_has_curves(w, node) else edge_level
+    if input.takes == curves:
+        level = curve_level
     w.adopt_level(level)
     w.selection = none
     w.pending_changed = true
-    let many = input.takes in [faces, bodies]
+    let many = input.takes in [faces, bodies, curves]
     w.notice = f"{input.prompt()}: click {"them (Shift adds), then Enter" if many else "one"}; Esc cancels"
     w.revision += 1
     w.rebuild()
@@ -155,7 +179,13 @@ func input_has_curves(w: Workspace, node: Node) -> bool!:
 ## cad_curve_nodes.waits_for), or none: an empty one it needs as its values
 ## stand.
 pub func next_input(node: Node) -> PickInput?:
-    let waiting = cad_curve_nodes.waits_for(node.kind, node.values, node.texts) if node.kind in cad_curve_nodes.kinds() else cad_modify.waits_for(node.kind, node.values, node.texts, node.inputs.length > 1 and node.inputs[1] >= 0)
+    var waiting = ""
+    if node.kind in cad_curve_nodes.kinds():
+        waiting = cad_curve_nodes.waits_for(node.kind, node.values, node.texts)
+    elif node.kind in cad_surface_nodes.kinds():
+        waiting = cad_surface_nodes.waits_for(node.kind, node.values, node.texts)
+    else:
+        waiting = cad_modify.waits_for(node.kind, node.values, node.texts, node.inputs.length > 1 and node.inputs[1] >= 0)
     if waiting == "":
         return none
     for input in inputs(node.kind):
@@ -167,6 +197,8 @@ pub func next_input(node: Node) -> PickInput?:
 func needed(node: Node, input: PickInput) -> bool:
     if input.label == "Splitting face":
         return int(node.values[edit_cad_faces.split_tool_slot]) == 0
+    if input.label == "Second face":
+        return node.kind == cad_surface_nodes.intersect_kind and int(node.values[0]) == 0
     if input.label == "Rotate axis":
         return int(node.values[cad_moves.type_slot]) == 2 and int(node.values[cad_moves.axis_slot]) == 3
     if input.label == "Tool bodies":
@@ -178,13 +210,30 @@ func needed(node: Node, input: PickInput) -> bool:
 
 ## Whether prompt `label` is one of node `node`'s inputs.
 pub func waits(node: Node, label: str) -> bool:
-    return (node.kind in cad_modify.kinds() or node.kind in cad_curve_nodes.kinds()) and input_named(node.kind, label) != none
+    return (node.kind in cad_modify.kinds() or node.kind in cad_curve_nodes.kinds() or node.kind in cad_surface_nodes.kinds()) and input_named(node.kind, label) != none
 
 ## The selection changed while input `label` of `node` waits: what is
 ## picked goes into the node; a single pick finishes at once.
 pub func follow(w: Workspace, node: Node, label: str, mesh: Mesh, chosen: Selection) -> unit!:
     let input = input_named(node.kind, label) else return
     let first = chosen.next(-1)
+    # Curves by name, each once; Enter finishes.
+    if input.takes == curves:
+        let names = mesh.find_attribute("cad_curve_name", 4)
+        if names < 0 or w.level_index() != curve_level:
+            return
+        let picked: list[str] = []
+        var at = first
+        while at >= 0:
+            let name = mesh.attribute_text(names, at)
+            if name != "" and not (name in picked):
+                picked.append(name)
+            at = chosen.next(at)
+        node.texts[input.slot] = picked.join(";")
+        w.network.invalidate(node.id)
+        w.pending_changed = true
+        w.rebuild()
+        return
     if input.takes == curve_or_edge and first >= 0 and w.level_index() == curve_level:
         let names = mesh.find_attribute("cad_curve_name", 4)
         let name = mesh.attribute_text(names, first) if names >= 0 else ""

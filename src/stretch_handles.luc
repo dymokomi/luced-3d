@@ -1,0 +1,177 @@
+## Alias's Stretch handles (Curve Edit › Stretch): while an Edit CAD node's
+## last step is Stretch, its handles stand on the curve, two at its ends to
+## begin with. Dragging one moves it in the plane facing the view through
+## where it stands, the curve following smoothly (luce-cad's stretched:
+## every control point by a polynomial field through the handles' moves,
+## landing them exactly); Shift-click on the curve adds a handle there (up
+## to the curve's degree + 1, what the kernel takes), Shift-click on a
+## handle takes it away. Each drag or click is one undo step. The handles
+## and the curve's path come from the step's cook (edit_cad_curves'
+## stretch lines), so the viewport needs no model.
+from luce_ui.ui import Painter, Rect, Event
+from luce_window.input import EventKind
+from workspace import Workspace
+from node import Node
+from luce_3d.graphics import Vector3
+import edit_cad
+import edit_cad_curves
+import view_projection as gm
+import theme
+from luce_std import math
+
+## Screen points within which the pointer is on a handle or the path.
+let reach = 12.0
+
+pub class StretchHandles:
+    let w: Workspace
+    ## The handle under the pointer or dragged (-1: none).
+    pub var hovered: int = -1
+    pub var dragging: bool = false
+    ## The dragged handle's place before the drag and its move then.
+    var base: Vector3
+    var pressed_move: Vector3
+
+    pub func init(self, w: Workspace):
+        self.w = w
+        self.base = Vector3()
+        self.pressed_move = Vector3()
+
+    ## The Edit CAD node whose last step is Stretch, displayed and edited.
+    func target(self) -> Node?:
+        let node = self.w.selected() else return none
+        if node.kind != edit_cad.kind_name or node.id != self.w.network.display or node.edits.length == 0 or not self.w.editing() or self.w.sketching():
+            return none
+        if node.edits[-1].verb != edit_cad_curves.stretch_verb:
+            return none
+        return node
+
+    func state(self) -> str:
+        let node = self.target() else return ""
+        return node.sketch_state
+
+    pub func active(self) -> bool:
+        return edit_cad_curves.fraction_points(self.state(), edit_cad_curves.stretch_handles_head).length > 0
+
+    ## The handle near (`x`, `y`) on screen, or -1.
+    func near(self, x: float, y: float, width: float, height: float) -> int!:
+        let handles = edit_cad_curves.fraction_points(self.state(), edit_cad_curves.stretch_handles_head)
+        var best = -1
+        var least = reach
+        for k in 0..<handles.length:
+            let (_, p) = handles[k]
+            let s = gm.project(self.w, p, width, height)
+            if s[2] <= 0.0:
+                continue
+            let d = math.hypot(s[0] - x, s[1] - y)
+            if d < least:
+                least = d
+                best = k
+        return best
+
+    ## The fraction along the curve's path nearest (`x`, `y`) on screen, or
+    ## -1 when the pointer is off it.
+    func on_path(self, x: float, y: float, width: float, height: float) -> float!:
+        let path = edit_cad_curves.fraction_points(self.state(), edit_cad_curves.stretch_path_head)
+        var best = -1.0
+        var least = reach
+        for k in 1..<path.length:
+            let (f0, p0) = path[k - 1]
+            let (f1, p1) = path[k]
+            let a = gm.project(self.w, p0, width, height)
+            let b = gm.project(self.w, p1, width, height)
+            if a[2] <= 0.0 or b[2] <= 0.0:
+                continue
+            let dx = b[0] - a[0]
+            let dy = b[1] - a[1]
+            let length = dx * dx + dy * dy
+            let t = math.clamp(((x - a[0]) * dx + (y - a[1]) * dy) / length, 0.0, 1.0) if length > 0.0 else 0.0
+            let d = math.hypot(a[0] + dx * t - x, a[1] + dy * t - y)
+            if d < least:
+                least = d
+                best = f0 + (f1 - f0) * t
+        return best
+
+    ## The pointer's events: hover, drag a handle, Shift-click to add or
+    ## take one away. Whether it took the event.
+    pub func event(self, event: Event, width: float, height: float) -> bool!:
+        let node = self.target() else return false
+        if self.dragging:
+            if event.kind == EventKind.pointer_moved:
+                let step = node.edits[-1]
+                let (fractions, moves) = edit_cad_curves.stretch_handles_of(step.numbers)
+                # In the plane facing the view through where the handle was.
+                let v = self.w.view
+                let facing = Vector3(math.sin(v.yaw) * math.cos(v.pitch), math.sin(v.pitch), math.cos(v.yaw) * math.cos(v.pitch))
+                let q = gm.plane(self.w, event.x, event.y, width, height, self.base, facing)
+                moves[self.hovered] = self.pressed_move.add(q.subtract(self.base))
+                self.w.preview_step(edit_cad_curves.stretch_with(step.numbers, fractions, moves))
+                return true
+            if event.kind == EventKind.pointer_up or event.cancelled:
+                self.dragging = false
+                if event.cancelled:
+                    self.w.cancel()
+                else:
+                    self.w.commit()
+                return true
+            return false
+        if event.alt:
+            return false
+        if event.kind == EventKind.pointer_moved:
+            let at = self.near(event.x, event.y, width, height)
+            let changed = at != self.hovered
+            self.hovered = at
+            return changed
+        if event.kind != EventKind.pointer_down or event.button != 0 or not event.inside:
+            return false
+        let at = self.near(event.x, event.y, width, height)
+        let step = node.edits[-1]
+        let (fractions, moves) = edit_cad_curves.stretch_handles_of(step.numbers)
+        if event.shift:
+            if at >= 0:
+                if fractions.length < 2:
+                    self.say("Stretch keeps one handle at least")
+                    return true
+                _ = fractions.remove_at(at)
+                _ = moves.remove_at(at)
+                self.change("Remove stretch handle", node, edit_cad_curves.stretch_with(step.numbers, fractions, moves))
+                return true
+            let f = self.on_path(event.x, event.y, width, height)
+            if f < 0.0:
+                return false
+            fractions.append(f)
+            moves.append(Vector3())
+            self.change("Add stretch handle", node, edit_cad_curves.stretch_with(step.numbers, fractions, moves))
+            return true
+        if at < 0:
+            return false
+        let handles = edit_cad_curves.fraction_points(node.sketch_state, edit_cad_curves.stretch_handles_head)
+        let (_, place) = handles[at]
+        self.hovered = at
+        self.base = place
+        self.pressed_move = moves[at]
+        self.dragging = true
+        self.w.begin("Stretch handle")
+        return true
+
+    ## The step's numbers set, one undo step.
+    func change(self, label: str, node: Node, numbers: list[float]) -> unit!:
+        self.w.perform(label, func () -> unit!:
+            node.edits[-1] = node.edits[-1].with_numbers(numbers)
+            self.w.network.invalidate(node.id)
+            self.w.rebuild())
+
+    func say(self, text: str):
+        self.w.notice = text
+        self.w.revision += 1
+
+    ## The handles: rings on the curve, the hovered or dragged one lit.
+    pub func draw(self, painter: Painter, width: float, height: float) -> unit!:
+        let handles = edit_cad_curves.fraction_points(self.state(), edit_cad_curves.stretch_handles_head)
+        for k in 0..<handles.length:
+            let (_, p) = handles[k]
+            let s = gm.project(self.w, p, width, height)
+            if s[2] <= 0.0:
+                continue
+            let color = theme.grey(245.0) if k == self.hovered else theme.accent()
+            painter.rounded_rectangle(Rect(s[0] - 7.0, s[1] - 7.0, 14.0, 14.0), theme.grey(20.0), 7.0)
+            painter.rounded_rectangle(Rect(s[0] - 5.5, s[1] - 5.5, 11.0, 11.0), color, 5.5)

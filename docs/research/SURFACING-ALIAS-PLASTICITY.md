@@ -93,7 +93,7 @@ remaining blend options on solids come last.
 | 0 | Measuring: exact curvature combs, continuity checks, deviation (Base: third derivatives). **Done** (§8) |
 | 1 | The NURBS toolkit in luce-cad, and CV editing at Edit CAD's CVs level. **Done** (§8) |
 | 2 | 3D CAD curves and curves on surfaces; Blend Curve in 3D, G0–G4. **Done** (§8) |
-| 3 | Project, Intersect, Trim, Untrim, Divide, Trim Convert, Stitch; open surface bodies throughout |
+| 3 | Project, Intersect, Trim, Untrim, Divide, Trim Convert, Stitch; open surface bodies throughout. **Done** (§8) |
 | 4 | Align (match) G0–G3, with every Alias option |
 | 5 | Surfaces from curves: Square, Skin, Rail, Profile, Set Planar, Extend |
 | 6 | Blends between surfaces: Freeform Blend, Profile Blend, Surface Fillet between face sets |
@@ -1629,17 +1629,24 @@ Tests, against closed forms (luce-cad `curve_tests.luc`, luced-3d `edit_cad_curv
   handles exactly;
 - edges and isoparms come out exactly (a circle's radius to 1e-12); a curve on a face lies on it.
 
-Left for later:
+Left for later, and what became of it (2026-10-12, with Stage 3):
 
 - **Ends on surfaces.** A blend's end is a curve's or an edge's (continuity along it). Alias's
   blend to a surface across its edge (Parametric or Geometric curvature type) waits for the
   surface tools (Stage 4's Align reads the same cross derivatives).
-- **Blend handles.** Alias's blend point handles in the viewport (tangent and curvature arrows)
-  are numbers in the tool bar for now.
-- **Isoparms as objects** to pick (rather than Duplicate Curve's parameter), and combs on curves
-  in the Check node.
-- **Stretch's handles** are the curve's two ends from the tool bar; the kernel takes up to
-  degree + 1 anywhere on it.
+- ~~**Blend handles.**~~ Done: at each end a tangent arrow (its length the tangent, a third of
+  the chord at 1) and at G2 or more a curvature arrow on from its tip, dragged in the viewport
+  on the Blend Curve step and node (`edit_cad_curves.blend_handles`, `feature_handles.luc`).
+- ~~**Isoparms as objects**~~ Done: at the Curves level a double-click on a surface picks the
+  isoparm through the point (U or V) as a curve of the model, selected for the curve tools
+  (`CadCurveTools.isoparm_fraction`). ~~Combs on curves~~ in the Check node: done
+  (`CadMeasure.with_curve_combs`, `curve_check`), curves alone too.
+- ~~**Stretch's handles**~~ Done: handles anywhere on the curve, up to degree + 1, dragged in
+  the plane facing the view, added and taken away by Shift-click (`stretch_handles.luc`).
+- Also done: curves have their own icon in the outliner; and the first result of the compute
+  worker no longer frames over a camera set or moved while it cooked (a scene's, or the user's
+  orbit right after opening a project): the put-off frame happens only if the camera is where
+  it was asked (`Workspace.frame_cube`).
 
 **Stage 3: project, intersect, trim, stitch** (S5–S7).
 
@@ -1656,6 +1663,88 @@ Left for later:
   - Divide then Stitch gives back one face's area and a closed edge loop;
   - six squares stitch into a closed solid with the cube's volume;
   - Untrim All gives the natural surface.
+
+**Stage 3: done** (2026-10-12). What was built:
+
+- **luce-cad** (`surfacing/`, public `CadSurfacing`; `modeling/trim`, `stitch`, `untrim`,
+  `face_meets`; `cad_trims`; luce-cad MODELING.md, Projection, trims and stitching):
+  - Project along a vector (Newton on S(u, v) = C(t) + λd, seeded along the curve, both ways or
+    ahead; a ray along a ruling takes the point's foot) or along the normals, pieces ending
+    exactly on the boundary edge they reach, each a curve on the face (chart curve degree 5
+    within a ten-millionth of the body, or Match original);
+  - Intersect, the booleans' face-face step, as curves on one face or both; with a plane too;
+  - Trim with the booleans' cutting and splitting: Keep, Discard, Divide; loose curve ends left
+    out and reported; region markers and crossings for the viewport; a trimmed solid an open
+    body;
+  - trim stages kept with the set (saved), Untrim Last and All, else the natural surface
+    (B-spline domain, plane rectangle, cylinder or cone band, sphere, torus);
+  - Trim Convert (Coons map of the four sides, least-squares fit, deviations reported) and
+    Shrink (the net cut to the trims by knot insertion);
+  - Stitch (vertices and edges merged within a gap, the shell oriented, closed into a solid when
+    every edge is shared) and Unstitch;
+  - per-edge and per-vertex precision (Parasolid's tolerant edges): new B-rep columns, saved;
+    edge building checks ends against a tolerant vertex's precision; meshing and modeling work
+    to the largest.
+- **luced-3d**: the eight as Edit CAD steps (`edit_cad_surfaces.luc`) and CAD nodes
+  (`cad_surface_nodes.luc`, category Surfaces), shared code `surface_ops.luc`; Trim's region
+  markers and Show intersections (`trim_regions.luc`); Project's face pick; the commands in the
+  right-click, S and Modify › Surfaces menus (`surface_commands.luc`); the step's tool bar hides
+  while the right-click menu is open (it drew over it).
+
+Captures: `tools/preview.py --scene` with `surf_project`, `surf_trim_markers`, `surf_trim_keep`,
+`surf_divide`, `surf_surface_menu`, `surf_intersect`, `surf_stitch`, `surf_project_node`, and
+for Stage 2's follow-ups `surf_blend_handles`, `surf_stretch`, `surf_isoparm`,
+`surf_curve_combs` (each also with `--background`).
+
+Tests, against closed forms (luce-cad `surfacing_tests.luc`, `curve_tests.luc`; luced-3d
+`edit_cad_surfaces_tests.luc`, `edit_cad_curves_tests.luc`, `camera_frame_tests.luc`):
+
+- a circle of radius 2 at z = 10 cast along −Z onto a cylinder of radius 3 lies on x² + y² = 4,
+  z = √(9 − x²) to 1e-5; a circle on the cylinder cast along its axis is itself to 1e-6; pulled
+  along the normals it keeps each height on the ray; a curve that misses is refused;
+- the cylinder and the plane y = 2 meet in its circle; a box's wall x = 1 meets it in four lines
+  (both faces) at z = ±√8;
+- Trim of a 4-box's top by a projected unit circle: Keep leaves π, Discard 16 − π, Divide both
+  faces summing to 16 with the box closed; the stage saves and loads; a dangling curve reports
+  its loose end and no regions;
+- Divide, Unstitch, Stitch: one face's area round four open edges; Untrim gives back the closed
+  box of volume 64; two trims, then Untrim (one hole) and Untrim All (none); a stageless
+  B-spline face untrims to its whole square;
+- six squares stitch into the cube (volume 8); a 0.01 gap within 0.02 stitches all twelve edges
+  with precision 0.01 (kept through a save) and Check passes G0 across them; within 0.005 the
+  top stays apart and a pair refuses; a filleted box unstitched and stitched again measures G1
+  across every fillet edge;
+- Trim Convert of a G1 fillet within 1e-4, the body closed with its volume; Shrink keeps a disc's
+  area and moves the net's corner in;
+- in the editor: Project by its face pick, Trim's markers clicked in the viewport (keep, let go),
+  Divide, Untrim, Intersect with a plane, Trim Convert, Unstitch and Stitch, the menus by level;
+  the nodes follow the box when it grows upstream; a blend's tangent arrow dragged to two
+  chords; a Stretch handle added mid-curve and dragged; an isoparm picked by a double-click;
+  curve combs in the Check node; curve icons in the outliner; a put-off frame keeping a camera
+  set meanwhile.
+
+Answers from the reference tools (the doc's questions that Stage 3 met):
+
+- **Trim's curves after trimming.** Alias keeps the curves on surface after a trim; so do we
+  (they lie on the new edges and can be deleted).
+- **Divide's result.** Alias's Divide makes each region its own trimmed surface; here each
+  region is its own face of the body (the first keeps the face's name, the others
+  `<tag>/divide<k>[<face>]`), and Unstitch makes them bodies when wanted.
+- **Trims on a solid.** Alias trims shells as well as surfaces and the shell opens; a trimmed
+  solid here is an open body (Stitch closes it again).
+- **Stitch's gap.** Alias's range is 0.0001 to 1 and keeps the originals by default; ours takes
+  the same range; the originals stay in the history (Undo or the node upstream).
+
+Left for later:
+
+- **3D Trimming** (Alias: curves off the surface projected or intersected as the trim runs) and
+  Trim Convert's Show deviations as a map; Keep originals on Untrim.
+- **Curve ends short of the boundary** are left out (Alias extends them with its Curve Trim tool,
+  2026); Stitch's detach of periodic surfaces and single-curve boundaries for export.
+- **Per-edge precision in the booleans** is the largest one, as in the tessellator (Parasolid
+  reads each edge's); a cone's band through its apex does not untrim.
+- **Isoparm picking** creates the curve (a step); Alias's temporary pick objects for other
+  tools are not separate from curves here.
 
 **Stage 4: Align** (S8).
 

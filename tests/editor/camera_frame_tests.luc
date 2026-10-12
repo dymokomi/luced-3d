@@ -1,0 +1,39 @@
+## Framing put off while the worker cooks (workspace.frame_cube): the first
+## result frames the view only when nobody set or moved the camera since,
+## so a scene's camera, or the user's orbit before the result came, stays.
+from workspace import Workspace
+import node_commands
+from luce_3d.graphics import Vector3
+from luce_std import math
+import time
+
+func settle(w: Workspace) -> unit!:
+    let worker = w.compute else return
+    let deadline = time.now() + 20000000000
+    while worker.busy and time.now() < deadline: _ = w.poll_compute()
+    assert(not worker.busy, "the worker did not finish")
+
+pub func camera_frame_tests() -> unit!:
+    let w = Workspace()
+    w.enable_compute()
+    node_commands.add_node(w, "Sphere", 0.0, 0.0)
+    let worker = w.compute else trap("no worker")
+    assert(worker.busy)
+    # Framing asked while it cooks, then the camera set (a scene's look, or
+    # an orbit): the first result keeps it.
+    w.frame_cube()
+    w.view.yaw = 1.1
+    w.view.distance = 3.3
+    w.view.target = Vector3(1.0, 2.0, 3.0)
+    w.view.update_camera()
+    settle(w)
+    assert(w.view.yaw == 1.1 and w.view.distance == 3.3 and w.view.target.subtract(Vector3(1.0, 2.0, 3.0)).length() == 0.0, f"the camera was taken: {w.view.distance}")
+    # Asked and left alone: the result frames it.
+    w.view.distance = 50.0
+    w.view.update_camera()
+    node_commands.add_node(w, "Sphere", 0.0, 100.0)
+    assert(worker.busy)
+    w.frame_cube()
+    settle(w)
+    assert(math.abs(w.view.distance - 50.0) > 1.0, "the put-off frame never came")
+    print("PASS framing put off while the worker cooks: a camera set meanwhile stays, one left alone is framed")

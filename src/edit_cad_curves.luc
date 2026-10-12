@@ -10,11 +10,16 @@
 ##     curve through the clicks, its 3D curve fitted to the surface).
 ##   Duplicate Curve: picked edges as free curves, exactly; at the Faces
 ##     and Patch levels, the face's isoparm at a parameter.
+##   Isoparm: at the Curves level a double-click on a surface picks the
+##     isoparm through the point clicked (Alias's isoparm pick), U or V in
+##     the tool bar, as a curve of the model, selected for the curve tools.
 ##   Blend Curve: between two picked curves or edges, at the ends nearest
 ##     each other, G0 to G4 at each end (G4: blend curves only, the
 ##     owner's answer), degree 5 on the spans the ends need (§6.2).
-##   Attach (Blend or Connect), Detach, Close (Preserve Shape), Stretch,
-##     Reverse; Delete removes the picked curves.
+##   Attach (Blend or Connect), Detach, Close (Preserve Shape), Stretch
+##     (its handles anywhere on the curve, up to degree + 1, dragged in the
+##     viewport: stretch_handles.luc), Reverse; Delete removes the picked
+##     curves.
 ## A Curve node and a Blend Curve node (cad_curve_nodes.luc) make the same
 ## curves with history: a blend on edges follows them as the body changes.
 from luce_cad.cad_geometry import CadGeometry
@@ -28,6 +33,8 @@ from geometry_data import GeometryData
 from edit_operations import EditStep
 from edit_types import EditTool
 from parameter_rows import Parameter, number, whole, toggle, menu, vector
+from handle_lines import HandleLine
+import handle_lines
 from luce_ui import ui
 from luce_std import math
 
@@ -35,6 +42,7 @@ pub let cv_verb = "CV Curve"
 pub let ep_verb = "EP Curve"
 pub let surface_verb = "Curve on Surface"
 pub let duplicate_verb = "Duplicate Curve"
+pub let isoparm_verb = "Isoparm"
 pub let blend_verb = "Blend Curve"
 pub let attach_verb = "Attach"
 pub let detach_verb = "Detach"
@@ -120,6 +128,11 @@ pub func tools(curves: int, edges: int, faces: int, patch: int) -> list[EditTool
     let duplicate = [menu("Direction", 0, "U|V", 0.0, "At a face: the isoparm along v at a u (U) or along u at a v."),
                      number("Parameter", 1, 0.5, 0.0, 1.0, 0.01, "At a face: where along it, 0 to 1.", slider = true)]
     result.append(EditTool(duplicate_verb, duplicate_verb, [edges, faces, patch], [0.0, 0.5], duplicate))
+    # Made by a double-click on a surface at the Curves level
+    # (viewport_tools.luc).
+    result.append(EditTool(isoparm_verb, isoparm_verb, [-1], [0.0, 0.0, 0.0, 0.0],
+                           [menu("Direction", 0, "U|V", 0.0, "The isoparm along v through the point clicked (U), or along u (V)."),
+                            vector("Point", 1, [0.0, 0.0, 0.0], "Where the surface was clicked.")]))
     result.append(EditTool(blend_verb, blend_verb, [curves], blend_numbers(), blend_rows()))
     result.append(EditTool(blend_verb, blend_edges_verb, [edges], blend_numbers(), blend_rows()))
     result.append(EditTool(attach_verb, attach_verb, [curves], [1.0, 0.5, 1.0],
@@ -128,13 +141,82 @@ pub func tools(curves: int, edges: int, faces: int, patch: int) -> list[EditTool
                             menu("Continuity", 2, "G0|G1|G2|G3", 1.0, "Blend: the continuity at the joint.")]))
     result.append(EditTool(detach_verb, detach_verb, [curves], [0.5], [number("Parameter", 0, 0.5, 0.001, 0.999, 0.01, "Where the curve is cut, 0 at its start to 1 at its end.", slider = true)]))
     result.append(EditTool(close_verb, close_verb, [curves], [1.0], [toggle("Preserve shape", 0, 1.0, "On: a G2 blend span closes the gap and the curve keeps its shape. Off: its ends move to meet halfway (G1).")]))
-    result.append(EditTool(stretch_verb, stretch_verb, [curves], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                           [vector("Start move", 0, [0.0, 0.0, 0.0], "How far the curve's start moves; the curve follows smoothly, its control points kept."),
-                            vector("End move", 3, [0.0, 0.0, 0.0], "How far its end moves."),
-                            toggle("Floating", 6, 0.0, "Off (Locked): the handles stay at their parameters. On: each finds the point of the new curve nearest it.")]))
+    result.append(EditTool(stretch_verb, stretch_verb, [curves], stretch_numbers(), stretch_rows()))
     result.append(EditTool(reverse_verb, reverse_verb, [curves], [0.0], none_shown))
     result.append(EditTool("Delete", delete_verb, [curves], [0.0], none_shown))
     return result
+
+# -- Stretch's handles (stretch_handles.luc drags them): the step's numbers
+# are Floating, then the handles, each a fraction along the curve and a move
+# (x y z). Two at the ends to begin with; Shift-click on the curve adds one
+# (up to degree + 1), on a handle takes it away.
+
+pub let stretch_floating_slot = 0
+pub let stretch_count_slot = 1
+pub let stretch_first_slot = 2
+
+## The state lines Stretch publishes: its handles (moved) with their
+## fractions, and the curve's path (fractions along it) to add handles on.
+pub let stretch_handles_head = "stretch_handles "
+pub let stretch_path_head = "stretch_path "
+
+pub func stretch_numbers() -> list[float]:
+    return [0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+
+pub func stretch_rows() -> list[Parameter]:
+    return [toggle("Floating", stretch_floating_slot, 0.0, "Off (Locked): the handles stay at their parameters. On: each finds the point of the new curve nearest it. Drag the handles in the viewport; Shift-click on the curve adds one (up to degree + 1), on a handle takes it away.")]
+
+## A Stretch step's handles: their fractions along the curve and moves.
+pub func stretch_handles_of(v: list[float]) -> (list[float], list[Vector3]):
+    let fractions: list[float] = []
+    let moves: list[Vector3] = []
+    let count = int(v[stretch_count_slot]) if v.length > stretch_count_slot else 0
+    for k in 0..<count:
+        let at = stretch_first_slot + 4 * k
+        if at + 3 >= v.length:
+            break
+        fractions.append(v[at])
+        moves.append(Vector3(v[at + 1], v[at + 2], v[at + 3]))
+    return (fractions, moves)
+
+## Stretch's numbers with handles `fractions` and `moves`.
+pub func stretch_with(v: list[float], fractions: list[float], moves: list[Vector3]) -> list[float]:
+    var made = [v[stretch_floating_slot], float(fractions.length)]
+    for k in 0..<fractions.length:
+        made = made + [fractions[k], moves[k].x, moves[k].y, moves[k].z]
+    return made
+
+## The state lines of `curve`'s handles at `fractions` moved by `moves`
+## (each its fraction, then where it stands), and its path.
+func stretch_lines(curve: CadSpline, fractions: list[float], moves: list[Vector3]) -> str:
+    var handles = stretch_handles_head
+    for k in 0..<fractions.length:
+        let p = curve.at(curve.low() + (curve.high() - curve.low()) * fractions[k]).add(moves[k])
+        handles = handles + f"{fractions[k]} {p.x} {p.y} {p.z} "
+    var path = stretch_path_head
+    for k in 0..<65:
+        let f = float(k) / 64.0
+        let p = curve.at(curve.low() + (curve.high() - curve.low()) * f)
+        path = path + f"{f} {p.x} {p.y} {p.z} "
+    return handles + "\n" + path
+
+## The (fraction, point) quadruples a state line holds after its head.
+pub func fraction_points(state: str, head: str) -> list[(float, Vector3)]:
+    let found: list[(float, Vector3)] = []
+    for line in state.split("\n"):
+        if not line.starts_with(head):
+            continue
+        let values: list[float] = []
+        for word in line[head.length..].split(" "):
+            if word != "":
+                let value = float(word) catch failure:
+                    recover 0.0
+                values.append(value)
+        var at = 0
+        while at + 3 < values.length:
+            found.append((values[at], Vector3(values[at + 1], values[at + 2], values[at + 3])))
+            at += 4
+    return found
 
 # -- Drawing.
 
@@ -175,7 +257,7 @@ pub func run(step: EditStep, data: GeometryData, shown: Mesh?) -> GeometryData!:
         let ends = edge_ends(step, data, mesh)
         if ends.length != 2:
             error(ui.invalid, "Blend Curve between edges: pick two edges")
-        return added(data, "Curve", blended(ends[0], ends[1], v), "blend")
+        return with_handles(added(data, "Curve", blended(ends[0], ends[1], v), "blend"), v)
     let picked = picked_curves(step, data)
     if picked.length == 0:
         error(ui.invalid, f"{step.verb}: pick curves at the Curves level")
@@ -183,7 +265,7 @@ pub func run(step: EditStep, data: GeometryData, shown: Mesh?) -> GeometryData!:
     if step.verb == blend_verb:
         if picked.length != 2:
             error(ui.invalid, "Blend Curve: pick two curves")
-        return added(data, "Curve", blended(CadCurves.curve(geometry, picked[0]), CadCurves.curve(geometry, picked[1]), v), "blend")
+        return with_handles(added(data, "Curve", blended(CadCurves.curve(geometry, picked[0]), CadCurves.curve(geometry, picked[1]), v), "blend"), v)
     if step.verb == attach_verb:
         if picked.length != 2:
             error(ui.invalid, "Attach: pick two curves")
@@ -193,6 +275,8 @@ pub func run(step: EditStep, data: GeometryData, shown: Mesh?) -> GeometryData!:
         let kept = CadCurves.with_curve(geometry, name, joined, source = "attach")
         return GeometryData(geometry = CadCurves.without_curve(kept, CadCurves.name(geometry, picked[1])))
     var result = geometry
+    var stretch_shown = false
+    var stretch_state = ""
     for index in picked:
         let name = CadCurves.name(geometry, index)
         let curve = CadCurves.curve(geometry, index)
@@ -207,11 +291,23 @@ pub func run(step: EditStep, data: GeometryData, shown: Mesh?) -> GeometryData!:
             result = CadCurves.with_curve(result, name, curve.piece(curve.low(), cut), source = "detached")
             result = CadCurves.with_curve(result, CadCurves.free_name(result, "Curve"), curve.piece(cut, curve.high()), source = "detached")
         elif step.verb == stretch_verb:
-            let moved = CadCurveTools.stretched(curve, [curve.low(), curve.high()], [Vector3(v[0], v[1], v[2]), Vector3(v[3], v[4], v[5])], v[6] != 0.0)
+            let (fractions, moves) = stretch_handles_of(v)
+            let params: list[float] = []
+            for f in fractions:
+                params.append(curve.low() + (curve.high() - curve.low()) * f)
+            if fractions.length > curve.degree() + 1:
+                error(ui.invalid, f"Stretch takes up to {curve.degree() + 1} handles on a curve of degree {curve.degree()}")
+            let moved = CadCurveTools.stretched(curve, params, moves, v[stretch_floating_slot] != 0.0)
             result = CadCurves.with_curve(result, name, moved, source = "stretched")
+            if not stretch_shown:
+                # The first curve's handles and path for the viewport.
+                stretch_shown = true
+                stretch_state = stretch_lines(curve, fractions, moves)
         else:
             error(ui.invalid, f"{step.verb} does not apply to curves")
-    return GeometryData(geometry = result)
+    let made = GeometryData(geometry = result)
+    made.sketch_state = stretch_state
+    return made
 
 ## The curves a step's group picked on the Curves level's pick mesh, in
 ## index order.
@@ -265,6 +361,26 @@ func drawn_curve(step: EditStep, data: GeometryData) -> GeometryData!:
         let name = CadCurves.free_name(data.geometry, "Curve")
         return GeometryData(geometry = CadCurves.with_curve(data.geometry, name, curve, source = "on face", face = face, chart = uv))
     error(ui.invalid, "Curve on Surface: click its points on a face of the model")
+
+## Isoparm: the isoparm of the face under the step's point (numbers 1 to
+## 3) through it, along v (direction 0) or u, a new curve selected.
+pub func picked_isoparm(step: EditStep, data: GeometryData) -> GeometryData!:
+    let n = step.numbers
+    if n.length < 4:
+        error(ui.invalid, "Isoparm needs the point clicked")
+    let p = Vector3(n[1], n[2], n[3])
+    let direction = int(n[0])
+    for model in data.models():
+        let face = CadCurveTools.face_at(model, p)
+        if face == "":
+            continue
+        let fraction = CadCurveTools.isoparm_fraction(model, face, direction, p)
+        let index = CadCurves.count(data.geometry)
+        let curve = CadCurveTools.isoparm(model, face, direction, fraction)
+        let made = GeometryData(geometry = CadCurves.with_curve(data.geometry, CadCurves.free_name(data.geometry, "Curve"), curve, source = f"isoparm {face} {"u" if direction == 0 else "v"} {fraction}"))
+        made.created = f"@cad_curve={index}"
+        return made
+    error(ui.invalid, "Isoparm: the point clicked is on no face of the model")
 
 ## Duplicate Curve: picked edges, each as a free curve; at a face, its
 ## isoparm (direction, parameter).
@@ -330,6 +446,37 @@ pub func nearest_ends(a: CadSpline, b: CadSpline) -> (int, int):
                 best = d
                 chosen = (sa, sb)
     return chosen
+
+## `made` (its last curve a blend of values `v`) with the blend's handles
+## (blend_handles).
+func with_handles(made: GeometryData, v: list[float]) -> GeometryData!:
+    let count = CadCurves.count(made.geometry)
+    made.handles = blend_handles(CadCurves.curve(made.geometry, count - 1), v)
+    return made
+
+## Alias's blend point handles on blend `curve` (values `v`), as feature
+## handles (feature_handles.luc drags them): at each end an arrow along the
+## way the blend leaves the end, its tip the tangent's length (half a chord
+## at 1, Relax); where the end is G2 or more, a second arrow on from the
+## tangent's tip, the curvature's lean (a quarter chord a unit). Dragging
+## one sets that value of the step or node.
+pub func blend_handles(curve: CadSpline, v: list[float]) -> str!:
+    let start = curve.at(curve.low())
+    let end = curve.at(curve.high())
+    let chord = math.max(1e-9, end.subtract(start).length())
+    let leaving = CadCurveTools.derivative(curve, curve.low(), 1).normalized() catch failure:
+        recover end.subtract(start).multiply_scalar(1.0 / chord)
+    let arriving = CadCurveTools.derivative(curve, curve.high(), 1, left = true).normalized() catch failure:
+        recover end.subtract(start).multiply_scalar(1.0 / chord)
+    let back = arriving.multiply_scalar(-1.0)
+    let third = chord / 3.0
+    let handles = [HandleLine("arrow", start_tangent_slot, third, start, leaving, -1, Vector3()),
+                   HandleLine("arrow", end_tangent_slot, third, end, back, -1, Vector3())]
+    if v[start_g_slot] >= 2.0:
+        handles.append(HandleLine("arrow", start_curvature_slot, third * 0.5, start.add(leaving.multiply_scalar(third * v[start_tangent_slot])), leaving, -1, Vector3()))
+    if v[end_g_slot] >= 2.0:
+        handles.append(HandleLine("arrow", end_curvature_slot, third * 0.5, end.add(back.multiply_scalar(third * v[end_tangent_slot])), back, -1, Vector3()))
+    return handle_lines.encode(handles)
 
 ## Blend Curve between `a` and `b` (blend_numbers' values `v`): from the end
 ## of `a` nearest `b` to the end of `b` nearest `a` (or their other ends).

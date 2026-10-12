@@ -1,0 +1,113 @@
+## Surfacing Stage 3 as nodes of a CAD network (§7.1): Alias's construction
+## history for Project, Intersect, Trim, Untrim, Trim Convert, Shrink,
+## Stitch and Unstitch. Each passes its input on changed (surface_ops.luc),
+## made again whenever the input changes; faces and bodies are kept by
+## name, curves by name, Trim's regions by the points clicked on their
+## markers (trim_regions.luc). Their picks are rows of the parameter panel
+## and prompts in the viewport, as the Modify features' (modify_picks.luc).
+from luce_3d.graphics import Vector3
+from geometry_data import GeometryData
+from parameter_rows import Parameter
+import edit_cad_surfaces
+import surface_ops
+from luce_ui import ui
+
+pub let project_kind = "Project"
+pub let intersect_kind = "Intersect"
+pub let trim_kind = "Trim"
+pub let untrim_kind = "Untrim"
+pub let convert_kind = "Trim Convert"
+pub let shrink_kind = "Shrink"
+pub let stitch_kind = "Stitch"
+pub let unstitch_kind = "Unstitch"
+
+pub func kinds() -> list[str]:
+    return [project_kind, intersect_kind, trim_kind, untrim_kind, convert_kind, shrink_kind, stitch_kind, unstitch_kind]
+
+## The texts each node keeps: Project's curves then its face; the face
+## (and Intersect's second face, Trim's picked points); Stitch's bodies
+## (one face's name each, empty: all) and Unstitch's body.
+pub let first_text = 0
+pub let second_text = 1
+
+## The nodes' parameters (their values are Edit CAD's steps' numbers).
+pub func fields(kind: str) -> list[Parameter]:
+    if kind == project_kind:
+        return edit_cad_surfaces.project_rows()
+    if kind == intersect_kind:
+        return edit_cad_surfaces.intersect_rows()
+    if kind == trim_kind:
+        return edit_cad_surfaces.trim_rows()
+    if kind == untrim_kind:
+        return edit_cad_surfaces.untrim_rows()
+    if kind == convert_kind:
+        return edit_cad_surfaces.convert_rows()
+    if kind == stitch_kind:
+        return edit_cad_surfaces.stitch_rows()
+    let none_shown: list[Parameter] = []
+    return none_shown
+
+## A new node's values.
+pub func starting(kind: str) -> list[float]:
+    for tool in edit_cad_surfaces.tools(0, 1, 2, 3):
+        if tool.verb == kind:
+            return tool.numbers else [0.0]
+    return [0.0]
+
+## What `kind` waits for ("" when it has what it needs).
+pub func waits_for(kind: str, v: list[float], t: list[str]) -> str:
+    if kind == project_kind:
+        if t[first_text].trim() == "":
+            return "Pick the curves to project"
+        if t[second_text].trim() == "":
+            return "Pick the face to project onto"
+        return ""
+    if kind in [stitch_kind]:
+        return ""
+    if kind == unstitch_kind:
+        return "Pick the body to unstitch" if t[first_text].trim() == "" else ""
+    if t[first_text].trim() == "":
+        return "Pick the face"
+    if kind == intersect_kind and int(v[edit_cad_surfaces.with_slot]) == 0 and t[second_text].trim() == "":
+        return "Pick the second face"
+    return ""
+
+## Node `kind` on its input `data`, by values `v` and texts `t`; `tag`
+## names what it makes (Divide's faces).
+pub func evaluate(kind: str, v: list[float], t: list[str], data: GeometryData, tag: str) -> GeometryData!:
+    let waiting = waits_for(kind, v, t)
+    if waiting != "":
+        return data.passed(waiting)
+    if kind == project_kind:
+        let curves: list[str] = []
+        for name in t[first_text].split(";"):
+            if name.trim() != "":
+                curves.append(name.trim())
+        let direction = Vector3(v[edit_cad_surfaces.direction_slot], v[edit_cad_surfaces.direction_slot + 1], v[edit_cad_surfaces.direction_slot + 2])
+        return surface_ops.project(data, curves, t[second_text].trim(), int(v[edit_cad_surfaces.along_slot]), direction, v[edit_cad_surfaces.both_slot] != 0.0, v[edit_cad_surfaces.original_slot] != 0.0)
+    if kind == stitch_kind or kind == unstitch_kind:
+        let bodies: list[int] = []
+        for name in t[first_text].split(";"):
+            if name.trim() != "":
+                let body = surface_ops.body_with(data, name.trim())
+                if not (body in bodies):
+                    bodies.append(body)
+        if kind == unstitch_kind:
+            return surface_ops.unstitch(data, bodies[0])
+        bodies.sort()
+        return surface_ops.stitch(data, bodies, v[edit_cad_surfaces.gap_slot])
+    let face = t[first_text].trim()
+    if kind == intersect_kind:
+        let origin = Vector3(v[edit_cad_surfaces.origin_slot], v[edit_cad_surfaces.origin_slot + 1], v[edit_cad_surfaces.origin_slot + 2])
+        let normal = Vector3(v[edit_cad_surfaces.normal_slot], v[edit_cad_surfaces.normal_slot + 1], v[edit_cad_surfaces.normal_slot + 2])
+        return surface_ops.intersect(data, face, t[second_text].trim(), int(v[edit_cad_surfaces.with_slot]) == 1, origin, normal, v[edit_cad_surfaces.both_faces_slot] != 0.0)
+    if kind == trim_kind:
+        return surface_ops.trim(data, face, surface_ops.parse_points(t[second_text]), int(v[edit_cad_surfaces.mode_slot]), v[edit_cad_surfaces.show_slot] != 0.0, [], tag)
+    if kind == untrim_kind:
+        return surface_ops.untrim(data, face, v[edit_cad_surfaces.all_slot] != 0.0)
+    if kind == convert_kind:
+        return surface_ops.convert(data, face, int(v[edit_cad_surfaces.degree_u_slot]), int(v[edit_cad_surfaces.degree_v_slot]), int(v[edit_cad_surfaces.spans_u_slot]),
+                                   int(v[edit_cad_surfaces.spans_v_slot]), v[edit_cad_surfaces.swap_slot] != 0.0, v[edit_cad_surfaces.keep_slot] != 0.0)
+    if kind == shrink_kind:
+        return surface_ops.shrink(data, face)
+    error(ui.invalid, f"{kind} is not a surfacing node")

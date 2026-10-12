@@ -67,16 +67,26 @@ pub func edges_summary(text: str) -> str:
     let count = text.split(";").length
     return "1 edge" if count == 1 else f"{count} edges"
 
-## The Check of `body` (from `data`) by values `v`, its edges `edges`
-## (references; empty: all), against `reference` for Deviation.
-pub func evaluate(v: list[float], edges: str, data: GeometryData, body: CadModel, reference: CadModel?) -> GeometryData!:
-    let check = CadMeasure.check(body, edges, int(v[level_slot]), int(v[stations_slot]), v[distance_slot], v[angle_slot], v[curvature_slot], v[rate_slot],
-                                 v[combs_slot] != 0.0, int(v[samples_slot]), v[quills_slot] != 0.0, v[scale_slot], v[sharp_slot] != 0.0)
+## The Check of `body` (from `data`; none: its curves alone) by values
+## `v`, its edges `edges` (references; empty: all), against `reference`
+## for Deviation. With Combs the input's curves are combed too (Alias's
+## Curve Curvature on curves and curves on surfaces).
+pub func evaluate(v: list[float], edges: str, data: GeometryData, body: CadModel?, reference: CadModel?) -> GeometryData!:
+    let combs = v[combs_slot] != 0.0
+    var check = CadMeasure.curve_check(data.geometry, int(v[samples_slot]), v[scale_slot])
+    if let model = body:
+        check = CadMeasure.check(model, edges, int(v[level_slot]), int(v[stations_slot]), v[distance_slot], v[angle_slot], v[curvature_slot], v[rate_slot],
+                                 combs, int(v[samples_slot]), v[quills_slot] != 0.0, v[scale_slot], v[sharp_slot] != 0.0)
+        if combs and data.has_curves():
+            CadMeasure.with_curve_combs(check, data.geometry, int(v[samples_slot]), v[scale_slot])
+    elif not data.has_curves():
+        error(ui.invalid, "Check needs a body or curves in its input")
     let result = GeometryData(geometry = data.geometry)
     var report = check.summary()
     if v[deviation_slot] != 0.0:
         let other = reference else error(ui.invalid, "Deviation: wire the reference body into the second input")
-        let spread = CadMeasure.deviation(body, other, v[acceptable_slot], v[ramp_slot])
+        let model = body else error(ui.invalid, "Deviation needs a body in the first input")
+        let spread = CadMeasure.deviation(model, other, v[acceptable_slot], v[ramp_slot])
         result.tint = spread.mesh()
         report = f"deviation {spread.smallest:.4f} to {spread.largest:.4f}, RMS {spread.rms:.4f}, {spread.within * 100.0:.1f}% within {v[acceptable_slot]}; {report}"
     result.check = check

@@ -1,0 +1,244 @@
+## Surfacing Stage 3 in Edit CAD and in CAD networks (edit_cad_surfaces.luc,
+## cad_surface_nodes.luc, trim_regions.luc): a curve projected onto a box's
+## top lies on it; Trim shows a marker in each region, a click on one keeps
+## it (the box opened, the top's area the region's), a second click lets
+## it go, Divide keeps the box closed; Untrim gives the square back; a
+## side intersected with a plane gives its line; Trim Convert makes the top
+## a B-spline and keeps the box closed; Unstitch and Stitch take the box
+## apart and back into one closed body; the right-click offers the tools at
+## each level. In a network the Project and Trim nodes follow the box when
+## it grows upstream, and Unstitch then Stitch nodes give its volume back.
+from workspace import Workspace
+from node import Node
+from app import Luce3D
+from geometry_data import GeometryData
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.cad_curves import CadCurves
+from luce_cad.surfacing import CadSurfacing
+from luce_cad.modeling import CadModeling
+from luce_cad.model import CadModel
+from luce_3d.graphics import Vector3
+import edit_cad_curves
+import edit_cad_surfaces
+import edit_cad_picks
+import edit_cad_commands
+import cad_surface_nodes
+import cad_check
+import surface_ops
+import modeling_commands
+import node_commands
+import placing_commands
+import selection_commands
+import view_projection
+import outliner
+from outliner import OutlineRow
+from luce_std import math
+
+pub func edit_cad_surfaces_tests() -> unit!:
+    in_edit_cad()
+    in_a_network()
+    print("PASS Edit CAD surfacing: a curve projected onto a box's top, Trim's markers clicked to keep a region and let it go, Divide closed, Untrim back to the square, a side intersected with a plane, Trim Convert to a B-spline, Unstitch and Stitch, the tools in the right-click menu by level; the outliner's curve icons; a Check node combs the curves; Project and Trim nodes follow the box upstream, Unstitch and Stitch nodes keep its volume")
+
+func data_of(w: Workspace, node: Node) -> GeometryData!:
+    return w.network.evaluate_data(node.id)
+
+## The area of the faces of `model` named `name`, from its mesh.
+func area_of(model: CadModel, name: str) -> float!:
+    let mesh = model.tessellate(32)
+    let owners = mesh.find_attribute("cad_face", 2)
+    var total = 0.0
+    for face in 0..<mesh.face_count():
+        if model.face_name(int(mesh.attribute_value(owners, face))) != name:
+            continue
+        let a = mesh.point(mesh.face_point(face, 0))
+        for k in 1..<mesh.face_size(face) - 1:
+            let b = mesh.point(mesh.face_point(face, k))
+            let c = mesh.point(mesh.face_point(face, k + 1))
+            total += b.subtract(a).cross(c.subtract(a)).length() * 0.5
+    return total
+
+## Select, at level `level`, the first polygon whose center and normal
+## `keep` takes (its whole face or model), alone.
+func select_where(w: Workspace, level: int, keep: func(Vector3, Vector3) -> bool) -> unit!:
+    selection_commands.set_mode(w, level)
+    let mesh = w.geometry else trap("pick geometry")
+    for polygon in 0..<mesh.face_count():
+        if keep(mesh.face_center(polygon), mesh.face_normal(polygon)):
+            selection_commands.choose_component(w, polygon, false)
+            return
+    assert(false, "nothing to select there")
+
+## The top face (normal +Y) of `model`'s name.
+func top_of(model: CadModel) -> str!:
+    for f in 0..<model.face_count():
+        let name = model.face_name(f)
+        let frame = CadModeling.face_frame(model, name)
+        if frame.found and frame.u.cross(frame.v).y > 0.999:
+            return name
+    trap("no top face")
+
+## The entries of the viewport's right-click menu now.
+func menu_entries(editor: Luce3D) -> list[str]!:
+    editor.panels.refresh()
+    let offered: list[str] = []
+    for command in editor.panels.viewport_menu.entries():
+        offered.append(command.text())
+    return offered
+
+func in_edit_cad() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    let node = w.selected() else trap("Edit CAD")
+    modeling_commands.create(w, "Box")
+    # A curve above the box (it spans -1 to 1), across it along x.
+    modeling_commands.model(w, edit_cad_curves.cv_verb)
+    for p in [Vector3(-2.0, 2.0, 0.2), Vector3(-0.7, 2.0, -0.1), Vector3(0.7, 2.0, 0.3), Vector3(2.0, 2.0, 0.1)]:
+        placing_commands.add_corner(w, p)
+    placing_commands.finish_placing(w)
+    let top = top_of(data_of(w, node).models()[0])
+    # Project: the curve picked at Curves, then the top clicked.
+    selection_commands.set_mode(w, 6)
+    selection_commands.choose_component(w, 0, false)
+    assert(edit_cad_surfaces.project_verb in menu_entries(editor), "the right-click at Curves offers Project")
+    edit_cad_commands.tool(w, edit_cad_surfaces.project_verb)
+    let prompt = w.prompt else trap("Project waits for its face")
+    assert(prompt.label == edit_cad_picks.projection_label)
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
+    assert(w.prompt == none, "the face pick finishes Project")
+    var held = data_of(w, node).geometry
+    assert(CadCurves.count(held) == 2 and CadCurves.face(held, 1) == top, node.warning)
+    let cast = CadCurves.curve(held, 1)
+    for k in 0..<9:
+        assert(math.abs(cast.at(cast.low() + (cast.high() - cast.low()) * float(k) / 8.0).y - 1.0) < 1e-6)
+    # Trim the top: two markers, nothing kept until one is clicked.
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
+    let entries = menu_entries(editor)
+    for name in [edit_cad_surfaces.trim_verb, edit_cad_surfaces.untrim_verb, edit_cad_surfaces.convert_verb, edit_cad_surfaces.shrink_verb, edit_cad_surfaces.intersect_verb]:
+        assert(name in entries, f"the right-click on a face lacks {name}: {entries}")
+    edit_cad_commands.tool(w, edit_cad_surfaces.trim_verb)
+    var result = data_of(w, node)
+    let markers = surface_ops.points_of(result.sketch_state, surface_ops.markers_head)
+    assert(markers.length == 2 and node.warning.contains("click the regions"), f"{markers.length} markers: {node.warning}")
+    assert(editor.panels.view.regions.active())
+    # A click on the marker with z below the curve (z < 0) keeps that side.
+    var low = markers[0] if markers[0].z < markers[1].z else markers[1]
+    let area = editor.panels.view.layout().bounds()
+    let s = view_projection.project(w, low, area.width, area.height)
+    assert(editor.panels.view.regions.click(s[0], s[1], area.width, area.height))
+    result = data_of(w, node)
+    let kept = result.models()[0]
+    assert(not CadSurfacing.is_closed(kept), node.warning)
+    let side = area_of(kept, top)
+    assert(side > 1.0 and side < 3.0, f"kept {side}")
+    # Clicked again: let go, waiting again.
+    assert(editor.panels.view.regions.click(s[0], s[1], area.width, area.height))
+    assert(CadSurfacing.is_closed(data_of(w, node).models()[0]) and node.warning.contains("click the regions"))
+    # Divide: both regions faces, the box closed.
+    modeling_commands.set_last_step(w, edit_cad_surfaces.mode_slot, 2.0, 0.0, 2.0)
+    let divided = data_of(w, node).models()[0]
+    assert(divided.face_count() == 7 and CadSurfacing.is_closed(divided), node.warning)
+    # Untrim one piece: the square back, closed.
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
+    edit_cad_commands.tool(w, edit_cad_surfaces.untrim_verb)
+    let whole = data_of(w, node).models()[0]
+    assert(CadSurfacing.is_closed(whole) and math.abs(area_of(whole, top) - 4.0) < 1e-6, f"{node.warning} {area_of(whole, top)}")
+    # Intersect the +X side with the plane y = 0 (the tool bar's With):
+    # its line x = 1, y = 0.
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.x > 0.99)
+    edit_cad_commands.tool(w, edit_cad_surfaces.intersect_verb)
+    modeling_commands.set_last_step(w, edit_cad_surfaces.with_slot, 1.0, 0.0, 1.0)
+    held = data_of(w, node).geometry
+    let line = CadCurves.curve(held, CadCurves.count(held) - 1)
+    for k in 0..<5:
+        let p = line.at(line.low() + (line.high() - line.low()) * float(k) / 4.0)
+        assert(math.abs(p.x - 1.0) < 1e-6 and math.abs(p.y) < 1e-6, f"{node.warning} {p}")
+    # Trim Convert of the top: a B-spline face, the box closed.
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
+    edit_cad_commands.tool(w, edit_cad_surfaces.convert_verb)
+    let converted = data_of(w, node).models()[0]
+    var spline = false
+    for f in 0..<converted.face_count():
+        spline = spline or (converted.face_name(f) == top and converted.face_surface_kind(f) == 3)
+    assert(spline and CadSurfacing.is_closed(converted), node.warning)
+    # Unstitch the box at Object, then Stitch every piece back.
+    select_where(w, 0, func (c: Vector3, n: Vector3) -> bool: return true)
+    let bodies = menu_entries(editor)
+    assert(edit_cad_surfaces.stitch_verb in bodies and edit_cad_surfaces.unstitch_verb in bodies, f"{bodies}")
+    edit_cad_commands.tool(w, edit_cad_surfaces.unstitch_verb)
+    assert(data_of(w, node).models().length == 6, node.warning)
+    selection_commands.set_mode(w, 0)
+    selection_commands.select_all(w)
+    edit_cad_commands.tool(w, edit_cad_surfaces.stitch_verb)
+    let sewn = data_of(w, node).models()
+    assert(sewn.length == 1 and CadSurfacing.is_closed(sewn[0]), node.warning)
+
+func in_a_network() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let box = w.network.selected
+    node_commands.add_node(w, "Curve", 0.0, 80.0)
+    let curve = w.network.require(w.network.selected)
+    w.network.connect(box, curve.id, 0)
+    curve.texts[0] = "-15 15 2; -5 15 -1; 5 15 3; 15 15 1"
+    w.network.invalidate(curve.id)
+    node_commands.add_node(w, cad_surface_nodes.project_kind, 0.0, 160.0)
+    let project = w.network.require(w.network.selected)
+    w.network.connect(curve.id, project.id, 0)
+    let top = top_of(CadGeometry.model(w.network.evaluate_data(box).geometry, 0))
+    project.texts[0] = f"Curve{curve.id}"
+    project.texts[1] = top
+    w.network.invalidate(project.id)
+    let cast = w.network.evaluate_data(project.id)
+    assert(CadCurves.count(cast.geometry) == 2, project.warning)
+    # The outliner draws the curves as curves.
+    assert(f"Curve{curve.id}" in project.curve_paths and "Projected1" in project.curve_paths, f"{project.curve_paths}")
+    assert(outliner.row_icon(project, OutlineRow(project.id, 1, true, path = "Projected1")) == "Curve")
+    assert(outliner.row_icon(project, OutlineRow(project.id, 1, true, path = top)) == "Cube")
+    # A Check after it combs the curves (the box's straight edges have none).
+    node_commands.add_node(w, cad_check.kind_name, 300.0, 160.0)
+    let check = w.network.require(w.network.selected)
+    w.network.connect(project.id, check.id, 0)
+    let checked = w.network.evaluate_data(check.id)
+    let measured = checked.check else trap("no check")
+    assert(measured.line_count(3) > 0 and measured.summary().contains("2 curve combs"), measured.summary())
+    w.network.selected = project.id
+    node_commands.add_node(w, cad_surface_nodes.trim_kind, 0.0, 240.0)
+    let trim = w.network.require(w.network.selected)
+    w.network.connect(project.id, trim.id, 0)
+    trim.texts[0] = top
+    w.network.invalidate(trim.id)
+    let waiting = w.network.evaluate_data(trim.id)
+    let markers = surface_ops.points_of(waiting.sketch_state, surface_ops.markers_head)
+    assert(markers.length == 2, f"{trim.warning} {markers.length}")
+    trim.texts[1] = surface_ops.points_text([markers[0]])
+    w.network.invalidate(trim.id)
+    let first = w.network.evaluate_data(trim.id).models()[0]
+    let before = area_of(first, top)
+    assert(not CadSurfacing.is_closed(first) and before > 50.0 and before < 350.0, f"{trim.warning} {before}")
+    # The box made 30 wide upstream: the curve, cast again, still cuts the
+    # top in two, and the region clicked is kept, wider.
+    let source = w.network.require(box)
+    source.values[0] = 30.0
+    w.network.invalidate(box)
+    let wider = w.network.evaluate_data(trim.id).models()[0]
+    assert(area_of(wider, top) > before * 1.2, f"{trim.warning} {area_of(wider, top)}")
+    # Unstitch the box, then Stitch: one closed body of its volume.
+    node_commands.add_node(w, cad_surface_nodes.unstitch_kind, 200.0, 80.0)
+    let apart = w.network.require(w.network.selected)
+    w.network.connect(box, apart.id, 0)
+    apart.texts[0] = top
+    w.network.invalidate(apart.id)
+    assert(w.network.evaluate_data(apart.id).models().length == 6, apart.warning)
+    node_commands.add_node(w, cad_surface_nodes.stitch_kind, 200.0, 160.0)
+    let sewn = w.network.require(w.network.selected)
+    w.network.connect(apart.id, sewn.id, 0)
+    let joined = w.network.evaluate_data(sewn.id).models()
+    assert(joined.length == 1 and CadSurfacing.is_closed(joined[0]) and sewn.warning == "", sewn.warning)
