@@ -106,11 +106,13 @@ The active take's state is the nodes', so its paths are rewritten there; an
 inactive take keeps its own copy of the Render camera, which is rewritten
 in the take.
 
-Nodes move between containers only by grouping today; there is no ungroup,
-copy and paste, or duplicate of nodes. When those come, they follow
-Houdini: paths are copied as typed, so a relative path inside copied nodes
-names the copy of its sibling, and an absolute one still names the
-original.
+Nodes move between containers only by grouping today; there is no ungroup.
+Copy and paste and Duplicate (`node_clipboard.luc`) follow Houdini: an
+absolute path still names the original, and so does a relative path that
+reaches a node left behind (it is kept as written); a relative path from a
+copied node to another copied node names the copy, rewritten from the copy's
+place and name (pasting renames copies whose names are taken, and the
+copied nodes may land at another level).
 
 ## Cooking and invalidation
 
@@ -147,4 +149,5 @@ writing relative and absolute paths for Import and Render rows, Import's
 Transform starting at Into this object, the worker rendering after a rename
 and regroup, and Modify › Rename… (F2). `tests/editor/import_path_tests.luc`
 checks the Import's rows through renames, grouping, undo, deletion and the
-worker.
+worker. `tests/editor/node_clipboard_tests.luc` checks paths between copies,
+within a network and across containers pasted together.

@@ -38,6 +38,12 @@ pub class NetworkView: Widget:
     pub var pointer_x: float = 100.0
     pub var pointer_y: float = 70.0
     pub var on_search: func() -> unit!? = none
+    ## A right click: the node under the pointer (picked first, unless it is
+    ## among the picked nodes), or -1 on empty canvas; the panels open the
+    ## node menu at the pointer.
+    pub var on_menu: func(int) -> unit!? = none
+    ## Whether the pointer is over the view (Paste puts nodes there).
+    pub var pointer_inside: bool = false
     pub var on_inspect: func(int) -> unit!? = none
     var mode: str = ""
     var moving: int = -1
@@ -397,9 +403,10 @@ pub class NetworkView: Widget:
                 self.zoom_about(math.exp(event.scroll_y * (0.01 if event.scroll_unit == ScrollUnit.points else 0.12)), event.x, event.y)
         elif event.kind == EventKind.pointer_down and event.inside:
             if event.button == 1:
+                if self.mode == "move":
+                    self.workspace.cancel()
                 self.mode = ""
-                if let search = self.on_search:
-                    search()
+                self.open_menu(event)
                 return
             if event.button == 0 and self.mode == "" and self.hovered >= 0 and not self.shading():
                 if let node = self.workspace.network.find(self.hovered):
@@ -488,6 +495,7 @@ pub class NetworkView: Widget:
                         node_commands.pick_wires(self.workspace, [key], operation)
                         self.mode = ""
         elif event.kind == EventKind.pointer_moved:
+            self.pointer_inside = event.inside
             var retained = -1
             if let node = self.workspace.network.find(self.hovered):
                 let screen = self.to_screen(node.x, node.y)
@@ -526,7 +534,28 @@ pub class NetworkView: Widget:
             self.mode = ""
         elif event.kind == EventKind.pointer_left:
             self.hovered = -1
+            self.pointer_inside = false
         self.box.invalidate()
+
+    ## A right click at `event`: the node there is picked (the picked nodes
+    ## stay picked when it is among them, as Houdini does), and the node
+    ## menu opens for it, or for the canvas.
+    func open_menu(self, event: Event) -> unit!:
+        let at = self.to_graph(event.x, event.y)
+        var hit = -1
+        for node in self.workspace.network.local_nodes().reversed():
+            if self.inside_node(node, at):
+                hit = node.id
+                break
+        if hit >= 0:
+            if hit in self.workspace.network.selection():
+                self.workspace.network.selected = hit
+                self.workspace.revision += 1
+            else:
+                node_commands.select_node(self.workspace, hit)
+        self.box.invalidate()
+        if let menu = self.on_menu:
+            menu(hit)
 
     ## Begin dragging `node` and the nodes picked with it.
     func start_move(self, node: Node) -> unit!:

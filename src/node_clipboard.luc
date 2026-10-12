@@ -1,0 +1,307 @@
+## Copy, Paste and Duplicate of nodes, after Houdini. The picked nodes travel
+## with their parameters, Edit steps and whole contents, and the wires among
+## them; wires from nodes left behind do not. They travel as a project
+## document (project_graph, the one node serializer) in text, on the system
+## clipboard, so another Luced 3D window pastes them; the last copy is kept
+## here too, for when there is no desktop clipboard or the copy is too large
+## for it. A paste gives the copies new ids and, among their new siblings,
+## names of their own, picks them, and is one undo step. A relative node
+## path between copied nodes names the copy; an absolute one, and a relative
+## one reaching outside the copy, stays as written (docs/NODE-PATHS.md).
+## Nodes the network shown can't hold (node_catalog.refusal) are left out,
+## and the status line says why.
+from luce_prism.prism import Document, Encoding
+from luce_clipboard import clipboard
+from luce_std import math
+from luce_ui import ui
+from workspace import Workspace
+from network import Network
+from node import Node
+from project_graph import write_graph, read_graph
+import node_catalog
+import node_paths
+import levels
+
+## The clipboard document's mark: it holds nodes, not a whole project.
+let mark: str = "/clipboard"
+let mark_type: str = "luced3d_nodes"
+## Where Duplicate puts the copies: below and to the right of the originals.
+pub let duplicate_offset_x: float = 40.0
+pub let duplicate_offset_y: float = 60.0
+
+pub class NodeClipboard:
+    ## The last copy's text, kept for when the system clipboard can't hold it.
+    pub var kept: str = ""
+    ## Whether the last copy reached the system clipboard.
+    var shared: bool = false
+    ## Whether copies go to the system clipboard (the editor's window); tests
+    ## leave the desktop's clipboard alone.
+    pub var system: bool = false
+
+    ## Copy the picked nodes in the network shown.
+    pub func copy(self, w: Workspace) -> unit!:
+        let ids = w.network.selection()
+        if ids.length == 0:
+            return
+        self.kept = encode(w.network, ids)
+        self.shared = false
+        if self.system:
+            self.shared = true
+            clipboard.write_text(self.kept) catch failure:
+                _ = failure
+                self.shared = false
+        let what = "1 node" if ids.length == 1 else f"{ids.length} nodes"
+        w.notice = f"Copied {what}" if self.shared or not self.system else f"Copied {what} (too large for the system clipboard: paste it in this window)"
+        w.revision += 1
+
+    ## Paste the clipboard's nodes into the network shown, their top left
+    ## at (`x`, `y`) of the network.
+    pub func paste(self, w: Workspace, x: float, y: float) -> unit!:
+        if let text = self.text():
+            paste_text(w, text, x, y, "Paste")
+            return
+        w.notice = "The clipboard holds no nodes"
+        w.revision += 1
+
+    ## The nodes to paste: the system clipboard's when it holds some, else
+    ## the last copy when it never reached the system clipboard.
+    func text(self) -> str?!:
+        if self.system:
+            let read = clipboard.read_text() catch failure:
+                _ = failure
+                return self.kept if self.kept != "" else none
+            let found: str = read
+            if holds_nodes(found):
+                return found
+            if self.shared:
+                return none
+        return self.kept if self.kept != "" else none
+
+## Duplicate the picked nodes beside them, leaving the clipboard alone.
+pub func duplicate(w: Workspace) -> unit!:
+    let ids = w.network.selection()
+    if ids.length == 0:
+        return
+    var left = 1.0e30
+    var top = 1.0e30
+    for id in ids:
+        let node = w.network.require(id)
+        left = math.min(left, node.x)
+        top = math.min(top, node.y)
+    paste_text(w, encode(w.network, ids), left + duplicate_offset_x, top + duplicate_offset_y, "Duplicate")
+
+## The document for nodes `ids` of `graph`'s network shown, with everything
+## inside them, as text. The containers above them come too, as bare stubs,
+## so the document reads back through read_graph's checks with its nodes on
+## the level they were copied from; the scope names that level.
+pub func encode(graph: Network, ids: list[int]) -> str!:
+    let copied = Network(false)
+    copied.next_id = graph.next_id
+    copied.scope = graph.scope
+    copied.selected = -1
+    copied.display = -1
+    copied.units = graph.units
+    for container in graph.ancestors(graph.scope):
+        let stub = Node(container.id, container.kind, container.x, container.y)
+        stub.name = container.name
+        stub.parent = container.parent
+        stub.visible = container.visible
+        stub.inputs = []
+        stub.sources = []
+        for _ in container.inputs:
+            stub.inputs.append(-1)
+            stub.sources.append(0)
+        copied.nodes.append(stub)
+    let taken: list[int] = []
+    for id in ids:
+        for node in subtree(graph, id):
+            taken.append(node.id)
+            copied.nodes.append(node.authored(node.id))
+    # Wires from nodes left behind are not copied.
+    for node in copied.nodes:
+        for port in 0..<node.inputs.length:
+            if not (node.inputs[port] in taken):
+                node.inputs[port] = -1
+                node.sources[port] = 0
+    let doc = Document()
+    write_graph(doc, copied)
+    doc.add(mark, mark_type)
+    return (doc.encode(Encoding.text).bytes()).text()
+
+## Whether `text` is a clipboard document of nodes.
+pub func holds_nodes(text: str) -> bool!:
+    let doc = Document.parse(text) catch failure:
+        _ = failure
+        return false
+    return doc.contains(mark) and doc.type_at(mark) == mark_type
+
+## Node `id` and everything inside it, containers before their contents.
+func subtree(graph: Network, id: int) -> list[Node]!:
+    let result = [graph.require(id)]
+    var at = 0
+    while at < result.length:
+        for child in graph.children(result[at].id):
+            result.append(child)
+        at += 1
+    return result
+
+## Paste document `text` into the network shown as one undo step `label`.
+pub func paste_text(w: Workspace, text: str, x: float, y: float, label: str) -> unit!:
+    let doc = Document.parse(text) catch failure:
+        _ = failure
+        w.notice = "The clipboard holds no nodes"
+        w.revision += 1
+        return
+    if not doc.contains(mark) or doc.type_at(mark) != mark_type:
+        w.notice = "The clipboard holds no nodes"
+        w.revision += 1
+        return
+    let copied = read_graph(doc) catch failure:
+        w.notice = f"The clipboard's nodes can't be read: {failure.message}"
+        w.revision += 1
+        return
+    let target = w.network
+    let scope = target.scope
+    let context = target.context()
+    let inputs = target.has_inputs(scope)
+    # The copied nodes each of their own subtree, left out where the network
+    # shown can't hold them (or what they hold).
+    let roots: list[Node] = []
+    let refused: list[str] = []
+    let depth = target.ancestors(scope).length
+    var count = 0
+    for root in copied.children(copied.scope):
+        let problem = refusal(copied, root, context, inputs, depth)
+        if problem != "":
+            refused.append(f"{root.name}: {problem}")
+        else:
+            roots.append(root)
+            count += subtree(copied, root.id).length
+    if roots.length == 0:
+        w.notice = "Nothing pasted. " + refused.join("; ")
+        w.revision += 1
+        return
+    let total = count
+    # On a data level the display flag stays where it was; with none there
+    # yet, the last pasted node takes it.
+    let shown = target.display_in(scope)
+    w.perform(label, func () -> unit!:
+        if target.nodes.length + total > 128:
+            error(ui.invalid, "This workspace supports up to 128 nodes")
+        var left = 1.0e30
+        var top = 1.0e30
+        for root in roots:
+            left = math.min(left, root.x)
+            top = math.min(top, root.y)
+        # Old id to new, containers before their contents.
+        let olds: list[int] = []
+        let news: list[int] = []
+        let made: list[Node] = []
+        for root in roots:
+            for node in subtree(copied, root.id):
+                let fresh = node.authored(target.next_id)
+                target.next_id += 1
+                olds.append(node.id)
+                news.append(fresh.id)
+                if node.parent == copied.scope:
+                    fresh.parent = scope
+                    fresh.x = node.x - left + x
+                    fresh.y = node.y - top + y
+                    fresh.name = unique_name(target, scope, node.name)
+                else:
+                    fresh.parent = news[olds.index_of(node.parent) else trap("pasted parent")]
+                default_scene_path(fresh, node.id)
+                target.nodes.append(fresh)
+                made.append(fresh)
+        # Wires among the copies; an object level has none.
+        for fresh in made:
+            let old_inputs = fresh.inputs
+            let old_sources = fresh.sources
+            fresh.inputs = []
+            fresh.sources = []
+            for port in 0..<target.input_count(fresh.kind, fresh.parent):
+                var input = -1
+                var output = 0
+                if port < old_inputs.length:
+                    if let at = olds.index_of(old_inputs[port]):
+                        input = news[at]
+                        output = old_sources[port]
+                fresh.inputs.append(input)
+                fresh.sources.append(output)
+        # A relative path between copies names the copy.
+        for at in 0..<made.length:
+            let fresh = made[at]
+            let original = copied.require(olds[at])
+            for path_row in node_paths.rows(fresh.kind):
+                let written = original.texts[path_row.slot].trim()
+                if written == "" or written == "." or node_paths.is_absolute(written) or node_paths.is_pattern(written):
+                    continue
+                let reached = node_paths.resolve(copied.nodes, original, written) else continue
+                let index = olds.index_of(reached.id) else continue
+                fresh.texts[path_row.slot] = node_paths.relative(target.nodes, fresh, target.require(news[index]))
+        let pasted: list[int] = []
+        for fresh in made:
+            if fresh.parent == scope:
+                pasted.append(fresh.id)
+        if target.level_of(scope) == levels.data_level:
+            for id in pasted:
+                target.require(id).visible = false
+            if shown >= 0:
+                target.require(shown).visible = true
+            else:
+                target.set_display(pasted[pasted.length - 1])
+        for id in pasted:
+            target.visibility_changed(target.require(id))
+        target.picked = pasted
+        target.wires = []
+        target.selected = pasted[pasted.length - 1]
+        w.selection = none
+        w.end_modal_tool()
+        w.rebuild())
+    if refused.length > 0:
+        w.notice = "Not pasted here: " + refused.join("; ")
+        w.revision += 1
+
+## Why `node` of `copied` (and what it holds) can't go in a network of
+## `context` with `inputs`, `depth` containers below the root, or "".
+func refusal(copied: Network, node: Node, context: str, inputs: bool, depth: int) -> str!:
+    let problem = node_catalog.refusal(node.kind, context, inputs)
+    if problem != "":
+        return problem
+    if not node_catalog.holds_nodes(node.kind):
+        return ""
+    if depth >= 16:
+        return "Group nesting is limited to 16 levels"
+    # Inside it: its own context (a Group keeps the one around it); an
+    # object (a node on the scene level) has no inputs.
+    let inner = node_catalog.child_context(node.kind)
+    let within = inner if inner != "" else context
+    let holds_inputs = context != "scene" and node_catalog.input_count(node.kind) > 0
+    for child in copied.children(node.id):
+        let deeper = refusal(copied, child, within, holds_inputs, depth + 1)
+        if deeper != "":
+            return f"{child.name}: {deeper}"
+    return ""
+
+## `name`, or with its number raised (Box 3, Box 4, …) until no node in
+## `parent` has it.
+func unique_name(graph: Network, parent: int, name: str) -> str:
+    if not graph.name_taken(parent, name):
+        return name
+    let words = name.split(" ")
+    if words.length > 1:
+        let number = int(words[words.length - 1]) catch failure:
+            _ = failure
+            return graph.fresh_name(parent, name, 2)
+        return graph.fresh_name(parent, words[0..<words.length - 1].join(" "), number + 1)
+    return graph.fresh_name(parent, name, 2)
+
+## A Camera's, Light's or Material's own path in the scene, when it is the
+## one the node started with (named by its id), follows the copy's id: two
+## objects never share a scene path by being copied.
+func default_scene_path(fresh: Node, old: int):
+    let kind = fresh.kind
+    if (kind == "Camera" or kind == "Light") and fresh.texts[0] == f"{kind.lower()}{old}":
+        fresh.texts[0] = f"{kind.lower()}{fresh.id}"
+    if kind == "Material" and fresh.texts[0] == f"materials/material{old}":
+        fresh.texts[0] = f"materials/material{fresh.id}"

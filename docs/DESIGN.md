@@ -252,9 +252,21 @@ the per-File import tolerance described in
 Imports are whole-file (no streaming, no file watching). OBJ import preflights
 counts before allocating and attaches attributes during mesh construction.
 
-The node menu (Tab or right-click) is cursor-anchored: empty queries browse
+The node menu (Tab) is cursor-anchored: empty queries browse
 categories, typing searches globally, arrows/Enter choose, Escape or an outside
 click dismisses.
+A right click opens `node_context_menu.luc`'s menu at the pointer (the
+Outliner opens it on a node's row): on a node, Actions' Rename, Copy, Paste,
+Duplicate, flags, Set Output, Group and Delete; on the canvas, Paste and Create
+(`top_menus.node_categories`, the Create menu's submenus). Copy, Paste and
+Duplicate live in `node_clipboard.luc`: the picked nodes, everything inside
+them and the wires among them are written with `project_graph` (the project
+serializer) together with stubs of the containers above them, so the text reads
+back through `read_graph`'s checks; the text goes on the system clipboard
+(luce-clipboard holds text only) and is kept in the window too. A paste checks
+each node against the level (`node_catalog.refusal`), gives new ids and unique
+names, rewires the copies among themselves, points relative node paths between
+copies at the copies, and is one undo step.
 The menu bar's Create menu (`top_menus.luc`) lists the same kinds, from
 `node_catalog.offered`, the one list both menus read; its items are Actions'
 `add` commands, so they add exactly as Tab does. Modify lists Actions' commands

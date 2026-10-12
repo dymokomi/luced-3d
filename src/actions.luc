@@ -11,6 +11,7 @@ import modeling_commands
 import selection_commands
 import node_commands
 import context_display
+from node_clipboard import NodeClipboard, duplicate
 from luce_geocore.geocore import Domain
 from tool_icons import asset_name
 
@@ -39,6 +40,12 @@ pub class Actions:
     pub let delete: Command
     ## Rename the selected node (F2): the panels' prompt asks for the name.
     pub let rename: Command
+    ## Copy, Paste and Duplicate of the picked nodes (node_clipboard.luc);
+    ## the panels connect Paste, which places the nodes.
+    pub let copy: Command
+    pub let paste: Command
+    pub let duplicate: Command
+    pub let clipboard: NodeClipboard
     pub let extrude: Command
     pub let clear_edits: Command
     pub let select_all: Command
@@ -101,6 +108,10 @@ pub class Actions:
         self.play_backwards = Command("Play backwards", id = "timeline_play_backwards")
         self.delete = Command("Delete node", id = "delete_node")
         self.rename = Command("Rename…", Shortcut(Key.f2), id = "rename_node")
+        self.copy = Command("Copy", Shortcut(Key.c, primary = true), id = "copy_nodes")
+        self.paste = Command("Paste", Shortcut(Key.v, primary = true), id = "paste_nodes")
+        self.duplicate = Command("Duplicate", Shortcut(Key.d, primary = true), id = "duplicate_nodes")
+        self.clipboard = NodeClipboard()
         self.extrude = Command("Extrude faces", id = "extrude_faces", icon = asset_name("Extrude"))
         self.clear_edits = Command("Clear edits", id = "clear_edits")
         self.select_all = Command("Select all", Shortcut(Key.a, primary = true), id = "select_all")
@@ -111,6 +122,8 @@ pub class Actions:
             self.frame.on_trigger(workspace.frame_cube), self.grid.on_trigger(workspace.toggle_grid), self.hulls.on_trigger(workspace.toggle_hulls),
             self.display.on_trigger(func () -> unit!: node_commands.display_selected(workspace)), self.enabled.on_trigger(func () -> unit!: node_commands.toggle_enabled(workspace)),
             self.freeze.on_trigger(func () -> unit!: node_commands.toggle_freeze(workspace)),
+            self.copy.on_trigger(func () -> unit!: self.clipboard.copy(workspace)),
+            self.duplicate.on_trigger(func () -> unit!: duplicate(workspace)),
             self.delete.on_trigger(func () -> unit!: node_commands.delete_selected(workspace)), self.extrude.on_trigger(func () -> unit!: modeling_commands.extrude(workspace)),
             self.clear_edits.on_trigger(func () -> unit!: modeling_commands.clear_edits(workspace)), self.select_all.on_trigger(func () -> unit!: selection_commands.select_all(workspace))]
         self.add = []
@@ -171,7 +184,7 @@ pub class Actions:
         self.connections.append(self.through_depth.on_trigger(func (): modeling_commands.toggle_through_depth(workspace)))
         for kind in kinds():
             self.add.append(Command(kind, id = "add_" + kind, icon = asset_name(kind)))
-        self.all = [self.undo, self.redo, self.frame, self.grid, self.hulls, self.display, self.parent, self.add_node, self.set_output, self.frame_nodes, self.group, self.enabled, self.freeze, self.play, self.play_backwards, self.previous_frame, self.next_frame, self.first_frame, self.last_frame, self.looping, self.delete, self.rename, self.extrude, self.clear_edits, self.select_all, self.smaller_brush, self.larger_brush, self.through_depth] + self.add + self.modes + self.context_modes + self.tools + self.modeling + self.create + self.selection_tools
+        self.all = [self.undo, self.redo, self.frame, self.grid, self.hulls, self.display, self.parent, self.add_node, self.set_output, self.frame_nodes, self.group, self.enabled, self.freeze, self.play, self.play_backwards, self.previous_frame, self.next_frame, self.first_frame, self.last_frame, self.looping, self.delete, self.rename, self.copy, self.paste, self.duplicate, self.extrude, self.clear_edits, self.select_all, self.smaller_brush, self.larger_brush, self.through_depth] + self.add + self.modes + self.context_modes + self.tools + self.modeling + self.create + self.selection_tools
         self.all += [self.new_project, self.open_project, self.save, self.save_as, self.project_settings, self.reset_layout]
         self.refresh()
 
@@ -203,6 +216,11 @@ pub class Actions:
         let node = w.selected()
         self.delete.set_enabled(node != none or w.network.selected_wires().length > 0)
         self.rename.set_enabled(node != none)
+        self.copy.set_enabled(node != none)
+        self.duplicate.set_enabled(node != none)
+        # The system clipboard is read only when pasting (another window may
+        # have copied nodes since); without it, while a copy is kept.
+        self.paste.set_enabled(self.clipboard.system or self.clipboard.kept != "")
         self.enabled.set_enabled(node != none)
         self.freeze.set_enabled(node != none)
         self.display.set_enabled(node != none)
@@ -211,7 +229,7 @@ pub class Actions:
         self.set_output.set_enabled(node != none and w.network.level_of(w.network.scope) == "data")
         # A sketch being edited takes single keys for its tools (D, O, …).
         if w.sketching():
-            for command in [self.display, self.enabled] + self.tools:
+            for command in [self.display, self.enabled, self.copy, self.paste, self.duplicate] + self.tools:
                 command.set_enabled(false)
         self.group.set_enabled(node != none and not w.network.in_material())
         if let selected = node:

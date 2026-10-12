@@ -99,17 +99,25 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
 - Nodes use compact Houdini-inspired bodies, top inputs and bottom outputs.
 - Drag or click-click from a geometry output to an input (or the reverse) to connect or replace
   a wire. Alt-click an input disconnects it. Outputs can feed multiple nodes.
-- Node types are available in Tab/right-click search: primitives, modeling,
+- Node types are available in Tab search: primitives, modeling,
   transforms, copies, groups and attributes. Merge has two geometry inputs for
   joining branches. Cycles are rejected. See [capabilities](docs/MODELING.md).
-- Tab or right-click opens a menu at the pointer, kept inside the window.
+- Tab opens a menu at the pointer, kept inside the window.
   Browse categories/submenus or type to filter; arrows and Enter choose.
+- A right click on a node (in the Network or on its Outliner row) opens its
+  menu: Rename…, Copy, Paste, Duplicate, display flag, bypass, freeze, Set
+  Output, Group and Delete. On empty canvas it offers Paste and Create (the
+  Create menu's nodes). Cmd/Ctrl-C, -V and -D copy, paste and duplicate the
+  picked nodes, with their parameters, Edit steps, contents and the wires
+  among them, as Houdini does; copies go through the system clipboard, so
+  another window pastes them. A network that can't hold a node leaves it out
+  and says why.
 - The menu bar's **Create** menu offers the same nodes for the network shown,
   one submenu per Tab category (inside a displayed Edit node, its primitives
   first); a node chosen there goes below the selected node, wired to it.
   **Modify** holds what applies to the selection: display flag, bypass,
   freeze, Set Output, Group, Rename… (F2, as Blender's and the desktop's),
-  Delete, the transform tools, the active Edit
+  Copy, Paste, Duplicate, Delete, the transform tools, the active Edit
   kind's tools and the selection edits, greyed out when they do not apply.
 - File imports OBJ, FBX (scene hierarchy, transforms, layers and instances; see
   [FBX files](docs/MODELING.md#fbx-files)), USD (.usd, .usda, .usdc, .usdz; see

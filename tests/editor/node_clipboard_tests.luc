@@ -1,0 +1,447 @@
+## The node menu (node_context_menu.luc) and Copy, Paste and Duplicate of
+## nodes (node_clipboard.luc): the menu's entries on a node and on empty
+## canvas, right clicks in the network view and the Outliner, each entry
+## chosen from the open menu, the shortcuts, copies with their parameters,
+## Edit steps, contents and wires among them, pasting across levels (and
+## what a level refuses), node paths between copies, and undo.
+from app import Luce3D
+from workspace import Workspace
+from luce_ui.ui import Event, Command
+from luce_window.input import EventKind, Key
+from edit_operations import EditStep
+from top_menus import node_categories
+import node_commands
+import node_clipboard
+import node_catalog
+from luce_std import math
+
+pub func node_clipboard_tests() -> unit!:
+    menu_contents()
+    right_clicks()
+    menu_actions()
+    copy_and_paste()
+    containers_and_levels()
+    paths_follow_copies()
+    between_windows()
+    print("PASS node menu and clipboard: the menu on a node and on the canvas, right clicks in the network and Outliner, each entry, Cmd/Ctrl C V D; copies keep parameters, Edit steps, contents and their own wires; levels refuse what they can't hold; relative paths between copies name the copies; one undo step; another window pastes")
+
+## A node's entries and the canvas's; the shortcuts are no other command's.
+func menu_contents() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1200.0, 800.0)
+    let a = editor.panels.actions
+    let menu = editor.panels.node_menu
+    assert(labels(menu.node_entries()) == ["Rename…", "", "Copy", "Paste", "Duplicate", "", "Display flag", "Enable / bypass", "Freeze / unfreeze", "", "Set Output", "Group", "", "Delete node"])
+    let commands = [a.copy, a.paste, a.duplicate]
+    let keys = [Key.c, Key.v, Key.d]
+    for at in 0..<commands.length:
+        let shortcut = commands[at].shortcut()
+        assert(shortcut.key == keys[at] and shortcut.primary and not shortcut.shift and not shortcut.alt)
+        for other in a.all:
+            if other is commands[at]:
+                continue
+            let theirs = other.shortcut()
+            assert(not (theirs.key == keys[at] and theirs.primary and not theirs.shift and not theirs.alt), other.text())
+    # The canvas: Paste and Create, which holds Tab's nodes by category.
+    let canvas = menu.canvas_entries()
+    assert(labels(canvas) == ["Paste", "", "Create"])
+    let categories = node_categories(w, a)
+    assert(canvas[2].item_count() == categories.length and categories.length > 0)
+    var offered = 0
+    for at in 0..<categories.length:
+        let shown = canvas[2].item(at)
+        assert(shown.text() == categories[at].text() and shown.item_count() == categories[at].item_count())
+        for index in 0..<shown.item_count():
+            assert(shown.item(index) is categories[at].item(index))
+        offered += shown.item_count()
+    assert(offered == node_catalog.offered(w.network.context(), w.network.has_inputs(w.network.scope)).length)
+    editor.close()
+
+## Right clicks: on a node it is picked and its entries show; a node among
+## the picked keeps them picked; on the canvas the canvas's; on an
+## Outliner row the network goes to the node, which is picked.
+func right_clicks() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1200.0, 800.0)
+    let menu = editor.panels.node_menu
+    let cube = w.network.nodes[0].id
+    node_commands.select_nothing(w)
+    editor.panels.refresh()
+    right_click_node(editor, cube)
+    assert(menu.is_open() and w.network.selection() == [cube] and labels(menu.commands)[0] == "Rename…")
+    assert(editor.panels.actions.copy.is_enabled() and editor.panels.actions.delete.is_enabled())
+    escape(editor)
+    assert(not menu.is_open())
+    _ = right_click_canvas(editor)
+    assert(menu.is_open() and labels(menu.commands) == ["Paste", "", "Create"] and w.network.selection() == [cube])
+    escape(editor)
+    node_commands.add_node(w, "Transform", 40.0, 180.0)
+    let transform = w.network.selected
+    node_commands.pick_nodes(w, [cube, transform], 0)
+    right_click_node(editor, cube)
+    assert(w.network.selected == cube and w.network.selection().length == 2)
+    escape(editor)
+    # The Outliner: a right click on the Geo's row.
+    let geo = w.network.scope
+    let outliner = editor.panels.outliner
+    var row = -1
+    for at in 0..<outliner.rows.length:
+        if outliner.rows[at].id == geo and outliner.rows[at].path == "":
+            row = at
+    assert(row >= 0)
+    let area = outliner.layout().bounds()
+    let y = area.y + (float(row) + 0.5) * outliner.row_height()
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = area.x + 60.0, y = y, button = 1))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = area.x + 60.0, y = y, button = 1))
+    assert(menu.is_open() and w.network.scope == -1 and w.network.selection() == [geo])
+    assert(labels(menu.commands)[0] == "Rename…")
+    escape(editor)
+    editor.close()
+
+## Each entry chosen from the open menu by keyboard, as a person would.
+func menu_actions() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1200.0, 800.0)
+    let a = editor.panels.actions
+    let cube = w.network.nodes[0].id
+    # Rename.
+    right_click_node(editor, cube)
+    choose(editor, "rename_node")
+    assert(editor.panels.rename_prompt.is_open())
+    for c in [66, 111, 120]:
+        editor.app.dispatch(Event(kind = EventKind.text_input, codepoint = c))
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    assert(w.network.require(cube).name == "Box" and w.history.undo_label() == "Undo Rename node")
+    # Copy, then Paste where the canvas was clicked.
+    right_click_node(editor, cube)
+    choose(editor, "copy_nodes")
+    assert(node_clipboard.holds_nodes(a.clipboard.kept) and w.notice == "Copied 1 node")
+    let at = right_click_canvas(editor)
+    choose(editor, "paste_nodes")
+    let pasted = w.network.require(w.network.selected)
+    assert(pasted.id != cube and pasted.kind == "Cube" and pasted.name == "Box 2", pasted.name)
+    # Where the click was, to the pointer's precision.
+    assert(math.abs(pasted.x - at[0]) < 0.001 and math.abs(pasted.y - at[1]) < 0.001 and w.history.undo_label() == "Undo Paste", f"{pasted.x},{pasted.y} for {at[0]},{at[1]}")
+    # Duplicate: beside the node.
+    right_click_node(editor, cube)
+    choose(editor, "duplicate_nodes")
+    let twin = w.network.require(w.network.selected)
+    let source = w.network.require(cube)
+    assert(twin.kind == "Cube" and twin.x == source.x + node_clipboard.duplicate_offset_x and twin.y == source.y + node_clipboard.duplicate_offset_y)
+    assert(w.history.undo_label() == "Undo Duplicate")
+    # The display flag, bypass, freeze and unfreeze.
+    assert(w.network.display == cube and not twin.visible)
+    right_click_node(editor, twin.id)
+    choose(editor, "display_node")
+    assert(w.network.display == twin.id and twin.visible and not w.network.require(cube).visible)
+    right_click_node(editor, cube)
+    choose(editor, "toggle_node")
+    assert(not w.network.require(cube).enabled)
+    right_click_node(editor, cube)
+    choose(editor, "toggle_node")
+    right_click_node(editor, cube)
+    choose(editor, "freeze_node")
+    assert(w.network.require(cube).frozen != "", w.notice)
+    right_click_node(editor, cube)
+    choose(editor, "freeze_node")
+    assert(w.network.require(cube).frozen == "")
+    # Set Output: an Output node fed by the cube.
+    right_click_node(editor, cube)
+    choose(editor, "set_output")
+    var output = -1
+    for node in w.network.local_nodes():
+        if node.kind == "Output": output = node.id
+    assert(output >= 0 and w.network.require(output).inputs[0] == cube)
+    # Group, then Delete the Group.
+    right_click_node(editor, cube)
+    choose(editor, "group_nodes")
+    let group = w.network.require(cube).parent
+    assert(w.network.require(group).kind == "Group" and w.network.require(group).parent == w.network.scope)
+    right_click_node(editor, group)
+    choose(editor, "delete_node")
+    assert(w.network.find(group) == none and w.network.find(cube) == none)
+    w.undo()
+    assert(w.network.find(group) != none and w.network.find(cube) != none)
+    editor.close()
+
+## Copies keep their parameters, Edit steps and the wires among them; wires
+## from nodes left behind are dropped; the display flag stays; names are
+## their own; one undo step. The shortcuts copy, paste and duplicate.
+func copy_and_paste() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1200.0, 800.0)
+    let a = editor.panels.actions
+    let cube = w.network.nodes[0].id
+    node_commands.select_node(w, cube)
+    node_commands.set_parameter(w, 0, 2.5)
+    node_commands.add_node(w, "Transform", 40.0, 180.0)
+    let transform = w.network.selected
+    node_commands.set_parameter(w, 1, 3.0)
+    node_commands.add_node(w, "Edit Mesh", 40.0, 290.0)
+    let edit = w.network.require(w.network.selected)
+    let input = w.network.evaluate(transform)
+    edit.edits.append(EditStep("PolyExtrude", "2", 3, [1.0], input.topology_hash()))
+    let shown = w.network.display
+    assert(shown == edit.id)
+    node_commands.pick_nodes(w, [cube, transform, edit.id], 0)
+    editor.panels.refresh()
+    a.copy.trigger()
+    editor.panels.refresh()
+    assert(w.notice == "Copied 3 nodes" and a.paste.is_enabled(), w.notice)
+    let count = w.network.nodes.length
+    a.clipboard.paste(w, 400.0, 300.0)
+    assert(w.network.nodes.length == count + 3 and w.history.undo_label() == "Undo Paste")
+    let copies = w.network.selection()
+    assert(copies.length == 3)
+    let c = w.network.require(copies[0])
+    let t = w.network.require(copies[1])
+    let e = w.network.require(copies[2])
+    assert(c.kind == "Cube" and t.kind == "Transform" and e.kind == "Edit Mesh")
+    assert(c.values[0] == 2.5 and t.values[1] == 3.0 and t.inputs[0] == c.id and e.inputs[0] == t.id)
+    assert(e.edits.length == 1 and e.edits[0].verb == "PolyExtrude" and e.edits[0].key == edit.edits[0].key)
+    assert(c.x == 400.0 and c.y == 300.0 and t.x == 400.0 and t.y == 410.0)
+    assert(w.network.display == shown and not e.visible and w.network.selected == e.id)
+    unique_names(w)
+    w.undo()
+    assert(w.network.nodes.length == count and w.network.find(c.id) == none)
+    w.redo()
+    assert(w.network.nodes.length == count + 3)
+    # Wires from nodes left behind are not copied.
+    node_commands.select_node(w, transform)
+    a.copy.trigger()
+    a.clipboard.paste(w, 600.0, 300.0)
+    assert(w.network.require(w.network.selected).inputs[0] == -1)
+    # The shortcuts, with the pointer over the network view: Cmd/Ctrl-C
+    # copies, Cmd/Ctrl-V pastes at the pointer, Cmd/Ctrl-D duplicates.
+    let graph = editor.panels.graph
+    let area = graph.layout().bounds()
+    editor.app.focus(graph.layout())
+    node_commands.select_node(w, cube)
+    editor.panels.refresh()
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.c, control = true))
+    assert(w.notice == "Copied 1 node")
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + area.width - 120.0, y = area.y + 30.0))
+    let before = w.network.nodes.length
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.v, control = true))
+    let pasted = w.network.require(w.network.selected)
+    let point = graph.to_graph(area.width - 120.0, 30.0)
+    assert(w.network.nodes.length == before + 1 and pasted.kind == "Cube" and math.abs(pasted.x - point.x) < 0.001 and math.abs(pasted.y - point.y) < 0.001)
+    let kept = a.clipboard.kept
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.d, control = true))
+    let twin = w.network.require(w.network.selected)
+    assert(w.network.nodes.length == before + 2 and twin.x == pasted.x + node_clipboard.duplicate_offset_x and a.clipboard.kept == kept)
+    assert(w.history.undo_label() == "Undo Duplicate")
+    unique_names(w)
+    editor.close()
+
+## Pasting across levels: a container with its contents, objects into a Geo,
+## and what a level refuses (with the reason, and no undo step).
+func containers_and_levels() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1200.0, 800.0)
+    let a = editor.panels.actions
+    let geo = w.network.scope
+    let cube = w.network.nodes[0].id
+    # A Geo copied at the root: the copy holds a copy of the cube, flagged.
+    node_commands.leave_group(w)
+    node_commands.select_node(w, geo)
+    a.copy.trigger()
+    a.clipboard.paste(w, 300.0, 70.0)
+    let copy = w.network.require(w.network.selected)
+    assert(copy.kind == "Geo" and copy.id != geo and copy.inputs.length == 0 and copy.name != w.network.require(geo).name)
+    let inside = w.network.children(copy.id)
+    assert(inside.length == 1 and inside[0].kind == "Cube" and inside[0].name == w.network.require(cube).name and inside[0].visible)
+    assert(w.network.display_in(copy.id) == inside[0].id)
+    # The Geo pasted inside a Geo: a nested container, with inputs there.
+    node_commands.enter_group(w, geo)
+    a.clipboard.paste(w, 300.0, 70.0)
+    let nested = w.network.require(w.network.selected)
+    assert(nested.kind == "Geo" and nested.parent == geo and nested.inputs.length == node_catalog.input_count("Geo"))
+    assert(w.network.children(nested.id).length == 1)
+    # The cube can't go on the root, nor a camera in a Geo: nothing changes.
+    node_commands.select_node(w, cube)
+    a.copy.trigger()
+    node_commands.leave_group(w)
+    let count = w.network.nodes.length
+    let label = w.history.undo_label()
+    a.clipboard.paste(w, 300.0, 300.0)
+    assert(w.network.nodes.length == count and w.history.undo_label() == label)
+    assert(w.notice.starts_with("Nothing pasted.") and w.notice.contains("Cube"), w.notice)
+    node_commands.add_node(w, "Camera", 500.0, 70.0)
+    let camera = w.network.selected
+    # Several at once: what the level holds is pasted, the rest is named.
+    node_commands.pick_nodes(w, [geo, camera], 0)
+    a.copy.trigger()
+    node_commands.enter_group(w, geo)
+    let before = w.network.nodes.length
+    let size = 1 + inside_count(w, geo)
+    a.clipboard.paste(w, 500.0, 300.0)
+    assert(w.network.nodes.length == before + size and w.network.require(w.network.selected).kind == "Geo")
+    assert(w.notice.starts_with("Not pasted here:") and w.notice.contains("Camera"), w.notice)
+    # A Group of geometry nodes can't go on the root: what it holds can't.
+    node_commands.select_node(w, cube)
+    node_commands.group_selected(w)
+    node_commands.select_node(w, w.network.require(cube).parent)
+    a.copy.trigger()
+    node_commands.leave_group(w)
+    let roots = w.network.nodes.length
+    a.clipboard.paste(w, 300.0, 300.0)
+    assert(w.network.nodes.length == roots and w.notice.contains("Cube"), w.notice)
+    # A copied camera's own scene path follows the copy's id.
+    node_commands.select_node(w, camera)
+    a.copy.trigger()
+    a.clipboard.paste(w, 700.0, 70.0)
+    let second = w.network.require(w.network.selected)
+    assert(second.kind == "Camera" and second.texts[0] == f"camera{second.id}" and w.network.require(camera).texts[0] == f"camera{camera}")
+    editor.close()
+
+## A relative node path between copied nodes names the copy, within a
+## network and across containers copied together; an absolute path, and a
+## relative one reaching a node not copied, stay as written (Houdini).
+func paths_follow_copies() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1200.0, 800.0)
+    let a = editor.panels.actions
+    let geo = w.network.scope
+    let cube = w.network.nodes[0]
+    node_commands.add_node(w, "Import", 200.0, 70.0)
+    let relative = w.network.selected
+    node_commands.set_text(w, 0, "../" + cube.name)
+    node_commands.add_node(w, "Import", 200.0, 180.0)
+    let absolute = w.network.selected
+    let named = f"/{w.network.require(geo).name}/{cube.name}"
+    node_commands.set_text(w, 0, named)
+    node_commands.pick_nodes(w, [cube.id, relative, absolute], 0)
+    a.copy.trigger()
+    a.clipboard.paste(w, 400.0, 70.0)
+    let copies = w.network.selection()
+    let cube_copy = w.network.require(copies[0])
+    assert(cube_copy.kind == "Cube" and cube_copy.name != cube.name)
+    assert(w.network.require(copies[1]).texts[0] == "../" + cube_copy.name, w.network.require(copies[1]).texts[0])
+    assert(w.network.require(copies[2]).texts[0] == named)
+    # Copied alone, the relative Import still names the original.
+    node_commands.select_node(w, relative)
+    a.copy.trigger()
+    a.clipboard.paste(w, 600.0, 70.0)
+    assert(w.network.require(w.network.selected).texts[0] == "../" + cube.name)
+    # Across containers: an Import in another Geo reaching into this one.
+    node_commands.leave_group(w)
+    node_commands.add_node(w, "Geo", 300.0, 70.0)
+    let other = w.network.selected
+    node_commands.enter_group(w, other)
+    node_commands.add_node(w, "Import", 40.0, 70.0)
+    let reaching = f"../../{w.network.require(geo).name}/{cube.name}"
+    node_commands.set_text(w, 0, reaching)
+    node_commands.leave_group(w)
+    node_commands.pick_nodes(w, [geo, other], 0)
+    a.copy.trigger()
+    a.clipboard.paste(w, 40.0, 300.0)
+    let pasted = w.network.selection()
+    let geo_copy = w.network.require(pasted[0])
+    let other_copy = w.network.require(pasted[1])
+    let reader = w.network.children(other_copy.id)[0]
+    assert(reader.texts[0] == f"../../{geo_copy.name}/{cube.name}", reader.texts[0])
+    w.undo()
+    assert(w.network.find(geo_copy.id) == none and w.network.find(reader.id) == none)
+    editor.close()
+
+## Another window pastes what this one copied (the clipboard's text is the
+## same either way); text that isn't nodes pastes nothing.
+func between_windows() -> unit!:
+    let first = Luce3D()
+    let a = first.panels.actions
+    node_commands.select_node(first.workspace, first.workspace.network.nodes[0].id)
+    node_commands.set_parameter(first.workspace, 0, 4.0)
+    a.copy.trigger()
+    let text = a.clipboard.kept
+    first.close()
+    let second = Luce3D()
+    let w = second.workspace
+    let count = w.network.nodes.length
+    node_clipboard.paste_text(w, text, 200.0, 70.0, "Paste")
+    let pasted = w.network.require(w.network.selected)
+    assert(w.network.nodes.length == count + 1 and pasted.kind == "Cube" and pasted.values[0] == 4.0)
+    assert(not node_clipboard.holds_nodes("Cube 1") and not node_clipboard.holds_nodes(""))
+    let b = second.panels.actions
+    b.clipboard.kept = "Cube 1"
+    b.clipboard.paste(w, 0.0, 0.0)
+    assert(w.notice == "The clipboard holds no nodes" and w.network.nodes.length == count + 1)
+    second.close()
+
+func right_click(editor: Luce3D, x: float, y: float) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = x, y = y, button = 1))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = x, y = y, button = 1))
+    editor.app.layout(1200.0, 800.0)
+
+## A right click in the middle of node `id` in the network view.
+func right_click_node(editor: Luce3D, id: int) -> unit!:
+    editor.panels.refresh()
+    let graph = editor.panels.graph
+    let area = graph.layout().bounds()
+    let node = editor.workspace.network.require(id)
+    let at = graph.to_screen(node.x + 48.0, node.y + 20.0)
+    right_click(editor, area.x + at.x, area.y + at.y)
+    assert(editor.panels.node_menu.is_open())
+
+## A right click on empty canvas, near the view's bottom right; where it
+## is in the network.
+func right_click_canvas(editor: Luce3D) -> list[float]!:
+    editor.panels.refresh()
+    let graph = editor.panels.graph
+    let area = graph.layout().bounds()
+    right_click(editor, area.x + area.width - 30.0, area.y + area.height - 30.0)
+    assert(editor.panels.node_menu.is_open())
+    let at = graph.to_graph(area.width - 30.0, area.height - 30.0)
+    return [at.x, at.y]
+
+func escape(editor: Luce3D) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.escape))
+
+## Choose the open node menu's entry `id` by keyboard, from the row the
+## menu opens on (its first checked entry, else its first), then Enter.
+func choose(editor: Luce3D, id: str) -> unit!:
+    let menu = editor.panels.node_menu
+    var rows: list[Command] = []
+    for command in menu.commands:
+        if not command.is_divider() and command.is_enabled():
+            rows.append(command)
+    var start = 0
+    for at in 0..<rows.length:
+        if rows[at].is_checked():
+            start = at
+            break
+    var target = -1
+    for at in 0..<rows.length:
+        if rows[at].id() == id:
+            target = at
+    assert(target >= 0, id)
+    for _ in 0..<(target - start if target > start else start - target):
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.down if target > start else Key.up))
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    assert(not menu.is_open(), id)
+    editor.panels.refresh()
+
+## How many nodes container `id` holds, at any depth.
+func inside_count(w: Workspace, id: int) -> int:
+    var total = 0
+    for child in w.network.children(id):
+        total += 1 + inside_count(w, child.id)
+    return total
+
+func unique_names(w: Workspace) -> unit!:
+    let names: list[str] = []
+    for node in w.network.local_nodes():
+        assert(not (node.name in names), node.name)
+        names.append(node.name)
+
+func labels(commands: list[Command]) -> list[str]:
+    let result: list[str] = []
+    for command in commands:
+        result.append(command.text())
+    return result

@@ -2,7 +2,7 @@
 ## outliner, render view and takes docked together, with the status line,
 ## the node search, the shading menu, the sketch's value and text boxes
 ## and the tool bar; it routes refreshes and the frame's poll to them.
-from luce_ui.ui import VStack, HStack, Text, TextField, Font, Button, ButtonStyle, Spacer, DStack, Panel, DockPosition, Size, ScrollView, Menu, TextPrompt, ContextMenu
+from luce_ui.ui import VStack, HStack, Text, TextField, Font, Button, ButtonStyle, Spacer, DStack, Panel, DockPosition, Size, ScrollView, Menu, TextPrompt, ContextMenu, Point
 from dock_layout import DockLayout
 from project_session import ProjectSession
 from node_menu import NodeMenu
@@ -31,6 +31,7 @@ from icon_shelf import IconShelf
 from node_path_picker import NodePathPicker
 import take_commands
 from top_menus import TopMenus
+from node_context_menu import NodeContextMenu
 
 pub class Panels:
     pub let body: VStack
@@ -63,6 +64,8 @@ pub class Panels:
     pub let project_settings: ProjectSettings
     ## What the sketch's Text tool says.
     pub let sketch_text: TextPrompt
+    ## The network's and Outliner's right-click menu.
+    pub let node_menu: NodeContextMenu
     ## Modify › Rename… (F2): the selected node's new name.
     pub let rename_prompt: TextPrompt
     pub let actions: Actions
@@ -84,6 +87,9 @@ pub class Panels:
     ## The menu adding a node (Tab, a marking menu) placed it at add_x/add_y;
     ## otherwise (the Create menu) it goes where place_added says.
     var placed: bool = false
+    ## Where the node menu was opened on the network (graph coordinates):
+    ## its Paste puts the nodes there.
+    var paste_at: Point? = none
 
     pub func init(self, workspace: Workspace, font: Font) -> unit!:
         self.workspace = workspace
@@ -95,9 +101,11 @@ pub class Panels:
         self.projects.refreshed = self.refresh
         self.graph.on_search = self.open_search
         self.graph.on_inspect = self.inspect_node
+        self.graph.on_menu = self.open_network_menu
         self.inspector = Inspector(workspace, self.actions, font)
         self.spreadsheet = GeometrySheet(workspace)
         self.outliner = Outliner(workspace, font)
+        self.outliner.on_menu = self.open_outliner_menu
         self.render_view = RenderView(self.workspace.view)
         self.takes = TakesList(workspace, font)
         self.take_name = TextField("", font = font, placeholder = "Take name", cells = 12.0)
@@ -142,6 +150,7 @@ pub class Panels:
                     node_commands.add_node(workspace, kind, self.add_x, self.add_y)
                 self.refresh()))
         self.connections.append(self.actions.add_node.on_trigger(self.open_search))
+        self.connections.append(self.actions.paste.on_trigger(self.paste_nodes))
         self.connections.append(self.actions.frame_nodes.on_trigger(self.graph.frame_all))
         self.menus = TopMenus(workspace, self.actions, font)
         let header = HStack([
@@ -214,7 +223,8 @@ pub class Panels:
         self.context_menu = ContextMenu(self.context_anchor, self.actions.context_modes, font = font)
         self.node_path_picker = NodePathPicker(workspace, font)
         self.node_path_picker.chosen = self.refresh
-        let footer = HStack([self.status, self.context_menu, self.node_path_picker.menu], padding = 6.0)
+        self.node_menu = NodeContextMenu(workspace, self.actions, font)
+        let footer = HStack([self.status, self.context_menu, self.node_path_picker.menu, self.node_menu.menu], padding = 6.0)
         self.body = VStack([header, self.dock, self.timeline.body, footer, self.search, self.shading, self.sketch_value.body, self.tool_bar.body, self.sketch_text, self.rename_prompt, self.project_settings.dialog, self.projects.confirm], spacing = 0.0)
         self.body.layout().set_flex()
         self.refresh()
@@ -249,6 +259,40 @@ pub class Panels:
         let graph_bounds = self.graph.layout().bounds()
         let body_bounds = self.body.layout().bounds()
         self.search.open(graph_bounds.x - body_bounds.x + self.graph.pointer_x, graph_bounds.y - body_bounds.y + self.graph.pointer_y, self.workspace.network.context(), self.workspace.network.has_inputs(self.workspace.network.scope))
+
+    ## A right click on the network view, on node `id` (-1: the canvas): the
+    ## node menu at the pointer; its Paste and Create put nodes there.
+    pub func open_network_menu(self, id: int) -> unit!:
+        let x = self.graph.pointer_x
+        let y = self.graph.pointer_y
+        self.paste_at = self.graph.to_graph(x, y)
+        if id < 0:
+            self.from_viewport = false
+            self.placed = true
+            self.add_at(x, y)
+        let bounds = self.graph.layout().bounds()
+        self.refresh()
+        self.node_menu.open(bounds.x + x, bounds.y + y, id >= 0)
+
+    ## A right click on node `id`'s row in the Outliner, at (`x`, `y`) in
+    ## window points: the node menu there.
+    func open_outliner_menu(self, id: int, x: float, y: float) -> unit!:
+        self.paste_at = none
+        self.refresh()
+        self.node_menu.open(x, y, true)
+
+    ## Paste: where the node menu opened on the network, else at the pointer
+    ## over the network view, else in its middle.
+    func paste_nodes(self) -> unit!:
+        let bounds = self.graph.layout().bounds()
+        var at = self.graph.to_graph(bounds.width * 0.5, bounds.height * 0.5)
+        if self.graph.pointer_inside:
+            at = self.graph.to_graph(self.graph.pointer_x, self.graph.pointer_y)
+        if let point = self.paste_at:
+            at = point
+        self.paste_at = none
+        self.actions.clipboard.paste(self.workspace, at.x, at.y)
+        self.refresh()
 
     ## A node added at (`x`, `y`) of the network view; repeated additions at
     ## an unchanged point do not bury a node.
@@ -355,9 +399,11 @@ pub class Panels:
         self.timeline.poll()
         self.network_tools.poll()
         self.up.layout().set_enabled(self.actions.parent.is_enabled())
-        # Tab closed without a choice: its placement is spent.
-        if self.placed and not self.search.is_open():
-            self.placed = false
+        # Tab or the node menu closed without a choice: its placement is spent.
+        if not self.node_menu.is_open():
+            self.paste_at = none
+            if self.placed and not self.search.is_open():
+                self.placed = false
         self.inspector.poll()
         self.place_tool_bar()
         if self.workspace.poll_compute():
@@ -401,6 +447,8 @@ pub class Panels:
         self.view.tools.chrome.on_reuse = none
         self.graph.on_search = none
         self.graph.on_inspect = none
+        self.graph.on_menu = none
+        self.outliner.on_menu = none
         for connection in self.connections:
             connection.disconnect()
         self.connections.clear()
