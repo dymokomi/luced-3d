@@ -74,8 +74,8 @@ The same luce-cad operations serve both workflows. A node runs them on its input
 | 1 | Profiles you can see, pick and extrude (done) |
 | 2 | Dimensions while drawing, and on the canvas (done) |
 | 3 | Sketch on a face from the viewport, with projection and offset (done) |
-| 4 | Extrude, Revolve and Press Pull in full (done; Thin, faces as profiles and To object revolves open) |
-| 5 | Fillet and Chamfer in the viewport (done; Full round, variable radius, chord length and G1 setback corners open) |
+| 4 | Extrude, Revolve and Press Pull in full (done; the parity round added Thin, faces as profiles, Start object, Extend, Objects To Cut and Revolve To) |
+| 5 | Fillet and Chamfer in the viewport (done; the parity round added Full round, chord length, variable radius and chamfer corner types; G1 setback corners open) |
 | 6 | Edit CAD direct modeling (done; Split Face, Replace Face onto several targets, Move Face by Point to Point and a face sketch's Redefine open) |
 | 7 | Shell, Move/Copy, Combine as nodes |
 | 8 | A timeline strip and history polish |
@@ -550,13 +550,13 @@ Our levels are Fusion's selection priority:
 | Select Edge Priority | Edges |
 | (Fusion's default: hover decides) | Smart |
 
-What is missing:
+Built in the parity round (§9, "Fusion parity round"):
 
-- **Profiles at Faces and Smart,** when a sketch's result is shown. A profile wins over the face it lies on.
+- **Profiles at Faces and Smart,** when a sketch's result is shown: a profile wins over the face it lies on.
 - **Sketch points and curves at Smart.**
 - **Each tool's inputs filter the pick.** While Extrude's "To object" waits for a face, only faces light up.
-- **Window and crossing.** Fusion's left-to-right box is a window, right-to-left a crossing [doc]. Our marquee has one mode; whether to adopt the split is open (§10, question 5).
-- **Repeat.** Fusion and SolidCraft put Repeat first in the radial menu. Our A and S menus in a CAD context should lead with the last CAD tool used, as the sketch already remembers its last tool (`last_sketch_tool`).
+- **Window and crossing,** by drag direction, as Fusion's [doc]. This replaces the owner's earlier answer 5 ("everything inside, either way"), now that Fusion parity is the rule.
+- **Repeat** leads the A and S menus in a CAD context.
 
 ## 7. Edit CAD: direct modeling
 
@@ -726,7 +726,7 @@ texts, values and the result's volume checked.
 - **Revolve**: Axis Picked (Pick axis: a sketch line, construction lines too, kept by index so it follows the line; or a straight or round body edge, kept by reference) or an origin axis X, Y, Z, projected onto the sketch plane as Fusion's Project Axis; Type Partial or Full; Direction One side, Two sides or Symmetric (the angle each way, Fusion's). A Revolve made from the sketch (right-click, A, Create) asks for its axis at once. The worker gets the sketch's text for a line axis (`Network.sketch_text`).
 - **Press Pull** (right-click, S, Modify › CAD features; no key, owner's answer 3) dispatches as Fusion's: in a sketch Extrude, on faces an **Offset Face** node (`CadDirect.offset_faces`, tangent faces following), on edges a Fillet. **Extrude face** makes a Sketch on the face (its loops projected) and an Extrude of it.
 - **Handles** (`feature_handles.luc`, `handle_lines.luc`): the cook reports where they stand (through the worker, like Auto's choice), so the viewport never cooks to draw them. An arrow per Distance side from the start, a taper ring beside each (pulled out sideways: positive), an angle ring per Revolve side, Offset Face's arrow, a blend's radius arrow out of its first edge's corner (luce-cad `edge_frame`, `face_point`). Drags snap (grid steps, whole degrees; Cmd frees), one undo each; a click on a handle opens its value box; a feature made from the viewport opens it by itself.
-- Not built: Thin; Start From object; a planar face as a profile directly (Extrude face goes through a Sketch); Start offset with To object or All (said on the node); To object for Revolve; Objects To Cut; To object's Extend options; the per-tool selection filter (a Pick prompt takes what the level picks).
+- Not built at stage 4, built in the parity round below: Thin; Start From object; a planar face as a profile directly; Start offset with To object or All; To object for Revolve; Objects To Cut; To object's Extend options; the per-tool selection filter.
 - Plan as written:
 - Two sides, taper, start offset, To object, All, Thin, faces as input.
 - Revolve about a picked line.
@@ -742,7 +742,7 @@ texts, values and the result's volume checked.
 - Chamfer: **Equal distance, Two distances, Distance and angle** (luce-cad `chamfered_sides`; the first distance on the face more of the picked edges lie on, Flip swaps; straight outside edges between flat faces for now, said on the node otherwise).
 - The owner's case is a regression through nodes: a cube's uprights filleted G3, then the rounded top chain filleted G1, G2, G3 and chamfered: closed, watertight tessellations of 18 faces, smaller than the cube.
 - Failures are said on the node; while a drag makes a blend fail the viewport keeps its last good result (worker and local cook), and its handles stay; released, it shows the input with the reason.
-- Not built: Full round fillet, variable radius, chord length, G1 setback corners (luce-cad limit 1), Fusion's chamfer corner types, and the Two distances / Distance and angle chamfers on curved or inside edges (luce-cad limit 2).
+- Not built at stage 5: Full round fillet, variable radius, chord length, G1 setback corners (luce-cad limit 1), Fusion's chamfer corner types. The parity round built Full round, chord length and the corner types; variable radius and G1 setback corners stay open. (Two distances and Distance and angle chamfers on curved and inside edges came with luce-cad f19fb15.)
 - Plan as written:
 - Edges selected, Shift+F, a radius arrow and box, a double-click for the chain. Chamfer types.
 - Clear failures.
@@ -772,6 +772,27 @@ texts, values and the result's volume checked.
   - Delete Face on a fillet's face heals back to the sharp edge, giving the unfilleted volume.
   - Editing a sketch after its extrude leaves the extrude as it was.
 
+**Fusion parity round** (2026-10-12; `cad_parity_tests`, `selection_rules_tests`, `cad_flow_tests`, `cad_node_tests`; luce-cad `extent_start_tests`, `thin_tests`, `chamfer_corner_tests`, `fillet_option_tests`, `sketch_tests`). Fusion parity is now the owner's top rule: every behavior and option as Fusion's. As built:
+- **Extrude** (`extrude_inputs.luc`, `cad_features.luc`; luce-cad `extent_starts.lucb`, `extent_targets.lucb`, `sketch/thicken.lucb`):
+  - Type **Thin extrude**: Wall thickness, Wall location Side 1 (inside a closed profile, left of an open curve as drawn), Side 2 (outside, right) or Center; open chains are walls too; with profiles picked, the chains round them, else every chain.
+  - **A face as the profile**: Extrude face makes an Extrude of the face itself (Profiles "face <name>", no Sketch), and Pick profiles takes a flat face clicked off the regions.
+  - Start **Object** (Pick start object): a face parallel to the sketch is a start offset (every extent and taper); a slanted or curved one bounds the extrusion, its end the start face moved the distance on, to a face, or past the body; one side, no taper.
+  - **Start offset with To object and All**.
+  - To object's **Extend**, Fusion's: To selected face (its surface extended), To adjacent faces (checked to stop on the face and its neighbors alone, else refused naming the other choices), To body, Through body (the long extrusion less what lies past the body's last face).
+  - **Objects To Cut** (Pick bodies at the Object level; Auto-select every body): Join, Cut and Intersect act on the bodies named, kept by one face name each; Cut and Intersect act on each body apart, as Fusion's (before, the bodies were unioned first).
+- **Revolve** Type Angle, Full or **To** (Pick object; Flip turns the other way; luce-cad `revolve_to.lucb`).
+- **Fillet**: Type **Full round** (Pick center face; the circle tangent to the center face and the faces across its longest parallel edges: both edges filleted to that radius, G1, G2 or G3; flat faces along straight edges); Radius type **Chord length** (r = c / (2 cos(θ/2)); edges at different angles refused) and **Variable** (Radius at the start, End radius, Points between, Smooth transition; an exact rational B-spline blend, luce-cad `variable_fillet.lucb`; one straight edge between flat faces ending at faces square to it, G1).
+- **Chamfer** Corner type, where three chamfers meet: **Chamfer** (Fusion's default: a flat face through the points where the contact lines meet on each face), **Miter** (they run on to a point), **Blend** (the chamfers stop at setbacks and the setback patch blends them into the faces, G2; equal distances). The Chamfer node now defaults to Fusion's Chamfer corners: a box with every edge chamfered has 26 faces, not 18.
+- **Selection**:
+  - Window and crossing by drag direction (left to right window, right to left crossing, drawn dashed) in CAD networks, Edit CAD and sketches; luce-cad `select_box(crossing)`.
+  - Per-prompt filters (`tool_prompt.domain`, `Workspace.prompt_level`): faces for Pick face, object, start object, center face and faces; edges for Pick edges and Pick axis; bodies for Pick bodies; the level caption says "Faces only".
+  - A shown, finished sketch (`sketch_shown.luc`): its profiles shaded and picked at the Faces level and Smart over the face beneath, its points and curves at Smart; Extrude and Revolve take them (a picked line is the Revolve's axis).
+- **Marking menus**: in a CAD network the A and S menus lead with Repeat and the CAD tool used last, under the repeat icon (a command again, or its node added bare when nothing selected applies).
+- **The ghost wireframe** round filleted bodies (`stage45/shots/cad_g3_chain.png`, `kernel/shots2/runout_fillet_g3.png`) was the B-spline faces' control nets, drawn as the control hull: G2/G3 strips and setback patches showed their nets standing off the body. luce-cad `hull_lines` now leaves out faces a modeling feature named (imported and freeform surfaces keep theirs); likewise a CAD network's sketch curves no longer show their circles' control triangles (`cad_nodes.shows_curve_hulls`). Fusion draws neither.
+- **Open ends that stop flat** (a fillet's open end where the face going on does not turn away): Fusion's help, its API reference and the forums found do not say what Fusion does there (ACIS/ShapeManager "capping" is not documented publicly either); the flat end face (luce-cad `cap_runout.lucb`) stays, documented as unverified against Fusion.
+- **Still open**: G1 setback corners (Fusion's Corner type Setback for tangent fillets: the setback patch must be rational to meet circular strips exactly, and `patch_fit.lucb` fits non-rational quads), so the Fillet node has no Corner type row: G1 corners are rolling balls, G2 and G3 corners setbacks, as before; variable radius beyond one straight edge (chains, curved faces, corners with other fillets, G2/G3).
+- Screenshots: `luce_work/cad/parity/shots/` (`cad_crossing`, `cad_repeat`, `cad_filter`, `cad_thin`, `cad_face_extrude`, `cad_through`, `cad_bodies`, `cad_revolve_to`, `cad_full_round`, `cad_chamfer_corner`, `cad_chamfer_blend`, `cad_shown_sketch`, `cad_variable`, `g3_after`).
+
 **Stage 7: Shell, Move/Copy, Combine as nodes** (luce-cad 10).
 - Tests: a shelled box's volume (outer minus inner, with the removed face open). Inside, Outside and Both.
 
@@ -797,7 +818,7 @@ texts, values and the result's volume checked.
 
    Or should the CAD context take Fusion's plain keys, with Rotate and Frame moving there?
 4. **Auto operation.** Fusion's Extrude picks Join or Cut by drag direction. On by default?
-5. **Window and crossing selection.** Adopt Fusion's left-to-right window, right-to-left crossing in CAD contexts?
+5. **Window and crossing selection.** Adopt Fusion's left-to-right window, right-to-left crossing in CAD contexts? (Answered "everything inside" first; the parity round adopted Fusion's split, parity being the owner's top rule.)
 6. **Edit CAD sketches as objects.** Sketches in a direct-modeling node are kept in the model as objects, editable later without changing what was already extruded (Fusion's direct mode). Agreed? It needs a sketch component in the geometry set.
 7. **Projected loops on by default** when sketching on a face? Fusion has a preference; SolidCraft defaults on.
 8. **Fusion's Slice** cuts away the body in front of the sketch plane while sketching. Wanted?

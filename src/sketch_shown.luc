@@ -1,0 +1,188 @@
+## A finished sketch shown in a CAD network (its node displayed, not being
+## edited), picked as Fusion picks it among the body's faces: at the Faces
+## level and Smart, a click inside one of its closed regions picks that
+## profile, winning over the face beneath it (Shift adds or takes it
+## away); at Smart, its points and curves near the pointer win too. The
+## picked profiles are the workspace's `sketch_profiles`, which Extrude and
+## Revolve take as they do in the editor; the picked curves are
+## `sketch_picks`. The profiles are shaded, the one under the pointer lit.
+from luce_cad.sketch import CadSketch
+from luce_gpu.gpu import RenderTarget
+from luce_ui.ui import Event
+from luce_window.input import EventKind
+from luce_3d.graphics import CurveLines
+from workspace import Workspace
+from node import Node
+from sketch_frames import FrameCache
+
+from sketch_profiles import SketchProfiles
+from sketch_kinds import point_kind
+from edit_types import smart_level
+from marquee import dragged
+import sketch_node
+import view_projection
+import theme
+from luce_std import math
+
+pub class SketchShown:
+    let w: Workspace
+    let frames: FrameCache
+    let profiles: SketchProfiles
+    ## The sketch as of its node's text.
+    var sketch: CadSketch? = none
+    var read_from: str = ""
+    ## Under the pointer: a profile's key, or a point or curve (-1).
+    pub var hover_key: str = ""
+    pub var hover_entity: int = -1
+    ## A press waiting for its release (a drag is a box, not a pick).
+    var press: list[float]
+
+    pub func init(self, w: Workspace):
+        self.w = w
+        self.frames = FrameCache()
+        self.profiles = SketchProfiles()
+        self.press = []
+
+    ## The Sketch node shown and not edited, when its picks apply: a CAD
+    ## network, the Faces level or Smart, no prompt or tool waiting.
+    pub func node(self) -> Node?:
+        let w = self.w
+        if w.network.context() != "cad" or w.sketching() or w.prompt != none or w.placing != none:
+            return none
+        let shown = w.network.find(w.network.display) else return none
+        if shown.kind != sketch_node.kind_name or not shown.enabled:
+            return none
+        if w.component_mode != smart_level and w.level_index() != w.level_of(2):
+            return none
+        return shown
+
+    ## The node's sketch, parsed once per text, solved.
+    func sketch_of(self, shown: Node) -> CadSketch!:
+        if shown.texts[0] != self.read_from or self.sketch == none:
+            let s = CadSketch.parse(shown.texts[0])
+            _ = s.solve()
+            self.sketch = s
+            self.read_from = shown.texts[0]
+        return self.sketch else trap("sketch")
+
+    ## What is under (`x`, `y`): sets hover_key and hover_entity.
+    func look(self, x: float, y: float, width: float, height: float) -> unit!:
+        self.hover_key = ""
+        self.hover_entity = -1
+        let shown = self.node() else return
+        let s = self.sketch_of(shown)
+        if s.entity_count() == 0:
+            return
+        let f = self.frames.frame(shown)
+        let at = f.coordinates(view_projection.plane(self.w, x, y, width, height, f.origin, f.normal()))
+        if self.w.component_mode == smart_level:
+            # Eight points' reach on the plane there.
+            let beside = f.coordinates(view_projection.plane(self.w, x + 8.0, y, width, height, f.origin, f.normal()))
+            let reach = math.hypot(beside[0] - at[0], beside[1] - at[1])
+            let picked = s.pick(at[0], at[1], reach)
+            if picked >= 0 and not s.construction(picked):
+                self.hover_entity = picked
+                return
+        self.hover_key = self.profiles.key_at(s, f, at[0], at[1])
+
+    ## Pointer events; whether one was used (a pick, or a move that changed
+    ## what is lit).
+    pub func event(self, event: Event, width: float, height: float) -> bool!:
+        if self.node() == none or event.alt:
+            if self.hover_key != "" or self.hover_entity >= 0:
+                self.hover_key = ""
+                self.hover_entity = -1
+            return false
+        if event.kind == EventKind.pointer_moved:
+            let before = (self.hover_key, self.hover_entity)
+            self.look(event.x, event.y, width, height)
+            if self.press.length > 0 and dragged([self.press[0], self.press[1], event.x, event.y]):
+                # A drag: the box is the components'.
+                self.press = []
+                return false
+            return before != (self.hover_key, self.hover_entity)
+        if event.kind == EventKind.pointer_down and event.button == 0 and event.inside:
+            self.look(event.x, event.y, width, height)
+            if self.hover_key == "" and self.hover_entity < 0:
+                return false
+            self.press = [event.x, event.y, 1.0 if event.shift else 0.0]
+            return true
+        if event.kind == EventKind.pointer_up and self.press.length > 0:
+            let adding = self.press[2] != 0.0
+            self.press = []
+            self.pick(adding)
+            return true
+        return false
+
+    ## The profile or curve under the pointer picked (`adding`: added, or
+    ## taken away when it was picked), the body's selection left.
+    func pick(self, adding: bool) -> unit!:
+        let w = self.w
+        let key = self.hover_key
+        let entity = self.hover_entity
+        let on = w.network.display
+        w.perform("Pick in the sketch", func () -> unit!:
+            w.selection = none
+            # Picks on another sketch are let go.
+            if w.sketch_picked_on != on:
+                w.sketch_profiles = []
+                w.sketch_picks = []
+                w.sketch_picked_on = on
+            if key != "":
+                if not adding:
+                    w.sketch_profiles = [key]
+                    w.sketch_picks = []
+                elif key in w.sketch_profiles:
+                    w.sketch_profiles = without(w.sketch_profiles, key)
+                else:
+                    w.sketch_profiles.append(key)
+            else:
+                if not adding:
+                    w.sketch_picks = [entity]
+                    w.sketch_profiles = []
+                elif entity in w.sketch_picks:
+                    let kept: list[int] = []
+                    for e in w.sketch_picks:
+                        if e != entity:
+                            kept.append(e)
+                    w.sketch_picks = kept
+                else:
+                    w.sketch_picks.append(entity)
+            w.revision += 1)
+
+    ## The profiles shaded (the picked in the accent, the one under the
+    ## pointer lit) and the picked and lit curves, over the scene.
+    pub func draw_lines(self, target: RenderTarget, width: float, height: float) -> unit!:
+        let shown = self.node() else return
+        let s = self.sketch_of(shown)
+        if s.entity_count() == 0:
+            return
+        let f = self.frames.frame(shown)
+        self.profiles.hover = self.hover_key
+        let mine = self.w.sketch_picked_on == shown.id
+        let picked: list[str] = self.w.sketch_profiles if mine else []
+        self.profiles.draw(target, self.w.view.camera, s, f, picked, width, height)
+        let lit: list[int] = self.w.sketch_picks.copy() if mine else []
+        if self.hover_entity >= 0:
+            lit.append(self.hover_entity)
+        if lit.length == 0:
+            return
+        CurveLines.batch(only(s, lit).curves(f.origin, f.u, f.v)).draw(self.w.view.camera, target, theme.accent(), 2.5)
+
+## `values` without `value`.
+func without(values: list[str], value: str) -> list[str]:
+    let kept: list[str] = []
+    for v in values:
+        if v != value:
+            kept.append(v)
+    return kept
+
+## A copy of `s` with only the curves `entities` drawn (the rest made
+## construction); a point picked draws as nothing.
+func only(s: CadSketch, entities: list[int]) -> CadSketch!:
+    let copy = CadSketch.parse(s.text())
+    _ = copy.solve()
+    for at in 0..<copy.entity_count():
+        if copy.kind(at) != point_kind and not (at in entities):
+            copy.set_construction(at, true)
+    return copy

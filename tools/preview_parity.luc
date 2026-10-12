@@ -18,6 +18,16 @@
 ##     level, the left box picked.
 ##   cad_revolve_to: a rectangle revolved To a wall's face: the quarter
 ##     turn, its Type To and Object rows.
+##   cad_full_round: a rib's top rounded whole (Full round): its Type and
+##     Center face rows.
+##   cad_chamfer_corner: three chamfers at a box's corner, Corner type
+##     Chamfer: the corner's triangle; its rows.
+##   cad_chamfer_blend: the same, Corner type Blend: the patch.
+##   cad_variable: a box's front top edge filleted with a variable radius,
+##     2 at its start, 6 at its end and 3 in the middle: its rows.
+##   cad_shown_sketch: a finished sketch on a box's top, shown, at Smart:
+##     its disc's profile picked (over the face beneath), the pointer on
+##     its line (lit).
 from luce_ui.ui import Event
 from luce_window.input import EventKind, Key
 from luce_3d.graphics import Vector3
@@ -31,12 +41,13 @@ import sketch_commands
 import selection_commands
 import tool_prompts
 import cad_features
+import cad_blends
 from workspace import Workspace
 from luce_cad.sketch import CadSketch
 from luce_std import math
 
 pub func scenes() -> list[str]:
-    return ["cad_crossing", "cad_repeat", "cad_filter", "cad_thin", "cad_face_extrude", "cad_through", "cad_bodies", "cad_revolve_to"]
+    return ["cad_crossing", "cad_repeat", "cad_filter", "cad_thin", "cad_face_extrude", "cad_through", "cad_bodies", "cad_revolve_to", "cad_full_round", "cad_chamfer_corner", "cad_chamfer_blend", "cad_shown_sketch", "cad_variable"]
 
 func look(editor: Luce3D, yaw: float, pitch: float, distance: float, target: Vector3) -> unit!:
     let w = editor.workspace
@@ -193,6 +204,73 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
         node_commands.set_parameter(w, cad_features.revolve_type_slot, 2.0)
         node_commands.set_text(w, cad_features.revolve_face_text, face)
         look(editor, 0.9, 0.55, 90.0, Vector3(0.0, 2.0, 0.0))
+    elif scene == "cad_full_round":
+        node_commands.delete_selected(w)
+        node_commands.add_node(w, "CAD", 40.0, 40.0)
+        node_commands.enter_group(w, w.network.selected)
+        node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+        node_commands.set_parameter(w, 0, 6.0)
+        node_commands.set_parameter(w, 1, 14.0)
+        node_commands.set_parameter(w, 2, 30.0)
+        let rib = w.network.selected
+        let top = facing(w, rib, Vector3(0.0, 1.0, 0.0))
+        node_commands.add_node(w, "Fillet", 40.0, 140.0)
+        node_commands.display_selected(w)
+        node_commands.set_parameter(w, cad_blends.type_slot, 2.0)
+        node_commands.set_text(w, cad_blends.faces_text, top)
+        look(editor, 0.7, 0.45, 75.0, Vector3(0.0, 2.0, 0.0))
+    elif scene in ["cad_chamfer_corner", "cad_chamfer_blend"]:
+        box_in_cad(editor)
+        let box = w.network.selected
+        let model = CadGeometry.model(w.network.evaluate_data(box).geometry, 0)
+        let corner: list[int] = []
+        for face in 0..<model.face_count():
+            for use in 0..<model.face_edge_count(face):
+                let id = model.face_edge_id(face, use)
+                let a = model.face_edge_point(face, use, 0.0)
+                let b = model.face_edge_point(face, use, 1.0)
+                if (a.subtract(Vector3(10.0, 10.0, 10.0)).length() < 1e-9 or b.subtract(Vector3(10.0, 10.0, 10.0)).length() < 1e-9) and not (id in corner):
+                    corner.append(id)
+        node_commands.add_node(w, "Chamfer", 40.0, 140.0)
+        node_commands.display_selected(w)
+        node_commands.set_text(w, 0, CadModeling.edge_references(model, corner))
+        node_commands.set_parameter(w, 0, 4.0)
+        node_commands.set_parameter(w, cad_blends.corner_slot, 2.0 if scene == "cad_chamfer_blend" else 0.0)
+        look(editor, 0.75, 0.6, 55.0, Vector3(4.0, 5.0, 4.0))
+    elif scene == "cad_variable":
+        box_in_cad(editor)
+        let model = CadGeometry.model(w.network.evaluate_data(w.network.selected).geometry, 0)
+        var front: list[int] = []
+        for face in 0..<model.face_count():
+            for use in 0..<model.face_edge_count(face):
+                let a = model.face_edge_point(face, use, 0.0)
+                let b = model.face_edge_point(face, use, 1.0)
+                if front.length == 0 and a.y > 9.99 and b.y > 9.99 and a.z > 9.99 and b.z > 9.99:
+                    front = [model.face_edge_id(face, use)]
+        node_commands.add_node(w, "Fillet", 40.0, 140.0)
+        node_commands.display_selected(w)
+        node_commands.set_text(w, 0, CadModeling.edge_references(model, front))
+        node_commands.set_parameter(w, cad_blends.chain_slot, 0.0)
+        node_commands.set_parameter(w, cad_blends.radius_type_slot, 2.0)
+        node_commands.set_parameter(w, cad_blends.size_slot, 2.0)
+        node_commands.set_parameter(w, cad_blends.end_radius_slot, 6.0)
+        node_commands.set_text(w, cad_blends.points_text, "0.5 3")
+        look(editor, 0.45, 0.45, 60.0, Vector3(0.0, 4.0, 4.0))
+    elif scene == "cad_shown_sketch":
+        box_in_cad(editor)
+        node_commands.add_node(w, "Sketch", 40.0, 140.0)
+        let sketch = w.network.selected
+        node_commands.set_parameter(w, 0, 1.0)
+        node_commands.set_parameter(w, 1, 10.0)
+        let s = CadSketch.parse("")
+        _ = s.add_circle(s.add_point(3.0, 0.0), 4.0)
+        _ = s.add_line(s.add_point(-6.0, -6.0), s.add_point(-6.0, 6.0))
+        _ = s.add_circle(s.add_point(3.0, 0.0), 2.0)
+        node_commands.set_text(w, 0, s.text())
+        node_commands.select_nothing(w)
+        w.network.set_display(sketch)
+        look(editor, 0.4, 0.8, 60.0, Vector3(0.0, 6.0, 0.0))
+        selection_commands.set_mode(w, smart_level)
     editor.panels.refresh()
 
 ## The name of the face of node `id`'s first body facing `normal`.
@@ -224,6 +302,13 @@ pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
         let at = screen(editor, Vector3(0.0, 10.0, 0.0))
         editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = at[0], y = at[1]))
         editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.s))
+    elif scene == "cad_shown_sketch":
+        # The ring between the circles clicked, then the pointer on the line.
+        let ring = screen(editor, Vector3(6.0, 10.0, 0.5))
+        for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+            editor.app.dispatch(Event(kind = kind, x = ring[0], y = ring[1], button = 0))
+        let line = screen(editor, Vector3(-6.0, 10.0, 2.0))
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = line[0], y = line[1]))
     elif scene == "cad_filter":
         # On the box's top front edge: Smart would take the edge; the
         # prompt takes faces only.

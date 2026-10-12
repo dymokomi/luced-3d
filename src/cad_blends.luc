@@ -1,14 +1,19 @@
 ## Fillet and Chamfer as Fusion 360's dialogs have them, on luce-cad's
 ## blends (CadModeling.filleted, chamfered, fillet_plan, rule_edges), and
 ## where a blend's radius arrow stands (handle_lines).
-##   Fillet: Type Fillet (the edges picked, kept by reference) or Rule
+##   Fillet: Type Fillet (the edges picked, kept by reference), Rule
 ##     fillet (All edges, or the edges Between faces of two picked sets;
-##     Rounds, Fillets or both), Radius, Continuity G1 (Fusion's Tangent),
-##     G2 (Curvature) or G3, Tangent chain.
+##     Rounds, Fillets or both) or Full round (a picked center face rounded
+##     away whole between its sides); Radius Type Constant (Radius), Chord
+##     length (the contacts' distance) or Variable (Radius at the edge's
+##     start, End radius at its end, points between, smooth or straight:
+##     one straight edge, G1); Continuity G1 (Fusion's Tangent),
+##     G2 (Curvature) or G3; Tangent chain.
 ##   Chamfer: Type Equal distance, Two distances (Distance along the first
 ##     face, the one more of the picked edges lie on, Distance 2 along the
 ##     other; Flip swaps them) or Distance and angle (the chamfer leaving
-##     the first face at Angle), Tangent chain.
+##     the first face at Angle); Corner Type Chamfer, Miter or Blend where
+##     three meet; Tangent chain.
 from luce_cad.cad_geometry import CadGeometry
 from luce_cad.modeling import CadModeling, FilletPlan
 from luce_cad.model import CadModel
@@ -17,6 +22,7 @@ from angles import radians
 from geometry_data import GeometryData
 from handle_lines import HandleLine
 import handle_lines
+from luce_ui import ui
 
 # -- Fillet's and Chamfer's value slots (node_catalog.cad_fields).
 pub let size_slot = 0
@@ -26,11 +32,21 @@ pub let type_slot = 3
 pub let rule_slot = 4
 pub let rounds_slot = 5
 pub let fillets_slot = 6
+pub let radius_type_slot = 7
+pub let chord_slot = 8
+pub let end_radius_slot = 9
+pub let smooth_slot = 10
+## Variable radius's points between its ends: "position radius" pairs
+## apart by `;` (positions 0 to 1 along the edge), text 3.
+pub let points_text = 3
+## Fillet's Type entries: Fillet, Rule fillet, Full round.
+pub let full_round_type = 2
 ## Chamfer's: its type, second distance, angle and flip.
 pub let chamfer_type_slot = 3
 pub let second_slot = 4
 pub let angle_slot = 5
 pub let flip_slot = 6
+pub let corner_slot = 7
 ## Rule fillet's face sets (Between faces): texts 1 and 2.
 pub let faces_text = 1
 pub let others_text = 2
@@ -60,13 +76,30 @@ pub func blended(kind: str, v: list[float], texts: list[str], body: CadModel, ta
     if kind == "Chamfer":
         let edges = texts[0]
         let shape = int(v[chamfer_type_slot])
+        let corner = int(v[corner_slot])
         if shape == 0:
-            return with_arrow(CadModeling.chamfered(body, edges, v[size_slot], tag, chain), body, edges)
+            return with_arrow(CadModeling.chamfered(body, edges, v[size_slot], tag, chain, corner), body, edges)
         let second = v[second_slot] if shape == 1 else 0.0
-        return with_arrow(CadModeling.chamfered_sides(body, edges, v[size_slot], second, radians(v[angle_slot]), tag, chain, v[flip_slot] != 0.0), body, edges)
-    let edges = edges_of(v, texts, body)
+        return with_arrow(CadModeling.chamfered_sides(body, edges, v[size_slot], second, radians(v[angle_slot]), tag, chain, v[flip_slot] != 0.0, corner), body, edges)
     let continuity = int(v[continuity_slot]) + 1
-    let kept = memo else return with_arrow(CadModeling.filleted(body, edges, v[size_slot], tag, continuity, chain), body, edges)
+    if int(v[type_slot]) == full_round_type:
+        # Full round: the center face picked, its sides found.
+        let center = texts[faces_text].split(";")[0].trim()
+        if center == "":
+            error(ui.invalid, "Full round: pick the center face (Pick center face)")
+        return GeometryData(geometry = CadGeometry.of_model(CadModeling.full_round(body, center, tag, continuity)))
+    let edges = edges_of(v, texts, body)
+    if int(v[radius_type_slot]) == 2:
+        let (positions, radii) = variable_points(v, texts)
+        let first = edges.split(";")[0].trim()
+        if first == "":
+            error(ui.invalid, "Variable radius: pick the edge (Pick edges)")
+        if edges.split(";").length > 1:
+            error(ui.invalid, "Variable radius takes one edge: pick one, with Tangent chain off")
+        return with_arrow(CadModeling.variable_filleted(body, first, positions, radii, tag, v[smooth_slot] != 0.0), body, edges)
+    # Chord length: the radius that leaves the faces that far apart.
+    let radius = CadModeling.chord_radius(body, edges, v[chord_slot], chain) if int(v[radius_type_slot]) == 1 else v[size_slot]
+    let kept = memo else return with_arrow(CadModeling.filleted(body, edges, radius, tag, continuity, chain), body, edges, int(v[radius_type_slot]) == 0)
     var plan = kept.plan
     if let held = plan:
         if not held.made_for(body, edges, continuity, tag, chain):
@@ -75,14 +108,43 @@ pub func blended(kind: str, v: list[float], texts: list[str], body: CadModel, ta
         kept.made += 1
     let current = plan else CadModeling.fillet_plan(body, edges, continuity, tag, chain)
     kept.plan = current
-    return with_arrow(current.filleted(v[size_slot]), body, edges)
+    return with_arrow(current.filleted(radius), body, edges, int(v[radius_type_slot]) == 0)
+
+## A Variable radius's positions and radii: Radius at 0, the points
+## between (sorted), End radius at 1.
+func variable_points(v: list[float], texts: list[str]) -> (list[float], list[float])!:
+    let between: list[(float, float)] = []
+    for pair in texts[points_text].split(";"):
+        let t = pair.trim()
+        if t == "":
+            continue
+        let parts: list[str] = []
+        for part in t.split(" "):
+            if part.trim() != "":
+                parts.append(part.trim())
+        if parts.length != 2:
+            error(ui.invalid, "Variable radius points are \"position radius\" pairs apart by ;, positions between 0 and 1")
+        let position = float(parts[0])
+        if not (position > 0.0 and position < 1.0):
+            error(ui.invalid, "A variable radius point's position is between 0 and 1 along the edge")
+        between.append((position, float(parts[1])))
+    between.sort()
+    let positions = [0.0]
+    let radii = [v[size_slot]]
+    for (position, radius) in between:
+        positions.append(position)
+        radii.append(radius)
+    positions.append(1.0)
+    radii.append(v[end_radius_slot])
+    return (positions, radii)
 
 ## `made` as a result, with the radius arrow on the first of `edges` of
-## `body` (none for every edge), out of the edge's corner.
-func with_arrow(made: CadModel, body: CadModel, edges: str) -> GeometryData!:
+## `body` (none for every edge, or without `arrow`: a chord length's is no
+## radius), out of the edge's corner.
+func with_arrow(made: CadModel, body: CadModel, edges: str, arrow: bool = true) -> GeometryData!:
     let result = GeometryData(geometry = CadGeometry.of_model(made))
     let first = edges.split(";")[0].trim()
-    if first == "":
+    if first == "" or not arrow:
         return result
     let frame = CadModeling.edge_frame(body, first) catch failure:
         return result

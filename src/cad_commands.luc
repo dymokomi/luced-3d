@@ -30,10 +30,18 @@ import sketch_node
 import tool_prompts
 import edit_cad_commands
 import extrude_inputs
+import cad_features
+from luce_cad.sketch import CadSketch
+from sketch_kinds import line_kind
 
 ## Whether Finish Sketch and the sketch's Extrude apply: a sketch is edited.
 pub func in_sketch(w: Workspace) -> bool:
     return w.sketching()
+
+## Whether the shown sketch (not edited) has profiles picked on it
+## (sketch_shown.luc), which Extrude and Revolve take as in the editor.
+pub func shown_profiles(w: Workspace) -> bool:
+    return not w.sketching() and w.sketch_picked_on == w.network.display and w.sketch_profiles.length > 0
 
 ## Finish Sketch: the node displayed before the sketch was edited is
 ## selected and shown again; without one, nothing is selected (the sketch
@@ -64,8 +72,8 @@ pub func extrude_profiles(w: Workspace) -> unit!:
     if edit_cad_commands.sketching(w):
         edit_cad_commands.feature_from_sketch(w, "Extrude")
         return
-    if not w.sketching():
-        w.notice = "Extrude takes a sketch's profiles: edit the sketch, and click inside its closed regions"
+    if not w.sketching() and not shown_profiles(w):
+        w.notice = "Extrude takes a sketch's profiles: click inside its closed regions (in the sketch, or the sketch shown)"
         w.revision += 1
         return
     let keys = w.sketch_profiles.join(";")
@@ -74,6 +82,7 @@ pub func extrude_profiles(w: Workspace) -> unit!:
         node.texts[0] = keys
         w.network.picked = [node.id]
         w.sketch_profiles = []
+        w.sketch_picks = []
         w.selection = none
         # The distance box opens by the arrow (panels).
         w.ask_value = true
@@ -85,11 +94,21 @@ pub func revolve_profiles(w: Workspace) -> unit!:
     if edit_cad_commands.sketching(w):
         edit_cad_commands.feature_from_sketch(w, "Revolve")
         return
-    if not w.sketching():
-        w.notice = "Revolve takes a sketch's profiles: edit the sketch, and click inside its closed regions"
+    if not w.sketching() and not shown_profiles(w):
+        w.notice = "Revolve takes a sketch's profiles: click inside its closed regions (in the sketch, or the sketch shown)"
         w.revision += 1
         return
     let keys = w.sketch_profiles.join(";")
+    # A line of the shown sketch picked with them is the axis, as Fusion
+    # takes a selected line.
+    var axis = -1
+    if shown_profiles(w):
+        let shown = w.network.require(w.network.display)
+        let sketch = CadSketch.parse(shown.texts[0])
+        for e in w.sketch_picks:
+            if axis < 0 and e < sketch.entity_count() and sketch.kind(e) == line_kind:
+                axis = e
+    w.sketch_picks = []
     w.perform("Revolve", func () -> unit!:
         let node = insert_after_display(w, ToolRun("Revolve", []))
         node.texts[0] = keys
@@ -98,8 +117,12 @@ pub func revolve_profiles(w: Workspace) -> unit!:
         w.selection = none
         w.rebuild())
     let made = w.selected() else return
-    if made.kind == "Revolve":
-        tool_prompts.pick_axis(w, made.id)
+    if made.kind != "Revolve":
+        return
+    if axis >= 0:
+        node_commands.set_text(w, cad_features.axis_text, cad_features.line_axis(axis))
+        return
+    tool_prompts.pick_axis(w, made.id)
 
 ## Press Pull: what the selection is decides the feature, as Fusion's
 ## does (profiles, then faces, then edges).

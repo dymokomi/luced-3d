@@ -15,8 +15,15 @@ import selection_commands
 import sketch_commands
 import tool_prompts
 import cad_features
+import cad_blends
 import extrude_inputs
 from luce_std import math
+from luce_ui.ui import Event
+from luce_window.input import EventKind
+from luce_cad.sketch import CadSketch
+from view_projection import project
+from sketch_support import render
+from edit_types import smart_level
 
 pub func cad_parity_tests() -> unit!:
     thin_extrude()
@@ -24,7 +31,9 @@ pub func cad_parity_tests() -> unit!:
     starts_and_extends()
     objects_to_cut()
     revolve_to()
-    print("PASS CAD parity: Thin extrude on Side 1, Side 2 and Center; a face extruded as its own profile (Extrude face, Pick profiles); Start: Object from a picked face; a start offset with To object and All; Extend To body and Through body; Objects To Cut picked and Auto-select, Cut on each body apart; Revolve To a picked face, either way")
+    blend_options()
+    shown_sketch()
+    print("PASS CAD parity: Thin extrude on Side 1, Side 2 and Center; a face extruded as its own profile (Extrude face, Pick profiles); Start: Object from a picked face; a start offset with To object and All; Extend To body and Through body; Objects To Cut picked and Auto-select, Cut on each body apart; Revolve To a picked face, either way; Full round of a rib's picked top, a fillet by chord length and by a variable radius, chamfer corners as Chamfer and Miter; a shown sketch's profile picked at the Faces level over the face beneath, extruded; its line picked at Smart as a Revolve's axis")
 
 ## The tessellated volume of every body of node `id`.
 func volume(w: Workspace, id: int) -> float!:
@@ -263,3 +272,133 @@ func revolve_to() -> unit!:
     node_commands.select_node(w, revolve)
     node_commands.set_parameter(w, cad_features.revolve_flip_slot, 1.0)
     assert(volume_is(w, revolve, 1600.0 + quarter))
+
+## A 4 x 10 x 20 rib: Full round of its top (Pick center face): radius
+## 2. A 20 box: a fillet by chord length √2 (radius 1); three chamfers of
+## 2 at a corner, Miter (7886) and Chamfer (the tip 8 / 12 more).
+func blend_options() -> unit!:
+    let w = Workspace()
+    cad(w)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    node_commands.set_parameter(w, 0, 4.0)
+    node_commands.set_parameter(w, 1, 10.0)
+    node_commands.set_parameter(w, 2, 20.0)
+    node_commands.add_node(w, "Fillet", 0.0, 100.0)
+    let fillet = w.network.selected
+    tool_prompts.pick_center_face(w, fillet)
+    let mesh = w.geometry else trap("no pick mesh")
+    var top = -1
+    for at in 0..<mesh.face_count():
+        if top < 0 and math.abs(mesh.face_center(at).y - 5.0) < 1e-6:
+            top = at
+    selection_commands.choose_component(w, top, false)
+    assert(int(w.network.require(fillet).values[cad_blends.type_slot]) == cad_blends.full_round_type)
+    assert(volume_is(w, fillet, 800.0 - 40.0 * 4.0 * (1.0 - math.pi * 0.25)))
+    # A 20 box's front top edge by chord length √2: radius 1.
+    let v = Workspace()
+    cad(v)
+    node_commands.add_node(v, "Solid Box", 0.0, 0.0)
+    let box = v.network.selected
+    let model = CadGeometry.model(v.network.evaluate_data(box).geometry, 0)
+    let front: list[int] = []
+    let corner: list[int] = []
+    for face in 0..<model.face_count():
+        for use in 0..<model.face_edge_count(face):
+            let id = model.face_edge_id(face, use)
+            let a = model.face_edge_point(face, use, 0.0)
+            let b = model.face_edge_point(face, use, 1.0)
+            if a.y > 9.99 and b.y > 9.99 and a.z > 9.99 and b.z > 9.99 and not (id in front):
+                front.append(id)
+            let at = a.subtract(Vector3(10.0, 10.0, 10.0)).length() < 1e-9 or b.subtract(Vector3(10.0, 10.0, 10.0)).length() < 1e-9
+            if at and not (id in corner):
+                corner.append(id)
+    node_commands.add_node(v, "Fillet", 0.0, 100.0)
+    let chord = v.network.selected
+    node_commands.set_text(v, 0, CadModeling.edge_references(model, front))
+    node_commands.set_parameter(v, cad_blends.radius_type_slot, 1.0)
+    node_commands.set_parameter(v, cad_blends.chord_slot, math.sqrt(2.0))
+    assert(volume_is(v, chord, 8000.0 - 20.0 * (1.0 - math.pi * 0.25)))
+    # Variable: 1 at the start to 3 at the end, straight: ∫ r² = 13 / 3;
+    # a point 2 at the middle, smooth, keeps it a body.
+    node_commands.set_parameter(v, cad_blends.radius_type_slot, 2.0)
+    node_commands.set_parameter(v, cad_blends.size_slot, 1.0)
+    node_commands.set_parameter(v, cad_blends.end_radius_slot, 3.0)
+    node_commands.set_parameter(v, cad_blends.smooth_slot, 0.0)
+    node_commands.set_parameter(v, cad_blends.chain_slot, 0.0)
+    assert(volume_is(v, chord, 8000.0 - 20.0 * (1.0 - math.pi * 0.25) * 13.0 / 3.0))
+    node_commands.set_text(v, cad_blends.points_text, "0.5 2")
+    node_commands.set_parameter(v, cad_blends.smooth_slot, 1.0)
+    assert(CadGeometry.model_count(v.network.evaluate_data(chord).geometry) == 1)
+    # Chamfer corners.
+    node_commands.select_node(v, box)
+    node_commands.add_node(v, "Chamfer", 200.0, 100.0)
+    let chamfer = v.network.selected
+    node_commands.set_text(v, 0, CadModeling.edge_references(model, corner))
+    node_commands.set_parameter(v, 0, 2.0)
+    assert(int(v.network.require(chamfer).values[cad_blends.corner_slot]) == 0)
+    # Flat faces only: the volumes are exact, the tip told apart.
+    assert(math.abs(volume(v, chamfer) - (7886.0 - 8.0 / 12.0)) < 1e-6)
+    node_commands.set_parameter(v, cad_blends.corner_slot, 1.0)
+    assert(math.abs(volume(v, chamfer) - 7886.0) < 1e-6)
+
+## A box with a finished sketch on top (a disc and a line), the sketch
+## shown, nothing selected: at the Faces level a click in the disc picks its
+## profile, not the top face beneath; Extrude takes it. At Smart, the line
+## clicked is picked, and with the disc picked a Revolve takes the line as
+## its axis.
+func shown_sketch() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    cad(w)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    node_commands.add_node(w, "Sketch", 0.0, 120.0)
+    let sketch = w.network.selected
+    node_commands.set_parameter(w, 0, 1.0)
+    node_commands.set_parameter(w, 1, 10.0)
+    let s = CadSketch.parse("")
+    _ = s.add_circle(s.add_point(3.0, 0.0), 2.0)
+    _ = s.add_line(s.add_point(-6.0, -6.0), s.add_point(-6.0, 6.0))
+    node_commands.set_text(w, 0, s.text())
+    node_commands.select_nothing(w)
+    w.network.set_display(sketch)
+    w.view.yaw = 0.4
+    w.view.pitch = 0.9
+    w.view.distance = 60.0
+    w.view.target = Vector3()
+    w.view.update_camera()
+    selection_commands.set_mode(w, w.level_of(2))
+    render(editor)
+    assert(not w.sketching() and editor.panels.view.shown.node() != none)
+    # The disc's middle: (3, 10, 0) on the top (the XZ plane's x is X).
+    click(editor, Vector3(3.0, 10.0, 0.0))
+    assert(w.sketch_profiles.length == 1 and w.sketch_picked_on == sketch and w.selection == none, f"{w.sketch_profiles}")
+    editor.panels.actions.refresh()
+    assert(editor.panels.actions.extrude_profiles.is_enabled())
+    editor.panels.actions.extrude_profiles.trigger()
+    let extrude = w.network.require(w.network.selected)
+    assert(extrude.kind == "Extrude" and extrude.inputs[0] == sketch and extrude.texts[0] != "")
+    # Smart: the line (entity 4), then the disc with Shift; Revolve takes
+    # the line.
+    w.network.set_display(sketch)
+    node_commands.select_nothing(w)
+    selection_commands.set_mode(w, smart_level)
+    render(editor)
+    click(editor, Vector3(-6.0, 10.0, 2.0))
+    assert(w.sketch_picks.length == 1, f"{w.sketch_picks}")
+    # (Off the disc's center point, which Smart would pick.)
+    click(editor, Vector3(4.2, 10.0, 0.6), shift = true)
+    assert(w.sketch_profiles.length == 1)
+    editor.panels.actions.refresh()
+    editor.panels.actions.revolve_profiles.trigger()
+    let revolve = w.network.require(w.network.selected)
+    assert(revolve.kind == "Revolve" and revolve.texts[cad_features.axis_text] == cad_features.line_axis(4) and w.prompt == none, revolve.texts[cad_features.axis_text])
+    editor.close()
+
+## A click (down and up) on the viewport where world point `p` is.
+func click(editor: Luce3D, p: Vector3, shift: bool = false) -> unit!:
+    let bounds = editor.panels.view.layout().bounds()
+    let at = project(editor.workspace, p, bounds.width, bounds.height)
+    for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+        editor.app.dispatch(Event(kind = kind, x = bounds.x + at[0], y = bounds.y + at[1], button = 0, shift = shift))
+    render(editor)
