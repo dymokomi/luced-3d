@@ -13,7 +13,8 @@ import edit_cad_faces
 import cad_features
 import cad_moves
 import cad_names
-from edit_types import edge_level, curve_level, face_level
+from edit_types import edge_level, curve_level, face_level, patch_level
+import blend_ops
 from luce_3d.graphics import Vector3
 import edit_cad_align
 import edit_cad_build
@@ -55,7 +56,8 @@ pub func waits(label: str) -> bool:
 ## The prompts of the builder nodes' curve inputs (modify_picks.luc's
 ## "Pick ..." of their rows), where a double-click adds an isoparm too.
 pub func builder_node_labels() -> list[str]:
-    return ["Pick boundaries", "Pick sections", "Pick generation curves", "Pick rails", "Pick profiles", "Pick rail", "Pick curves", "Pick from curve", "Pick to curve"]
+    return ["Pick boundaries", "Pick sections", "Pick generation curves", "Pick rails", "Pick profiles", "Pick rail", "Pick curves", "Pick from curve", "Pick to curve",
+            "Pick first side", "Pick second side", "Pick curve"]
 
 ## The selection changed while the last step waits: what was picked goes
 ## into it (a face's name, the tool bodies' group, an edge as the axis);
@@ -67,8 +69,10 @@ pub func follow_pick(w: Workspace, node: Node, mesh: Mesh, chosen: Selection) ->
     let step = node.edits[-1]
     let first = chosen.next(-1)
     if edit_cad_build.waits(prompt.label):
-        # A builder's curves: each click adds one (again: takes it out).
-        if first < 0 or not (w.level_index() == curve_level or w.level_index() == edge_level):
+        # A builder's curves (a fillet's faces): each click adds one
+        # (again: takes it out).
+        let level = w.level_index()
+        if first < 0 or not (level == curve_level or level == edge_level or blend_ops.takes_faces(step.verb) and (level == face_level or level == patch_level)):
             return
         let words = edit_cad_align.pick_words(mesh, first, w.level_index(), true)
         if words == "":
@@ -237,11 +241,15 @@ pub func accept_pick(w: Workspace, node: Node) -> unit!:
     if prompt.label == edit_cad_build.project_curves_label:
         wait_for(w, node, projection_label, face_level, "Click the face to project the curves onto; Esc cancels")
         return
-    if prompt.label == edit_cad_build.curves_label and node.edits.length > 0:
+    if (prompt.label == edit_cad_build.curves_label or prompt.label == edit_cad_build.first_label) and node.edits.length > 0:
         let (label, hint) = edit_cad_build.next_prompt(node.edits[-1])
-        if label == edit_cad_build.rails_label:
+        if label == edit_cad_build.rails_label or label == edit_cad_build.second_label:
             wait_for(w, node, label, w.level_index(), hint)
             return
+    if prompt.label == edit_cad_build.second_label and node.edits.length > 0 and node.edits[-1].verb == blend_ops.blend_verb:
+        # Blend Surface's profiles (Profile Blend), none as well.
+        wait_for(w, node, edit_cad_build.profiles_label, w.level_index(), "Pick profile curves across the blend (Alias's Profile Blend), or none; Enter finishes, Esc cancels")
+        return
     finish_pick(w, node)
 
 ## A builder's pick made: the step cooks with it; when it has what it
@@ -263,7 +271,7 @@ pub func after_builder_pick(w: Workspace, node: Node) -> unit!:
             w.rebuild()
             return
     let (label, hint) = edit_cad_build.next_prompt(step)
-    let full = step.verb == "Square" and edit_cad_build.picked_count(step) >= 4
+    let full = step.verb == "Square" and edit_cad_build.picked_count(step) >= 4 or step.verb == blend_ops.tube_verb and edit_cad_build.picked_count(step) >= 1
     if full:
         finish_pick(w, node)
         return

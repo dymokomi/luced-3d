@@ -584,6 +584,27 @@ model back exactly.
     as the Modify features' inputs (Boundaries, Sections, Generation curves
     and Rails, Profiles and Rail, Curves, Extend's Edge); edges are kept as
     their faces and a point, so a node follows its input upstream.
+- **Surfacing Stage 6, blends between surfaces** (`blend_ops.luc`, with the
+  builders' picks in `edit_cad_build.luc`; luce-cad's `CadSurfaceBlend`),
+  Edit CAD steps and CAD network nodes (category Surfaces), from the
+  right-click (Blend Surface and Tube on edges and curves, Surface Fillet on
+  faces), the S and Modify › Surfaces menus:
+  - **Blend Surface** (Alias's Freeform Blend; Profile Blend with
+    profiles): the first side (edges, curves or isoparms, a chain), Enter,
+    the second side, Enter, profile curves or none, Enter. Each side G0–G3
+    (a label on the model cycles it), its Shape (Lock shapes),
+    Proportional crown, Flow control (Connect ends or Free), Modify range,
+    Continuity check.
+  - **Surface Fillet** (Alias's; Parasolid's face-face blend): the first
+    set's faces, Enter, the second set's, Enter; Section G0 chamfer, G1
+    circular, G2 or G3 curvature, Construction Radius or Chord, the size,
+    each set's side flipped (also by a click on its "Set" label: Alias's
+    arrow), Trim Automatic, Curves on surface or Off, Form factor,
+    Continuity check.
+  - **Tube** (Alias's Tubular Offset): one curve or edge (or a double-click
+    for an isoparm), Radius, Normal and Tangent offsets, Flip.
+  - While they wait, their picks are lit (a face set by its outline) and
+    the prompts read "Pick first side or set", "Pick second side or set".
 - **Stage 3 follow-up**: Trim's 3D Trimming draws the curves as they are cast
   onto the face (white) while it waits for its region clicks.
 - Primitives are luce-cad's analytic solids: Box, Cylinder, Cone, Sphere and

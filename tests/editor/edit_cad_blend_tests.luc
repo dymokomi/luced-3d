@@ -1,0 +1,284 @@
+## Surfacing Stage 6 in Edit CAD and CAD networks (blend_ops.luc,
+## edit_cad_build.luc, cad_surface_nodes.luc): on an Edit CAD box unstitched
+## into six squares, the right-click on faces offers Surface Fillet and on
+## edges Blend Surface and Tube; Surface Fillet between the top and a side
+## (the first set picked, the second clicked, Enter) rolls a quarter
+## cylinder inside the box and trims both back to it; Blend Surface between
+## two opposite top edges waits for its second side, then its profiles,
+## and bridges them G1 with a label on each side; Tube on an edge is a
+## cylinder round it; the Blend Surface node follows the box upstream.
+from workspace import Workspace
+from node import Node
+import node as nodes
+from app import Luce3D
+from geometry_data import GeometryData
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+from luce_cad.nurbs import CadNurbs
+from luce_3d.graphics import Vector3
+import blend_ops
+import build_ops
+import edit_cad_align
+import edit_cad_build
+import edit_cad_commands
+import edit_cad_picks
+import edit_cad_surfaces
+import modeling_commands
+import node_commands
+import selection_commands
+import view_projection
+from luce_std import math
+
+pub func edit_cad_blend_tests() -> unit!:
+    fillet_and_menus()
+    blend_and_tube()
+    blend_node()
+    print("PASS Edit CAD blends: the right-click offers Surface Fillet on faces, Blend Surface and Tube on edges; a Surface Fillet between the box's top and a side is a quarter cylinder inside it, both trimmed back, its set labels flipping a side on a click; Blend Surface between opposite top edges waits for its second side and profiles, then bridges them with a label each; Tube on an edge is a cylinder round it; the Blend Surface node follows the box")
+
+func data_of(w: Workspace, node: Node) -> GeometryData!:
+    return w.network.evaluate_data(node.id)
+
+## The six squares of a 2-box as bodies of an Edit CAD node.
+func unstitched_box(w: Workspace) -> Node!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    let node = w.selected() else trap("Edit CAD")
+    modeling_commands.create(w, "Box")
+    selection_commands.set_mode(w, 0)
+    selection_commands.choose_component(w, 0, false)
+    edit_cad_commands.tool(w, edit_cad_surfaces.unstitch_verb)
+    assert(data_of(w, node).models().length == 6, node.warning)
+    return node
+
+## The entries of the viewport's right-click menu now.
+func menu_entries(editor: Luce3D) -> list[str]!:
+    editor.panels.refresh()
+    let offered: list[str] = []
+    for command in editor.panels.viewport_menu.entries():
+        offered.append(command.text())
+    return offered
+
+## The pick mesh's polygon whose middle and normal `keep` takes.
+func face_where(w: Workspace, keep: func(Vector3, Vector3) -> bool) -> int!:
+    let mesh = w.geometry else trap("pick geometry")
+    for polygon in 0..<mesh.face_count():
+        var middle = Vector3()
+        for k in 0..<mesh.face_size(polygon):
+            middle = middle.add(mesh.point(mesh.face_point(polygon, k)))
+        middle = middle.multiply_scalar(1.0 / float(mesh.face_size(polygon)))
+        if keep(middle, mesh.face_normal(polygon)):
+            return polygon
+    return -1
+
+## The pick mesh's edge whose middle `keep` takes with the normal of a
+## polygon of its body with corners at its ends (-1 none).
+func edge_where(w: Workspace, keep: func(Vector3, Vector3) -> bool) -> int!:
+    let mesh = w.geometry else trap("pick geometry")
+    let polygon_models = mesh.find_attribute("cad_model", 2)
+    let edge_models = mesh.find_attribute("cad_edge_model", 4)
+    for edge in 0..<mesh.edge_count():
+        let a = mesh.point(mesh.edge_point(edge, 0))
+        let b = mesh.point(mesh.edge_point(edge, 1))
+        let middle = a.add(b).multiply_scalar(0.5)
+        for polygon in 0..<mesh.face_count():
+            if int(mesh.attribute_value(polygon_models, polygon)) != int(mesh.attribute_value(edge_models, edge)):
+                continue
+            var ends = 0
+            for k in 0..<mesh.face_size(polygon):
+                if edit_cad_align.on_segment(mesh.point(mesh.face_point(polygon, k)), a, b, 1e-6):
+                    ends += 1
+            if ends >= 2 and keep(middle, mesh.face_normal(polygon)):
+                return edge
+    return -1
+
+## The area of the faces named `name` among `data`'s models, from their
+## meshes.
+func area_of(data: GeometryData, name: str) -> float!:
+    var total = 0.0
+    for model in data.models():
+        let mesh = model.tessellate(32)
+        let owners = mesh.find_attribute("cad_face", 2)
+        for face in 0..<mesh.face_count():
+            if model.face_name(int(mesh.attribute_value(owners, face))) != name:
+                continue
+            let a = mesh.point(mesh.face_point(face, 0))
+            for k in 1..<mesh.face_size(face) - 1:
+                let b = mesh.point(mesh.face_point(face, k))
+                let c = mesh.point(mesh.face_point(face, k + 1))
+                total += b.subtract(a).cross(c.subtract(a)).length() * 0.5
+    return total
+
+## The name of the face under polygon `polygon` of the pick mesh.
+func face_name_at(w: Workspace, polygon: int) -> str!:
+    let mesh = w.geometry else trap("pick geometry")
+    return mesh.attribute_text(mesh.find_attribute("cad_face_name", 2), polygon)
+
+## The last step's value at `slot` set to `value` (one undo).
+func set_value(w: Workspace, node: Node, slot: int, value: float) -> unit!:
+    w.perform("value", func () -> unit!:
+        let numbers = node.edits[-1].numbers.copy()
+        numbers[slot] = value
+        node.edits[-1] = node.edits[-1].with_numbers(numbers)
+        w.network.invalidate(node.id)
+        w.rebuild())
+
+func fillet_and_menus() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let node = unstitched_box(w)
+    selection_commands.set_mode(w, 3)
+    let top = face_where(w, func (c: Vector3, n: Vector3) -> bool: return c.y > 0.99 and n.y > 0.99)
+    assert(top >= 0, "no top polygon")
+    let top_name = face_name_at(w, top)
+    selection_commands.choose_component(w, top, false)
+    assert(blend_ops.fillet_verb in menu_entries(editor), "the right-click on a face offers Surface Fillet")
+    edit_cad_commands.tool(w, blend_ops.fillet_verb)
+    let prompt = w.prompt else trap("Surface Fillet waits for its second set")
+    assert(prompt.label == edit_cad_build.second_label, prompt.label)
+    # The first set lit while it waits: its face's four edges.
+    _ = data_of(w, node)
+    var lit = 0
+    for line in node.sketch_state.split("\n"):
+        if line.starts_with(build_ops.pick_head):
+            lit += 1
+    assert(lit == 4, f"{lit} lines light the first set")
+    _ = data_of(w, node)
+    assert(nodes.waiting(node.warning), f"waiting, not a warning: {node.warning}")
+    let side = face_where(w, func (c: Vector3, n: Vector3) -> bool: return c.x > 0.99 and n.x > 0.99)
+    let side_name = face_name_at(w, side)
+    selection_commands.choose_component(w, side, false)
+    edit_cad_picks.accept_pick(w, node)
+    assert(w.prompt == none, "Enter finishes the fillet's picks")
+    set_value(w, node, blend_ops.size_slot, 0.25)
+    let made = data_of(w, node)
+    assert(node.warning == "", node.warning)
+    assert(made.models().length == 7, f"{made.models().length} bodies")
+    # Each face loses the strip under the fillet: 4 - 2 × 0.25.
+    assert(math.abs(area_of(made, top_name) - 3.5) < 1e-3, f"the top's area {area_of(made, top_name)}")
+    assert(math.abs(area_of(made, side_name) - 3.5) < 1e-3, f"the side's area {area_of(made, side_name)}")
+    # The fillet: a quarter cylinder of radius 0.25 about x = y = 0.75.
+    let sheet = made.models()[6]
+    let name = sheet.face_name(0)
+    let s = CadNurbs.surface_of_face(sheet, name)
+    for i in 0..<5:
+        for j in 0..<5:
+            let p = CadNurbs.point_at(sheet, s, float(i) / 4.0, float(j) / 4.0)
+            assert(math.abs(math.hypot(p.x - 0.75, p.y - 0.75) - 0.25) < 1e-9, f"a fillet point {p}")
+    assert(made.report.contains("G1"), f"the continuity check: {made.report}")
+    # Its set labels: a click on the first flips the ball's side there.
+    let labels = build_ops.labels_of(node.sketch_state)
+    assert(labels.length == 2 and labels[0].text == "Set 1", node.sketch_state)
+    let s0 = view_projection.project(w, labels[0].point, 800.0, 600.0)
+    assert(editor.panels.view.build_labels.click(s0[0], s0[1], 800.0, 600.0), "the set label took no click")
+    assert(node.edits[-1].numbers[blend_ops.flip_slot] == 1.0, f"{node.edits[-1].numbers}")
+
+## The +X, +Z, -X and -Z walls' top edges (k 0 to 3).
+func top_side(c: Vector3, n: Vector3, which: int) -> bool:
+    if math.abs(c.y - 1.0) > 1e-6:
+        return false
+    if which == 0:
+        return math.abs(c.x - 1.0) < 1e-6 and n.x > 0.99
+    if which == 1:
+        return math.abs(c.z - 1.0) < 1e-6 and n.z > 0.99
+    if which == 2:
+        return math.abs(c.x + 1.0) < 1e-6 and n.x < -0.99
+    return math.abs(c.z + 1.0) < 1e-6 and n.z < -0.99
+
+func blend_and_tube() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let node = unstitched_box(w)
+    # Remove the top, then bridge the +X and -X walls' top edges G1.
+    selection_commands.set_mode(w, 0)
+    let top = face_where(w, func (c: Vector3, n: Vector3) -> bool: return c.y > 0.99 and n.y > 0.99)
+    selection_commands.choose_component(w, top, false)
+    edit_cad_commands.tool(w, "Remove")
+    selection_commands.set_mode(w, 2)
+    selection_commands.choose_component(w, edge_where(w, func (c: Vector3, n: Vector3) -> bool: return top_side(c, n, 0)), false)
+    let offered = menu_entries(editor)
+    assert(blend_ops.blend_verb in offered and blend_ops.tube_verb in offered, "the right-click on an edge offers Blend Surface and Tube")
+    edit_cad_commands.tool(w, blend_ops.blend_verb)
+    let prompt = w.prompt else trap("Blend Surface waits for its second side")
+    assert(prompt.label == edit_cad_build.second_label, prompt.label)
+    selection_commands.choose_component(w, edge_where(w, func (c: Vector3, n: Vector3) -> bool: return top_side(c, n, 2)), false)
+    edit_cad_picks.accept_pick(w, node)
+    let profiles = w.prompt else trap("Blend Surface asks for profiles")
+    assert(profiles.label == edit_cad_build.profiles_label, profiles.label)
+    edit_cad_picks.accept_pick(w, node)
+    assert(w.prompt == none, "Enter finishes the blend's picks")
+    let made = data_of(w, node)
+    assert(node.warning == "", node.warning)
+    assert(made.models().length == 6, f"{made.models().length} bodies")
+    assert(build_ops.labels_of(node.sketch_state).length == 2, node.sketch_state)
+    assert(made.report.contains("G1"), f"the blend's check: {made.report}")
+    # Its middle rises above the walls (G1: it leaves them going up).
+    let sheet = made.models()[5]
+    let s = CadNurbs.surface_of_face(sheet, sheet.face_name(0))
+    assert(CadNurbs.point_at(sheet, s, 0.5, 0.5).y > 1.2, f"the blend's middle {CadNurbs.point_at(sheet, s, 0.5, 0.5)}")
+    # Tube on the +Z wall's top edge: one pick finishes it; a cylinder of
+    # radius 0.25 about the edge.
+    selection_commands.set_mode(w, 2)
+    selection_commands.choose_component(w, edge_where(w, func (c: Vector3, n: Vector3) -> bool: return top_side(c, n, 1)), false)
+    edit_cad_commands.tool(w, blend_ops.tube_verb)
+    assert(w.prompt == none, "Tube on a picked edge needs nothing more")
+    let tubed = data_of(w, node)
+    assert(node.warning == "", node.warning)
+    let tube = tubed.models()[tubed.models().length - 1]
+    let ts = CadNurbs.surface_of_face(tube, tube.face_name(0))
+    for i in 0..<5:
+        for j in 0..<5:
+            let p = CadNurbs.point_at(tube, ts, float(i) / 4.0, float(j) / 4.0)
+            assert(math.abs(math.hypot(p.y - 1.0, p.z - 1.0) - 0.25) < 1e-9, f"a tube point {p}")
+
+## The name of `model`'s flat face facing `normal`.
+func facing(model: CadModel, normal: Vector3) -> str!:
+    for f in 0..<model.face_count():
+        let name = model.face_name(f)
+        let frame = CadModeling.face_frame(model, name)
+        if frame.found and frame.u.cross(frame.v).dot(normal) > 0.999:
+            return name
+    trap("no such face")
+
+func blend_node() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let box = w.network.selected
+    for k in 0..<3:
+        w.network.require(box).values[k] = 2.0
+    w.network.invalidate(box)
+    node_commands.add_node(w, edit_cad_surfaces.unstitch_verb, 0.0, 80.0)
+    let apart = w.network.require(w.network.selected)
+    w.network.connect(box, apart.id, 0)
+    let first = CadGeometry.model(w.network.evaluate_data(box).geometry, 0)
+    apart.texts[0] = facing(first, Vector3(0.0, 1.0, 0.0))
+    w.network.invalidate(apart.id)
+    let plus = facing(first, Vector3(1.0, 0.0, 0.0))
+    let minus = facing(first, Vector3(-1.0, 0.0, 0.0))
+    node_commands.add_node(w, blend_ops.blend_verb, 0.0, 160.0)
+    let blend = w.network.require(w.network.selected)
+    w.network.connect(apart.id, blend.id, 0)
+    _ = w.network.evaluate_data(blend.id)
+    assert(nodes.waiting(blend.warning), blend.warning)
+    blend.texts[blend_ops.first_text] = f"edge {plus} 1 1 0"
+    blend.texts[blend_ops.second_text] = f"edge {minus} -1 1 0"
+    w.network.invalidate(blend.id)
+    let made = w.network.evaluate_data(blend.id)
+    assert(blend.warning == "", blend.warning)
+    assert(made.models().length == 7, f"{made.models().length} bodies")
+    # The box 3 wide upstream: the blend still spans its top edges.
+    w.network.require(box).values[0] = 3.0
+    w.network.invalidate(box)
+    let wider = w.network.evaluate_data(blend.id)
+    assert(blend.warning == "", blend.warning)
+    let sheet = wider.models()[6]
+    let s = CadNurbs.surface_of_face(sheet, sheet.face_name(0))
+    let a = CadNurbs.point_at(sheet, s, 0.0, 0.5)
+    let b = CadNurbs.point_at(sheet, s, 1.0, 0.5)
+    assert(math.abs(math.abs(a.x - b.x) - 3.0) < 1e-6, f"the blend after the box grew spans {a} to {b}")

@@ -96,7 +96,7 @@ remaining blend options on solids come last.
 | 3 | Project, Intersect, Trim, Untrim, Divide, Trim Convert, Stitch; open surface bodies throughout. **Done** (§8) |
 | 4 | Align (match) G0–G3, with every Alias option. **Done** (§8) |
 | 5 | Surfaces from curves: Square, Skin, Rail, Profile, Set Planar, Extend. **Done** (§8) |
-| 6 | Blends between surfaces: Freeform Blend, Profile Blend, Surface Fillet between face sets |
+| 6 | Blends between surfaces: Freeform Blend, Profile Blend, Surface Fillet between face sets. **Done** (§8) |
 | 7 | Fill: N-sided and four-sided variational patches (xNURBS parity) |
 | 8 | Parasolid's blend options on solids: conic, overflow, limits, caps, Y-blends, corners |
 
@@ -1975,6 +1975,67 @@ Left for later, and what became of it (2026-10-12, with Stage 6):
   - between a plane and a cylinder that do not touch, the G1 fillet's contact curves lie at r
     from the ball's center;
   - Blend Surface G3 both sides is three quintic spans across and measures G3.
+
+**Stage 6: done** (2026-10-12). What was built:
+
+- **luce-cad** (`surfacing/along.lucb`, `blend_surface.lucb`, `surface_fillet.lucb`, `tube.lucb`,
+  `blend_api.lucb`; public `CadSurfaceBlend`; luce-cad MODELING.md, Blends between surfaces):
+  - **Blend Surface** as §6.7 has it: two sides (chains of edges, isoparms, curves on faces, free
+    curves) matched by length (Connect ends) or square to side 1 (Free), within ranges; each section a
+    quintic B-spline across whose end rows are §6.1's by arc length from each side's cross curve (G0 to
+    G3; eight rows, three spans, at G3 both sides), the speed each side's Shape times the chord; the
+    middle the ends' cubic Hermite, bowed by Proportional Crown; profiles (Profile Blend) passed exactly
+    in their sections, their differences carried along; rows fitted along (`along_net`).
+  - **Surface Fillet** between face sets: Parasolid's rolling ball, the contacts by Newton in each
+    station's plane, the spine marched both ways to where a contact leaves its set (bisected), a cubic
+    through the centers; G0 Chamfer, G1 Circular (rational, exact), G2 and G3 Curvature (the edge
+    fillets' `fillet_section` on the same contacts, bent by the faces' normal curvature), Form Factor;
+    Radius or Chord; each set's side flipped; Trim Automatic (the contacts cast onto each face, the
+    part under the fillet discarded), Curves on surface, Off.
+  - **Tube**: exact circles along a curve (or an edge, an isoparm, a curve on a face) with Normal and
+    Tangent offsets and Flip.
+- **luced-3d**: the three as Edit CAD steps and CAD nodes (`blend_ops.luc`), taking their picks as the
+  builders do (two lists and profiles; faces for the fillet), the right-click, S and Modify menus,
+  Blend Surface's side labels, the fillet's set labels flipping a side on a click, Continuity Check,
+  the picks lit while they wait (a face set by its outline).
+
+Captures: `tools/preview.py --scene` with `surf_fillet_waiting`, `surf_fillet`, `surf_blend`,
+`surf_blend_profile`, `surf_tube`, `surf_blend_node`, and for Stage 5's follow-ups `surf_cap`,
+`surf_square_picks`, `surf_blend_isoparms`, `surf_rail_spine`, `surf_skin_crown` (each also with
+`--background`).
+
+Tests, against closed forms (luce-cad `blend_build_tests.luc`; luced-3d `edit_cad_blend_tests.luc`,
+`edit_cad_wait_tests.luc`):
+
+- a Surface Fillet between two perpendicular planes is the edge fillet: G1 exactly the cylinder of its
+  radius (to 1e-12) along the planes' whole length, and trimmed back the planes keep 12 of 16 each and
+  measure G1, G2 and G3 at the contacts as the section asks; Chordal keeps the chord between the
+  contacts;
+- between a plane and a cylinder that do not touch, every section point lies a radius off the ball's
+  center and the contacts lie on both surfaces (to 1e-9);
+- Blend Surface between two cylinders measures G0, G1, G2 and G3 at both edges as asked (and not more
+  by chance); G3 both sides is three quintic spans across; Crown lifts the middle; a profile lies on the
+  Profile Blend;
+- Tube along a line is a cylinder exactly and along a circle a torus within 1e-7;
+- in the editor: Surface Fillet between a box's top and a side (picked, clicked, Enter) is a quarter
+  cylinder inside the box, both faces trimmed (area 3.5 each), Continuity Check G1, its set label
+  flipping a side; Blend Surface between opposite walls' top edges waits for its second side and
+  profiles, then bridges them G1 with a label each; Tube on an edge is a cylinder round it; the Blend
+  Surface node follows the box upstream.
+
+Answers from the reference tools (the doc's questions that Stage 6 met):
+
+- **A free curve's side** is G0 only, as Alias's Freeform Blend says ("a side of free curves only is
+  G0"); higher is refused with that reason.
+- **Lock Shape Controls** is on by default (side 2's Shape follows side 1's), as Alias's starts.
+- **The fillet's default side** is toward the other set, as Alias's arrows start; Alias's Surface
+  Fillet trims Automatic by default, and so does ours.
+- **Shape above 1** lengthens the tangents (tighter toward the corner), as Alias's words it.
+
+Left for later: Alias's Bias and Lead sections, one-sided Curvature and variable radius along the
+fillet (Stage 8's variable handles), Flow Control Edge align and Interior Edge Align, Explicit Control
+on the blends, G3 Curvature's rate on faces whose curvature changes, Tube's variable radius and its
+trims, Symmetric Fillet, Round and the corner tools (Stage 8).
 
 **Stage 7: fill** (S12).
 

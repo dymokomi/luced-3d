@@ -7,12 +7,16 @@
 ## curve or an edge (a click on one already in takes it out; a
 ## double-click on a surface adds a temporary isoparm, Alias's), Enter
 ## finishing. Each builder is one step and one undo with its picks.
+## Stage 6's blends (blend_ops.luc) take their picks the same way: Blend
+## Surface its two sides (then its profiles), Surface Fillet its two face
+## sets at the Faces level, Tube its curve.
 from luce_geocore.geocore import Mesh, Selection
 from luce_3d.graphics import Vector3
 from geometry_data import GeometryData
 from edit_operations import EditStep
-from edit_types import EditTool, edge_level, curve_level
+from edit_types import EditTool, edge_level, curve_level, face_level
 import build_ops
+import blend_ops
 import edit_cad_align
 
 ## The prompts a builder waits in; Project's and Blend Curve's curves
@@ -21,25 +25,45 @@ pub let curves_label = "Pick builder curves"
 pub let rails_label = "Pick builder rails"
 pub let project_curves_label = "Pick curves to project"
 pub let blend_curves_label = "Pick blend curves"
+pub let profiles_label = "Pick blend profiles"
+## A blend's two lists (Blend Surface's sides, Surface Fillet's sets).
+pub let first_label = "Pick first side or set"
+pub let second_label = "Pick second side or set"
 
 pub func verbs() -> list[str]:
-    return build_ops.verbs()
+    return build_ops.verbs() + blend_ops.verbs()
+
+## A new step's values (a builder's or a blend's).
+pub func starting(verb: str) -> list[float]:
+    return blend_ops.starting(verb) if verb in blend_ops.verbs() else build_ops.starting(verb)
+
+## What step `verb` with values `v` and texts `t` waits for.
+func waits_for(verb: str, v: list[float], t: list[str]) -> str:
+    if verb in blend_ops.verbs():
+        return blend_ops.waits_for(verb, t)
+    return build_ops.waits_for(verb, t, build_ops.spined(verb, v))
 
 ## The tools: the curve builders at the Curves and Edges levels, Extend at
-## the Edges and Curves levels.
-pub func tools(edges: int, curves: int) -> list[EditTool]:
+## the Edges and Curves levels; Blend Surface and Tube at the Edges and
+## Curves levels, Surface Fillet at the Faces and Patch levels.
+pub func tools(edges: int, curves: int, faces: int, patch: int) -> list[EditTool]:
     let result: list[EditTool] = []
     for verb in build_ops.curve_verbs():
         result.append(EditTool(verb, verb, [curves, edges], build_ops.starting(verb), build_ops.rows(verb)))
     result.append(EditTool(build_ops.extend_verb, build_ops.extend_verb, [edges, curves], build_ops.starting(build_ops.extend_verb), build_ops.rows(build_ops.extend_verb)))
+    for verb in blend_ops.verbs():
+        let offered = [faces, patch] if blend_ops.takes_faces(verb) else [edges, curves]
+        result.append(EditTool(verb, verb, offered, blend_ops.starting(verb), blend_ops.rows(verb)))
     return result
 
 ## Step `step` on `data`; `name` names the sheet it makes.
 pub func run(step: EditStep, name: str, data: GeometryData) -> GeometryData!:
-    let start = build_ops.starting(step.verb)
+    let start = starting(step.verb)
     let numbers = step.numbers.copy()
     while numbers.length < start.length:
         numbers.append(start[numbers.length])
+    if step.verb in blend_ops.verbs():
+        return blend_ops.build(step.verb, data, numbers, [step.text(0), step.text(1), step.text(2)], name)
     return build_ops.build(step.verb, data, numbers, [step.text(0), step.text(1)], name)
 
 ## The words for the picks of `chosen` on `mesh` at `level`, in order: a
@@ -71,20 +95,27 @@ pub func toggled(text: str, words: str) -> str:
 
 ## The prompt a builder step waits in next ("" none) and its hint.
 pub func next_prompt(step: EditStep) -> (str, str):
-    let texts = [step.text(0), step.text(1)]
-    let waiting = build_ops.waits_for(step.verb, texts, build_ops.spined(step.verb, step.numbers))
+    let texts = [step.text(0), step.text(1), step.text(2)]
+    let waiting = waits_for(step.verb, step.numbers, texts)
     if waiting == "":
         return ("", "")
-    if (step.verb == build_ops.rail_verb or step.verb == build_ops.profile_verb) and build_ops.items(texts[build_ops.curves_text]).length > 0:
-        return (rails_label, waiting + "; Enter finishes, Esc cancels")
+    let second = step.verb == build_ops.rail_verb or step.verb == build_ops.profile_verb or blend_ops.two_lists(step.verb)
+    if second and build_ops.items(texts[build_ops.curves_text]).length > 0:
+        return (second_label if blend_ops.two_lists(step.verb) else rails_label, waiting + "; Enter finishes, Esc cancels")
+    if blend_ops.takes_faces(step.verb):
+        return (first_label, waiting + "; a click adds a face (again: takes it out); Esc cancels")
+    if blend_ops.two_lists(step.verb):
+        return (first_label, waiting + "; a click adds a curve or an edge (again: takes it out), double-click a surface for an isoparm; Esc cancels")
     return (curves_label, waiting + "; a click adds a curve or an edge (again: takes it out), double-click a surface for an isoparm; Esc cancels")
 
 ## Whether the prompt `label` is a builder's.
 pub func waits(label: str) -> bool:
-    return label in [curves_label, rails_label, project_curves_label, blend_curves_label]
+    return label in [curves_label, rails_label, project_curves_label, blend_curves_label, profiles_label, first_label, second_label]
 
 ## A level for the prompt: the curves when the step's first pick was one.
 pub func level_for(step: EditStep, current: int) -> int:
+    if blend_ops.takes_faces(step.verb):
+        return face_level
     let first = build_ops.items(step.text(0))
     if first.length > 0:
         return curve_level if first[0].starts_with("curve") else edge_level
@@ -93,8 +124,12 @@ pub func level_for(step: EditStep, current: int) -> int:
 ## The last step's list for prompt `label` with the click's `words` toggled
 ## (Project's curves in its second text, its first the face).
 pub func with_pick(step: EditStep, label: str, words: str) -> EditStep:
-    let texts = [step.text(0), step.text(1)]
-    let at = build_ops.rails_text if label == rails_label or label == project_curves_label else build_ops.curves_text
+    let texts = [step.text(0), step.text(1), step.text(2)]
+    var at = build_ops.curves_text
+    if label == rails_label or label == project_curves_label or label == second_label:
+        at = build_ops.rails_text
+    if label == profiles_label:
+        at = blend_ops.profiles_text
     texts[at] = toggled(texts[at], words)
     return step.with_texts(texts)
 
