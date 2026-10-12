@@ -203,7 +203,14 @@ the wireframe looks cleaner.
   authored pole, chosen before meshing trims that touch the pole. The chart must
   fit one open hemisphere with a 0.05-radius margin for every sample; if the
   averaged boundary direction fails, a bounded convex-hull closest-point search
-  looks for another separating direction. Antipodal domains still fail.
+  looks for another separating direction. A sphere face no such chart holds
+  (holes spread all round a ball, through its poles too; half a ball whose rim
+  runs round such holes) is meshed about an axis of its own (`sphere_axis`):
+  the direction, of 400, farthest from every trim sample; the face is a band
+  between a lower and an upper boundary, each a loop going once round that
+  axis or a latitude circle near a pole the face holds (closed by rows and a
+  pole fan), every other loop a hole; a seam crossing no trim joins the two
+  boundaries, its samples used on both sides of the chart.
 - **Open supports** cannot pretend their opposite rails are periodic.
 - **Seam classification** (`seam_flow`). Seven interior seam samples test placed
   tangent planes within 0.5 degrees and U/V directors within 5 degrees; one
