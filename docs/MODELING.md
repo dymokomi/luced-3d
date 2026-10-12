@@ -380,23 +380,39 @@ the top left choose what Select picks: Points, Lines or Shapes.
   on the curve), and a line drawn within 3° of level or upright becomes
   horizontal or vertical: the constraints Fusion infers. Cmd (Ctrl
   elsewhere) places freely.
+- **The origin** (`sketch_origin.luc`): every sketch shows its origin point
+  and its x (red) and y (green) axes across the view, as Fusion does. Where
+  nothing of the sketch is under the pointer, Select, the constraint tools and
+  Sketch Dimension pick them, and drawing tools snap to them (a rectangle
+  begun at the origin has its corner there). They are made in the sketch only
+  when something holds to them (luce-cad's `CadSketch.origin`: fixed, the axes
+  construction lines), are never part of a profile, and are never deleted.
 - **Constraints** take their entities in order, the first the reference,
   and apply when they have enough (or at once to a selection): Horizontal/
   Vertical, Coincident, Tangent, Equal, Parallel, Perpendicular, Fix/UnFix,
   MidPoint, Concentric, Collinear and Symmetry. One the sketch cannot hold is
-  refused: "Sketch geometry is over constrained".
+  refused: "Sketch geometry is over constrained", and the dimensions and
+  constraints it conflicts with are lit in the warning color (and what they
+  hold) until the next change or Esc.
 - **Sketch Dimension** (D) takes a line (its length), a circle (diameter), an
   arc (radius), two points, a point and a line, or two lines (their angle,
   or their distance when parallel), then a click to place it. It measures
   the sketch as it is; one that repeats or contradicts others is driven
-  (shown in parentheses), and the status line says so. Each dimension is a
+  (shown in parentheses), the status line says so and what it repeats is
+  lit (luce-cad's `find_dependent`). Each dimension is a
   row of the parameter panel (d1, d2, …) in the document's unit; a new value
   re-solves the sketch.
 - **Dimensions on the canvas** are drawn as drawings draw them
   (`sketch_dimensions.luc`, laid out by luce-cad's `CadSketch.lay_out`):
   extension lines, a dimension line with filled arrows (outside when the
-  ends are close), R and Ø leaders, an arc for an angle, the value over a
-  dark patch; driven ones muted and in parentheses. A click on a label or
+  ends are close), R and Ø leaders, an arc for an angle (an arc's sweep at
+  its center), the value over a dark patch; driven ones muted and in
+  parentheses. Labels laid out automatically keep off each other: one whose
+  place another label takes, or whose lines cross another's label, goes to
+  the other side or a row further out (round its circle for a radius); a
+  label the user dragged keeps its place. Constraint glyphs keep off the
+  labels and each other (below right of what they hold, else above, else to
+  the left). Both are placed once per sketch change or view. A click on a label or
   its lines selects the dimension; a click on the selected one opens its
   value box on the label (Enter re-solves, one undo); a drag moves the label,
   one undo, kept in the sketch's text relative to what it measures. The
@@ -412,9 +428,12 @@ the top left choose what Select picks: Points, Lines or Shapes.
   locks it; Tab locks it as it stands and moves on (Shift+Tab back); locked
   values steer the cursor; Enter places the point. Lengths read any unit and
   arithmetic ("1 in", "10 + 5 mm"), angles degrees. The locked values become
-  the shape's dimensions in its undo step (a line's angle against a level
-  construction line at its start); Sweep, Sides and a 3-point rectangle's
-  Angle only shape it.
+  the shape's dimensions in its undo step, as Fusion makes them: a line's
+  and a 3-point rectangle's Angle against the sketch's x axis, an arc's Sweep
+  an angle dimension on the arc, a circle's Diameter (Fusion's box for those
+  tools). A polygon's Sides is how many sides it is made with: its corners
+  stay on a construction circle and its sides equal, so it stays regular (a
+  circumscribed one's sides also touch an inner circle, its Radius's).
 - **Modify**: Trim (T), Extend and Break act on the curve clicked, where it
   is clicked (Trim takes the piece between its nearest crossings; a
   circle becomes the arc left). Fillet and Chamfer take two lines meeting
@@ -478,8 +497,17 @@ of the body's edges is made by the cook too (`sketch_node.shadows_text`).
 A projection whose edge is gone stays where it was, drawn yellow, and the
 node shows a yellow badge (red when it fails); select the curves and
 right-click: **Re-link** (then click the edge to follow) or **Break link**.
-**Slice** (right-click in a sketch) hides the body in front of the sketch's
-plane (display only, `slice_view.luc`). Extrude's Operation row shows what
+**Project** brings an edge clicked, every loop of a face clicked inside (off
+its edges; the face nearest the camera where several cast there), or, from
+the right-click menu while Project is the tool, the body's outline (**Project
+body**, Fusion's Bodies filter); all linked, and a face is remembered so the
+edges it gains upstream come too. Projected curves and their points draw
+purple. **Slice** (right-click in a sketch) cuts the body in front of the
+sketch's plane away (display only, `slice_view.luc`): the body is sliced
+(luce-cad's `CadModeling.sliced`), so its edges show round the cut, and the
+cut is capped, drawn lighter with Fusion's diagonal hatch and a dark outline
+under the sketch (`sketch_section.luc`, the cap's loops sent by the cook). A
+body the slice cannot cut shows clipped and uncapped, said. Extrude's Operation row shows what
 Auto chose ("Auto (Cut)"). An Extrude made from a sketch rolled back to goes
 in right after the sketch, before the features after it, and keeps the
 display, as Fusion's marker stays at the new feature; those later features

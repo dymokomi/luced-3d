@@ -51,7 +51,9 @@ from sketch_kinds import on_curve, midpoint, point_kind, line_kind
 import sketch_selecting
 import marquee
 from sketch_dimensions import SketchDimensions, LabelDrag
+from sketch_glyphs import SketchGlyphs, Glyph
 from sketch_typing import SketchTyping
+import sketch_origin
 
 ## How near the cursor snaps, in points on screen.
 pub let snap_reach = 9.0
@@ -90,11 +92,17 @@ pub class SketchEditor:
     pub var snap_other: int = -1
     pub var free_placing: bool = false
     pub var hover: int = -1
+    ## The part of the sketch origin under the pointer when no entity is
+    ## (sketch_origin.luc: 0 its point, 1 its x axis, 2 its y axis; -1 none).
+    pub var hover_origin: int = -1
     pub var selection: list[int]
     ## Constraints selected by their glyphs, and the one whose glyph is
     ## under the pointer (-1: none).
     pub var constraint_selection: list[int]
     pub var hover_glyph: int = -1
+    ## The dimensions and constraints the last over-constraining one
+    ## conflicted with, lit until the next change (sketch_picking.luc).
+    pub var conflicts: list[int]
     ## The sketch's profiles: shaded, hovered and picked at Shapes and Smart
     ## (the picked keys are the workspace's sketch_profiles).
     pub let profiles: SketchProfiles
@@ -138,8 +146,9 @@ pub class SketchEditor:
     ## (set by the view).
     pub var on_pick: func() -> unit!? = none
     pub var on_constrain: func() -> bool!? = none
-    ## The dimensions as placed on the screen.
+    ## The dimensions and the constraint glyphs as placed on the screen.
     pub let dimensions: SketchDimensions
+    pub let glyphs: SketchGlyphs
     ## A dimension pressed, its label to drag.
     pub let label_drag: LabelDrag
     ## The value boxes while drawing, the clicks placed so far by the tool
@@ -173,10 +182,12 @@ pub class SketchEditor:
         self.cursor = [0.0, 0.0]
         self.selection = []
         self.constraint_selection = []
+        self.conflicts = []
         self.profiles = SketchProfiles()
         self.picks = []
         self.box = []
         self.dimensions = SketchDimensions()
+        self.glyphs = SketchGlyphs()
         self.label_drag = LabelDrag()
         self.typing = SketchTyping()
         self.landed = [0.0, 0.0]
@@ -223,6 +234,8 @@ pub class SketchEditor:
         # the sketch read before (an undo, another node).
         self.hover = -1
         self.hover_glyph = -1
+        self.hover_origin = -1
+        self.conflicts = []
         self.snap = -1
         self.reset_tool()
         self.node = node.id
@@ -249,10 +262,30 @@ pub class SketchEditor:
         self.w.sketch_profiles = self.profiles.still_there(sketch, self.frame, self.w.sketch_profiles)
         self.revision += 1
 
+    ## The constraint glyphs on a viewport `width` by `height`, placed clear
+    ## of the dimensions' labels (each made again only when the sketch or
+    ## the view changed).
+    pub func placed_glyphs(self, width: float, height: float) -> list[Glyph]!:
+        let sketch = self.sketch else return []
+        let labels = self.dimensions.placed(self.w, sketch, self.frame, self.revision, width, height)
+        return self.glyphs.placed(self.w, sketch, self.frame, self.dimensions.made_from, width, height, labels)
+
     ## Look straight at the sketch plane, as Fusion's Look At does.
     pub func look_at(self) -> unit!:
         let sketch = self.sketch else return
         look_at(self.w, sketch, self.frame)
+
+    ## Light the constraints an over-constraint of `sketch` runs through,
+    ## but `added` (the one that over-constrained it; -1 none), as they
+    ## will be numbered once it is taken away (`removing`).
+    pub func light_conflicts(self, sketch: CadSketch, added: int, removing: bool) -> unit!:
+        let found: list[int] = []
+        for at in 0..<sketch.find_dependent():
+            let c = sketch.dependent(at)
+            if c != added:
+                found.append(c - 1 if removing and c > added else c)
+        self.conflicts = found
+        self.revision += 1
 
     ## Say `text` in the status line.
     pub func say(self, text: str):
@@ -264,6 +297,7 @@ pub class SketchEditor:
         let sketch = self.sketch else return
         let node = self.w.network.find(self.node) else return
         let text = sketch.text()
+        self.conflicts = []
         if text == node.texts[0]:
             return
         self.w.perform(label, func () -> unit!:
@@ -329,9 +363,6 @@ pub class SketchEditor:
     ## A point at the cursor: the snapped point itself, else a new point (on
     ## the snapped curve, constrained there).
     pub func cursor_point(self) -> int!:
-        let sketch = self.sketch else return -1
-        if self.snap >= 0 and sketch.kind(self.snap) == point_kind:
-            return self.snap
         return self.snapped_point(self.cursor, self.snap, self.snap_kind, self.snap_other)
 
     ## The input body's edges cast onto the plane while Project is the
@@ -343,6 +374,29 @@ pub class SketchEditor:
     pub func projected_edge(self) -> int!:
         let cast = self.projection() else return -1
         return cast.nearest(self.cursor[0], self.cursor[1], self.reach)
+
+    ## The face Project would bring with the cursor where it is (off every
+    ## edge, inside a face's shadow, the nearest the camera), or -1.
+    pub func projected_face(self) -> int!:
+        let cast = self.projection() else return -1
+        if cast.nearest(self.cursor[0], self.cursor[1], self.reach) >= 0:
+            return -1
+        return cast.face_at(self.cursor[0], self.cursor[1], self.camera_side())
+
+    ## +1 when the camera is on the sketch plane's normal side, else -1.
+    pub func camera_side(self) -> float!:
+        let eye = self.w.view.camera.projection(1.0).position
+        return 1.0 if eye.subtract(self.frame.origin).dot(self.frame.normal()) >= 0.0 else -1.0
+
+    ## Project body (the right-click menu while Project is the tool): the
+    ## input body's outline as seen from the camera, as one undo step.
+    pub func project_body(self) -> unit!:
+        let sketch = self.sketch else return
+        let (made, problem) = self.projecting.project_body(self.w, self.node, sketch, self.camera_side())
+        if problem != "":
+            self.say(problem)
+        if made:
+            self.commit("Project body")
 
     ## The Text tool's words: the text where its clicks put it, as one undo.
     pub func place_text(self, content: str) -> unit!:
@@ -368,8 +422,9 @@ pub class SketchEditor:
     ## A point at `place` as what it snapped to holds it: that point itself;
     ## a new one at a line's middle, on two crossing curves or on a curve
     ## (held there by its constraints); else a free new one.
-    pub func snapped_point(self, place: list[float], snapped: int, kind: int, other: int) -> int!:
+    pub func snapped_point(self, place: list[float], caught: int, kind: int, other: int) -> int!:
         let sketch = self.sketch else return -1
+        let snapped = self.resolved(caught)
         if snapped >= 0 and sketch.kind(snapped) == point_kind:
             return snapped
         let point = sketch.add_point(place[0], place[1])
@@ -382,6 +437,25 @@ pub class SketchEditor:
             if curve >= 0 and sketch_kinds.holds_points(sketch.kind(curve)):
                 _ = sketch.constrain(on_curve, point, curve)
         return point
+
+    ## Snapped-to entity `snapped` as an entity: the origin's part for its
+    ## mark (sketch_origin.snap_mark), made in the sketch when first used.
+    pub func resolved(self, snapped: int) -> int!:
+        let part = sketch_origin.marked_part(snapped)
+        if part < 0:
+            return snapped
+        return self.origin_entity(part)
+
+    ## The sketch origin's part `part` (0 point, 1 x axis, 2 y axis) as an
+    ## entity of the live sketch, made when first held to (Fusion's
+    ## origin, projected into the sketch when referenced).
+    pub func origin_entity(self, part: int) -> int!:
+        let sketch = self.sketch else return -1
+        let before = sketch.entity_count()
+        let at = sketch.origin(part)
+        if sketch.entity_count() != before:
+            self.revision += 1
+        return at
 
     ## What Select hovers at the selection level (Points: points, Lines and
     ## Shapes: curves); other tools pick either (CadSketch.pick's `only`).
@@ -497,7 +571,11 @@ pub class SketchEditor:
             at -= 1
             if constraints[at] < sketch.constraint_count():
                 sketch.unconstrain(constraints[at])
-        let chosen = self.selection.copy()
+        # The origin is the sketch's frame: never deleted.
+        let chosen: list[int] = []
+        for entity in self.selection:
+            if entity < sketch.entity_count() and sketch.origin_part(entity) < 0:
+                chosen.append(entity)
         chosen.sort()
         at = chosen.length
         while at > 0:

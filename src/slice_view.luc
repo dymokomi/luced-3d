@@ -1,32 +1,102 @@
 ## Fusion's Slice while sketching: the body in front of the edited
 ## sketch's plane is cut away from view, so what the sketch is drawn
-## against shows. Display only: what the viewport is given for the sketch
-## node is its CAD preview clipped by the plane (luce-geocore's Clip,
-## keeping the side behind the plane), the node's result unchanged. The
-## worker and the UI-thread cook both ask here.
+## against shows, and the cut is capped and hatched as Fusion draws it.
+## Display only: what the viewport is given for the sketch node is its body
+## sliced (luce-cad's CadModeling.sliced: the half-space in front taken
+## away, the cut closed by cap faces, so the body's edges show round the
+## cut), the node's result unchanged. The cap's loops on the plane go to the
+## editor as a sketch's text (`section`), which draws the cap lighter with
+## Fusion's diagonal hatch over it and the sketch over both (sketch_view.luc,
+## sketch_section.luc). A body the slice cannot cut shows its tessellation
+## clipped by the plane instead (luce-geocore's Clip), uncapped, said.
+## The worker and the UI-thread cook both slice here, each through its own
+## Slicer, which keeps the last slice while the body and plane stay.
 from luce_geocore.geocore import Verbs
+from luce_cad.modeling import CadModeling
+from luce_cad.model import CadModel
+from luce_cad.sketch import CadSketch
+from luce_cad.cad_geometry import CadGeometry
 from geometry_data import GeometryData
 from network import Network
 from node import Node
+from sketch_node import SketchFrame
 import sketch_node
 
-## What the viewport shows of `node`'s result `data` in `graph`: clipped by
-## its sketch plane while it is the sketch sliced, else `data` itself.
-pub func shown(graph: Network, node: Node, data: GeometryData) -> GeometryData!:
-    if graph.slicing != node.id or not data.has_cad():
-        return data
-    let state = sketch_node.parse_state(data.sketch_state) else return data
-    let o = state.plane.origin
-    let n = state.plane.normal()
+## What the cap faces are named for (their names start with it).
+let cap_tag = "slice"
+
+pub class Slicer:
+    ## The last slice: what it was made from (the body's input stamp and
+    ## the plane), the data shown, the cap's text and why it is uncapped.
+    var made_from: str = ""
+    var body: GeometryData? = none
+    var cap: str = ""
+    var problem: str = ""
+    ## The cap of the Sketch sliced last, and its stamp (0: none).
+    pub var section: str = ""
+    pub var section_stamp: int = 0
+
+    pub func init(self):
+        self.made_from = ""
+
+    ## What the viewport shows of `node`'s result `data` in `graph`: its
+    ## body sliced by its sketch plane while it is the sketch sliced, else
+    ## `data` itself.
+    pub func shown(self, graph: Network, node: Node, data: GeometryData) -> GeometryData!:
+        if graph.slicing < 0:
+            self.section = ""
+            self.section_stamp = 0
+        if graph.slicing != node.id or not data.has_cad():
+            return data
+        let state = sketch_node.parse_state(data.sketch_state) else return data
+        var body_stamp = 0
+        if node.inputs.length > 0:
+            if let input = graph.find(node.inputs[0]):
+                body_stamp = input.stamp
+        let key = f"{body_stamp}|{state.plane.key()}"
+        if key != self.made_from or self.body == none:
+            self.made_from = key
+            self.slice(data, state.plane)
+        let made = self.body else return data
+        let result = GeometryData(geometry = made.geometry)
+        result.sketch_state = data.sketch_state
+        result.warning = self.problem
+        self.section = self.cap
+        self.section_stamp = node.stamp
+        return result
+
+    ## Slice every body of `data` by plane `f`, keeping what is behind it:
+    ## the sliced bodies and their cap's loops; a body that does not slice,
+    ## its tessellation clipped instead.
+    func slice(self, data: GeometryData, f: SketchFrame) -> unit!:
+        var shown = GeometryData()
+        let cap = CadSketch.parse("")
+        self.problem = ""
+        for model in data.models():
+            let sliced = CadModeling.sliced(model, f.origin, f.normal(), cap_tag) catch failure:
+                # Uncapped: the tessellation clipped by the plane.
+                self.problem = f"Slice could not cut the body ({failure.message}): it shows clipped, without its cap"
+                shown = shown.merged(clipped(model, f))
+                continue
+            shown = shown.merged(GeometryData(geometry = CadGeometry.of_model(sliced)))
+            for face in 0..<sliced.face_count():
+                let name = CadModeling.face_name_of(sliced, face)
+                if name.starts_with(cap_tag) and not cap.projects_face(name):
+                    _ = cap.project_face(sliced, name, f.origin, f.u, f.v)
+        self.body = shown
+        self.cap = cap.text()
+
+## `model`'s tessellation clipped by plane `f`, keeping what is behind it.
+func clipped(model: CadModel, f: SketchFrame) -> GeometryData!:
+    let o = f.origin
+    let n = f.normal()
     # Clip: a custom plane through the sketch's origin facing its normal,
     # keeping what is below it (behind the plane, seen from the sketch).
     let numbers = [3.0, 0.0, 0.0, 1.0, o.x, o.y, o.z, n.x, n.y, n.z]
     var result = GeometryData()
-    for mesh in data.preview().meshes:
+    for mesh in GeometryData(geometry = CadGeometry.of_model(model)).preview().meshes:
         # Every face (group type 3: primitives).
-        let clipped = Verbs.run("Clip", mesh, "*", 3, numbers).mesh()
-        result = result.merged(GeometryData(clipped))
-    result.sketch_state = data.sketch_state
+        result = result.merged(GeometryData(Verbs.run("Clip", mesh, "*", 3, numbers).mesh()))
     return result
 
 ## A key part apart for what a sliced node shows (0 when not sliced), so

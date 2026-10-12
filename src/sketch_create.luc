@@ -36,6 +36,7 @@ import sketch_kinds as k
 from sketch_slots import slot_tools, finish_slot, preview_slot
 from sketch_geometry import side_of, ended_curve, through, turn_to, across
 from sketch_freeform import freeform_tools, finish_freeform, preview_freeform, curve_end
+import sketch_origin
 from luce_std import math
 
 ## How many sides the polygon tools make, unless typed.
@@ -136,9 +137,12 @@ func rectangle(e: SketchEditor, a: list[float], b: list[float], c: list[float], 
         _ = sketch.constrain(k.parallel, lines[1], lines[3])
     return p
 
-## A polygon of six equal sides: Circumscribed round a construction circle
-## (each side touching it), Inscribed in one (each corner on it), Edge on a
-## side's two ends (to its left).
+## A regular polygon, six sides unless Sides was typed: its corners on a
+## construction circle and its sides equal, which keeps it regular however
+## it is dragged; Inscribed's circle is that one (the click a corner),
+## Circumscribed's an inner one its first side touches (the click a side's
+## middle; a typed Radius is that circle's), Edge's on one side's two ends
+## (to its left).
 func polygon(e: SketchEditor) -> unit!:
     let sketch = e.sketch else return
     let c = e.clicks
@@ -166,7 +170,7 @@ func polygon(e: SketchEditor) -> unit!:
     if r <= 0.0:
         return
     let center = e.made_point(0) if e.tool != "Edge Polygon" else sketch.add_point(cx, cy)
-    let circle = sketch.add_circle(center, r if e.tool != "Circumscribed Polygon" else r * math.cos(half), true)
+    let around = sketch.add_circle(center, r, true)
     let corners: list[int] = []
     for at in 0..<n:
         let angle = start + 2.0 * math.pi * float(at) / float(n)
@@ -178,12 +182,16 @@ func polygon(e: SketchEditor) -> unit!:
     for at in 0..<n:
         sides.append(sketch.add_line(corners[at], corners[(at + 1) % n]))
     for at in 0..<n:
-        if e.tool == "Circumscribed Polygon":
-            _ = sketch.constrain(k.tangent, sides[at], circle, side = side_of(sketch, sides[at], cx, cy))
-        else:
-            _ = sketch.constrain(k.on_curve, corners[at], circle)
+        _ = sketch.constrain(k.on_curve, corners[at], around)
+        # Each side equal to the one before (a glyph on each side, not all
+        # on the first).
         if at > 0:
-            _ = sketch.constrain(k.equal, sides[0], sides[at])
+            _ = sketch.constrain(k.equal, sides[at - 1], sides[at])
+    if e.tool == "Circumscribed Polygon":
+        # The circle the sides touch, about the same center (made last: a
+        # typed Radius is its).
+        let inner = sketch.add_circle(center, r * math.cos(half), true)
+        _ = sketch.constrain(k.tangent, sides[0], inner, side = side_of(sketch, sides[0], cx, cy))
 
 ## What the tool would make with the cursor where it is.
 pub func preview(e: SketchEditor, lines: OverlayLines) -> unit!:
@@ -387,12 +395,14 @@ func replaced(m: list[list[float]], column: int, values: list[float]) -> list[li
         result.append(copy)
     return result
 
-## The values locked in the value boxes as the shape's dimensions, on what
-## the tool made from entity `first` on: a line's Length and Angle (from a
-## level construction line at its start, as long as it), a rectangle's
-## Width and Height (or a 3-point one's Length and Width) on its first two
-## sides, a circle's Diameter, an arc's or a polygon's Radius. A Sweep, a
-## 3-point rectangle's Angle and Sides only shape it. Typed values that
+## The values locked in the value boxes as the shape's dimensions, as
+## Fusion makes them, on what the tool made from entity `first` on: a
+## line's Length and its Angle (from the sketch's x axis,
+## sketch_origin.luc), a rectangle's Width and Height (a 3-point one's
+## Length, Angle and Width) on its first two sides, a circle's Diameter, an
+## arc's or a polygon's Radius and an arc's Sweep (an angle dimension on
+## the arc). A polygon's Sides is no dimension: it is how many sides the
+## polygon was made with, held equal round its circle. Typed values that
 ## would over-constrain what the shape snapped to are kept driven.
 func typed_dimensions(e: SketchEditor, first: int) -> unit!:
     let sketch = e.sketch else return
@@ -411,16 +421,9 @@ func typed_dimensions(e: SketchEditor, first: int) -> unit!:
     if lines.length > 0:
         if let length = t.locked("Length"):
             made.append(length_of_line(sketch, lines[0], length))
-        if e.tool == "Line":
+        if e.tool in ["Line", "3-Point Rectangle"]:
             if let angle = t.locked("Angle"):
-                let line = lines[0]
-                let start = sketch.part(line, 0)
-                let end = sketch.part(line, 1)
-                let reach = math.hypot(sketch.x(end) - sketch.x(start), sketch.y(end) - sketch.y(start))
-                let level = sketch.add_line(start, sketch.add_point(sketch.x(start) + reach, sketch.y(start), true), true)
-                _ = sketch.constrain(k.horizontal, level)
-                _ = sketch.constrain(k.equal, level, line)
-                made.append(sketch.constrain(k.angle, level, line, value = angle))
+                made.append(sketch.constrain(k.angle, e.origin_entity(sketch_origin.x_axis), lines[0], value = angle))
         if lines.length > 1:
             if let width = t.locked("Width"):
                 made.append(length_of_line(sketch, lines[0] if e.tool != "3-Point Rectangle" else lines[1], width))
@@ -435,6 +438,9 @@ func typed_dimensions(e: SketchEditor, first: int) -> unit!:
             made.append(sketch.constrain(k.diameter, round, value = diameter))
         if let radius = t.locked("Radius"):
             made.append(sketch.constrain(k.radius, round, value = radius))
+        if sketch.kind(round) == k.arc_kind:
+            if let sweep = t.locked("Sweep"):
+                made.append(sketch.constrain(k.sweep, round, value = sweep))
     if made.length == 0:
         return
     if not sketch.solve():

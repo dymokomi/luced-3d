@@ -34,8 +34,18 @@
 ##     --background, the projection and plane come from the compute
 ##     worker's cook).
 ##   cad_slice: a Sketch on the XY plane through a box, Slice on: only the
-##     body behind the plane shows.
+##     body behind the plane shows, its cut capped and hatched.
 ##   cad_auto: the cut Extrude selected: its Operation row says Auto (Cut).
+##   cad_origin: a line typed 30 long at 40° from a point off the origin
+##     (its angle dimensioned from the x axis), and a point's distance from
+##     the x axis; Sketch Dimension's pointer over the y axis (lit).
+##   cad_typed: a center point arc typed radius 12, sweep 120 (an angle
+##     dimension on the arc) and a circumscribed hexagon beside it.
+##   cad_conflict: the dimensioned plate's width dimensioned again: added
+##     driven, the width it repeats lit in the warning color.
+##   cad_project_face: Project in a Sketch above a box with a hole, the
+##     pointer inside the top face (its loops lit), one edge projected.
+##   cad_project_body: the box's outline brought by Project body.
 from luce_ui.ui import Event
 from luce_window.input import EventKind, Key
 from luce_3d.graphics import Vector3
@@ -46,13 +56,12 @@ from view_projection import project
 import node_commands
 import sketch_commands
 import selection_commands
-import sketch_glyphs
 import cad_commands
 import sketch_kinds as names
 import text as characters
 
 pub func scenes() -> list[str]:
-    return ["cad_glyphs", "cad_window", "cad_profiles", "cad_extrude", "cad_face_menu", "cad_rollback", "cad_marking", "cad_edge_menu", "cad_dims", "cad_typing", "cad_dim_edit", "cad_face_sketch", "cad_lost", "cad_slice", "cad_auto", "cad_face_open"]
+    return ["cad_glyphs", "cad_window", "cad_profiles", "cad_extrude", "cad_face_menu", "cad_rollback", "cad_marking", "cad_edge_menu", "cad_dims", "cad_typing", "cad_dim_edit", "cad_face_sketch", "cad_lost", "cad_slice", "cad_auto", "cad_face_open", "cad_origin", "cad_typed", "cad_conflict", "cad_project_face", "cad_project_body"]
 
 ## A CAD node holding a Solid Box with a Sketch on its top face, made from
 ## the face selected as a user does (the right-click menu's command).
@@ -270,7 +279,30 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
         node_commands.set_text(w, 0, sketch_commands.rectangle_text(0.0, 0.0, 12.0, 8.0))
         node_commands.display_selected(w)
         cad_commands.toggle_slice(w)
+        editor.panels.refresh()
+        # Looked at from the side once the sketch is entered (which looks
+        # straight at it).
+        editor.panels.view.sketch.editor.sync()
         look(editor, 0.7, 0.45, 75.0, Vector3())
+        editor.panels.refresh()
+    elif scene in ["cad_origin", "cad_typed"]:
+        open_sketch(editor, "", 15.0, 10.0, 90.0)
+    elif scene == "cad_conflict":
+        open_sketch(editor, dimensioned_plate(), 30.0, 13.0, 95.0)
+    elif scene in ["cad_project_face", "cad_project_body"]:
+        let w = editor.workspace
+        node_commands.delete_selected(w)
+        node_commands.add_node(w, "CAD", 40.0, 40.0)
+        node_commands.enter_group(w, w.network.selected)
+        node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+        node_commands.add_node(w, "Sketch", 40.0, 140.0)
+        node_commands.set_parameter(w, 1, 20.0)
+        node_commands.display_selected(w)
+        editor.panels.refresh()
+        let e = editor.panels.view.sketch.editor
+        e.sync()
+        look(editor, 0.5, 0.9, 80.0, Vector3(0.0, 10.0, 0.0))
+        e.choose("Project")
         editor.panels.refresh()
     elif scene == "cad_auto":
         cut_box(editor)
@@ -295,7 +327,7 @@ pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
     let e = view.sketch.editor
     if scene == "cad_glyphs" and frame == last - 1:
         let sketch = e.sketch else trap("no sketch")
-        for g in sketch_glyphs.glyphs(w, sketch, e.frame, area.width, area.height):
+        for g in e.placed_glyphs(area.width, area.height):
             if sketch.constraint_kind(g.constraint) == names.parallel:
                 let x = area.x + g.box.x + g.box.width * 0.5
                 let y = area.y + g.box.y + g.box.height * 0.5
@@ -346,6 +378,84 @@ pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
         type_text(editor, "25")
         editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.tab))
         # The tool's hint is no failure.
+        w.notice = ""
+    if scene == "cad_origin" and frame == last - 1:
+        let at = func (x: float, y: float) -> list[float]!:
+            let s = project(w, e.frame.at(x, y), area.width, area.height)
+            return [area.x + s[0], area.y + s[1]]
+        let clicked = func (x: float, y: float) -> unit!:
+            let p = at(x, y)
+            for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+                editor.app.dispatch(Event(kind = kind, x = p[0], y = p[1], button = 0))
+        e.choose("Line")
+        clicked(10.0, 5.0)
+        let toward = at(20.0, 16.0)
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = toward[0], y = toward[1]))
+        type_text(editor, "30")
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.tab))
+        type_text(editor, "40")
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.escape))
+        e.choose("Sketch Dimension")
+        clicked(10.0, 5.0)
+        clicked(25.0, 0.0)
+        clicked(4.0, -4.0)
+        if editor.panels.sketch_value.is_open():
+            editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.escape))
+        e.choose("Sketch Dimension")
+        let over = at(0.0, 18.0)
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = over[0], y = over[1]))
+        w.notice = ""
+    if scene == "cad_typed" and frame == last - 1:
+        let at = func (x: float, y: float) -> list[float]!:
+            let s = project(w, e.frame.at(x, y), area.width, area.height)
+            return [area.x + s[0], area.y + s[1]]
+        let clicked = func (x: float, y: float) -> unit!:
+            let p = at(x, y)
+            for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+                editor.app.dispatch(Event(kind = kind, x = p[0], y = p[1], button = 0))
+        e.choose("Center Point Arc")
+        clicked(6.0, 8.0)
+        let start = at(16.0, 10.0)
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = start[0], y = start[1]))
+        type_text(editor, "12")
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+        let sweep = at(0.0, 20.0)
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = sweep[0], y = sweep[1]))
+        type_text(editor, "120")
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+        e.choose("Circumscribed Polygon")
+        clicked(34.0, 10.0)
+        let side = at(42.0, 10.0)
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = side[0], y = side[1]))
+        type_text(editor, "8")
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+        w.notice = ""
+    if scene == "cad_conflict" and frame == last - 1:
+        let at = func (x: float, y: float) -> list[float]!:
+            let s = project(w, e.frame.at(x, y), area.width, area.height)
+            return [area.x + s[0], area.y + s[1]]
+        e.choose("Sketch Dimension")
+        for place in [[30.0, 0.0], [30.0, -14.0]]:
+            let p = at(place[0], place[1])
+            for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+                editor.app.dispatch(Event(kind = kind, x = p[0], y = p[1], button = 0))
+        # The over-constraint's notice is what the scene shows, no failure.
+        assert(w.notice.contains("over-constrain"))
+        w.notice = ""
+    if scene in ["cad_project_face", "cad_project_body"] and frame == last - 1:
+        if scene == "cad_project_body":
+            e.project_body()
+        else:
+            let p = project(w, Vector3(10.0, 20.0, 3.0), area.width, area.height)
+            for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+                editor.app.dispatch(Event(kind = kind, x = area.x + p[0], y = area.y + p[1], button = 0))
+            # Project again (a tool is used once), the pointer in the face.
+            e.choose("Project")
+            let inside = project(w, Vector3(3.0, 20.0, -2.0), area.width, area.height)
+            editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + inside[0], y = area.y + inside[1]))
+        if w.notice != "":
+            print(f"project scene: {w.notice}")
         w.notice = ""
     # Once the cook (the worker's, with --background) gave the pick mesh:
     # the top face selected and a Sketch made on it.

@@ -1,0 +1,85 @@
+## The sketch origin, as Fusion shows it in every sketch: its point and its
+## x and y axes, the axes drawn across the view (x red, y green) and the
+## point at the plane's origin. They are references, not curves: never part
+## of a profile, never deleted or boxed, but a constraint tool, Sketch
+## Dimension or Select picks them where nothing of the sketch is under the
+## pointer, and drawing tools snap to them. The entities behind them are
+## made in the sketch only when something holds to them (CadSketch.origin:
+## fixed, the axes construction lines), as Fusion projects its origin when
+## a constraint refers to it; until then the editor draws them alone.
+from luce_ui.ui import Painter
+from luce_gpu.gpu import RenderTarget, Rect
+from luce_3d.graphics import PerspectiveCamera
+from overlay_lines import OverlayLines
+from sketch_node import SketchFrame
+from workspace import Workspace
+from view_projection import project
+import theme
+from luce_std import math
+
+## The origin's parts, CadSketch.origin's numbering.
+pub let origin_point = 0
+pub let x_axis = 1
+pub let y_axis = 2
+
+## The snap a drawing tool keeps for part `part` before its entity is made
+## (the editor resolves it: SketchEditor.resolved).
+pub func snap_mark(part: int) -> int:
+    return -2 - part
+
+## The part snap `snapped` marks, or -1 when it is an entity (or none).
+pub func marked_part(snapped: int) -> int:
+    return -2 - snapped if snapped <= -2 else -1
+
+## The part under plane point `at` within `reach`, among the point (`only`
+## 1), the axes (2) or both (0); the point before the axes; -1 for none.
+pub func under(at: list[float], reach: float, only: int) -> int:
+    if only != 2 and math.hypot(at[0], at[1]) <= reach:
+        return origin_point
+    if only == 1:
+        return -1
+    let to_x = math.abs(at[1])
+    let to_y = math.abs(at[0])
+    if to_x <= reach and to_x <= to_y:
+        return x_axis
+    if to_y <= reach:
+        return y_axis
+    return -1
+
+## Where a drawing tool's cursor at `at` lands on the origin within
+## `reach`: [part, snap kind (1 point, 8 curve), x, y], or [] for nowhere.
+## `mask` is the snapping layer's (1 points, 8 curves).
+pub func landing(at: list[float], reach: float, mask: int) -> list[float]:
+    let points = mask % 2 == 1
+    let curves = (mask // 8) % 2 == 1
+    if points and math.hypot(at[0], at[1]) <= reach:
+        return [float(origin_point), 1.0, 0.0, 0.0]
+    if not curves:
+        return []
+    let part = under(at, reach, 2)
+    if part == x_axis:
+        return [float(x_axis), 8.0, at[0], 0.0]
+    if part == y_axis:
+        return [float(y_axis), 8.0, 0.0, at[1]]
+    return []
+
+## The axes in the 3D pass, across the view through the plane's origin
+## (lifted plane `f`), part `lit` (hovered, -1 none) brighter.
+pub func draw_axes(w: Workspace, target: RenderTarget, camera: PerspectiveCamera, f: SketchFrame, lit: int) -> unit!:
+    let reach = math.max(1000.0, w.view.distance * 50.0)
+    for part in [x_axis, y_axis]:
+        let lines = OverlayLines.make()
+        let way = f.u if part == x_axis else f.v
+        lines.add_segment(f.origin.subtract(way.multiply_scalar(reach)), f.origin.add(way.multiply_scalar(reach)))
+        let color = theme.axis(part - 1)
+        lines.batch().draw(camera, target, theme.grey(245.0) if part == lit else color, 2.0 if part == lit else 1.0)
+
+## The origin point on the flat layer: a small diamond at the plane's
+## origin, larger when hovered (`lit`).
+pub func draw_point(w: Workspace, p: Painter, f: SketchFrame, lit: bool, width: float, height: float) -> unit!:
+    let s = project(w, f.origin, width, height)
+    if s[2] < 0.0:
+        return
+    let size = 9.0 if lit else 7.0
+    p.rectangle(Rect(s[0] - size * 0.5, s[1] - size * 0.5, size, size), theme.grey(28.0))
+    p.rectangle(Rect(s[0] - size * 0.5 + 1.5, s[1] - size * 0.5 + 1.5, size - 3.0, size - 3.0), theme.accent() if lit else theme.grey(235.0))

@@ -4,7 +4,7 @@
 ## Offset of the loop one relation, one dimension, following the face as
 ## the box widens upstream; a link lost (yellow, the node warned), broken
 ## or re-linked by Project's cast; the face gone, the node failing (red);
-## Slice cutting the body in front of a sketch's plane from view.
+## Slice cutting the body in front of a sketch's plane from view, capped.
 from app import Luce3D
 from luce_ui.ui import Event
 from luce_window.input import EventKind, Key
@@ -17,7 +17,7 @@ import selection_commands
 import sketch_commands
 import sketch_node
 import sketch_kinds as names
-import slice_view
+from slice_view import Slicer
 import cad_commands
 from luce_std import math
 
@@ -200,15 +200,30 @@ func slice() -> unit!:
     assert(w.sketching())
     let node = w.network.require(id)
     let data = w.network.evaluate_data(id)
-    let whole = slice_view.shown(w.network, node, data)
+    let slicer = Slicer()
+    let whole = slicer.shown(w.network, node, data)
     assert(whole is data)
     cad_commands.toggle_slice(w)
     editor.panels.actions.refresh()
     assert(w.slice and w.network.slicing == id and editor.panels.actions.slice.is_checked())
-    let cut = slice_view.shown(w.network, node, data)
-    let mesh = cut.mesh else trap("no sliced mesh")
-    let bounds = mesh.bounds()
+    # The body behind the plane, capped (its edges round the cut), the
+    # cap's loop for the editor's hatch.
+    let cut = slicer.shown(w.network, node, data)
+    assert(cut.has_cad() and cut.warning == "", cut.warning)
+    let bounds = cut.models()[0].tessellate(8).bounds()
     assert(near(bounds.maximum.y, 0.0) and near(bounds.minimum.y, -10.0) and near(bounds.maximum.z, 10.0), f"{bounds.minimum.y} {bounds.maximum.y}")
+    assert(slicer.section_stamp == node.stamp)
+    let cap = CadSketch.parse(slicer.section)
+    var sides = 0
+    for at in 0..<cap.entity_count():
+        if cap.kind(at) == names.line_kind:
+            sides += 1
+    assert(sides == 4, slicer.section)
+    # The same slice again: kept, not made again.
+    assert(slicer.shown(w.network, node, data).models()[0] is cut.models()[0])
+    # The UI-thread cook gave the editor the cap too.
+    render(editor)
+    assert(w.section != "" and w.section_stamp == w.network.require(id).stamp)
     render(editor)
     cad_commands.toggle_slice(w)
     assert(not w.slice and w.network.slicing == -1)

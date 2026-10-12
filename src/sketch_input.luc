@@ -18,6 +18,7 @@ import sketch_tools
 import sketch_kinds
 import sketch_inference
 import sketch_glyphs
+import sketch_origin
 import view_projection
 import marquee
 import units
@@ -57,13 +58,14 @@ pub func handle(e: SketchEditor, event: Event, width: float, height: float) -> b
         e.dragging = -1
         if e.drag_moved:
             # Let go on a point or a curve it snapped to: held there.
-            if e.snap >= 0 and e.snap != dragged:
+            let snapped = e.resolved(e.snap)
+            if snapped >= 0 and snapped != dragged:
                 # Exactly where it snapped, then held there.
                 sketch.place(dragged, e.cursor[0], e.cursor[1])
                 if e.snap_kind == 1:
-                    _ = sketch.constrain(coincident, dragged, e.snap)
-                elif e.snap_kind == 8 and sketch_kinds.holds_points(sketch.kind(e.snap)):
-                    _ = sketch.constrain(on_curve, dragged, e.snap)
+                    _ = sketch.constrain(coincident, dragged, snapped)
+                elif e.snap_kind == 8 and sketch_kinds.holds_points(sketch.kind(snapped)):
+                    _ = sketch.constrain(on_curve, dragged, snapped)
                 if not sketch.solve():
                     sketch.unconstrain(sketch.constraint_count() - 1)
                     _ = sketch.solve()
@@ -122,6 +124,7 @@ pub func handle(e: SketchEditor, event: Event, width: float, height: float) -> b
 ## Keys: a tool's letter, Esc, Delete, X.
 func key(e: SketchEditor, event: Event) -> bool!:
     if event.key == Key.escape:
+        e.conflicts = []
         if e.boxing:
             e.boxing = false
         elif e.clicks.length > 0 or e.picks.length > 0:
@@ -156,7 +159,7 @@ func key(e: SketchEditor, event: Event) -> bool!:
         let sketch = e.sketch else return true
         let construction = not sketch.construction(e.selection[0])
         for at in e.selection:
-            if sketch.kind(at) != point_kind:
+            if sketch.kind(at) != point_kind and sketch.origin_part(at) < 0:
                 sketch.set_construction(at, construction)
         e.commit("Toggle construction")
         return true
@@ -180,18 +183,24 @@ func track(e: SketchEditor, x: float, y: float, free: bool) -> unit!:
     e.snap_kind = 0
     e.snap_other = -1
     e.hover = sketch.pick(e.cursor[0], e.cursor[1], e.reach, e.pick_filter())
+    # Where nothing of the sketch is, the origin's point or axes (tools
+    # that pick: Select, the constraints, Sketch Dimension).
+    e.hover_origin = -1
+    if e.hover < 0 and e.dragging < 0 and sketch_origin_picks(e.tool):
+        e.hover_origin = sketch_origin.under(e.cursor, e.reach, e.pick_filter())
     # Select: a glyph or label under the pointer wins over geometry.
     e.hover_glyph = -1
     if e.tool == "Select" and e.dragging < 0:
         _ = e.dimensions.placed(e.w, sketch, e.frame, e.revision, e.width, e.height)
         e.hover_glyph = e.dimensions.at(x, y)
         if e.hover_glyph < 0:
-            e.hover_glyph = sketch_glyphs.glyph_at(sketch_glyphs.glyphs(e.w, sketch, e.frame, e.width, e.height), x, y)
+            e.hover_glyph = sketch_glyphs.glyph_at(e.placed_glyphs(e.width, e.height), x, y)
         if e.hover_glyph >= 0:
             e.hover = -1
+            e.hover_origin = -1
     # Shapes and Smart: the profile under the pointer, off the curves.
     e.profiles.hover = ""
-    if e.tool == "Select" and e.dragging < 0 and e.hover < 0 and e.hover_glyph < 0 and e.w.sketch_level in [face_level, smart_level]:
+    if e.tool == "Select" and e.dragging < 0 and e.hover < 0 and e.hover_glyph < 0 and e.hover_origin < 0 and e.w.sketch_level in [face_level, smart_level]:
         e.profiles.hover = e.profiles.key_at(sketch, e.frame, e.cursor[0], e.cursor[1])
     # Tools that place, and a dragged point, snap; tools that pick (Trim,
     # the constraints) read the pointer as it is.
@@ -263,7 +272,7 @@ func finish_open(e: SketchEditor) -> unit!:
 func project_at(e: SketchEditor) -> unit!:
     let sketch = e.sketch else return
     let relinking = e.projecting.relinking.length > 0
-    let (made, problem) = e.projecting.project_at(e.w, e.node, sketch, e.cursor[0], e.cursor[1], e.reach)
+    let (made, problem) = e.projecting.project_at(e.w, e.node, sketch, e.cursor[0], e.cursor[1], e.reach, e.camera_side())
     if problem != "":
         e.say(problem)
     if made:
@@ -282,7 +291,13 @@ func select_at(e: SketchEditor, operation: int) -> unit!:
             return
         e.select_constraint(pressed, operation)
         return
-    let at = e.hover
+    var at = e.hover
+    # The origin's point or axis: selected as an entity (constraint tools
+    # chosen next apply to it).
+    if at < 0 and e.hover_origin >= 0:
+        at = e.origin_entity(e.hover_origin)
+        e.change_selection([at], 2 if operation == 1 and at in e.selection else operation)
+        return
     if at < 0:
         # A press in a profile picks it when it is not dragged into a box.
         e.box_profile = e.profiles.hover
@@ -351,3 +366,8 @@ func press_label(e: SketchEditor, constraint: int, operation: int) -> unit!:
 ## Viewport point (`x`, `y`) on the plane.
 func plane_point(e: SketchEditor, x: float, y: float) -> list[float]!:
     return e.frame.coordinates(view_projection.plane(e.w, x, y, e.width, e.height, e.frame.origin, e.frame.normal()))
+
+## Whether tool `tool` picks the origin's point and axes where nothing of
+## the sketch is: Select, the constraint tools and Sketch Dimension.
+func sketch_origin_picks(tool: str) -> bool:
+    return tool == "Select" or tool == "Sketch Dimension" or sketch_tools.constrains(tool)

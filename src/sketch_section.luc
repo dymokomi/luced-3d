@@ -1,0 +1,68 @@
+## Slice's cap in the Sketch editor, drawn as Fusion draws a sliced body's
+## cut: the region the plane cuts through the body filled lighter than the
+## body, Fusion's diagonal section hatch over it and its outline dark; the
+## sketch's profiles and curves draw over all of it (sketch_view.luc). The
+## cap's loops come from the cook as a sketch's text (slice_view.luc, the
+## workspace's `section`), read once per cap; the hatch is made again only
+## when the zoom changes its spacing.
+from luce_cad.sketch import CadSketch
+from luce_cad.modeling import CadModeling
+from luce_geocore.geocore import Mesh
+from luce_gpu.gpu import RenderTarget
+from luce_3d.graphics import PerspectiveCamera
+from overlay_lines import OverlayLines
+from profile_shading import ProfileShading
+from sketch_node import SketchFrame
+from snapping import grid_step
+from workspace import Workspace
+import theme
+
+pub class SketchSection:
+    ## The cap as read: from which section text and plane, its fill, its
+    ## outline, and its hatch as of `hatched` (the spacing and lift too).
+    var read_from: str = ""
+    var fill: Mesh? = none
+    var outline: OverlayLines? = none
+    var hatched: str = ""
+    var hatch: OverlayLines? = none
+
+    pub func init(self):
+        self.read_from = ""
+
+    ## Draw the cap of Sketch node `node` (its stamp `stamp`) on plane `f`
+    ## while it is sliced, lifted to `lifted` (where the sketch's lines are
+    ## drawn, a hair toward the camera), under the sketch.
+    pub func draw(self, w: Workspace, target: RenderTarget, camera: PerspectiveCamera, node: int, stamp: int, f: SketchFrame, lifted: SketchFrame, width: float, height: float) -> unit!:
+        if not w.slice or w.network.slicing != node or w.section_stamp != stamp or w.section == "":
+            return
+        let key = f"{w.section}|{f.key()}"
+        if key != self.read_from:
+            self.read_from = key
+            self.hatched = ""
+            let cap = CadSketch.parse(w.section)
+            _ = cap.solve()
+            cap.analyze()
+            let curves = cap.curves(f.origin, f.u, f.v)
+            self.fill = CadModeling.profile_fills(curves) if CadModeling.profile_count(curves) > 0 else none
+            let lines = OverlayLines.make()
+            for which in 0..<2:
+                lines.add_sketch(cap, lifted.origin, lifted.u, lifted.v, which)
+            self.outline = lines
+        let fill = self.fill else return
+        ProfileShading.draw(target, fill, camera, width, height, theme.grey(205.0), 0.92)
+        # Hatch lines a fifth of the grid apart: about the same on screen at
+        # any zoom.
+        let spacing = grid_step(w.view.distance) * 0.4
+        let lift = lifted.origin.subtract(f.origin)
+        let hatch_key = f"{spacing}|{lifted.key()}"
+        if hatch_key != self.hatched:
+            self.hatched = hatch_key
+            let lines = OverlayLines.make()
+            lines.add_hatch(fill, f.origin, f.u, f.v, spacing, lift)
+            self.hatch = lines
+        if let lines = self.hatch:
+            if lines.count() > 0:
+                lines.batch().draw(camera, target, theme.grey(40.0), 1.0)
+        if let lines = self.outline:
+            if lines.count() > 0:
+                lines.batch().draw(camera, target, theme.grey(20.0), 1.5)

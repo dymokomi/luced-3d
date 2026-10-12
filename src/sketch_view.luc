@@ -1,4 +1,5 @@
-## What the Sketch editor draws (sketch_editor.luc): its profiles shaded
+## What the Sketch editor draws (sketch_editor.luc): Slice's cap
+## (sketch_section.luc), its profiles shaded
 ## (sketch_profiles.luc), its curves as line batches on the plane (made
 ## again only when the sketch changes), what is
 ## hovered, selected or picked and what is being drawn on top; then, flat
@@ -20,8 +21,9 @@ import sketch_picking
 from view_projection import project
 import sketch_kinds as names
 import sketch_tools
-import sketch_glyphs
 import sketch_typing
+import sketch_origin
+from sketch_section import SketchSection
 import units
 from snapping import grid_step
 from marquee import draw_box, dragged
@@ -34,6 +36,11 @@ pub class SketchView:
     ## The curve batches as of editor revision and lifted plane `drawn`.
     var drawn: str = ""
     var batches: list[OverlayLines]
+    ## The points of projected curves, as of `drawn` (purple, as their
+    ## curves).
+    var projected_points: list[int]
+    ## Slice's cap, under the sketch.
+    let section: SketchSection
 
     pub func init(self, w: Workspace) -> unit!:
         self.w = w
@@ -43,6 +50,8 @@ pub class SketchView:
         self.editor.on_pick = self.pick
         self.editor.on_constrain = self.constrain
         self.batches = []
+        self.projected_points = []
+        self.section = SketchSection()
 
     ## A drawing tool's clicks are in.
     func finish(self) -> unit!:
@@ -80,22 +89,29 @@ pub class SketchView:
             self.batches = []
             for which in 0..<3:
                 let lines = OverlayLines.make()
-                lines.add_sketch(sketch, f.origin, f.u, f.v, which)
+                lines.add_sketch(sketch, f.origin, f.u, f.v, which, unlinked = true)
                 self.batches.append(lines)
             # Projected curves over them (Fusion's purple), those whose
             # edge was lost upstream apart.
             let linked = OverlayLines.make()
             let lost = OverlayLines.make()
+            self.projected_points = []
             for at in 0..<sketch.entity_count():
                 if at in e.lost:
                     lost.add_sketch(sketch, f.origin, f.u, f.v, 3, at)
-                elif sketch.kind(at) != names.point_kind and sketch.linked(at):
+                elif sketch.linked(at):
                     linked.add_sketch(sketch, f.origin, f.u, f.v, 3, at)
+                    if sketch.kind(at) == names.point_kind:
+                        self.projected_points.append(at)
+                    for part in 0..<sketch.part_count(at):
+                        self.projected_points.append(sketch.part(at, part))
             self.batches.append(linked)
             self.batches.append(lost)
             self.drawn = drawn
         let camera = self.w.view.camera
         self.grid(target)
+        # The origin's axes across the view, as in every Fusion sketch.
+        sketch_origin.draw_axes(self.w, target, camera, f, e.hover_origin)
         # Project: the input body's edges cast on the plane, the one under
         # the cursor brighter.
         if e.tool == "Project":
@@ -109,14 +125,24 @@ pub class SketchView:
                     let one = OverlayLines.make()
                     one.add_shadows(cast, f.origin, f.u, f.v, under)
                     one.batch().draw(camera, target, theme.accent(), 2.0)
-        # Its profiles shaded under the curves, picked and hovered ones lit.
+                # Off the edges, inside a face: its loops, all they bring.
+                let face = e.projected_face()
+                if face >= 0:
+                    let loops = OverlayLines.make()
+                    for at in 0..<cast.face_edge_count(face):
+                        loops.add_shadows(cast, f.origin, f.u, f.v, cast.face_edge(face, at))
+                    if loops.count() > 0:
+                        loops.batch().draw(camera, target, theme.accent(), 2.0)
+        # Slice's cap (hatched), then its profiles shaded under the curves,
+        # picked and hovered ones lit.
         let size = target.size()
+        if let node = self.w.network.find(e.node):
+            self.section.draw(self.w, target, camera, node.id, node.stamp, e.frame, f, size.width, size.height)
         e.profiles.draw(target, camera, sketch, f, self.w.sketch_profiles, size.width, size.height)
         let colors = [theme.sketch_free(), theme.sketch_fixed(), theme.sketch_construction(), theme.sketch_projected(), theme.warning()]
-        # Lost curves, then projected ones, first: at the same depth the
-        # first drawn stays (a lost curve over the edge projected again in
-        # its place, both over their fully constrained drawing).
-        for which in [4, 3, 0, 1, 2]:
+        # Projected curves only in Fusion's purple (left out of the others),
+        # lost ones last, over the edge projected again in their place.
+        for which in [0, 1, 2, 3, 4]:
             if self.batches[which].count() > 0:
                 self.batches[which].batch().draw(camera, target, colors[which], 1.5)
         let chosen = OverlayLines.make()
@@ -142,6 +168,17 @@ pub class SketchView:
         self.rubber_band(hovered)
         if hovered.count() > 0:
             hovered.batch().draw(camera, target, theme.grey(245.0), 2.0)
+        # What the constraints an over-constraint runs through hold.
+        let conflicting = OverlayLines.make()
+        for c in e.conflicts:
+            if c >= sketch.constraint_count():
+                continue
+            for which in 0..<3:
+                let held = sketch.constraint_entity(c, which)
+                if held >= 0 and held < sketch.entity_count():
+                    conflicting.add_sketch(sketch, f.origin, f.u, f.v, 3, held)
+        if conflicting.count() > 0:
+            conflicting.batch().draw(camera, target, theme.warning(), 2.0)
 
     ## The sketch plane's grid around where the camera looks: a line every
     ## 1, 2 or 5 × 10ⁿ mm, about a tenth of the view's distance apart, a
@@ -188,21 +225,23 @@ pub class SketchView:
         e.sync()
         let sketch = e.sketch else return
         let f = e.frame
+        sketch_origin.draw_point(self.w, p, f, e.hover_origin == sketch_origin.origin_point or e.snap == sketch_origin.snap_mark(sketch_origin.origin_point), width, height)
         for at in 0..<sketch.entity_count():
-            if sketch.kind(at) != names.point_kind:
+            # (The origin's point is drawn above, its axes' ends not at all.)
+            if sketch.kind(at) != names.point_kind or sketch.origin_part(at) >= 0:
                 continue
             let s = project(self.w, f.at(sketch.x(at), sketch.y(at)), width, height)
             if s[2] < 0.0:
                 continue
             let chosen = at in e.selection or at in e.picks
-            let color = theme.accent() if chosen else (theme.sketch_fixed() if sketch.fixed(at) else theme.sketch_free())
+            let color = theme.accent() if chosen else (theme.sketch_projected() if at in self.projected_points else (theme.sketch_fixed() if sketch.fixed(at) else theme.sketch_free()))
             let size = 7.0 if at == e.hover or chosen else 5.0
             p.rectangle(Rect(s[0] - size * 0.5, s[1] - size * 0.5, size, size), color)
         if e.snap >= 0 and sketch.kind(e.snap) == names.point_kind:
             let s = project(self.w, f.at(e.cursor[0], e.cursor[1]), width, height)
             outline(p, Rect(s[0] - 7.0, s[1] - 7.0, 14.0, 14.0), theme.accent())
         _ = e.dimensions.placed(self.w, sketch, f, e.revision, width, height)
-        e.dimensions.draw(p, e.constraint_selection, e.hover_glyph)
+        e.dimensions.draw(p, e.constraint_selection, e.hover_glyph, e.conflicts)
         self.glyphs(p, width, height)
         # Select's box while it is dragged.
         if e.boxing and dragged(e.box):
@@ -210,17 +249,19 @@ pub class SketchView:
         self.value_boxes(p, width, height)
 
     ## Each constraint's glyph beside what it holds, where sketch_glyphs
-    ## places them: the selected ones in the accent, the one under the
+    ## places them: the selected ones in the accent, those an
+    ## over-constraint runs through in the warning color, the one under the
     ## pointer lit.
     func glyphs(self, p: Painter, width: float, height: float) -> unit!:
         let e = self.editor
         let sketch = e.sketch else return
-        for g in sketch_glyphs.glyphs(self.w, sketch, e.frame, width, height):
+        for g in e.placed_glyphs(width, height):
             let chosen = g.constraint in e.constraint_selection
+            let conflicting = g.constraint in e.conflicts
             let lit = g.constraint == e.hover_glyph
             let b = g.box
-            p.rounded_rectangle(b, theme.accent() if chosen else (theme.grey(95.0) if lit else theme.grey(60.0)), 3.0)
-            p.text(g.label, b.x + 3.0, b.y + 1.0, theme.text() if chosen or lit else theme.text_muted())
+            p.rounded_rectangle(b, theme.warning() if conflicting else (theme.accent() if chosen else (theme.grey(95.0) if lit else theme.grey(60.0))), 3.0)
+            p.text(g.label, b.x + 3.0, b.y + 1.0, theme.text() if chosen or lit or conflicting else theme.text_muted())
 
     ## The value boxes of a shape being drawn, beside what each measures:
     ## the focused one outlined in the accent (its text lit while the next

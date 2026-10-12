@@ -6,7 +6,11 @@
 ## picks: a click on a label or its lines selects the dimension (they win
 ## over geometry under the pointer, as in Fusion), a click on a selected
 ## one opens its value box there, and a drag moves its label (kept relative
-## to what it measures).
+## to what it measures). Labels laid out automatically keep off each other:
+## one whose place is taken (another's label, or its lines across it) is
+## stepped further out, or round its circle (CadSketch.lay_out's step),
+## while a label the user put keeps its place. All of it is made again only
+## when the sketch or the view changed.
 from luce_cad.sketch import CadSketch
 from luce_ui.ui import Painter, Point, Font, Unit
 from luce_gpu.gpu import Rect, Color
@@ -21,6 +25,10 @@ from luce_std import math
 
 ## How near a dimension's line the pointer picks it, in points.
 let line_reach = 4.0
+## How many places on an automatically placed label is tried at.
+let label_steps = 7
+## Points kept clear round a label.
+let label_margin = 2.0
 ## An arrowhead's length and half width, in points.
 let arrow_length = 9.0
 let arrow_half = 3.2
@@ -58,10 +66,11 @@ pub class ShownDimension:
         return false
 
 ## The dimensions of a sketch as last placed, made again only when the
-## sketch, the plane or the view changed.
+## sketch, the plane or the view changed (`made_from`, which the glyphs
+## placed round them share).
 pub class SketchDimensions:
     let font: Font
-    var made_from: str = ""
+    pub var made_from: str = ""
     pub var shown: list[ShownDimension]
 
     pub func init(self) -> unit!:
@@ -79,31 +88,74 @@ pub class SketchDimensions:
         self.shown = []
         let pixel = pixel_size(w, f, width, height)
         let shown_unit = units.document_unit(w)
-        for at in 0..<sketch.constraint_count():
-            let kind = sketch.constraint_kind(at)
-            if not names.is_dimension(kind) or not sketch.lay_out(at, pixel):
-                continue
-            let label_at = project(w, f.at(sketch.label_x(), sketch.label_y()), width, height)
-            if label_at[2] < 0.0:
-                continue
-            let lines: list[float] = []
-            for line in 0..<sketch.layout_line_count():
-                let a = project(w, f.at(sketch.layout_line(line, 0), sketch.layout_line(line, 1)), width, height)
-                let b = project(w, f.at(sketch.layout_line(line, 2), sketch.layout_line(line, 3)), width, height)
-                lines.extend([a[0], a[1], b[0], b[1]])
-            let arrows: list[float] = []
-            for arrow in 0..<sketch.layout_arrow_count():
-                let x = sketch.layout_arrow(arrow, 0)
-                let y = sketch.layout_arrow(arrow, 1)
-                let tip = project(w, f.at(x, y), width, height)
-                let toward = project(w, f.at(x + sketch.layout_arrow(arrow, 2) * pixel, y + sketch.layout_arrow(arrow, 3) * pixel), width, height)
-                let length = math.max(1e-9, math.hypot(toward[0] - tip[0], toward[1] - tip[1]))
-                arrows.extend([tip[0], tip[1], (toward[0] - tip[0]) / length, (toward[1] - tip[1]) / length])
-            let label = value_text(sketch, at, kind, shown_unit)
-            let text_width = self.font.measure(label)
-            let box = Rect(label_at[0] - text_width * 0.5 - 4.0, label_at[1] - 10.0, text_width + 8.0, 20.0)
-            self.shown.append(ShownDimension(at, label, box, lines, arrows, sketch.driven(at)))
+        # Labels the user put first (they stay), then the others, each at
+        # the first step clear of those before it (else the least crowded);
+        # then each still crowded tried again against all the rest (one
+        # placed early may be what a later one cannot get round).
+        for placed in [true, false]:
+            for at in 0..<sketch.constraint_count():
+                let kind = sketch.constraint_kind(at)
+                if not names.is_dimension(kind) or sketch.label_placed(at) != placed:
+                    continue
+                if let chosen = self.clearest(w, sketch, f, at, pixel, shown_unit, width, height, self.shown):
+                    self.shown.append(chosen)
+        for _ in 0..<2:
+            for index in 0..<self.shown.length:
+                let d = self.shown[index]
+                if sketch.label_placed(d.constraint):
+                    continue
+                let others: list[ShownDimension] = []
+                for at in 0..<self.shown.length:
+                    if at != index:
+                        others.append(self.shown[at])
+                if crowding_of(d, others) == 0:
+                    continue
+                if let chosen = self.clearest(w, sketch, f, d.constraint, pixel, shown_unit, width, height, others):
+                    self.shown[index] = chosen
         return self.shown
+
+    ## Dimension `at` at the first step clear of `others` (a label the user
+    ## put: where it was put), else at its least crowded step; none when it
+    ## measures nothing or is behind the camera.
+    func clearest(self, w: Workspace, sketch: CadSketch, f: SketchFrame, at: int, pixel: float, shown_unit: Unit, width: float, height: float, others: list[ShownDimension]) -> ShownDimension?!:
+        let kind = sketch.constraint_kind(at)
+        var best: ShownDimension? = none
+        var best_crowding = 0
+        for step in 0..<(1 if sketch.label_placed(at) else label_steps):
+            let made = self.made(w, sketch, f, at, kind, step, pixel, shown_unit, width, height) else break
+            let crowding = crowding_of(made, others)
+            if best == none or crowding < best_crowding:
+                best = made
+                best_crowding = crowding
+            if crowding == 0:
+                break
+        return best
+
+    ## Dimension `at` (of kind `kind`) laid out at step `step` and cast on
+    ## the screen; none when it measures nothing or is behind the camera.
+    func made(self, w: Workspace, sketch: CadSketch, f: SketchFrame, at: int, kind: int, step: int, pixel: float, shown_unit: Unit, width: float, height: float) -> ShownDimension?!:
+        if not sketch.lay_out(at, pixel, step):
+            return none
+        let label_at = project(w, f.at(sketch.label_x(), sketch.label_y()), width, height)
+        if label_at[2] < 0.0:
+            return none
+        let lines: list[float] = []
+        for line in 0..<sketch.layout_line_count():
+            let a = project(w, f.at(sketch.layout_line(line, 0), sketch.layout_line(line, 1)), width, height)
+            let b = project(w, f.at(sketch.layout_line(line, 2), sketch.layout_line(line, 3)), width, height)
+            lines.extend([a[0], a[1], b[0], b[1]])
+        let arrows: list[float] = []
+        for arrow in 0..<sketch.layout_arrow_count():
+            let x = sketch.layout_arrow(arrow, 0)
+            let y = sketch.layout_arrow(arrow, 1)
+            let tip = project(w, f.at(x, y), width, height)
+            let toward = project(w, f.at(x + sketch.layout_arrow(arrow, 2) * pixel, y + sketch.layout_arrow(arrow, 3) * pixel), width, height)
+            let length = math.max(1e-9, math.hypot(toward[0] - tip[0], toward[1] - tip[1]))
+            arrows.extend([tip[0], tip[1], (toward[0] - tip[0]) / length, (toward[1] - tip[1]) / length])
+        let label = value_text(sketch, at, kind, shown_unit)
+        let text_width = self.font.measure(label)
+        let box = Rect(label_at[0] - text_width * 0.5 - 4.0, label_at[1] - 10.0, text_width + 8.0, 20.0)
+        return ShownDimension(at, label, box, lines, arrows, sketch.driven(at))
 
     ## The dimension under (`x`, `y`), the last drawn (on top) first; -1
     ## for none.
@@ -122,13 +174,14 @@ pub class SketchDimensions:
                 return d
         return none
 
-    ## Draw them: selected ones in the accent, the one under the pointer
-    ## lit, driven ones muted; each label over a dim patch so it reads over
-    ## the geometry.
-    pub func draw(self, p: Painter, selected: list[int], lit: int) -> unit!:
+    ## Draw them: selected ones in the accent, those an over-constraint
+    ## runs through (`conflicting`) in the warning color, the one under the
+    ## pointer lit, driven ones muted; each label over a dim patch so it
+    ## reads over the geometry.
+    pub func draw(self, p: Painter, selected: list[int], lit: int, conflicting: list[int]) -> unit!:
         for d in self.shown:
-            let chosen = d.constraint in selected
-            let color = theme.accent() if chosen else (theme.grey(250.0) if d.constraint == lit else (theme.grey(150.0) if d.driven else theme.grey(205.0)))
+            let chosen = d.constraint in selected or d.constraint in conflicting
+            let color = theme.warning() if d.constraint in conflicting else (theme.accent() if chosen else (theme.grey(250.0) if d.constraint == lit else (theme.grey(150.0) if d.driven else theme.grey(205.0))))
             # A dark edge under each line and arrow, so they read over a lit
             # face as over the backdrop.
             var at = 0
@@ -214,12 +267,59 @@ pub func pixel_size(w: Workspace, f: SketchFrame, width: float, height: float) -
 ## driven.
 pub func value_text(sketch: CadSketch, at: int, kind: int, shown_unit: Unit) -> str:
     let value = sketch.constraint_value(at)
-    var label = units.angle_text(math.abs(value)) if kind == names.angle else units.length_text(value, shown_unit)
+    var label = units.angle_text(math.abs(value)) if kind == names.angle or kind == names.sweep else units.length_text(value, shown_unit)
     if kind == names.radius:
         label = "R" + label
     elif kind == names.diameter:
         label = "Ø" + label
     return f"({label})" if sketch.driven(at) else label
+
+## How crowded dimension `d` is among `others`: how many of their labels
+## its label meets, or their lines cross it, or its lines cross them.
+pub func crowding_of(d: ShownDimension, others: list[ShownDimension]) -> int:
+    var count = 0
+    for o in others:
+        if boxes_meet(d.box, o.box, label_margin) or lines_cross(o.lines, d.box) or lines_cross(d.lines, o.box):
+            count += 1
+    return count
+
+## Whether boxes `a` and `b` meet, `margin` points apart or closer.
+pub func boxes_meet(a: Rect, b: Rect, margin: float) -> bool:
+    return a.x - margin < b.x + b.width and b.x - margin < a.x + a.width and a.y - margin < b.y + b.height and b.y - margin < a.y + a.height
+
+## Whether one of `lines` (x1, y1, x2, y2 each) crosses box `b`.
+pub func lines_cross(lines: list[float], b: Rect) -> bool:
+    var at = 0
+    while at + 3 < lines.length:
+        if segment_meets_box(lines[at], lines[at + 1], lines[at + 2], lines[at + 3], b):
+            return true
+        at += 4
+    return false
+
+## Whether the segment (`x1`, `y1`) to (`x2`, `y2`) meets box `b` (its
+## part inside the box clipped, Liang–Barsky).
+func segment_meets_box(x1: float, y1: float, x2: float, y2: float, b: Rect) -> bool:
+    var low = 0.0
+    var high = 1.0
+    let dx = x2 - x1
+    let dy = y2 - y1
+    let ps = [-dx, dx, -dy, dy]
+    let qs = [x1 - b.x, b.x + b.width - x1, y1 - b.y, b.y + b.height - y1]
+    for side in 0..<4:
+        let p = ps[side]
+        let q = qs[side]
+        if p == 0.0:
+            if q < 0.0:
+                return false
+        else:
+            let t = q / p
+            if p < 0.0:
+                low = math.max(low, t)
+            else:
+                high = math.min(high, t)
+            if low > high:
+                return false
+    return true
 
 ## A rectangle's outline.
 func outline(p: Painter, r: Rect, color: Color) -> unit!:

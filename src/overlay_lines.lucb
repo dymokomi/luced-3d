@@ -105,12 +105,15 @@ pub struct OverlayLines:
     ## and y along `u` and `v`: `which` 0 the free ones, 1 the fully
     ## constrained (after CadSketch.analyze), 2 construction (and control
     ## point splines' nets), 3 entity `entity` alone (a hovered or selected
-    ## one; a point draws nothing).
-    pub func add_sketch(sketch: interop.Reference[CadSketch], origin: Vector3, u: Vector3, v: Vector3, which: i64, entity: i64 = -1) -> !:
+    ## one; a point draws nothing). With `unlinked`, 0 to 2 leave out
+    ## projected curves (drawn apart, in their own color).
+    pub func add_sketch(sketch: interop.Reference[CadSketch], origin: Vector3, u: Vector3, v: Vector3, which: i64, entity: i64 = -1, unlinked: bool = false) -> !:
         let s = try sketch.get()
         for at in 0..<s.entity_count():
             let kind = s.kind(at)
-            if kind == 0: continue
+            # The origin's axes are drawn across the view apart.
+            if kind == 0 or s.origin_part(at) >= 0: continue
+            if unlinked and which != 3 and s.linked(at): continue
             if which == 2 and kind == 4 and not s.fit(at):
                 for k in 1..<s.part_count(at):
                     let a = s.part(at, k - 1)
@@ -186,6 +189,54 @@ pub struct OverlayLines:
     pub func add_segment(a: Vector3, b: Vector3) -> !:
         try self.points.push(a)
         try self.points.push(b)
+
+    ## Diagonal hatch lines `spacing` apart, at 45° on the plane through
+    ## `origin` (axes `u`, `v`), across the triangles of `fills` (which lie
+    ## on that plane), moved by `lift`: Fusion's hatch over a slice's cap.
+    pub func add_hatch(fills: interop.Reference[Mesh], origin: Vector3, u: Vector3, v: Vector3, spacing: f64, lift: Vector3) -> !:
+        if not (spacing > 0.0): return
+        let mesh = fills.value()
+        # Lines x - y = k step: `spacing` apart across them.
+        let step = spacing * math.sqrt(2.0)
+        var xs: f64[3] = [0.0, 0.0, 0.0]
+        var ys: f64[3] = [0.0, 0.0, 0.0]
+        var ss: f64[3] = [0.0, 0.0, 0.0]
+        for face in 0..<mesh.face_count():
+            if (try mesh.face_size(face)) != 3: continue
+            for corner in 0..<(usize)3:
+                let d = (try mesh.point(try mesh.face_point(face, (i64)corner))).subtract(origin)
+                xs[corner] = d.dot(u)
+                ys[corner] = d.dot(v)
+                ss[corner] = xs[corner] - ys[corner]
+            let low = math.min(ss[0], math.min(ss[1], ss[2]))
+            let high = math.max(ss[0], math.max(ss[1], ss[2]))
+            var k = math.ceil(low / step)
+            while k * step <= high:
+                let value = k * step
+                k += 1.0
+                # Where the line crosses the triangle's edges: two places.
+                var found = 0
+                var ax = 0.0
+                var ay = 0.0
+                var bx = 0.0
+                var by = 0.0
+                for edge in 0..<(usize)3:
+                    let next = (edge + 1) % 3
+                    let s0 = ss[edge]
+                    let s1 = ss[next]
+                    if (s0 < value) == (s1 < value) or s0 == s1: continue
+                    let t = (value - s0) / (s1 - s0)
+                    let x = xs[edge] + (xs[next] - xs[edge]) * t
+                    let y = ys[edge] + (ys[next] - ys[edge]) * t
+                    if found == 0:
+                        ax = x
+                        ay = y
+                    else:
+                        bx = x
+                        by = y
+                    found += 1
+                if found == 2:
+                    try self.add_segment(planar(origin, u, v, ax, ay).add(lift), planar(origin, u, v, bx, by).add(lift))
 
     ## An arc on the plane through `origin` (axes `u`, `v`) about plane
     ## point (`cx`, `cy`) of `radius`, from angle `start` sweeping `sweep`

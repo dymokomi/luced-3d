@@ -2,9 +2,13 @@
 ## cast onto the sketch plane while Project is the tool. The cast is made
 ## by the cook, off the UI thread with the compute worker (the workspace's
 ## `shadows`, sketch_node.shadows_text), and read here once per cast. A
-## click brings the edge under the cursor in, fixed and linked, so it
-## follows the body; with curves to re-link (lost projections chosen for
-## Re-link) it points them at that edge instead.
+## click on an edge brings it in, fixed and linked, so it follows the body;
+## a click inside a face (off its edges) brings every edge of its loops,
+## the face nearest the camera where several cast there, and the face is
+## remembered so edges it gains upstream come too; Project body (the
+## right-click menu, Fusion's Bodies filter) brings the body's outline. With
+## curves to re-link (lost projections chosen for Re-link) a click on an
+## edge points them at it instead.
 from luce_cad.sketch import CadSketch, CadShadows
 from workspace import Workspace
 
@@ -30,15 +34,31 @@ pub class SketchProjecting:
         return self.shadows
 
     ## Bring the edge nearest (`x`, `y`) within `reach` into `sketch` (or
-    ## re-link the chosen lost curves to it); what to say when nothing could
-    ## be ("": it was, or no edge is there), and whether one was.
-    pub func project_at(self, w: Workspace, node: int, sketch: CadSketch, x: float, y: float, reach: float) -> (bool, str)!:
+    ## re-link the chosen lost curves to it), else the face there nearest
+    ## the camera (on the plane's `toward` side: +1 its normal's); what to
+    ## say when nothing could be ("": it was, or nothing is there), and
+    ## whether something was.
+    pub func project_at(self, w: Workspace, node: int, sketch: CadSketch, x: float, y: float, reach: float, toward: float) -> (bool, str)!:
         let found = self.projection(w, node)
         let cast = found else return (false, "Project casts the edges of the Sketch's input body: connect a body to it (or wait for it to cook)")
         let edge = cast.nearest(x, y, reach)
-        if edge < 0:
-            return (false, "")
         var failed = ""
+        if edge < 0:
+            if self.relinking.length > 0:
+                return (false, "")
+            # Inside a face: all its loops.
+            let face = cast.face_at(x, y, toward)
+            if face < 0:
+                return (false, "")
+            let made = sketch.project_shadow_face(cast, face) catch failure:
+                failed = failure.message
+                recover -1
+            if failed != "":
+                return (false, failed)
+            if made == 0:
+                return (false, "That face's edges are projected already")
+            _ = sketch.solve()
+            return (true, "")
         if self.relinking.length > 0:
             for curve in self.relinking:
                 if curve < sketch.entity_count():
@@ -51,5 +71,22 @@ pub class SketchProjecting:
                 recover -1
         if failed != "":
             return (false, failed)
+        _ = sketch.solve()
+        return (true, "")
+
+    ## Project body: the outline of the input body seen from the camera's
+    ## side `toward` brought into `sketch`; what to say when it could not be
+    ## (""), and whether it was.
+    pub func project_body(self, w: Workspace, node: int, sketch: CadSketch, toward: float) -> (bool, str)!:
+        let found = self.projection(w, node)
+        let cast = found else return (false, "Project casts the edges of the Sketch's input body: connect a body to it (or wait for it to cook)")
+        var failed = ""
+        let made = sketch.project_shadow_outline(cast, toward) catch failure:
+            failed = failure.message
+            recover -1
+        if failed != "":
+            return (false, failed)
+        if made == 0:
+            return (false, "The body's outline is projected already")
         _ = sketch.solve()
         return (true, "")

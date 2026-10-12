@@ -1,0 +1,270 @@
+## Fusion's sketch references and typed values, used as a user would: the
+## origin's point and axes picked by Sketch Dimension where nothing else is
+## (made in the sketch then, fixed); a typed line and 3-point rectangle
+## angle held against the x axis; a center point arc's typed Sweep an angle
+## dimension on the arc; a dimension that would over-constrain lighting what
+## it repeats; automatically placed labels kept off each other; Project of a
+## whole face (a click inside it) and of the body's outline (Project body).
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3
+from luce_cad.sketch import CadSketch
+import node_commands
+import sketch_commands
+import sketch_kinds as names
+from sketch_support import open_sketch, render, click, key, near, sketch_of, last_of
+from sketch_dimensions import boxes_meet
+from view_projection import project
+import text as characters
+from luce_std import math
+
+pub func sketch_reference_tests() -> unit!:
+    origin_dimensions()
+    typed_angles()
+    conflicts_lit()
+    labels_apart()
+    projected_face_and_body()
+    print("PASS sketch references: the origin's point and x axis dimensioned to (made then, fixed); a typed line angle and a 3-point rectangle's angle from the x axis; an arc's typed sweep an angle dimension on it; a repeated dimension added driven with what it repeats lit; labels laid out apart; Project of a face's loops by a click inside it and of the body's outline")
+
+func type_text(editor: Luce3D, text: str) -> unit!:
+    for character in text:
+        editor.app.dispatch(Event(kind = EventKind.text_input, codepoint = characters.code_of(character)))
+
+func hover(editor: Luce3D, x: float, y: float) -> unit!:
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    let s = project(editor.workspace, view.sketch.editor.frame.at(x, y), bounds.width, bounds.height)
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + s[0], y = bounds.y + s[1]))
+
+## A point dimensioned to the origin's point, and to its x axis: the
+## origin made in the sketch then (fixed, no profile), the dimensions
+## holding the point there.
+func origin_dimensions() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let id = open_sketch(editor, 10.0, 8.0, 80.0)
+    let e = editor.panels.view.sketch.editor
+    e.choose("Point")
+    click(editor, 12.0, 9.0)
+    assert(sketch_of(editor, id).entity_count() == 1)
+    # Nothing of the sketch near the origin: its point is under the pointer.
+    e.choose("Sketch Dimension")
+    hover(editor, 0.0, 0.0)
+    assert(e.hover < 0 and e.hover_origin == 0)
+    click(editor, 12.0, 9.0)
+    click(editor, 0.0, 0.0)
+    click(editor, 4.0, 12.0)
+    if editor.panels.sketch_value.is_open():
+        key(editor, Key.escape)
+    var s = sketch_of(editor, id)
+    assert(s.constraint_count() == 2 and s.constraint_kind(1) == names.distance, s.text())
+    assert(s.origin_part(s.constraint_entity(1, 1)) == 0 or s.origin_part(s.constraint_entity(1, 0)) == 0)
+    assert(near(s.constraint_value(1), 15.0))
+    # The x axis, far from the origin's point: a point's distance from it.
+    e.choose("Sketch Dimension")
+    hover(editor, 30.0, 0.0)
+    assert(e.hover_origin == 1)
+    click(editor, 12.0, 9.0)
+    click(editor, 30.0, 0.0)
+    click(editor, 20.0, 5.0)
+    if editor.panels.sketch_value.is_open():
+        key(editor, Key.escape)
+    s = sketch_of(editor, id)
+    let last = s.constraint_count() - 1
+    assert(s.constraint_kind(last) == names.line_distance and s.origin_part(s.constraint_entity(last, 1)) == 1 and near(s.constraint_value(last), 9.0), s.text())
+    # The origin is fixed and draws no profile.
+    s.analyze()
+    assert(s.fixed(s.constraint_entity(last, 1)))
+    editor.close()
+
+## A Line typed 20, Tab, 30: its angle from the x axis (no other
+## construction line); a 3-point rectangle typed 20, Tab, 45, then 10: its
+## first side at 45° from the x axis; a Center Point Arc typed 10, Enter,
+## 120, Enter: an angle dimension on the arc, 120° swept.
+func typed_angles() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let id = open_sketch(editor, 30.0, 20.0, 160.0)
+    let e = editor.panels.view.sketch.editor
+    e.choose("Line")
+    click(editor, 5.0, 5.0)
+    hover(editor, 15.0, 9.0)
+    type_text(editor, "20")
+    key(editor, Key.tab)
+    type_text(editor, "30")
+    key(editor, Key.enter)
+    key(editor, Key.escape)
+    var s = sketch_of(editor, id)
+    var angle = -1
+    for at in 0..<s.constraint_count():
+        if s.constraint_kind(at) == names.angle:
+            angle = at
+    assert(angle >= 0 and s.origin_part(s.constraint_entity(angle, 0)) == 1, s.text())
+    var others = 0
+    for at in 0..<s.entity_count():
+        if s.kind(at) == names.line_kind and s.construction(at) and s.origin_part(at) < 0:
+            others += 1
+    assert(others == 0)
+    e.choose("3-Point Rectangle")
+    click(editor, 40.0, 5.0)
+    hover(editor, 50.0, 12.0)
+    type_text(editor, "20")
+    key(editor, Key.tab)
+    type_text(editor, "45")
+    key(editor, Key.enter)
+    hover(editor, 40.0, 30.0)
+    type_text(editor, "10")
+    key(editor, Key.enter)
+    s = sketch_of(editor, id)
+    var turned = 0
+    for at in 0..<s.constraint_count():
+        if s.constraint_kind(at) == names.angle and s.origin_part(s.constraint_entity(at, 0)) == 1:
+            turned += 1
+            let line = s.constraint_entity(at, 1)
+            let a = s.part(line, 0)
+            let b = s.part(line, 1)
+            let way = math.atan2(s.y(b) - s.y(a), s.x(b) - s.x(a))
+            assert(near(way, s.constraint_value(at)), f"{way}")
+    assert(turned == 2, s.text())
+    e.choose("Center Point Arc")
+    click(editor, 30.0, 40.0)
+    hover(editor, 36.0, 42.0)
+    type_text(editor, "10")
+    key(editor, Key.enter)
+    hover(editor, 25.0, 48.0)
+    assert(e.typing.boxes.length == 1 and e.typing.boxes[0].label == "Sweep")
+    type_text(editor, "120")
+    key(editor, Key.enter)
+    s = sketch_of(editor, id)
+    let arc = last_of(s, names.arc_kind)
+    var sweep = -1
+    for at in 0..<s.constraint_count():
+        if s.constraint_kind(at) == names.sweep:
+            sweep = at
+    assert(arc >= 0 and sweep >= 0 and s.constraint_entity(sweep, 0) == arc and near(s.constraint_value(sweep), math.pi * 2.0 / 3.0), s.text())
+    let c = s.part(arc, 0)
+    let start = math.atan2(s.y(s.part(arc, 1)) - s.y(c), s.x(s.part(arc, 1)) - s.x(c))
+    var end = math.atan2(s.y(s.part(arc, 2)) - s.y(c), s.x(s.part(arc, 2)) - s.x(c))
+    while end <= start:
+        end += 2.0 * math.pi
+    assert(near(end - start, math.pi * 2.0 / 3.0) and near(s.radius(arc), 10.0))
+    let dims = sketch_commands.dimensions(s.text())
+    assert(dims[dims.length - 1].angle)
+    editor.close()
+
+## A 40 by 20 rectangle typed (its width and height dimensioned), then its
+## bottom dimensioned again: added driven, and the width it repeats lit
+## until the next change (Esc).
+func conflicts_lit() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let id = open_sketch(editor, 25.0, 15.0, 120.0)
+    let e = editor.panels.view.sketch.editor
+    e.choose("2-Point Rectangle")
+    click(editor, 5.0, 5.0)
+    hover(editor, 20.0, 15.0)
+    type_text(editor, "40")
+    key(editor, Key.tab)
+    type_text(editor, "20")
+    key(editor, Key.enter)
+    var s = sketch_of(editor, id)
+    var width = -1
+    for at in 0..<s.constraint_count():
+        if s.constraint_kind(at) == names.distance and width < 0:
+            width = at
+    assert(width >= 0)
+    e.choose("Sketch Dimension")
+    click(editor, 25.0, 5.0)
+    click(editor, 25.0, -4.0)
+    s = sketch_of(editor, id)
+    let repeated = s.constraint_count() - 1
+    assert(s.driven(repeated))
+    assert(width in e.conflicts and not (repeated in e.conflicts), f"{e.conflicts}")
+    assert(editor.workspace.notice.contains("over-constrain"))
+    render(editor)
+    key(editor, Key.escape)
+    assert(e.conflicts.length == 0)
+    editor.close()
+
+## A line's length and the distance between its ends, both unplaced: they
+## would sit on one place; laid out, their labels stand apart.
+func labels_apart() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    let s = CadSketch.parse("")
+    let a = s.add_point(5.0, 5.0)
+    let b = s.add_point(45.0, 5.0)
+    _ = s.add_line(a, b)
+    _ = s.constrain(names.distance, a, b, value = 40.0)
+    _ = s.constrain(names.horizontal_distance, a, b, value = 40.0, driven = true)
+    let id = open_sketch(editor, 25.0, 5.0, 120.0)
+    node_commands.set_text(w, 0, s.text())
+    render(editor)
+    let e = editor.panels.view.sketch.editor
+    e.sync()
+    let bounds = editor.panels.view.layout().bounds()
+    let sketch = e.sketch else trap("no sketch")
+    let shown = e.dimensions.placed(w, sketch, e.frame, e.revision, bounds.width, bounds.height)
+    assert(shown.length == 2 and not boxes_meet(shown[0].box, shown[1].box, 0.0), f"{shown.length}")
+    _ = id
+    editor.close()
+
+## A 20 mm box under a Sketch 30 up, Project the tool: Project body brings
+## its outline (the top's four edges, one loop); a click inside the top face
+## brings its loops, here the same edges, so nothing new is made.
+func projected_face_and_body() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    w.snaps.flags[1] = false
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    node_commands.add_node(w, "Sketch", 0.0, 120.0)
+    let id = w.network.selected
+    node_commands.set_parameter(w, 1, 30.0)
+    node_commands.display_selected(w)
+    w.view.yaw = 0.0
+    w.view.pitch = 1.5
+    w.view.distance = 120.0
+    w.view.target = Vector3(0.0, 30.0, 0.0)
+    w.view.update_camera()
+    render(editor)
+    let e = editor.panels.view.sketch.editor
+    e.sync()
+    e.choose("Project")
+    render(editor)
+    # Inside the top face, off its edges: the face is what a click brings.
+    hover(editor, 2.0, 3.0)
+    assert(e.projected_edge() < 0 and e.projected_face() >= 0)
+    click(editor, 2.0, 3.0)
+    var s = sketch_of(editor, id)
+    var lines = 0
+    for at in 0..<s.entity_count():
+        if s.kind(at) == names.line_kind and s.linked(at):
+            lines += 1
+    assert(lines == 4 and s.projected_face_count() == 1, s.text())
+    # The body's outline: the same four edges, already there.
+    e.choose("Project")
+    e.project_body()
+    assert(w.notice.contains("projected already"), w.notice)
+    # A fresh sketch: Project body brings the four, one closed loop.
+    node_commands.set_text(w, 0, "")
+    render(editor)
+    e.sync()
+    e.choose("Project")
+    render(editor)
+    e.project_body()
+    s = sketch_of(editor, id)
+    var points = 0
+    lines = 0
+    for at in 0..<s.entity_count():
+        if s.kind(at) == names.line_kind:
+            lines += 1
+        elif s.kind(at) == names.point_kind:
+            points += 1
+    assert(lines == 4 and points == 4 and s.link_count() == 4, s.text())
+    editor.close()

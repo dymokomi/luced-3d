@@ -2,14 +2,22 @@
 ## sketch_view.luc draws and what Select picks, so a glyph is clicked where
 ## it shows. Glyphs win over geometry under the pointer, as in Fusion.
 ## Glyphs that would sit on one place (a line's Horizontal and its
-## Parallel) stand side by side instead of over each other. Dimensions are
-## sketch_dimensions.luc's.
+## Parallel) stand side by side instead of over each other, and a glyph
+## keeps off the dimensions' labels and the glyphs before it: beside what it
+## holds, below and right of it first, else above, else to the left, else
+## a row further off. Placed once per sketch change or view
+## (SketchGlyphs), after the dimensions (sketch_dimensions.luc), which they
+## keep off.
 from luce_gpu.gpu import Rect
 from luce_cad.sketch import CadSketch
 from sketch_node import SketchFrame
+from sketch_dimensions import ShownDimension, boxes_meet
 from workspace import Workspace
 from view_projection import project
 import sketch_kinds as names
+
+## Points kept between a glyph and a label or another glyph.
+let glyph_margin = 1.5
 
 ## A constraint's glyph, placed: the constraint, the text shown and the box
 ## it is drawn in (viewport points).
@@ -23,36 +31,74 @@ pub class Glyph:
         self.label = label
         self.box = box
 
-## Every constraint glyph of `sketch` on plane `f`, on a viewport `width`
-## by `height` (those behind the camera left out).
-pub func glyphs(w: Workspace, sketch: CadSketch, f: SketchFrame, width: float, height: float) -> list[Glyph]!:
-    let placed: list[Glyph] = []
-    # How far along each anchor's row the next glyph goes.
-    let anchors: list[str] = []
-    let reaches: list[float] = []
-    for at in 0..<sketch.constraint_count():
-        let kind = sketch.constraint_kind(at)
-        let label = glyph(kind)
-        # A projected curve is fixed by its link, not by a glyph to show.
-        if label == "" or (kind == names.fix and sketch.linked(sketch.constraint_entity(at, 0))):
-            continue
-        let where = place_of(sketch, sketch.constraint_entity(at, 0))
-        let s = project(w, f.at(where[0], where[1]), width, height)
-        if s[2] < 0.0:
-            continue
-        # Beside what it holds, after the glyphs already there.
-        let anchor = f"{int(s[0])},{int(s[1])}"
-        var along = 0.0
-        if let index = anchors.index_of(anchor):
-            along = reaches[index]
-        let box = Rect(s[0] + 6.0 + along, s[1] + 4.0, float(label.length) * 8.0 + 6.0, 18.0)
-        if let index = anchors.index_of(anchor):
-            reaches[index] = along + box.width + 3.0
-        else:
-            anchors.append(anchor)
-            reaches.append(box.width + 3.0)
-        placed.append(Glyph(at, label, box))
-    return placed
+## A sketch's glyphs as last placed, made again only when the dimensions
+## were (their `made_from` key: the sketch, the plane or the view changed).
+pub class SketchGlyphs:
+    var made_from: str = "?"
+    pub var shown: list[Glyph]
+
+    pub func init(self):
+        self.shown = []
+
+    ## Every constraint glyph of `sketch` on plane `f`, on a viewport
+    ## `width` by `height` (those behind the camera left out), clear of
+    ## `labels`; `key` is the dimensions' (SketchDimensions.made_from).
+    pub func placed(self, w: Workspace, sketch: CadSketch, f: SketchFrame, key: str, width: float, height: float, labels: list[ShownDimension]) -> list[Glyph]!:
+        if key == self.made_from:
+            return self.shown
+        self.made_from = key
+        self.shown = []
+        let taken: list[Rect] = []
+        for d in labels:
+            taken.append(d.box)
+        # How far along each anchor's row the next glyph goes.
+        let anchors: list[str] = []
+        let reaches: list[float] = []
+        for at in 0..<sketch.constraint_count():
+            let kind = sketch.constraint_kind(at)
+            let label = glyph(kind)
+            # A projected curve is fixed by its link, not by a glyph to show;
+            # nor is the origin, which is fixed as the sketch's frame.
+            let held = sketch.constraint_entity(at, 0)
+            if label == "" or (kind == names.fix and (sketch.linked(held) or sketch.origin_part(held) >= 0)):
+                continue
+            let where = place_of(sketch, held)
+            let s = project(w, f.at(where[0], where[1]), width, height)
+            if s[2] < 0.0:
+                continue
+            let anchor = f"{int(s[0])},{int(s[1])}"
+            var along = 0.0
+            if let index = anchors.index_of(anchor):
+                along = reaches[index]
+            let box = clear_box(s[0], s[1], along, float(label.length) * 8.0 + 6.0, 18.0, taken)
+            if let index = anchors.index_of(anchor):
+                reaches[index] = along + box.width + 3.0
+            else:
+                anchors.append(anchor)
+                reaches.append(box.width + 3.0)
+            taken.append(box)
+            self.shown.append(Glyph(at, label, box))
+        return self.shown
+
+## A glyph box `w` by `h` beside screen point (`x`, `y`), `along` its row,
+## at the first place round it clear of `taken` (below right, above right,
+## below left, above left, then a row further below and above); below
+## right when none is.
+func clear_box(x: float, y: float, along: float, w: float, h: float, taken: list[Rect]) -> Rect:
+    let right = x + 6.0 + along
+    let left = x - 6.0 - along - w
+    let lefts = [right, right, left, left, right, right]
+    let tops = [y + 4.0, y - 4.0 - h, y + 4.0, y - 4.0 - h, y + 8.0 + h, y - 8.0 - 2.0 * h]
+    for at in 0..<lefts.length:
+        let box = Rect(lefts[at], tops[at], w, h)
+        var clear = true
+        for t in taken:
+            if boxes_meet(box, t, glyph_margin):
+                clear = false
+                break
+        if clear:
+            return box
+    return Rect(right, y + 4.0, w, h)
 
 ## The constraint whose glyph is under (`x`, `y`), the last drawn
 ## (on top) first; -1 for none.
