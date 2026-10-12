@@ -412,6 +412,53 @@ pub func main(arguments: list[str]) -> int!:
         node_commands.set_parameter(w, 1, 1.0)
         w.frame_cube()
         editor.panels.refresh()
+    if arguments.length > 1 and (arguments[1] == "cad_twice" or arguments[1] == "cad_twice_chamfer"):
+        # Fillets on fillets: a box's uprights filleted G3, then its top and
+        # bottom loops (lines and the uprights' sections, tangent where they
+        # meet) filleted G3 from one picked edge each, or the top chamfered.
+        let w = editor.workspace
+        node_commands.delete_selected(w)
+        node_commands.add_node(w, "CAD", 40.0, 40.0)
+        node_commands.enter_group(w, w.network.selected)
+        node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+        node_commands.set_parameter(w, 0, 3.0)
+        node_commands.set_parameter(w, 1, 2.0)
+        node_commands.set_parameter(w, 2, 2.0)
+        let body = CadGeometry.model(w.network.evaluate_data(w.network.selected).geometry, 0)
+        let uprights: list[int] = []
+        for face in 0..<body.face_count():
+            for use in 0..<body.face_edge_count(face):
+                let a = body.face_edge_point(face, use, 0.0)
+                let b = body.face_edge_point(face, use, 1.0)
+                let id = body.face_edge_id(face, use)
+                if a.x == b.x and a.z == b.z and not (id in uprights):
+                    uprights.append(id)
+        node_commands.add_node(w, "Fillet", 40.0, 160.0)
+        node_commands.set_parameter(w, 0, 0.6)
+        node_commands.set_parameter(w, 1, 2.0)
+        node_commands.set_text(w, 0, CadModeling.edge_references(body, uprights))
+        let rounded = CadGeometry.model(w.network.evaluate_data(w.network.selected).geometry, 0)
+        let loops: list[int] = []
+        for face in 0..<rounded.face_count():
+            for use in 0..<rounded.face_edge_count(face):
+                let a = rounded.face_edge_point(face, use, 0.0)
+                let b = rounded.face_edge_point(face, use, 1.0)
+                let id = rounded.face_edge_id(face, use)
+                let top = a.y > 0.99 and b.y > 0.99
+                let floor = a.y < -0.99 and b.y < -0.99 and arguments[1] == "cad_twice"
+                if (top or floor) and a.x == b.x and loops.length < (2 if arguments[1] == "cad_twice" else 1) and not (id in loops):
+                    loops.append(id)
+        if arguments[1] == "cad_twice":
+            node_commands.add_node(w, "Fillet", 40.0, 280.0)
+            node_commands.set_parameter(w, 0, 0.25)
+            node_commands.set_parameter(w, 1, 2.0)
+        else:
+            node_commands.add_node(w, "Chamfer", 40.0, 280.0)
+            node_commands.set_parameter(w, 0, 0.2)
+        node_commands.set_text(w, 0, CadModeling.edge_references(rounded, loops))
+        node_commands.display_selected(w)
+        w.frame_cube()
+        editor.panels.refresh()
     if arguments.length > 1 and arguments[1] == "script":
         # A Script node on a grid, its script half-typed: completion opens at `g.`.
         let w = editor.workspace

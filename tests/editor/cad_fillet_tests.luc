@@ -1,0 +1,158 @@
+## Fillets on fillets, as the owner met them: a box's four uprights
+## filleted G3, then the top loop (lines and the uprights' sections, tangent
+## where they meet) filleted G1, G2 and G3 and chamfered from one picked
+## edge; the bottom loop; both; through Fillet and Chamfer nodes and as Edit
+## CAD steps. A blend that cannot be built says why on its node (or step)
+## and the viewport keeps showing what it started from, locally and on the
+## compute worker.
+from workspace import Workspace
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+from luce_geocore.geocore import Vector3
+from luce_std import math
+import time
+import node_commands
+import selection_commands
+import modeling_commands
+
+## The ids of `model`'s edges whose start and middle `keep` takes.
+func edges_where(model: CadModel, keep: func(Vector3, Vector3) -> bool) -> list[int]!:
+    let found: list[int] = []
+    for face in 0..<model.face_count():
+        for use in 0..<model.face_edge_count(face):
+            let id = model.face_edge_id(face, use)
+            if keep(model.face_edge_point(face, use, 0.0), model.face_edge_point(face, use, 0.5)) and not (id in found):
+                found.append(id)
+    return found
+
+func upright(a: Vector3, b: Vector3) -> bool:
+    return math.abs(a.x - b.x) < 1e-9 and math.abs(a.z - b.z) < 1e-9
+
+func top(a: Vector3, b: Vector3) -> bool:
+    return a.y > 0.99 and b.y > 0.99
+
+func bottom(a: Vector3, b: Vector3) -> bool:
+    return a.y < -0.99 and b.y < -0.99
+
+func model_of(w: Workspace, id: int) -> CadModel!:
+    return CadGeometry.model(w.network.evaluate_data(id).geometry, 0)
+
+func settle(w: Workspace) -> unit!:
+    let session = w.compute else trap("compute")
+    let deadline = time.now() + 60000000000
+    while session.busy and time.now() < deadline:
+        _ = w.poll_compute()
+    assert(not session.busy)
+
+pub func cad_fillet_tests() -> unit!:
+    feature_nodes()
+    edit_steps()
+    print("PASS CAD fillets on fillets: a box's uprights filleted G3, its top and bottom loops then filleted G1, G2, G3 and chamfered, by nodes and as Edit CAD steps; a blend too large says why on its node or step, and the viewport keeps its input (locally and on the worker)")
+
+## Fillet and Chamfer nodes inside a CAD node.
+func feature_nodes() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    for axis in 0..<3:
+        node_commands.set_parameter(w, axis, 2.0)
+    let box = w.network.selected
+    let source = model_of(w, box)
+    node_commands.add_node(w, "Fillet", 0.0, 120.0)
+    let corners = w.network.selected
+    node_commands.set_parameter(w, 0, 0.4)
+    node_commands.set_parameter(w, 1, 2.0)
+    node_commands.set_text(w, 0, CadModeling.edge_references(source, edges_where(source, upright)))
+    let rounded = model_of(w, corners)
+    assert(rounded.face_count() == 10 and w.network.require(corners).failure == "")
+    let line = edges_where(rounded, top)[0]
+    let floor = edges_where(rounded, bottom)[0]
+    # The top loop from one of its lines: G1, G2, G3 (continuity slot 1).
+    node_commands.add_node(w, "Fillet", 0.0, 240.0)
+    let second = w.network.selected
+    node_commands.set_parameter(w, 0, 0.2)
+    node_commands.set_text(w, 0, CadModeling.edge_references(rounded, [line]))
+    for continuity in 0..<3:
+        node_commands.set_parameter(w, 1, float(continuity))
+        assert(model_of(w, second).face_count() == 18 and w.network.require(second).failure == "")
+    # Both loops at once.
+    node_commands.set_text(w, 0, CadModeling.edge_references(rounded, [line, floor]))
+    assert(model_of(w, second).face_count() == 26)
+    # The top loop chamfered.
+    node_commands.select_node(w, corners)
+    node_commands.add_node(w, "Chamfer", 200.0, 240.0)
+    let chamfer = w.network.selected
+    node_commands.set_parameter(w, 0, 0.2)
+    node_commands.set_text(w, 0, CadModeling.edge_references(rounded, [line]))
+    assert(model_of(w, chamfer).face_count() == 18)
+    # Too large: the node says why, and the viewport shows its input (the
+    # rounded box), not nothing.
+    node_commands.select_node(w, second)
+    node_commands.set_parameter(w, 0, 0.5)
+    node_commands.display_selected(w)
+    let failed = w.network.require(second).failure
+    assert(failed.contains("too large") and failed.contains("must be less than"))
+    assert(w.notice.contains("too large") and w.notice.contains("shows its input"))
+    let (_, meshes) = w.on_screen()
+    assert(meshes.length > 0)
+    # On the compute worker too.
+    w.enable_compute()
+    settle(w)
+    assert(w.notice.contains("too large") and w.notice.contains("shows its input"))
+    let (_, published) = w.on_screen()
+    assert(published.length > 0)
+    node_commands.set_parameter(w, 0, 0.2)
+    settle(w)
+    assert(w.notice == "" and w.network.require(second).failure == "")
+
+## The same as Edit CAD steps: a Box, its uprights filleted G3 (picked at
+## the Edges level), then one edge of the top loop filleted.
+func edit_steps() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    let node = w.network.selected
+    modeling_commands.create(w, "Box")
+    pick_edges(w, upright)
+    modeling_commands.model(w, "Fillet")
+    modeling_commands.set_last_step(w, 0, 0.4, 0.0001, 100000.0)
+    modeling_commands.set_last_step(w, 1, 2.0, 0.0, 2.0)
+    assert(model_of(w, node).face_count() == 10)
+    # One edge of the top loop: its tangent chain is the whole loop.
+    pick_edges(w, func(a: Vector3, b: Vector3) -> bool:
+        return top(a, b) and math.abs(a.x - b.x) < 1e-9)
+    modeling_commands.model(w, "Fillet")
+    modeling_commands.set_last_step(w, 0, 0.2, 0.0001, 100000.0)
+    for continuity in 0..<3:
+        modeling_commands.set_last_step(w, 1, float(continuity), 0.0, 2.0)
+        assert(model_of(w, node).face_count() == 18 and w.network.require(node).warning == "")
+    # Too large: the step says why and is left out; the rounded box stays.
+    modeling_commands.set_last_step(w, 0, 0.5, 0.0001, 100000.0)
+    let kept = model_of(w, node)
+    let warning = w.network.require(node).warning
+    assert(kept.face_count() == 10 and w.network.require(node).failure == "")
+    assert(warning.starts_with("Step 3 (Fillet) could not be built: ") and warning.contains("too large"))
+    modeling_commands.set_last_step(w, 0, 0.2, 0.0001, 100000.0)
+    assert(model_of(w, node).face_count() == 18 and w.network.require(node).warning == "")
+
+## Edges level: the B-rep edges with a mesh edge `keep` takes (by its
+## ends), each picked once (a pick takes the whole B-rep edge; picking it
+## again with Shift would drop it).
+func pick_edges(w: Workspace, keep: func(Vector3, Vector3) -> bool) -> unit!:
+    selection_commands.set_mode(w, 2)
+    let mesh = w.geometry else trap("edges")
+    let tag = mesh.find_attribute("cad_edge", 4)
+    let picked: list[int] = []
+    for at in 0..<mesh.edge_count():
+        let owner = int(mesh.attribute_value(tag, at))
+        if owner < 0 or owner in picked:
+            continue
+        if keep(mesh.point(mesh.edge_point(at, 0)), mesh.point(mesh.edge_point(at, 1))):
+            selection_commands.choose_component(w, at, picked.length > 0)
+            picked.append(owner)
+    assert(picked.length > 0 and w.selected_count() > 0)

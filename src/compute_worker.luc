@@ -23,6 +23,7 @@ import import_node
 import node_paths
 from luce_ui import ui
 from edit_kinds import is_edit, edit_kind, context_kind
+from edit_types import run_step
 from shader_nodes import is_shader
 from luce_cad.cad_edits import CadEdits
 from render_geometry import render_geometry
@@ -93,6 +94,8 @@ class Computation:
                     error(failure.code, failure.message)
                 if not item.outside:
                     notice = failure.message
+                    if self.publish_fallback(item.node, item.matrix):
+                        notice = f"{failure.message} (the viewport shows its input)"
                 continue
             self.channel.progress(item.node.id, 0.95, "Preparing viewport")
             self.publish(item.node, data, item.matrix)
@@ -224,9 +227,12 @@ class Computation:
                     start = count
             count -= 1
         for at in start..<node.edits.length:
-            result = kind.run(node.edits[at], result)
+            let (next, built) = run_step(kind, node.edits[at], at, result)
+            result = next
             self.recipes += 1
             self.channel.check()
+            if not built:
+                break
             if at + 1 < node.edits.length and checkpoint(at + 1, node.edits.length):
                 _ = self.store.put(prefix_stamp(node, base, at + 1), result)
         return result
@@ -340,6 +346,20 @@ class Computation:
             self.publish_lines((node.stamp, "overlays", self.graph.show_normals, placement).hash(), node, data, matrix, true, self.graph.show_normals)
         self.publish_curves(node, data, matrix, placement)
         self.publish_cad_hulls(node, data, matrix, placement)
+
+    ## A failed node's place in the viewport: the nearest node upstream
+    ## that cooked (what the failing feature started from), published as
+    ## that node's, so the view never goes blank; false when none did.
+    func publish_fallback(self, node: Node, matrix: Matrix4) -> bool!:
+        for id in self.graph.upstream_chain(node.id):
+            let upstream = self.graph.find(id) else return false
+            let data = self.evaluate(upstream) catch failure:
+                if failure.message == "Computation superseded":
+                    error(failure.code, failure.message)
+                continue
+            self.publish(upstream, data, matrix)
+            return true
+        return false
 
     ## Overlay lines under `key`: the CAD edges (as wires and patch borders)
     ## with `edges`, the normal guides with `normals`.

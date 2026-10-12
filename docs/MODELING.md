@@ -288,6 +288,18 @@ Create entries come from the kinds themselves: the strip shows what the
 active kind offers (Edit Mesh's on other nodes). A kind may also show its
 selection through surfaces (Edit SDF).
 
+A step that cannot be built does not take the node down. The recipe stops
+there, and the node keeps what the steps before it made. Its warning names the
+step and says why, for example "Step 3 (Fillet) could not be built: a fillet
+radius of 0.5 is too large for this curved edge: it must be less than 0.341".
+The node shows WARNING, and the status line shows the displayed node's
+warning. Undo the step, or change its values in the tool bar.
+
+Any other node that fails shows ERROR and its message, and the status line
+says "(the viewport shows its input)". The viewport then shows the nearest node
+upstream that cooked, so a feature that cannot be built leaves the body it
+started from on screen. That holds locally and on the compute worker.
+
 Edit Mesh's levels are Object, Polygons, Edges, Vertices and Corners. At the
 Object level a pick selects a whole piece, and moves, rotations, scales and
 Delete act on whole pieces. Besides the modeling verbs its tools include
@@ -317,7 +329,9 @@ and delete; faces delete (a model losing every face goes); CVs move with the
 gizmo, Rotate, Scale, Noise, Flatten and Snap, and only the moved ones
 change. A moved boundary CV takes its trims along: they are re-projected
 onto the edited surface, and a face whose trims fold is left out with a
-warning instead of failing the node. Edges have no tools yet. Its primitives
+warning instead of failing the node. Edges are filleted and chamfered by the
+Fillet and Chamfer nodes' own code, the tool bar holding the step's radius,
+continuity and Tangent chain. Its primitives
 are luce-cad's analytic solids: Box, Cylinder, Cone, Sphere and Torus.
 
 Edit SDF's one level, Object, picks whole primitives of the SDF program. It

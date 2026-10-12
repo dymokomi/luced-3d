@@ -33,6 +33,14 @@ pub class LocalCook:
         self.meshes = []
         self.around = []
 
+## The result of the nearest node upstream of node `id` that cooked.
+func nearest_cooked(graph: Network, id: int) -> GeometryData?!:
+    for upstream in graph.upstream_chain(id):
+        let data = graph.evaluate_data(upstream) catch failure:
+            continue
+        return data
+    return none
+
 ## Cook what `graph`'s viewport draws (the context, then the rest of the
 ## root) into `objects` and `batches`, meshes prepared for display `mode`.
 ## The render mode's sets are the root's objects, whatever the context. The
@@ -75,11 +83,20 @@ pub func cook_outputs(graph: Network, objects: Group, batches: ViewportBatches, 
     for item in view_items(graph):
         let node = item.node
         let matrix = item.matrix
-        let data = graph.evaluate_data(node.id) catch failure:
-            if not item.outside:
-                result.notice = failure.message
-            continue
-        if node.id == graph.pick_node() and not item.outside:
+        # A failed node shows the nearest node upstream that cooked (what it
+        # started from), not picked on: the view never goes blank.
+        var fallback = false
+        var shown: GeometryData? = none
+        shown = graph.evaluate_data(node.id) catch failure:
+            if item.outside:
+                recover none
+            result.notice = failure.message
+            fallback = true
+            recover nearest_cooked(graph, node.id)
+        let data = shown else continue
+        if fallback:
+            result.notice = f"{result.notice} (the viewport shows its input)"
+        if node.id == graph.pick_node() and not item.outside and not fallback:
             result.node = node
             result.data = data
         let branch = Group()
