@@ -249,6 +249,18 @@ the wireframe looks cleaner.
   ordered vertices are allowed; orientation reversal, backtracking,
   intersections and moved seam aliases are rejected. Canonical 3D points and IDs
   never move.
+  A last pass (`settle`) puts a trim point that a line crosses beside it by
+  less than half the layout's precision onto the line: crossings are solved
+  only to that precision, and a point left a hair beside a line left a cut
+  cell whose boundary did not close ("open trim cell boundary").
+- Axis refinement (`refine_axis`) gives a failing interval as many even pieces
+  as its sag needs (at half the target), not halves until it fits: halving
+  overshot up to twice the count, past the axis budget on long cylinders at
+  64 divisions, which then fell back to the trimmed chart (whose target is
+  relative to the face's length, not its section). Lines then snap onto a trim
+  sample they pass within 30% of their spacing (`snap_lines`, curved faces,
+  never moving a line already through a sample): a line missing a sample by a
+  little leaves a crossing station beside it, a needle on both faces.
 - Root deduplication: physical sample deduplication is bypassed
   (`trim_layout.separates_crossings`) when a nearby interior sample separates
   the two sides of a return across a row; monotone runs keep their existing
@@ -271,11 +283,36 @@ the wireframe looks cleaner.
   its quad's four sides), so a fan of slivers from one boundary point across a
   row of grid points unwinds completely. This is not an exact predicate or
   guaranteed Delaunay.
-- Interior refinement (`adaptive_uv`) splits to the face's target, or beside a
-  frozen side (a boundary or trim side no pass splits) to that side's own sag,
-  which a triangle keeping that side can never get below. It stops when a pass
-  no longer lowers its worst excess, and at the face budget (131,072
-  triangles) it keeps the mesh it has: a coarser face, never a missing one.
+- Curved faces meshed in a chart (analytic trims, `sphere_axis`, `sphere_disk`
+  and trimmed B-splines) are refined by Delaunay insertion judged on the
+  surface (`chart_delaunay`): the chart's triangles are lifted, flipped until
+  the angles facing each side sum to at most half a turn on the surface, and a
+  triangle straying further than the face's target (or, beside a frozen side,
+  that side's own sag), or with a circumradius over twice its shortest side,
+  takes its circumcenter on the surface, mapped into the chart through its
+  barycentric coordinates. Points inside a trim side's 120-degree lens are
+  not inserted (no flip mends a flat triangle against a frozen side). This
+  grades the lattice down to a finely sampled rim (a small hole's rim is
+  sampled to its wall's target, several times finer than a large sphere's
+  lattice) and shapes triangles on the surface where the chart stretches it
+  (latitude and longitude near a pole). Before it, the lattice refinement
+  split triangles at their centers (`adaptive_uv`, still used by mapped
+  patches), which left needles fanning from the rims. The lattices are sized
+  so their triangles keep the target (a sphere's or torus's step for half the
+  target's chord sag, since a triangle's middle strays twice as far as its
+  sides; a cylinder's rows round the axis just under it), not split once more
+  each. Along a cylinder's or cone's axis, where nothing bends, rows are at
+  most `divisions` apart over the face and cells at most three times as long
+  as wide. At the face budget (131,072 triangles) the refinement keeps the
+  mesh it has: a coarser face, never a missing one.
+- Lattice insertion (`insert_grid`) leaves out a point within a quarter step
+  of a boundary side and inside its 120-degree lens.
+- Caps (`spherical_cap`, `sphere_axis`'s polar circles): rows as many as keep
+  the target, their columns evenly round (a multiple of 8, square on the
+  first row) and halved on each row where they crowd to under half a row
+  apart, the rim joined to the first row in longitude order; so no needles
+  close into the pole and the volume converges as the square of the
+  division.
 - Quad recombination is greedy quality-ranked matching: convex, corner angles
   20–160 degrees, edge ratio at most 10. It is not Blossom or field-aligned.
 
@@ -339,7 +376,11 @@ the wireframe looks cleaner.
   faces with four logical sides get a UV grid lifted onto the exact support,
   reusing boundary IDs; denser samples on one side propagate across the patch.
   UV Jacobian orientation and every lifted display diagonal are checked;
-  folded grids rewind to the next strategy.
+  folded grids rewind to the next strategy. A curved analytic patch whose
+  quads stray from the surface by more than twice the target at their middles
+  is refused too: a Coons grid between differently parameterized sides shears
+  its columns round a cylinder (a slanted pin's hole, columns a quarter turn
+  across).
 - **Mapped interior spacing** (`mapped_spacing`) redistributes interior rows by
   physical length, including the gaps next to both fixed boundaries, in at most
   three passes; candidates must improve the worst spacing ratio or normalized
@@ -446,10 +487,12 @@ the wireframe looks cleaner.
 
 - STEP: 16 MiB / 262,144 entities; 32,768 topological vertices/edges; 8,192
   surfaces/faces; 64 trim loops.
-- Stations: 1,025 per UV axis with at most 131,072 grid points jointly (checked
+- Stations: 2,049 per UV axis with at most 131,072 grid points jointly (checked
   during inherited planning, after refinement and before every allocation);
-  1,025 per shared edge; clipped charts up to 1,024 coedges with a 16,384-sample
-  boundary budget.
+  4,097 per shared edge (two faces' lattices each cross it in their own
+  phase: a long pipe's end circle at 64 divisions holds the pipe's ~1,050
+  columns and its cap's crossings); clipped charts up to 1,024 coedges with a
+  16,384-sample boundary budget.
 - Passes: eight trim reconciliation, 32 mapped-side balancing, 64 opposite-side
   propagation (256 intervals per edge), eight interior refinement passes. A
   face's demand on an edge is at most 1,024 intervals.
@@ -532,7 +575,11 @@ How to judge a change:
     flags on tire bands and a multi-minute UI handoff.
 - Quality work still open: joint layout of compound curved sides, station-family
   planning across shared edges, trim healing/arrangement, density grading, and
-  the remaining constrained patches.
+  the remaining constrained patches. Where a grid line of one face crosses a
+  shared edge a hair from one of its samples, the crossing becomes a station
+  beside the sample (`trim_layout`), leaving needles on both faces (the walls
+  and floors of holes drilled in a ball; `luce-cad` `mesh_quality_tests`
+  bounds the sphere faces' angles and slivers, not their aspect, for this).
 - Vulkan paths are cross-compiled and linked, not runtime-verified here.
 - Performance of the pipeline is tracked in [PERFORMANCE.md](PERFORMANCE.md).
 
