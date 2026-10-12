@@ -70,8 +70,8 @@ The same luce-cad operations serve both workflows. A node runs them on its input
 
 | Stage | What it delivers |
 |---|---|
-| 0 | Small fixes found here |
-| 1 | Profiles you can see, pick and extrude |
+| 0 | Small fixes found here (done) |
+| 1 | Profiles you can see, pick and extrude (done) |
 | 2 | Dimensions while drawing, and on the canvas |
 | 3 | Sketch on a face from the viewport, with projection and offset |
 | 4 | Extrude, Revolve and Press Pull in full |
@@ -650,7 +650,13 @@ texts, values and the result's volume checked.
   - Built: `sketch_glyphs.luc` places glyphs and labels once for drawing and picking; glyphs on one place stand side by side. A click on a glyph selects its constraint (lit, what it holds lit); Delete removes selected constraints and entities as one undo step. A right click on a glyph selects it and opens the viewport's right-click menu (`viewport_menu.luc`) with Delete constraint.
 - Box selection in a sketch takes only what lies wholly inside the box, either way it is dragged (owner's answer 5; luce-cad `boxing.lucb`); at Shapes, chains wholly inside.
 
-**Stage 1: see a profile, extrude it** (G1–G4; luce-cad 1–3).
+**Stage 1: see a profile, extrude it** (G1–G4; luce-cad 1–3). Done 2026-10-11 (`cad_flow_tests`; luce-cad `profile_tests`). As built, after the owner's answers:
+- No new plain keys (answer 3): Extrude, Finish Sketch, Sketch on face, Fillet and Chamfer are reached by the viewport's new right-click menu (`viewport_menu.luc`, selection-aware), the A and S marking menus and the menu bar's Create and Modify (`cad_commands.luc`, Actions' commands). E stays Rotate.
+- The Sketch passes its input's bodies on beside its curves (answer 2). A set carries one sketch's curves, its nearest one's (the sketch plane is the set's), so no separate sketch tag attribute was needed; an earlier sketch's unconsumed curves do not pass a later Sketch. Extrude and Revolve drop the curves they consume.
+- Rollback (answer 1): selecting a Sketch gives it the display flag, remembering the node shown before (`Workspace.sketch_return`); Finish Sketch, or selecting another node or nothing, shows that node again.
+- Profiles shaded with `profile_fills` and picked at Shapes and Smart (a press in a region that is not dragged into a box); the arrow stands on `profile_anchor`. Auto (answer 4) probes the anchor halfway along with `CadModeling.inside`; the row shows "Auto", not which operation it chose (open).
+- Sketch on face is wired (face selected → Sketch after the displayed node, edited at once); its loops are not projected yet (stage 3). A face's Extrude and Press Pull show disabled until stage 4. Fillet and Chamfer of selected edges make the node after the displayed one (stage 5 adds the radius arrow).
+- Profile hover runs luce-cad's arrangement on each pointer move; fine for sketches of tens of curves, a cache by sketch revision is the next step if large sketches lag.
 - The Sketch passes its input through, with tagged curves. Extrude and Revolve read the nearest sketch and combine with the chain's body, Auto by default. The second input stays as an explicit target.
 - Profile fills in the sketch, and profiles at the Shapes level.
 - E makes the Extrude with the selected keys. Its arrow and box appear in the viewport.

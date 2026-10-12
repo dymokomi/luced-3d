@@ -1,7 +1,10 @@
 ## What the marking menus offer (marking_menu.luc), by context:
-##   a sketch being edited: its CREATE, MODIFY and CONSTRAINTS tools;
+##   a sketch being edited: its CREATE tools with Extrude (its picked
+##     profiles) and Finish Sketch (A), MODIFY (S) and CONSTRAINTS (D);
 ##   an Edit node: its primitives (A) and its tools (S), steps inside it;
-##   inside a CAD node: sketches, extrusions and solids (A), features (S);
+##   inside a CAD node: sketches, extrusions and solids (A, Sketch on face
+##     first with a face selected), features (S: Fillet and Chamfer take
+##     the selected edges; Press Pull, stage 4, shows disabled);
 ##   elsewhere: primitives, lights, containers and Edit nodes (A), and the
 ##   modeling tools on the displayed mesh's selection, each a new node (S).
 ## Node entries add the node after the selected one (`add`).
@@ -19,12 +22,15 @@ import sketch_node
 ## Create (A).
 pub func create_items(w: Workspace, actions: Actions, add: func(str) -> unit!, sketch: SketchEditor) -> list[MarkItem]:
     if w.sketching():
-        return sketch_items(sketch, 0)
+        return sketch_items(sketch, 0) + command_items([actions.extrude_profiles, actions.finish_sketch])
     if w.editing():
         return command_items(actions.create_commands())
     let context = w.network.context()
     if context == "cad":
-        return node_items([sketch_node.kind_name, "Extrude", "Revolve"] + cad_nodes.solid_kinds(), add)
+        let items = node_items([sketch_node.kind_name, "Extrude", "Revolve"] + cad_nodes.solid_kinds(), add)
+        if actions.sketch_on_face.is_enabled():
+            return command_items([actions.sketch_on_face]) + items
+        return items
     if context == "shading":
         return no_items()
     return node_items(["Cube", "Sphere", "Cylinder", "Cone", "Torus", "Grid", "Light", "Camera", "Group", "Null", "Code", "CAD", "Edit Mesh", "Edit SDF", "File"], add)
@@ -37,7 +43,11 @@ pub func modify_items(w: Workspace, actions: Actions, add: func(str) -> unit!, s
         return command_items(actions.modify_commands())
     let context = w.network.context()
     if context == "cad":
-        return node_items(["Fillet", "Chamfer", "Boolean", "Mirror Body", "Pattern", "Transform", "Edit CAD"], add)
+        let rest = node_items(["Boolean", "Mirror Body", "Pattern", "Transform", "Edit CAD"], add)
+        # Selected edges go to the blends; without, they are added bare.
+        let blends = command_items([actions.fillet_edges, actions.chamfer_edges]) if actions.fillet_edges.is_enabled() else node_items(["Fillet", "Chamfer"], add)
+        let pull = command_items([actions.press_pull]) if actions.sketch_on_face.is_enabled() else no_items()
+        return blends + pull + rest
     if context == "shading":
         return no_items()
     return command_items(actions.modify_commands()) + node_items(["Transform", "Mirror", "CopyTransform"], add)
@@ -68,7 +78,8 @@ func command_items(commands: list[Command]) -> list[MarkItem]:
     let result = no_items()
     for command in commands:
         let chosen = command
-        result.append(MarkItem(command.text(), asset_name(command.text()), command.is_enabled(), func () -> unit!: chosen.trigger()))
+        let icon = command.icon() if command.icon() != "" else asset_name(command.text())
+        result.append(MarkItem(command.text(), icon, command.is_enabled(), func () -> unit!: chosen.trigger()))
     return result
 
 func node_items(kinds: list[str], add: func(str) -> unit!) -> list[MarkItem]:

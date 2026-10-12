@@ -351,14 +351,21 @@ The **Sketch** node (inside a CAD node) is a 2D sketch on a plane, as in
 Fusion 360: points, lines, circles and arcs held by constraints and
 dimensions, solved by luce-cad (`CadSketch`, luce-cad's docs/MODELING.md,
 Sketches). It keeps the sketch as text and solves it on every evaluation;
-its result is the curves Extrude and Revolve read. **Plane** picks XY (as
+its result is the curves Extrude and Revolve read, with its input's bodies
+passed on beside them: one body flows down the chain, so `Box → Sketch →
+Extrude` is one wire, as Fusion's timeline is (a set holds one sketch's
+curves, its nearest one's). **Plane** picks XY (as
 from the front), XZ (the ground, as from above), YZ (as from the right) or
 **Face**: a flat face of the body connected to its input, picked with
 **Pick face** (one click on the body), kept by the face's name so the sketch
 follows it as features upstream change the body. **Offset** moves the plane
 along its normal; starting to edit (or a new face) looks straight at it.
 
-Selected and displayed, it is edited in the viewport (`sketch_editor.luc`,
+Selecting a Sketch edits it and rolls the display back to it, as Fusion
+does: the viewport shows the model as it was at the sketch. **Finish Sketch**
+(the right-click menu, A, Create), or selecting another node or nothing,
+shows the node displayed before again. While displayed and selected, it is
+edited in the viewport (`sketch_editor.luc`,
 `sketch_view.luc`, after docs/research/FUSION-SKETCH-STUDY.md). Its curves
 draw blue while free, light when fully constrained and orange as
 construction. The toolbar along the bottom has Fusion's **CREATE**, **MODIFY**
@@ -395,22 +402,48 @@ the top left choose what Select picks: Points, Lines or Shapes.
   waits for splines.
 - **Select** picks entities (Shift adds, Ctrl/Cmd takes away) and drags
   points, the sketch solving as they move (one undo when released). A drag
-  from empty space boxes what the level offers: the points inside it, the
-  curves it meets, at Shapes their whole chains (luce-cad's
-  `CadSketch.select_box` on the box cast onto the plane), with the same
-  modifiers; a plain box over nothing clears the selection. Delete removes
-  the selection and what is drawn on it, X toggles construction.
+  from empty space boxes what lies wholly inside it at the level, either way
+  dragged (the owner's rule for CAD, Fusion's window): the points inside it,
+  whole curves, at Shapes whole chains (luce-cad's `CadSketch.select_box`
+  on the box cast onto the plane), with the same modifiers; a plain box over
+  nothing clears the selection. A click on a constraint's glyph or a
+  dimension's label selects the constraint (glyphs win over geometry,
+  `sketch_glyphs.luc`). Delete removes the selected constraints and
+  entities (and what is drawn on them) in one undo step, as the right-click
+  menu's Delete does; X toggles construction.
 
 Each finished action is one undo step: the editor works on a live sketch
 read from the node and writes it back.
 
 **Profiles.** Curves that cross split each other: every smallest closed
-region is a profile, as in Fusion. Extrude and Revolve take the sketch's
+region is a profile, as in Fusion. While a sketch is edited its profiles are
+shaded (`sketch_profiles.luc`, luce-cad's `profile_fills`), the one under
+the pointer lit; at the Shapes and Smart levels a click inside a region, off
+its curves, picks its profile (Shift adds or takes it away). **Extrude** (the
+right-click menu, A in the sketch, Create) then makes an Extrude after the
+sketch with those profiles (none picked: its closed shapes), shown and
+selected, its distance box open by its arrow: the arrow stands on the
+profiles along the plane's normal and its tip drags the distance, snapped to
+the grid (Cmd frees it), one undo step. Extrude's and Revolve's **Operation**
+is **Auto** by default: halfway along what they make, inside a body they
+cut, else they join it (a new body without one), as Fusion does; Join, Cut
+and Intersect act on the body flowing down the chain, or on the second
+input's when one is wired. Extrude and Revolve take the sketch's
 closed shapes by default (holes left empty, overlapping shapes joined), or
 the profiles picked with **Pick profiles**: the feature's result shows while
 a click in a region adds it or leaves it out (its outline lit); Enter
 finishes. Picked profiles are kept by the curves round them, so they hold as
 dimensions change; **Closed shapes** forgets them.
+
+**The viewport's right-click menu** (`viewport_menu.luc`) offers what
+applies to what is selected, or under the pointer when nothing is (it is
+selected first): in a sketch, Delete for its selection, Extrude, Finish
+Sketch and its CREATE tools; in a CAD node, Sketch on face for a selected
+flat face (a Sketch after the displayed node on that face, edited at once;
+the face's Extrude and Press Pull come with the plan's stage 4), Fillet and
+Chamfer for selected edges (the blend after the displayed node with those
+edges), else the CAD Create nodes. The A and S marking menus and the menu
+bar's Create and Modify hold the same entries (`cad_commands.luc`).
 
 **Units.** Lengths are kept in millimeters; the document shows and reads
 them in its unit, millimeters or inches (Window → Project settings), kept with the

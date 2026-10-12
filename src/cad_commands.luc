@@ -1,0 +1,114 @@
+## The CAD hand-offs of docs/research/FUSION-CAD-UX.md, from the viewport's
+## selection to a feature, as Fusion makes them: the right-click menu, the
+## A and S marking menus and the Create and Modify menus all run these.
+##   Finish Sketch: leave the sketch edited; the node shown before it shows
+##     again (rolled forward).
+##   Extrude (in a sketch): an Extrude after the sketch taking its picked
+##     profiles (none: its closed shapes), Operation Auto; it is shown and
+##     selected, its arrow and distance box in the viewport.
+##   Sketch on face: a Sketch after the displayed node on the selected flat
+##     face, edited at once.
+##   Fillet, Chamfer: the blend after the displayed node, on the selected
+##     edges.
+## Each is one undo step, and says why when it does not apply.
+from luce_geocore.geocore import Domain
+from workspace import Workspace
+from tools import ToolRun
+from edit_steps import insert_after_display
+import node_commands
+import sketch_node
+
+## Whether Finish Sketch and the sketch's Extrude apply: a sketch is edited.
+pub func in_sketch(w: Workspace) -> bool:
+    return w.sketching()
+
+## Finish Sketch: the node displayed before the sketch was edited is
+## selected and shown again; without one, nothing is selected (the sketch
+## stays shown).
+pub func finish_sketch(w: Workspace) -> unit!:
+    if not w.sketching():
+        return
+    let back = w.sketch_return
+    w.sketch_profiles = []
+    if back >= 0 and w.network.find(back) != none:
+        node_commands.select_node(w, back)
+    else:
+        w.sketch_return = -1
+        node_commands.select_nothing(w)
+    w.revision += 1
+
+## Extrude from the edited sketch: after it, with its picked profiles.
+pub func extrude_profiles(w: Workspace) -> unit!:
+    if not w.sketching():
+        w.notice = "Extrude takes a sketch's profiles: edit the sketch, and click inside its closed regions"
+        w.revision += 1
+        return
+    let keys = w.sketch_profiles.join(";")
+    w.perform("Extrude", func () -> unit!:
+        let node = insert_after_display(w, ToolRun("Extrude", []))
+        node.texts[0] = keys
+        w.network.picked = [node.id]
+        w.sketch_profiles = []
+        w.selection = none
+        # The distance box opens by the arrow (panels).
+        w.ask_distance = true
+        w.rebuild())
+
+## The selected faces' or edges' attribute `name` texts on the displayed
+## CAD body's pick geometry, each once, at the level picking `domain`.
+func selected_texts(w: Workspace, domain: Domain, name: str, attribute_domain: int) -> list[str]!:
+    let found: list[str] = []
+    if w.sketching() or w.network.context() != "cad" or not w.selecting() or not w.on_domain(domain):
+        return found
+    let mesh = w.geometry else return found
+    let column = mesh.find_attribute(name, attribute_domain)
+    if column < 0:
+        return found
+    let chosen = w.current_selection() else return found
+    var at = chosen.next(-1)
+    while at >= 0:
+        let text = mesh.attribute_text(column, at)
+        if text != "" and not (text in found):
+            found.append(text)
+        at = chosen.next(at)
+    return found
+
+## The names of the selected faces of the displayed CAD body.
+pub func selected_faces(w: Workspace) -> list[str]!:
+    return selected_texts(w, Domain.face, "cad_face_name", 2)
+
+## References to the selected edges of the displayed CAD body.
+pub func selected_edges(w: Workspace) -> list[str]!:
+    return selected_texts(w, Domain.edge, "cad_edge_reference", 4)
+
+## Sketch on face: a Sketch on the first selected face, after the
+## displayed node, edited at once (the editor looks straight at it).
+pub func sketch_on_face(w: Workspace) -> unit!:
+    let faces = selected_faces(w)
+    if faces.length == 0:
+        w.notice = "Sketch on face: select a flat face of the body (the Faces level) first"
+        w.revision += 1
+        return
+    let name = faces[0]
+    w.perform("Sketch on face", func () -> unit!:
+        let node = insert_after_display(w, ToolRun(sketch_node.kind_name, []))
+        node.values[0] = float(sketch_node.face_plane)
+        node.texts[1] = name
+        w.network.picked = [node.id]
+        w.selection = none
+        w.rebuild())
+
+## Fillet or Chamfer (`kind`) of the selected edges, after the displayed
+## node.
+pub func blend_edges(w: Workspace, kind: str) -> unit!:
+    let edges = selected_edges(w)
+    if edges.length == 0:
+        w.notice = f"{kind}: select edges of the body (the Edges level) first"
+        w.revision += 1
+        return
+    w.perform(kind, func () -> unit!:
+        let node = insert_after_display(w, ToolRun(kind, []))
+        node.texts[0] = edges.join(";")
+        w.network.picked = [node.id]
+        w.selection = none
+        w.rebuild())

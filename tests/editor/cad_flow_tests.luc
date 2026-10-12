@@ -1,0 +1,253 @@
+## Stage 1 of the Fusion CAD plan (docs/research/FUSION-CAD-UX.md): one
+## body down the chain, rollback while a sketch is edited, profiles shaded
+## and picked, Extrude from them with its arrow and distance box and Auto
+## Join/Cut, and the selection-aware right-click and marking menus.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3
+from luce_geocore.geocore import Mesh
+from luce_cad.sketch import CadSketch
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+from view_projection import project
+from edit_types import face_level
+from sketch_support import open_sketch, render, click, near
+from marking_menu import MarkItem
+import marking_items
+import node_commands
+import selection_commands
+import sketch_commands
+from luce_std import math
+
+pub func cad_flow_tests() -> unit!:
+    profiles_and_extrude()
+    chain_and_rollback()
+    print("PASS CAD flow: a plate's two profiles shaded and picked by a click; Extrude of the plate's profile after the sketch (its key, the plate's area × 10), its distance box and arrow (one undo each); a box's top face selected, Sketch on face from the right-click menu, a circle extruded down by Auto into a Cut and up into a Join, its diameter changed with the key kept; the sketch passes the body on; selecting the sketch rolls the display back, Finish Sketch forward; edges right-clicked to Fillet; the A and S marking menus' CAD entries")
+
+## Whether `model`'s tessellated volume is `expected` (to 0.3%).
+func volume_near(model: CadModel, expected: float) -> bool!:
+    let mesh = model.tessellate(32)
+    var total = 0.0
+    for triangle in 0..<mesh.index_count() // 3:
+        let a = mesh.vertex(mesh.index(triangle * 3)).position
+        let b = mesh.vertex(mesh.index(triangle * 3 + 1)).position
+        let c = mesh.vertex(mesh.index(triangle * 3 + 2)).position
+        total += a.dot(b.cross(c)) / 6.0
+    if math.abs(total - expected) > expected * 0.003: print(f"volume {total}, expected {expected}")
+    return math.abs(total - expected) <= expected * 0.003
+
+## The body node `id` makes (its first model).
+func body(editor: Luce3D, id: int) -> CadModel!:
+    return CadGeometry.model(editor.workspace.network.evaluate_data(id).geometry, 0)
+
+## A 40 x 20 plate with a hole of radius 5, on the ground: two profiles
+## shaded; a click in the plate's ring at Shapes picks its profile (not
+## the hole's); Extrude makes an Extrude after the sketch with that key,
+## shown and selected, the plate's area × 10; the distance box takes 15;
+## the arrow dragged to 40.
+func profiles_and_extrude() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    let sketch = open_sketch(editor, 20.0, -10.0, 90.0)
+    let e = editor.panels.view.sketch.editor
+    let s = CadSketch.parse(sketch_commands.rectangle_text(20.0, -10.0, 40.0, 20.0))
+    _ = s.add_circle(s.add_point(10.0, -10.0), 5.0)
+    node_commands.set_text(w, 0, s.text())
+    render(editor)
+    assert(e.profiles.keys.length == 2)
+    selection_commands.set_mode(w, face_level)
+    click(editor, 30.0, -10.0)
+    let curves = s.curves(e.frame.origin, e.frame.u, e.frame.v)
+    let ring = CadModeling.profile_at(curves, e.frame.at(30.0, -10.0))
+    assert(w.sketch_profiles == [ring], f"{w.sketch_profiles}")
+    # Shift adds the hole's disc, again takes it away.
+    click(editor, 10.0, -10.0, shift = true)
+    assert(w.sketch_profiles.length == 2)
+    click(editor, 10.0, -10.0, shift = true)
+    assert(w.sketch_profiles == [ring])
+    render(editor)
+    # The right-click menu offers Extrude; Extrude makes the feature.
+    let actions = editor.panels.actions
+    assert(actions.extrude_profiles.is_enabled() and actions.extrude_profiles.text() == "Extrude profile")
+    actions.extrude_profiles.trigger()
+    render(editor)
+    let extrude = w.network.require(w.network.selected)
+    assert(extrude.kind == "Extrude" and extrude.texts[0] == ring and extrude.inputs[0] == sketch and w.network.display == extrude.id)
+    assert(volume_near(body(editor, extrude.id), (800.0 - math.pi * 25.0) * 10.0))
+    assert(w.history.undo_label().contains("Extrude"))
+    # Its distance box is open by the arrow: 15 typed.
+    assert(editor.panels.sketch_value.is_open() and editor.panels.view.arrow.active())
+    for c in [49, 53]:
+        editor.app.dispatch(Event(kind = EventKind.text_input, codepoint = c))
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    assert(near(w.network.require(extrude.id).values[0], 15.0))
+    # The arrow's tip dragged up to 40 above the plate (the grid snaps to
+    # 10 at this zoom), one undo step.
+    w.view.yaw = 0.5
+    w.view.pitch = 0.4
+    w.view.distance = 120.0
+    w.view.update_camera()
+    render(editor)
+    let bounds = editor.panels.view.layout().bounds()
+    let tip = editor.panels.view.arrow.tip(bounds.width, bounds.height) else trap("no arrow")
+    let anchor = CadModeling.profile_anchor(curves, ring)
+    let to = project(w, anchor.point.add(anchor.normal.multiply_scalar(40.0)), bounds.width, bounds.height)
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + tip[0], y = bounds.y + tip[1]))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = bounds.x + tip[0], y = bounds.y + tip[1], button = 0))
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + (tip[0] + to[0]) * 0.5, y = bounds.y + (tip[1] + to[1]) * 0.5))
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + to[0], y = bounds.y + to[1]))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = bounds.x + to[0], y = bounds.y + to[1], button = 0))
+    assert(near(w.network.require(extrude.id).values[0], 40.0), f"{w.network.require(extrude.id).values[0]}")
+    w.undo()
+    assert(near(w.network.require(extrude.id).values[0], 15.0))
+    editor.close()
+
+## The pick mesh's face whose every point is at height `y`, or -1.
+func face_at_height(mesh: Mesh, y: float) -> int!:
+    for face in 0..<mesh.face_count():
+        var level = true
+        for corner in 0..<mesh.face_size(face):
+            level = level and math.abs(mesh.point(mesh.face_point(face, corner)).y - y) < 1e-6
+        if level:
+            return face
+    return -1
+
+## A right click on the viewport where world point `p` is.
+func right_click(editor: Luce3D, p: Vector3) -> unit!:
+    let bounds = editor.panels.view.layout().bounds()
+    let s = project(editor.workspace, p, bounds.width, bounds.height)
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + s[0], y = bounds.y + s[1]))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = bounds.x + s[0], y = bounds.y + s[1], button = 1))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = bounds.x + s[0], y = bounds.y + s[1], button = 1))
+    editor.app.layout(1600.0, 1000.0)
+
+## Whether `items` hold one named `name`, ready.
+func offers(items: list[MarkItem], name: str) -> bool:
+    for item in items:
+        if item.name == name and item.enabled:
+            return true
+    return false
+
+## Box → Sketch on its top face (from the right-click menu on the face) →
+## a circle → Extrude: Auto cuts going down and joins going up; the
+## circle's diameter changed, the volume follows with the key kept; the
+## sketch passes the box on, and selecting it rolls the display back.
+func chain_and_rollback() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    w.snaps.flags[1] = false
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let box = w.network.selected
+    w.view.yaw = 0.4
+    w.view.pitch = 0.6
+    w.view.distance = 90.0
+    w.view.target = Vector3()
+    w.view.update_camera()
+    render(editor)
+    # No faces or edges selected: the right-click menu offers the CAD
+    # Create nodes.
+    right_click(editor, Vector3(30.0, 0.0, 30.0))
+    let menu = editor.panels.viewport_menu
+    assert(menu.is_open() and menu.commands.length > 3 and menu.commands[0].text() == "Sketch", menu.commands[0].text())
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.escape))
+    # The Faces level: a right click on the top face selects it, and the
+    # menu offers Sketch on face (Press Pull to come, disabled).
+    selection_commands.set_mode(w, w.level_of(2))
+    render(editor)
+    right_click(editor, Vector3(3.0, 10.0, 2.0))
+    let mesh = w.geometry else trap("no pick mesh")
+    assert(w.selected_count() > 0 and menu.is_open(), f"{w.selected_count()}")
+    assert(menu.commands[0].id() == "sketch_on_face" and menu.commands[0].is_enabled() and not menu.commands[2].is_enabled())
+    let a_items = marking_items.create_items(w, editor.panels.actions, no_add, editor.panels.view.sketch.editor)
+    assert(a_items[0].name == "Sketch on face" and a_items[0].enabled)
+    assert(face_at_height(mesh, 10.0) >= 0)
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.escape))
+    editor.panels.actions.sketch_on_face.trigger()
+    render(editor)
+    let sketch = w.network.require(w.network.selected)
+    assert(sketch.kind == "Sketch" and sketch.inputs[0] == box and int(sketch.values[0]) == 3 and sketch.texts[1] != "" and w.sketching())
+    # A circle of radius 3 at the face's middle.
+    let e = editor.panels.view.sketch.editor
+    let middle = e.frame.coordinates(Vector3(0.0, 10.0, 0.0))
+    let s = CadSketch.parse("")
+    let circle = s.add_circle(s.add_point(middle[0], middle[1]), 3.0)
+    node_commands.set_text(w, 0, s.text())
+    render(editor)
+    # The sketch passes the box on beside its curves.
+    let passed = w.network.evaluate_data(sketch.id)
+    assert(CadGeometry.model_count(passed.geometry) == 1 and passed.geometry.has("curves"))
+    # The A menu in the sketch offers Extrude and Finish Sketch.
+    let in_sketch = marking_items.create_items(w, editor.panels.actions, no_add, e)
+    assert(offers(in_sketch, "Extrude") and offers(in_sketch, "Finish Sketch"))
+    editor.panels.actions.extrude_profiles.trigger()
+    render(editor)
+    let extrude = w.network.selected
+    assert(w.network.require(extrude).inputs[1] < 0 and int(w.network.require(extrude).values[1]) == 0)
+    # Down 5 into the box: Auto cuts; up 5: it joins.
+    node_commands.set_parameter(w, 0, -5.0)
+    assert(volume_near(body(editor, extrude), 8000.0 - math.pi * 9.0 * 5.0))
+    node_commands.set_parameter(w, 0, 5.0)
+    assert(volume_near(body(editor, extrude), 8000.0 + math.pi * 9.0 * 5.0))
+    node_commands.set_parameter(w, 0, -5.0)
+    # The circle's profile picked by key; the diameter changed upstream
+    # (radius 4): the cut follows, the key kept.
+    let curves = s.curves(e.frame.origin, e.frame.u, e.frame.v)
+    let key = CadModeling.profile_at(curves, Vector3(0.0, 10.0, 0.0))
+    node_commands.set_text(w, 0, key)
+    # Selecting the sketch rolls the display back to it, the box shown as
+    # it was there; Finish Sketch shows the Extrude again.
+    node_commands.select_node(w, sketch.id)
+    assert(w.network.display == sketch.id and w.sketch_return == extrude and w.sketching())
+    s.set_radius(circle, 4.0)
+    node_commands.set_text(w, 0, s.text())
+    render(editor)
+    editor.panels.actions.finish_sketch.trigger()
+    assert(w.network.display == extrude and w.network.selected == extrude and not w.sketching())
+    assert(w.network.require(extrude).texts[0] == key)
+    assert(volume_near(body(editor, extrude), 8000.0 - math.pi * 16.0 * 5.0))
+    # Selecting another node leaves the sketch too: back to the Extrude.
+    node_commands.select_node(w, sketch.id)
+    node_commands.select_node(w, box)
+    assert(w.network.display == extrude)
+    # Edges: the Extrude's top rim right-clicked at the Edges level, Fillet.
+    node_commands.select_node(w, extrude)
+    selection_commands.set_mode(w, w.level_of(4))
+    render(editor)
+    let edges = w.geometry else trap("no edges")
+    let tag = edges.find_attribute("cad_edge_reference", 4)
+    var rim = -1
+    for edge in 0..<edges.edge_count():
+        let p = edges.point(edges.edge_point(edge, 0))
+        if rim < 0 and edges.attribute_text(tag, edge) != "" and math.abs(p.y - 10.0) < 1e-6 and math.abs(p.x) > 9.99 and math.abs(p.z) < 9.0:
+            rim = edge
+    assert(rim >= 0)
+    selection_commands.choose_component(w, rim, false)
+    render(editor)
+    let s_items = marking_items.modify_items(w, editor.panels.actions, no_add, e)
+    assert(s_items[0].name == "Fillet" and s_items[0].enabled)
+    assert(menu_offers(editor, "fillet_edges") and menu_offers(editor, "chamfer_edges"))
+    let faces = body(editor, extrude).face_count()
+    editor.panels.actions.fillet_edges.trigger()
+    let fillet = w.network.require(w.network.selected)
+    assert(fillet.kind == "Fillet" and fillet.inputs[0] == extrude and fillet.texts[0] != "" and w.network.display == fillet.id)
+    assert(body(editor, fillet.id).face_count() == faces + 1)
+    editor.close()
+
+## Whether the viewport's menu, opened now, offers command `id`, enabled.
+func menu_offers(editor: Luce3D, id: str) -> bool!:
+    let menu = editor.panels.viewport_menu
+    for command in menu.entries():
+        if command.id() == id and command.is_enabled():
+            return true
+    return false
+
+## A marking menu's node entry, unused here.
+func no_add(kind: str) -> unit!:
+    _ = kind

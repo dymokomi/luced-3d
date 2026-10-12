@@ -10,6 +10,7 @@ import node_paths
 import levels
 import script_node
 import script_cook
+import sketch_node
 from luce_std import math
 from luce_ui import ui
 from grouping import group_nodes
@@ -19,14 +20,24 @@ import time
 
 ## Selecting an Edit node also gives it the display flag: its tools edit
 ## the geometry the viewport shows, however the node was reached.
+## Selecting a Sketch edits it, Fusion's way: it takes the display flag, so
+## the viewport shows the model as of the sketch (the sketch passes its
+## input's body on), and the node displayed before is kept to show again
+## when the sketch is left (another node or nothing selected, or Finish
+## Sketch), as Fusion rolls back and forward.
 pub func select_node(w: Workspace, id: int) -> unit!:
     let node = w.network.require(id)
     w.network.picked = [id]
     w.network.wires = []
     if node.id != w.network.selected:
         w.placing = none
-    let shows = is_edit(node.kind) and w.network.display != id
+    let sketch = node.kind == sketch_node.kind_name and node.enabled
+    let shows = (is_edit(node.kind) or sketch) and w.network.display != id
     if w.network.selected != id or shows:
+        if sketch and shows and w.sketch_return < 0:
+            w.sketch_return = w.network.display
+        elif not sketch and leave_sketch(w, is_edit(node.kind)):
+            w.rebuild()
         w.network.selected = id
         if shows:
             w.network.set_display(id)
@@ -137,11 +148,28 @@ pub func pick_nodes(w: Workspace, ids: list[int], operation: int) -> unit!:
 pub func select_nothing(w: Workspace) -> unit!:
     if w.selected() == none and w.network.wires.length == 0:
         return
+    if leave_sketch(w, false):
+        w.rebuild()
     w.network.pick_nothing()
     w.placing = none
     w.selection = none
     w.end_modal_tool()
     w.revision += 1
+
+## A sketch edited from a rolled-back display is left: the node displayed
+## before shows again, unless the node selected next takes the display
+## (`taken`) or that node is gone or in another network. Whether the display
+## moved.
+pub func leave_sketch(w: Workspace, taken: bool) -> bool!:
+    let back = w.sketch_return
+    w.sketch_return = -1
+    if back < 0 or taken:
+        return false
+    let node = w.network.find(back) else return false
+    if node.parent != w.network.scope or w.network.display == back:
+        return false
+    w.network.set_display(back)
+    return true
 
 ## Pick `wires` (each a node and its input port): they alone (operation
 ## 0, with no node), added to what is picked (1), or taken from it (2).
@@ -165,6 +193,7 @@ pub func enter_group(w: Workspace, id: int) -> unit!:
         return
     if w.in_transaction():
         w.commit()
+    w.sketch_return = -1
     w.network.scope = id
     let children = w.network.local_nodes()
     let shown = w.network.display_in(id)
@@ -179,6 +208,7 @@ pub func leave_group(w: Workspace) -> unit!:
     let node = w.network.require(w.network.scope)
     if w.in_transaction():
         w.commit()
+    w.sketch_return = -1
     w.network.scope = node.parent
     w.network.selected = node.id
     w.network.display = node.id
@@ -240,6 +270,8 @@ pub func add_node(w: Workspace, kind: str, x: float, y: float) -> unit!:
             error(ui.invalid, refused)
         let source = w.network.selected
         let node = w.network.add(kind, x, y)
+        # The new node takes the display: nothing to roll forward to.
+        w.sketch_return = -1
         # A Script node's starter names parameters: their rows.
         if kind == script_cook.kind_name:
             script_node.refresh(node)

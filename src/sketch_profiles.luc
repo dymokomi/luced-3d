@@ -1,0 +1,87 @@
+## A sketch's profiles in the editor, Fusion's way: every closed region
+## shaded light, the one under the pointer lit, the picked ones in the
+## accent. At the Shapes and Smart levels a click inside a region, off its
+## curves, picks its profile (Shift adds or takes it away); the picked keys
+## are the workspace's `sketch_profiles`, which Extrude takes
+## (cad_commands.extrude_profiles). The curves, their keys and fills are
+## made again only when the sketch or its plane changes; the regions come
+## from luce-cad (CadModeling.profile_at, profile_fills), kept by key so a
+## profile holds as dimensions change.
+from luce_cad.sketch import CadSketch
+from luce_cad.modeling import CadModeling
+from luce_geocore.geocore import GeometrySet, Mesh
+from luce_3d.graphics import PerspectiveCamera
+from luce_gpu.gpu import RenderTarget
+from sketch_node import SketchFrame
+from profile_shading import ProfileShading
+import theme
+
+pub class SketchProfiles:
+    ## The curves as of `made_from` (the sketch's text and plane), every
+    ## profile's key, and the fill of every profile.
+    var curves: GeometrySet? = none
+    var made_from: str = ""
+    pub var keys: list[str]
+    var every: Mesh? = none
+    ## The fills of the picked and the hovered profiles, as of their keys.
+    var picked_fill: Mesh? = none
+    var picked_keys: str = ""
+    var hover_fill: Mesh? = none
+    var hover_key: str = ""
+    ## The profile under the pointer ("": none).
+    pub var hover: str = ""
+
+    pub func init(self):
+        self.keys = []
+
+    ## The curves of `sketch` on plane `f`, made again when either changed.
+    pub func curves_of(self, sketch: CadSketch, f: SketchFrame) -> GeometrySet!:
+        let key = f"{sketch.text()}|{f.key()}"
+        if key != self.made_from or self.curves == none:
+            let made = sketch.curves(f.origin, f.u, f.v)
+            self.curves = made
+            self.made_from = key
+            # A sketch without curves has no profiles.
+            let text = CadModeling.profile_keys(made) if sketch.entity_count() > 0 else ""
+            self.keys = text.split(";") if text != "" else []
+            self.every = CadModeling.profile_fills(made) if self.keys.length > 0 else none
+            self.picked_keys = "?"
+            self.hover_key = "?"
+        return self.curves else trap("curves")
+
+    ## The key of the profile at plane point (`x`, `y`) of `sketch` on `f`,
+    ## or "".
+    pub func key_at(self, sketch: CadSketch, f: SketchFrame, x: float, y: float) -> str!:
+        if sketch.entity_count() == 0:
+            return ""
+        let curves = self.curves_of(sketch, f)
+        if self.keys.length == 0:
+            return ""
+        return CadModeling.profile_at(curves, f.at(x, y))
+
+    ## `picked` without the keys `sketch` no longer has.
+    pub func still_there(self, sketch: CadSketch, f: SketchFrame, picked: list[str]) -> list[str]!:
+        _ = self.curves_of(sketch, f)
+        let kept: list[str] = []
+        for key in picked:
+            if key in self.keys:
+                kept.append(key)
+        return kept
+
+    ## The shading, before the curves: every profile, then the picked ones,
+    ## then the one under the pointer.
+    pub func draw(self, target: RenderTarget, camera: PerspectiveCamera, sketch: CadSketch, f: SketchFrame, picked: list[str], width: float, height: float) -> unit!:
+        let curves = self.curves_of(sketch, f)
+        let all = self.every else return
+        ProfileShading.draw(target, all, camera, width, height, theme.sketch_free(), 0.22)
+        let chosen = picked.join(";")
+        if chosen != self.picked_keys:
+            self.picked_keys = chosen
+            self.picked_fill = CadModeling.profile_fills(curves, chosen) if chosen != "" else none
+        if let fill = self.picked_fill:
+            ProfileShading.draw(target, fill, camera, width, height, theme.accent(), 0.35)
+        if self.hover != self.hover_key:
+            self.hover_key = self.hover
+            self.hover_fill = CadModeling.profile_fills(curves, self.hover) if self.hover != "" else none
+        if let fill = self.hover_fill:
+            ProfileShading.draw(target, fill, camera, width, height, theme.grey(235.0), 0.18)

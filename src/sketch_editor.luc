@@ -27,7 +27,8 @@
 ## from elsewhere reads the node again (sync).
 from sketch_chains import chain_of
 from snapping import SnapMark, grid_step, on_grid, stepped, sketch_kind_name
-from edit_types import point_level, edge_level, face_level
+from edit_types import point_level, edge_level, face_level, smart_level
+from sketch_profiles import SketchProfiles
 from luce_cad.sketch import CadSketch, CadProjection
 from luce_cad.cad_geometry import CadGeometry
 from luce_ui.ui import Event
@@ -88,6 +89,11 @@ pub class SketchEditor:
     ## under the pointer (-1: none).
     pub var constraint_selection: list[int]
     pub var hover_glyph: int = -1
+    ## The sketch's profiles: shaded, hovered and picked at Shapes and Smart
+    ## (the picked keys are the workspace's sketch_profiles).
+    pub let profiles: SketchProfiles
+    ## The profile under a press that may turn into a box ("": none).
+    var box_profile: str = ""
     ## A constraint or dimension tool's picks so far.
     pub var picks: list[int]
     ## A point being dragged by Select.
@@ -144,6 +150,7 @@ pub class SketchEditor:
         self.cursor = [0.0, 0.0]
         self.selection = []
         self.constraint_selection = []
+        self.profiles = SketchProfiles()
         self.picks = []
         self.box = []
 
@@ -176,6 +183,7 @@ pub class SketchEditor:
             self.reset_tool()
             self.selection = []
             self.constraint_selection = []
+            self.w.sketch_profiles = []
             self.set_tool("Select")
         # What the pointer was over, and a tool's clicks and picks, belong to
         # the sketch read before (an undo, another node).
@@ -208,6 +216,7 @@ pub class SketchEditor:
             if at < sketch.constraint_count():
                 constraints.append(at)
         self.constraint_selection = constraints
+        self.w.sketch_profiles = self.profiles.still_there(sketch, self.frame, self.w.sketch_profiles)
         self.revision += 1
 
     ## Look straight at the sketch plane (x right, y up, as its frame
@@ -410,6 +419,7 @@ pub class SketchEditor:
             else:
                 self.selection = []
                 self.constraint_selection = []
+                self.w.sketch_profiles = []
             self.revision += 1
             return true
         if event.key == Key.enter:
@@ -461,6 +471,10 @@ pub class SketchEditor:
             self.hover_glyph = sketch_glyphs.glyph_at(sketch_glyphs.glyphs(self.w, sketch, self.frame, self.width, self.height), x, y)
             if self.hover_glyph >= 0:
                 self.hover = -1
+        # Shapes and Smart: the profile under the pointer, off the curves.
+        self.profiles.hover = ""
+        if self.tool == "Select" and self.dragging < 0 and self.hover < 0 and self.hover_glyph < 0 and self.w.sketch_level in [face_level, smart_level]:
+            self.profiles.hover = self.profiles.key_at(sketch, self.frame, self.cursor[0], self.cursor[1])
         # Tools that place, and a dragged point, snap; tools that pick (Trim,
         # the constraints) read the pointer as it is.
         let places = sketch_tools.places(self.tool) or self.dragging >= 0
@@ -656,6 +670,8 @@ pub class SketchEditor:
             return
         let at = self.hover
         if at < 0:
+            # A press in a profile picks it when it is not dragged into a box.
+            self.box_profile = self.profiles.hover
             self.boxing = true
             self.box = [self.pointer_x, self.pointer_y, self.pointer_x, self.pointer_y]
             self.box_operation = operation
@@ -666,12 +682,33 @@ pub class SketchEditor:
         let picked = chain_of(sketch, at) if self.w.sketch_level == face_level and sketch.kind(at) != point_kind else [at]
         self.change_selection(picked, 2 if operation == 1 and at in self.selection else operation)
 
+    ## Profile `key` (a click in its region) alone (`operation` 0, the
+    ## entities and constraints let go), added or taken away again (1,
+    ## Shift) or taken away (2, Ctrl or Cmd).
+    func select_profile(self, key: str, operation: int):
+        let picked = self.w.sketch_profiles
+        if operation == 0:
+            self.selection = []
+            self.constraint_selection = []
+            self.w.sketch_profiles = [key]
+        elif operation == 2 or key in picked:
+            let kept: list[str] = []
+            for each in picked:
+                if each != key:
+                    kept.append(each)
+            self.w.sketch_profiles = kept
+        else:
+            picked.append(key)
+        self.revision += 1
+        self.w.revision += 1
+
     ## Constraint `constraint` (its glyph clicked) alone (`operation` 0,
     ## the entities let go), added or taken away again (1, Shift) or taken
     ## away (2, Ctrl or Cmd).
     func select_constraint(self, constraint: int, operation: int):
         if operation == 0:
             self.selection = []
+            self.w.sketch_profiles = []
             self.constraint_selection = [constraint]
         elif operation == 2 or constraint in self.constraint_selection:
             self.constraint_selection = without(self.constraint_selection, constraint)
@@ -685,6 +722,7 @@ pub class SketchEditor:
         if operation == 0:
             self.selection = picked
             self.constraint_selection = []
+            self.w.sketch_profiles = []
         elif operation == 2:
             for each in picked:
                 self.selection = without(self.selection, each)
@@ -703,7 +741,9 @@ pub class SketchEditor:
         let sketch = self.sketch else return
         let operation = self.box_operation
         if not marquee.dragged(self.box):
-            if operation == 0:
+            if self.box_profile != "":
+                self.select_profile(self.box_profile, operation)
+            elif operation == 0:
                 self.change_selection([], 0)
             return
         let corners: list[float] = []

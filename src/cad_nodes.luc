@@ -13,6 +13,7 @@ from luce_ui import ui
 from luce_3d.graphics import Vector3
 import sketch_node
 from angles import radians
+from luce_std import math
 
 ## What a feature node keeps between its evaluations on the compute
 ## worker: a Fillet's plan (luce-cad's FilletPlan: the body's edges
@@ -76,6 +77,53 @@ func body_of(data: GeometryData, role: str) -> CadModel!:
         body = CadModeling.combined(body, CadGeometry.model(data.geometry, at), 0)
     return body
 
+## The bodies flowing down the chain in `data` (a Sketch passes its input's
+## on beside its curves), without the curves; none without a body.
+pub func bodies_in(data: GeometryData) -> GeometryData?!:
+    if CadGeometry.model_count(data.geometry) == 0:
+        return none
+    return GeometryData(geometry = data.geometry.without("curves"))
+
+## The operation Extrude's and Revolve's Operation menu means: 0 Auto, then
+## New body, Join, Cut, Intersect.
+pub func operation_names() -> str:
+    return "Auto|New body|Join|Cut|Intersect"
+
+## Auto's choice, Fusion's: inside a body at `probe` (a point halfway along
+## the new solid) it cuts, else it joins when there are bodies, else it is
+## a new body (operated's numbers: 0 new, 1 join, 2 cut).
+func automatic(target: GeometryData?, probe: Vector3) -> int!:
+    let bodies = target else return 0
+    for at in 0..<CadGeometry.model_count(bodies.geometry):
+        if CadModeling.inside(CadGeometry.model(bodies.geometry, at), probe):
+            return 2
+    return 1
+
+## Halfway along what Extrude or Revolve makes from the profiles `profiles`
+## of the sketch in `data` (values `v`): on the profiles' anchor, moved half
+## the distance along the plane's normal, or turned half the angle about
+## the axis.
+func probe_point(kind: str, v: list[float], data: GeometryData, profiles: str) -> Vector3?!:
+    let anchor = CadModeling.profile_anchor(data.geometry, profiles)
+    if not anchor.found:
+        return none
+    if kind == "Extrude":
+        # A symmetric extrusion's middle is on the plane.
+        let along = 0.0 if v[2] != 0.0 else v[0] * 0.5
+        return anchor.point.add(anchor.normal.multiply_scalar(along))
+    # Revolve: about the plane's U or V axis through its origin, toward the
+    # normal.
+    let plane = sketch_node.plane_of(data.geometry)
+    let axis = plane.u if int(v[0]) == 0 else plane.v
+    let offset = anchor.point.subtract(plane.origin)
+    let along = axis.multiply_scalar(offset.dot(axis))
+    let radial = offset.subtract(along)
+    let turn = radians(v[2]) * 0.5
+    let side = axis.cross(radial)
+    let sign = 1.0 if side.dot(anchor.normal) >= 0.0 else -1.0
+    let turned = radial.multiply_scalar(math.cos(turn)).add(side.multiply_scalar(sign * math.sin(turn)))
+    return plane.origin.add(along).add(turned)
+
 ## `made` combined with the bodies of `target` by operation `operation`
 ## (0 a new body beside them, 1 join, 2 cut, 3 intersect).
 func operated(made: CadModel, target: GeometryData?, operation: int) -> GeometryData!:
@@ -128,12 +176,27 @@ pub func evaluate_cad(kind: str, v: list[float], data: GeometryData, tag: str, s
         # Extrude: distance, operation, symmetric. Revolve: axis, operation, angle.
         let symmetric = kind == "Extrude" and v[2] != 0.0
         # The profiles chosen (keys in the first text; none: islands
-        # alternating from the outside in).
+        # alternating from the outside in) of the nearest sketch upstream:
+        # the curves in the input.
         let profiles = (texts else ["", "", ""])[0]
         let made = CadModeling.extruded(data.geometry, v[0], -v[0] * 0.5 if symmetric else 0.0, tag, profiles) if kind == "Extrude" else CadModeling.revolved(data.geometry, int(v[0]), tag, radians(v[2]), profiles)
-        if int(v[1]) != 0 and second == none:
-            error(ui.invalid, "Join, Cut and Intersect need target bodies: connect them to the second input")
-        return operated(made, second, int(v[1]))
+        # The bodies it works on: the second input's when one is wired,
+        # else those flowing down the chain with the sketch.
+        let chain = bodies_in(data)
+        let target = second if second != none else chain
+        var operation = int(v[1]) - 1
+        if int(v[1]) == 0:
+            operation = 0
+            if let probe = probe_point(kind, v, data, profiles):
+                operation = automatic(target, probe)
+        if operation != 0 and target == none:
+            error(ui.invalid, "Join, Cut and Intersect need a body: the sketch's input body, or one wired to the second input")
+        let result = operated(made, target, operation)
+        # An explicit target leaves the chain's bodies as they were.
+        if second != none:
+            if let bodies = chain:
+                return bodies.merged(result)
+        return result
     if kind == "Fillet" or kind == "Chamfer":
         let edges = (texts else ["", "", ""])[0]
         let body = body_of(data, "first")

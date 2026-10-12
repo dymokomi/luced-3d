@@ -1,0 +1,44 @@
+## A sketch's profiles shaded on the viewport (sketch_view.luc): the fill
+## triangles luce-cad makes (CadModeling.profile_fills) cast onto the
+## screen as the camera sees them and filled translucent in one draw, Fusion's
+## light shading of closed regions. The points never pass through Luce lists.
+import interop
+import memory
+from luce_std import math
+from luce_gpu import gpu
+from luce_geocore.geocore import Mesh, Vector3
+from luce_3d.graphics import PerspectiveCamera
+from luce_ui.ui import Painter, Point
+
+pub struct ProfileShading:
+    let reserved: u8 = 0
+
+    ## Fill `fills`' triangles in `color` at `opacity` on `target`, a
+    ## viewport `width` by `height` seen by `camera`. Triangles reaching
+    ## behind the camera are left out.
+    pub static func draw(target: interop.View[gpu.RenderTarget], fills: interop.Reference[Mesh], camera: interop.Reference[PerspectiveCamera], width: f64, height: f64, color: gpu.Color, opacity: f64) -> !:
+        let mesh = fills.value()
+        let faces = mesh.face_count()
+        if faces == 0: return
+        let lens = try camera.value().projection(math.max(1.0, width) / math.max(1.0, height))
+        var points = try new Point[(usize)faces * 3] --- in memory.heap
+        defer free(points) in memory.heap
+        var colors = try new gpu.Color[(usize)faces * 3] --- in memory.heap
+        defer free(colors) in memory.heap
+        var count: usize = 0
+        for face in 0..<faces:
+            if (try mesh.face_size(face)) != 3: continue
+            var behind = false
+            for corner in 0..<3:
+                let d = (try mesh.point(try mesh.face_point(face, corner))).subtract(lens.position)
+                let z = -d.dot(lens.backward)
+                if z <= lens.near: behind = true
+                let depth = math.max(z, lens.near)
+                points[count + (usize)corner] = Point((d.dot(lens.right) * lens.focal / lens.aspect / depth + 1.0) * width * 0.5,
+                                                      (1.0 - d.dot(lens.up) * lens.focal / depth) * height * 0.5)
+                colors[count + (usize)corner] = color
+            if not behind: count += 3
+        if count == 0: return
+        var painter = try Painter(target)
+        defer painter.close()
+        try painter.shaded_mesh(points[..<count], colors[..<count], opacity)

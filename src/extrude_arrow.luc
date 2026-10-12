@@ -1,0 +1,161 @@
+## The selected Extrude's arrow in the viewport, Fusion's: it stands on its
+## profiles (a point inside them, luce-cad's profile_anchor) along the
+## sketch plane's normal, its tip at the distance (half of it each way when
+## symmetric). Dragging the tip sets Distance: the pointer's ray met with the
+## arrow's line, snapped to the grid's 1, 2 or 5 × 10ⁿ for the zoom (Cmd or
+## Ctrl drags freely), one undo step, the worker cooking each step as the
+## parameter panel's drags do. The distance box opens by the tip
+## (panels.luc), the panel row, the box and the arrow being one value.
+from luce_ui.ui import Painter, Point, Event
+from luce_gpu.gpu import Rect
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3
+from luce_cad.sketch import CadSketch
+from luce_cad.modeling import CadModeling, ProfileAnchor
+from workspace import Workspace
+from node import Node
+from sketch_frames import FrameCache
+from snapping import grid_step, stepped
+import sketch_node
+import view_projection
+import theme
+from luce_std import math
+
+## How near the tip a press takes it, in points.
+let reach = 12.0
+
+pub class ExtrudeArrow:
+    let w: Workspace
+    let frames: FrameCache
+    ## The anchor as of `made_from` (the sketch's text, plane and the keys).
+    var anchor: ProfileAnchor? = none
+    var made_from: str = ""
+    pub var hovered: bool = false
+    pub var dragging: bool = false
+
+    pub func init(self, w: Workspace):
+        self.w = w
+        self.frames = FrameCache()
+
+    ## The selected Extrude, when its arrow shows: enabled, displayed, no
+    ## prompt open, its input a Sketch.
+    func extrude(self) -> Node?:
+        let node = self.w.selected() else return none
+        if node.kind != "Extrude" or not node.enabled or self.w.prompt != none or node.inputs[0] < 0:
+            return none
+        return node
+
+    ## The Extrude's sketch: its input, a Sketch node.
+    func sketch_of(self, node: Node) -> Node?:
+        let input = self.w.network.find(node.inputs[0]) else return none
+        return input if input.kind == sketch_node.kind_name else none
+
+    ## Where the arrow stands, made again when the sketch, its plane or the
+    ## Extrude's profiles changed; none without a closed profile.
+    func anchor_of(self, node: Node) -> ProfileAnchor?!:
+        let sketch = self.sketch_of(node) else return none
+        let f = self.frames.frame(self.w, sketch)
+        let key = f"{sketch.texts[0]}|{f.key()}|{node.texts[0]}"
+        if key != self.made_from:
+            self.made_from = key
+            self.anchor = none
+            let s = CadSketch.parse(sketch.texts[0])
+            if s.entity_count() > 0 and s.solve():
+                let found = CadModeling.profile_anchor(s.curves(f.origin, f.u, f.v), node.texts[0])
+                if found.found:
+                    self.anchor = found
+        return self.anchor
+
+    ## Whether the arrow shows.
+    pub func active(self) -> bool!:
+        let node = self.extrude() else return false
+        return self.anchor_of(node) != none
+
+    ## The arrow's foot and tip in the world: the tip at the distance along
+    ## the normal (half of it when symmetric).
+    func ends(self, node: Node) -> list[Vector3]?!:
+        let a = self.anchor_of(node) else return none
+        let length = node.values[0] * (0.5 if node.values[2] != 0.0 else 1.0)
+        return [a.point, a.point.add(a.normal.multiply_scalar(length))]
+
+    ## The tip on a viewport `width` by `height`, in its points (none when
+    ## the arrow does not show).
+    pub func tip(self, width: float, height: float) -> list[float]?!:
+        let node = self.extrude() else return none
+        let ends = self.ends(node) else return none
+        let s = view_projection.project(self.w, ends[1], width, height)
+        return [s[0], s[1]]
+
+    ## Pointer events; whether one was used.
+    pub func event(self, event: Event, width: float, height: float) -> bool!:
+        let node = self.extrude() else return false
+        let ends = self.ends(node) else return false
+        if self.dragging:
+            if event.cancelled or event.kind in [EventKind.focus_lost, EventKind.overflow] or (event.kind == EventKind.key_down and event.key == Key.escape):
+                self.w.cancel()
+                self.dragging = false
+                return true
+            if event.kind == EventKind.pointer_up:
+                self.w.commit()
+                self.dragging = false
+                return true
+            if event.kind == EventKind.pointer_moved:
+                self.drag_to(node, ends, event.x, event.y, width, height, not (event.meta or event.control))
+                return true
+            return false
+        if event.alt:
+            return false
+        let tip = view_projection.project(self.w, ends[1], width, height)
+        let near = tip[2] >= 0.0 and math.hypot(event.x - tip[0], event.y - tip[1]) <= reach
+        if event.kind == EventKind.pointer_moved:
+            let changed = near != self.hovered
+            self.hovered = near
+            return changed
+        if event.kind == EventKind.pointer_down and event.button == 0 and event.inside and near:
+            self.w.begin("Extrude distance")
+            self.dragging = true
+            return true
+        return false
+
+    ## The tip dragged to the pointer at (`x`, `y`): Distance where the
+    ## pointer's ray passes nearest the arrow's line (snapped when `snap`).
+    func drag_to(self, node: Node, ends: list[Vector3], x: float, y: float, width: float, height: float, snap: bool) -> unit!:
+        let lens = self.w.view.camera.projection(math.max(1.0, width) / math.max(1.0, height))
+        let a = self.anchor_of(node) else return
+        let n = a.normal
+        let r = view_projection.ray(self.w, x, y, width, height)
+        let gap = ends[0].subtract(lens.position)
+        let b = n.dot(r)
+        let c = r.dot(r)
+        let denominator = c - b * b
+        if math.abs(denominator) < 1e-9:
+            return
+        # The parameter along the normal from the foot (n is a unit).
+        let t = (b * gap.dot(r) - c * n.dot(gap)) / denominator
+        var distance = t * (2.0 if node.values[2] != 0.0 else 1.0)
+        distance = stepped(distance, grid_step(self.w.view.distance), snap)
+        let values = node.values.copy()
+        values[0] = distance
+        self.w.preview_parameters(values)
+
+    ## The arrow over the scene: a shaft from the profiles to the tip, a head,
+    ## and the tip's handle (lit when hovered or dragged).
+    pub func draw(self, p: Painter, width: float, height: float) -> unit!:
+        let node = self.extrude() else return
+        let ends = self.ends(node) else return
+        let foot = view_projection.project(self.w, ends[0], width, height)
+        let tip = view_projection.project(self.w, ends[1], width, height)
+        if foot[2] < 0.0 or tip[2] < 0.0:
+            return
+        let color = theme.grey(245.0) if self.hovered or self.dragging else theme.accent()
+        p.line(Point(foot[0], foot[1]), Point(tip[0], tip[1]), 2.5, color)
+        # The head: a triangle pointing along the shaft as seen.
+        let dx = tip[0] - foot[0]
+        let dy = tip[1] - foot[1]
+        let length = math.max(1e-6, math.hypot(dx, dy))
+        let ux = dx / length
+        let uy = dy / length
+        if length > 4.0:
+            let back = Point(tip[0] - ux * 14.0, tip[1] - uy * 14.0)
+            p.triangle(Point(tip[0], tip[1]), Point(back.x - uy * 7.0, back.y + ux * 7.0), Point(back.x + uy * 7.0, back.y - ux * 7.0), color)
+        p.rounded_rectangle(Rect(tip[0] - 6.0, tip[1] - 6.0, 12.0, 12.0), color, 6.0)

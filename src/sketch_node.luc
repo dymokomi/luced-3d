@@ -2,12 +2,15 @@
 ## way. Its entities and constraints are luce-cad's (CadSketch), kept as
 ## text in the node's first text and solved on every evaluation, so a
 ## dimension typed in the parameter panel moves the geometry. Its result is
-## the sketch's curves on its plane, what Extrude and Revolve read. The
+## the sketch's curves on its plane, what Extrude and Revolve read, with the
+## input's bodies. The
 ## plane is one of the origin planes (XY, the XZ ground, YZ) or a flat face
 ## of the body connected to its input (Face: kept by the face's name, so
 ## the sketch stays on it as features upstream change the body), moved
 ## along its normal by Offset; drawing and constraining happen in the
-## viewport (sketch_editor.luc). Curves projected from the input body's
+## viewport (sketch_editor.luc). The input's bodies pass through beside the
+## curves, so a chain Box → Sketch → Extrude is one wire and displaying the
+## sketch shows the body as it was there. Curves projected from the input body's
 ## edges are cast again on every evaluation, so they follow it. Lengths are
 ## millimeters.
 from luce_cad.sketch import CadSketch
@@ -16,6 +19,7 @@ from luce_cad.modeling import CadModeling
 from luce_3d.graphics import Vector3
 from geometry_data import GeometryData
 from luce_ui import ui
+from luce_geocore.geocore import GeometrySet, Sketches
 
 pub let kind_name = "Sketch"
 
@@ -88,10 +92,20 @@ pub func evaluate_sketch(v: list[float], texts: list[str], data: GeometryData) -
         lost = sketch.relink(CadGeometry.model(data.geometry, 0), f.origin, f.u, f.v)
     if sketch.entity_count() > 0 and not sketch.solve():
         error(ui.invalid, "The sketch's constraints cannot all hold: remove one that conflicts")
-    let result = GeometryData(geometry = sketch.curves(f.origin, f.u, f.v))
+    # The input's bodies pass on beside the curves: one body flows down the
+    # chain, as Fusion's design does along its timeline (an earlier
+    # sketch's curves do not: the curves in a set are its nearest sketch's).
+    var result = GeometryData(geometry = sketch.curves(f.origin, f.u, f.v))
+    if CadGeometry.model_count(data.geometry) > 0:
+        result = result.merged(GeometryData(geometry = data.geometry.without("curves")))
     if lost > 0:
         result.warning = f"{lost} projected curve(s) lost their edge upstream: they stay where they were"
     return result
+
+## The sketch plane a set of a sketch's curves carries (luce-geocore's
+## detail attributes), its axes as Extrude and Revolve read them.
+pub func plane_of(geometry: GeometrySet) -> SketchFrame!:
+    return SketchFrame(Sketches.plane_origin(geometry), Sketches.plane_u(geometry), Sketches.plane_v(geometry))
 
 ## The plane of the face named `texts[1]` of `data`'s body, moved Offset
 ## along its normal.
@@ -102,6 +116,6 @@ pub func face_frame(v: list[float], texts: list[str], data: GeometryData) -> Ske
         error(ui.invalid, "The sketch's face is on its input body: connect the body")
     let found = CadModeling.face_frame(CadGeometry.model(data.geometry, 0), texts[1])
     if not found.found:
-        error(ui.invalid, "The sketch's face is no longer on the body (or not flat): pick a face again")
+        error(ui.invalid, "The sketch's face is not on the body, or not flat: pick a flat face (Pick face)")
     let f = SketchFrame(found.origin, found.u, found.v)
     return SketchFrame(f.origin.add(f.normal().multiply_scalar(v[1])), f.u, f.v)
