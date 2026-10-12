@@ -1928,10 +1928,37 @@ Answers from the reference tools (the doc's questions that Stage 5 met):
 - **Extend's types.** Alias offers Linear and Extrapolate (our Natural); Soft and Reflective are
   Parasolid's (C2 easing to straight, C2 mirrored), as the plan's S10 asked.
 
-Left for later: Square's Rebuild per edge, Boundary Blend and Influence, Colinear Options; Rail's
-Spine mode, Sweep Pivot, Curve Segments and Fixed Curve; Skin's Multiple surfaces, Proportional
-Crown and Flow Control; Extend of several edges at once (Chain Select); the builders' Explicit
-Control on Skin, Rail and Profile.
+Left for later, and what became of it (2026-10-12, with Stage 6):
+
+- ~~Square at corners whose neighbors disagree~~ Done: a G1 or G2 cap on a box's four perpendicular
+  walls measures G1 or G2 on all four. Such a corner is singular (each wall wants the patch square off
+  it, the next wall's top edge leaves the corner flat). As Gregory's patch keeps each side's field
+  everywhere but at the corner, each field is its own target plus the corner's mismatch carried down
+  to nothing by a quintic Hermite in a corner zone (1/256 of the side, a span of its own ending C2);
+  off the zones every edge holds. The G1 slope also turns its part across onto the neighbor's way on
+  with its length, so it does not shrink to nothing where the next boundary leaves the wall's plane.
+  Alias's Square leaves such corners broken too; there the break is confined to the zone.
+- ~~Square's Rebuild per edge, Boundary Blend and Influence, Colinear Options~~ Done, as Alias's
+  2014 reference words them: Rebuild "to reduce data and improve parameterization" (refit by arc
+  length on the fewest uniform spans), Boundary Blend "the midpoint of influence between opposite
+  boundaries" (0.17 to 0.83), Influence "how much each boundary pair shapes the surface", Colinear
+  "line up the new surface's isoparametric curves with adjacent surfaces" ("like turning off Skews in
+  Align").
+- ~~Rail's Spine mode, Sweep Pivot, Curve Segments and Fixed Curve~~ Done: Spine (sections square to a
+  spine curve), Sweep Pivot Closest, On Curve and Off Curve, Fixed Curve Rail and Gen., Curve Segments.
+- ~~Skin's Multiple surfaces and Proportional Crown~~ Done: curve sets (Alias's), Single or Multiple
+  Surfaces, Proportional Crown (two sections). Skin's Flow Control and Modify Range wait.
+- ~~Extend of several edges at once (Chain Select)~~ Done: several picks, and Chain Select (the edges
+  running on tangent).
+- **Align's Vector type at G3**: not built, as Alias does not offer it: its 2015 reference gives
+  Vector for G1 and G2 only (G0 first, then the tangent and curvature rows along the vector); a G3 row
+  along a vector would leave the rate of curvature to the vector alone. Our refusal says so and points
+  to the Edge type.
+- ~~Edit CAD's Project and Blend Curve with temporary isoparms~~ Done: started with nothing picked they
+  wait for curves, a double-click adding an isoparm (Project's Enter goes on to its face). While a
+  builder waits, its picks are lit along their length.
+- Still left: the builders' Explicit Control on Skin, Rail and Profile; Rail's Colinear Options and
+  Rebuild per curve.
 
 **Stage 6: blends between surfaces** (S11).
 

@@ -5,12 +5,16 @@
 ## ("G1", "Implied tangent"...); a click cycles it to the next choice, one
 ## undo step, the same value as its row in the parameters. The labels come
 ## from the cook's state lines (build_ops.labels_of), so the worker's
-## results serve and the viewport never cooks.
+## results serve and the viewport never cooks. While the builder waits for
+## more picks, those it has are lit along their length.
 from luce_ui.ui import Painter, Rect, Point
 from workspace import Workspace
 from node import Node
 import edit_cad
+import edit_cad_build
+import edit_cad_picks
 import build_ops
+import surface_ops
 import view_projection as gm
 import theme
 from luce_std import math
@@ -105,8 +109,33 @@ pub class BuildLabels:
             self.w.rebuild())
         return true
 
+    ## Whether the target waits for picks (a step's or a node's prompt).
+    func waiting(self) -> bool:
+        let prompt = self.w.prompt else return false
+        return edit_cad_build.waits(prompt.label) or prompt.label in edit_cad_picks.builder_node_labels()
+
+    ## The picks lit, each its curve along its length (the accent, wide).
+    func draw_picks(self, painter: Painter, width: float, height: float) -> unit!:
+        if not self.waiting():
+            return
+        let found = self.target() else return
+        let (node, _) = found
+        for line in node.sketch_state.split("\n"):
+            if not line.starts_with(build_ops.pick_head):
+                continue
+            var previous: list[float]? = none
+            for p in surface_ops.points_of(line, build_ops.pick_head):
+                let s = gm.project(self.w, p, width, height)
+                if s[2] <= 0.0:
+                    previous = none
+                    continue
+                if let before = previous:
+                    painter.line(Point(before[0], before[1]), Point(s[0], s[1]), 3.0, theme.accent())
+                previous = s
+
     ## The labels: a dark plate with the continuity, the hovered one lit.
     pub func draw(self, painter: Painter, width: float, height: float) -> unit!:
+        self.draw_picks(painter, width, height)
         let shown = self.labels()
         for k in 0..<shown.length:
             let box = self.plate(shown[k], width, height) else continue

@@ -560,7 +560,20 @@ model back exactly.
     resolved to the isoparm through the point that fits the others: for
     Square the one whose ends meet the other boundaries', else the one
     along them). Project's and Blend Curve's node prompts take temporary
-    isoparms the same way.
+    isoparms the same way. While a builder waits, the curves, edges and
+    isoparms it has are lit along their length in the accent color.
+  - Edit CAD's **Project** with no curves picked waits for them (a click
+    adds a curve, a double-click a surface's temporary isoparm; Enter goes
+    on to the face to cast onto); **Blend Curve** at the Curves level with
+    fewer than two picked waits likewise, the second finishing it.
+  - The Stage 5 follow-ups (luce-cad MODELING.md, Surfaces from curves):
+    Square's **1-3 / 2-4 boundary blend** and **influence**, **Rebuild** and
+    **Colinear** per boundary, and corners whose walls disagree (a G1 cap on
+    a box's four walls) handled in corner zones; Rail's **Spine** sweep mode
+    (the spine is the rails' last pick), **Sweep pivot** (Closest, On curve,
+    Off curve) with **Fixed curve**, and **Curve segments**; Skin's **Curves a
+    section** (curve sets), **Surface type** (Single or Multiple surfaces) and
+    **Proportional crown**; Extend's **Chain select**.
   - **Boundary labels** (Alias's; Plasticity's black circles): each
     boundary with a continuity of its own carries its label beside its
     middle (Square's four, Skin's start and end, Rail's sides); a click

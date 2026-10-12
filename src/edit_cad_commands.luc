@@ -190,6 +190,8 @@ pub func tool(w: Workspace, name: str) -> unit!:
         move_copy(w)
     elif name == edit_cad_surfaces.project_verb:
         project_step(w)
+    elif name == edit_cad_curves.blend_verb and w.level_index() == curve_level:
+        blend_step(w)
     elif name in edit_cad_align.verbs():
         align_step(w, name)
     elif name in edit_cad_build.verbs():
@@ -327,15 +329,28 @@ pub func pick_second_master(w: Workspace) -> unit!:
     w.begin(second_label)
     wait_for(w, node, second_label, edge_level, "Click the second master: an edge or a curve beside another side of the input (double-click a surface for an isoparm); Esc cancels")
 
+## Whether curves are picked at the Curves level.
+func curves_picked(w: Workspace) -> bool!:
+    if w.level_index() != curve_level or not w.selecting():
+        return false
+    let chosen = w.current_selection() else return false
+    return chosen.count() > 0
+
 ## Project on the picked curves: the step takes the view's direction (for
 ## Along: View), then waits for the face to cast onto; Esc takes it away.
+## With no curves picked it waits for them first: a click adds one, a
+## double-click on a surface a temporary isoparm (Alias's), Enter goes on.
 pub func project_step(w: Workspace) -> unit!:
     let node = model_node(w) else return
     if w.in_transaction():
         return
     w.begin(edit_cad_surfaces.project_verb)
     let count = node.edits.length
-    modeling_commands.model(w, edit_cad_surfaces.project_verb)
+    let waiting = not curves_picked(w)
+    if waiting:
+        node.edits.append(EditStep(edit_cad_surfaces.project_verb, "", 0, edit_cad_surfaces.project_numbers(), 0).with_texts(["", ""]))
+    else:
+        modeling_commands.model(w, edit_cad_surfaces.project_verb)
     if node.edits.length == count:
         w.cancel()
         return
@@ -350,7 +365,30 @@ pub func project_step(w: Workspace) -> unit!:
         numbers[edit_cad_surfaces.direction_slot + 1] = look.y
         numbers[edit_cad_surfaces.direction_slot + 2] = look.z
         node.edits[-1] = step.with_numbers(numbers)
+    if waiting:
+        wait_for(w, node, edit_cad_build.project_curves_label, curve_level, "Click the curves to project, or double-click a surface for an isoparm; Enter goes on to the face, Esc cancels")
+        return
     wait_for(w, node, projection_label, face_level, "Click the face to project the curves onto; Esc cancels")
+
+## Blend Curve between the two picked curves; with fewer picked it waits for
+## them: a click adds a curve, a double-click on a surface a temporary
+## isoparm (Alias's); the second finishes it. Esc takes it away.
+pub func blend_step(w: Workspace) -> unit!:
+    let node = model_node(w) else return
+    if w.in_transaction():
+        return
+    var words: list[str] = []
+    if curves_picked(w):
+        if let mesh = w.geometry:
+            if let chosen = w.current_selection():
+                words = edit_cad_build.picked_words(mesh, chosen, curve_level, false)
+    if words.length >= 2:
+        modeling_commands.model(w, edit_cad_curves.blend_verb)
+        return
+    w.begin(edit_cad_curves.blend_verb)
+    node.edits.append(EditStep(edit_cad_curves.blend_verb, "", 0, edit_cad_curves.blend_numbers(), 0).with_texts([words.join(";"), ""]))
+    w.network.invalidate(node.id)
+    wait_for(w, node, edit_cad_build.blend_curves_label, curve_level, "Click the curves to blend between, or double-click a surface for an isoparm; Esc cancels")
 
 ## Press Pull: profiles in a sketch Extrude, faces Offset Face, edges a
 ## Fillet, as Fusion's dispatches.

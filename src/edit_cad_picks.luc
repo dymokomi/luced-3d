@@ -13,7 +13,7 @@ import edit_cad_faces
 import cad_features
 import cad_moves
 import cad_names
-from edit_types import edge_level, curve_level
+from edit_types import edge_level, curve_level, face_level
 from luce_3d.graphics import Vector3
 import edit_cad_align
 import edit_cad_build
@@ -154,7 +154,13 @@ pub func follow_pick(w: Workspace, node: Node, mesh: Mesh, chosen: Selection) ->
         # Redefine Sketch Plane: the face the sketch goes onto.
         node.edits[-1] = step.with_texts([step.text(0), name, step.text(2)])
     else:
-        node.edits[-1] = step.with_texts([name])
+        # The face first; the step's other texts kept (Project's curves).
+        let texts = step.texts.copy()
+        if texts.length == 0:
+            texts.append(name)
+        else:
+            texts[0] = name
+        node.edits[-1] = step.with_texts(texts)
         if step.verb == "Split Body":
             let numbers = step.numbers.copy()
             numbers[edit_cad_faces.split_tool_slot] = 0.0
@@ -224,9 +230,13 @@ pub func set_axis(w: Workspace, node: Node, axis: str) -> unit!:
 
 ## Enter while a step waits: kept as it stands (Combine's tools, Replace
 ## Face's targets, a Split by an origin plane chosen in the tool bar); a
-## builder's generation curves or profiles go on to its rail.
+## builder's generation curves or profiles go on to its rail, Project's
+## curves on to its face.
 pub func accept_pick(w: Workspace, node: Node) -> unit!:
     let prompt = w.prompt else return
+    if prompt.label == edit_cad_build.project_curves_label:
+        wait_for(w, node, projection_label, face_level, "Click the face to project the curves onto; Esc cancels")
+        return
     if prompt.label == edit_cad_build.curves_label and node.edits.length > 0:
         let (label, hint) = edit_cad_build.next_prompt(node.edits[-1])
         if label == edit_cad_build.rails_label:
@@ -239,6 +249,19 @@ pub func accept_pick(w: Workspace, node: Node) -> unit!:
 ## else it waits on, the selection cleared for the next click.
 pub func after_builder_pick(w: Workspace, node: Node) -> unit!:
     let step = node.edits[-1]
+    if let prompt = w.prompt:
+        if prompt.label in [edit_cad_build.project_curves_label, edit_cad_build.blend_curves_label]:
+            # Blend Curve's two ends finish it; Project goes on to its face
+            # with Enter.
+            if prompt.label == edit_cad_build.blend_curves_label and edit_cad_build.picked_count(step) >= 2:
+                finish_pick(w, node)
+                return
+            w.network.invalidate(node.id)
+            w.selection = none
+            w.pending_changed = true
+            say(w, "Enter goes on to the face; a click adds another curve (again: takes it out), a double-click a surface's isoparm; Esc cancels" if prompt.label == edit_cad_build.project_curves_label else "Pick the other curve, or double-click a surface for an isoparm; Esc cancels")
+            w.rebuild()
+            return
     let (label, hint) = edit_cad_build.next_prompt(step)
     let full = step.verb == "Square" and edit_cad_build.picked_count(step) >= 4
     if full:

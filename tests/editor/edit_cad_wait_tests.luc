@@ -1,0 +1,162 @@
+## Surfacing Stage 5's follow-ups in the editor (edit_cad_build.luc,
+## edit_cad_picks.luc, build_ops.luc, build_labels.luc): a builder waiting
+## for more picks publishes the lines of those it has, for the viewport to
+## light; Project with nothing picked waits for its curves, a double-click
+## on a surface adding a temporary isoparm, Enter going on to the face it
+## casts onto; Blend Curve with nothing picked takes two temporary
+## isoparms; Rail sweeps square to a spine (its rails' last pick) and Skin
+## takes curve sets, as rows of the step and the node.
+from workspace import Workspace
+from node import Node
+from app import Luce3D
+from geometry_data import GeometryData
+from luce_cad.cad_curves import CadCurves
+from luce_cad.curves import CadCurveTools
+from luce_cad.nurbs import CadNurbs
+from luce_geocore.geocore import GeometrySet
+from luce_3d.graphics import Vector3
+import build_ops
+import edit_cad_build
+import edit_cad_commands
+import edit_cad_curves
+import edit_cad_picks
+import edit_cad_surfaces
+import modeling_commands
+import node_commands
+import selection_commands
+import view_projection
+from luce_std import math
+
+pub func edit_cad_wait_tests() -> unit!:
+    picks_lit()
+    project_and_blend_isoparms()
+    builder_rows()
+    print("PASS Edit CAD waits: a waiting Square publishes its picks' lines; Project with nothing picked takes a temporary isoparm and casts it onto the face clicked after Enter; Blend Curve blends two temporary isoparms; Rail sweeps square to a spine, Skin takes curve sets")
+
+func data_of(w: Workspace, node: Node) -> GeometryData!:
+    return w.network.evaluate_data(node.id)
+
+## The six squares of a 2-box as bodies of an Edit CAD node.
+func unstitched_box(w: Workspace) -> Node!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    let node = w.selected() else trap("Edit CAD")
+    modeling_commands.create(w, "Box")
+    selection_commands.set_mode(w, 0)
+    selection_commands.choose_component(w, 0, false)
+    edit_cad_commands.tool(w, edit_cad_surfaces.unstitch_verb)
+    assert(data_of(w, node).models().length == 6, node.warning)
+    return node
+
+## The pick mesh's polygon whose middle and normal `keep` takes.
+func face_where(w: Workspace, keep: func(Vector3, Vector3) -> bool) -> int!:
+    let mesh = w.geometry else trap("pick geometry")
+    for polygon in 0..<mesh.face_count():
+        var middle = Vector3()
+        for k in 0..<mesh.face_size(polygon):
+            middle = middle.add(mesh.point(mesh.face_point(polygon, k)))
+        middle = middle.multiply_scalar(1.0 / float(mesh.face_size(polygon)))
+        if keep(middle, mesh.face_normal(polygon)):
+            return polygon
+    return -1
+
+## A double-click at `p` in an 800 by 600 view.
+func double_click(w: Workspace, p: Vector3) -> unit!:
+    let at = view_projection.project(w, p, 800.0, 600.0)
+    assert(edit_cad_commands.pick_isoparm(w, at[0], at[1], 800.0, 600.0), f"the double-click at {p} took nothing")
+
+func picks_lit() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let node = unstitched_box(w)
+    # Square started on nothing waits; two temporary isoparms on the top
+    # are lit as lines (each the isoparm's length, on the top).
+    selection_commands.set_mode(w, 6)
+    edit_cad_commands.tool(w, build_ops.square_verb)
+    let prompt = w.prompt else trap("Square waits")
+    assert(prompt.label == edit_cad_build.curves_label, prompt.label)
+    double_click(w, Vector3(0.3, 1.0, 0.2))
+    double_click(w, Vector3(-0.5, 1.0, 0.6))
+    _ = data_of(w, node)
+    var lines = 0
+    for line in node.sketch_state.split("\n"):
+        if line.starts_with(build_ops.pick_head):
+            lines += 1
+            let words = line[build_ops.pick_head.length..].trim().split(" ")
+            assert(words.length == 3 * 48, f"{words.length} numbers on a pick's line")
+            assert(math.abs(float(words[1]) - 1.0) < 1e-9, f"a pick's line leaves the top: {words[1]}")
+    assert(lines == 2, f"{lines} picks lit: {node.sketch_state}")
+
+func project_and_blend_isoparms() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let node = unstitched_box(w)
+    let before = CadCurves.count(data_of(w, node).geometry)
+    # Project with nothing picked: it waits for curves; a double-click on
+    # the top adds its isoparm; Enter asks for the face; the bottom's click
+    # casts it (straight down) onto the bottom.
+    selection_commands.set_mode(w, 6)
+    edit_cad_commands.tool(w, edit_cad_surfaces.project_verb)
+    let prompt = w.prompt else trap("Project waits for curves")
+    assert(prompt.label == edit_cad_build.project_curves_label, prompt.label)
+    double_click(w, Vector3(0.25, 1.0, 0.5))
+    assert(node.edits[-1].text(1).contains("isoparm_at"), node.edits[-1].text(1))
+    edit_cad_picks.accept_pick(w, node)
+    let face = w.prompt else trap("Project waits for its face")
+    assert(face.label == edit_cad_picks.projection_label, face.label)
+    let bottom = face_where(w, func (c: Vector3, n: Vector3) -> bool: return math.abs(c.y + 1.0) < 1e-6 and n.y < -0.99)
+    assert(bottom >= 0, "no bottom polygon")
+    selection_commands.choose_component(w, bottom, false)
+    assert(w.prompt == none, "the face finishes Project")
+    let cast = data_of(w, node)
+    assert(node.warning == "", node.warning)
+    assert(CadCurves.count(cast.geometry) == before + 1, f"{CadCurves.count(cast.geometry)} curves")
+    let c = CadCurves.curve(cast.geometry, CadCurves.count(cast.geometry) - 1)
+    for k in 0..<5:
+        let p = c.at(c.low() + (c.high() - c.low()) * float(k) / 4.0)
+        assert(math.abs(p.y + 1.0) < 1e-6, f"the cast isoparm leaves the bottom at {p}")
+    # Blend Curve with nothing picked: two double-clicks (the top's and a
+    # side's isoparms) blend between them.
+    selection_commands.set_mode(w, 6)
+    w.selection = none
+    edit_cad_commands.tool(w, edit_cad_curves.blend_verb)
+    let waiting = w.prompt else trap("Blend Curve waits")
+    assert(waiting.label == edit_cad_build.blend_curves_label, waiting.label)
+    double_click(w, Vector3(0.5, 1.0, 0.0))
+    assert(w.prompt != none, "one isoparm is not a blend yet")
+    double_click(w, Vector3(1.0, -0.5, 0.0))
+    assert(w.prompt == none, "the second isoparm finishes Blend Curve")
+    let blended = data_of(w, node)
+    assert(node.warning == "", node.warning)
+    assert(CadCurves.count(blended.geometry) == before + 2, f"{CadCurves.count(blended.geometry)} curves after the blend")
+
+func builder_rows() -> unit!:
+    # Rail in Spine mode: the rails' last pick is the spine; every section
+    # square to it (x constant across).
+    var curves = GeometrySet()
+    curves = CadCurves.with_curve(curves, "wave", CadCurveTools.by_points([Vector3(0.0, 0.0, 0.0), Vector3(1.0, 1.0, 0.3), Vector3(2.0, -1.0, -0.2), Vector3(3.0, 0.0, 0.0)], 3))
+    curves = CadCurves.with_curve(curves, "spine", CadCurveTools.by_points([Vector3(0.0, 0.0, -1.0), Vector3(3.0, 0.0, -1.0)], 1))
+    curves = CadCurves.with_curve(curves, "post", CadCurveTools.by_points([Vector3(0.0, 0.0, 0.0), Vector3(0.0, 0.3, 1.0)], 1))
+    let v = build_ops.starting(build_ops.rail_verb)
+    v[build_ops.mode_slot] = float(build_ops.spine_mode)
+    let waiting = build_ops.build(build_ops.rail_verb, GeometryData(geometry = curves), v, ["curve post", "curve wave"], "Rail")
+    assert(waiting.models().length == 0, "Spine mode waits for its spine")
+    let made = build_ops.build(build_ops.rail_verb, GeometryData(geometry = curves), v, ["curve post", "curve wave;curve spine"], "Rail")
+    let model = made.models()[0]
+    let s = CadNurbs.surface_of_face(model, "Rail")
+    for k in 0..<5:
+        let t = float(k) / 4.0
+        assert(math.abs(CadNurbs.point_at(model, s, 0.0, t).x - CadNurbs.point_at(model, s, 1.0, t).x) < 1e-5, "a spine's section leans")
+    # Skin of curve sets two by two: Multiple surfaces makes two sheets.
+    var sets = GeometrySet()
+    sets = CadCurves.with_curve(sets, "a1", CadCurveTools.by_points([Vector3(0.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0)], 1))
+    sets = CadCurves.with_curve(sets, "a2", CadCurveTools.by_points([Vector3(1.0, 0.0, 0.0), Vector3(2.0, 0.0, 0.5)], 1))
+    sets = CadCurves.with_curve(sets, "b1", CadCurveTools.by_points([Vector3(0.0, 2.0, 0.0), Vector3(1.0, 2.0, 0.0)], 1))
+    sets = CadCurves.with_curve(sets, "b2", CadCurveTools.by_points([Vector3(1.0, 2.0, 0.0), Vector3(2.0, 2.0, 1.0)], 1))
+    let sv = build_ops.starting(build_ops.skin_verb)
+    sv[build_ops.set_slot] = 2.0
+    sv[build_ops.multiple_slot] = 1.0
+    let skins = build_ops.build(build_ops.skin_verb, GeometryData(geometry = sets), sv, ["curve a1;curve a2;curve b1;curve b2", ""], "Skin")
+    assert(skins.models().length == 2, f"{skins.models().length} sheets")

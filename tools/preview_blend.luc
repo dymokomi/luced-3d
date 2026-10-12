@@ -1,0 +1,204 @@
+## The captures of the surfacing plan's Stage 5 follow-ups and Stage 6
+## (preview_build.luc hands these scenes here):
+##   surf_cap: an open box's four walls capped by Square G1 at every top
+##     edge (each corner's zone where the walls disagree), its labels and
+##     Continuity Check.
+##   surf_square_picks: Square waiting with two temporary isoparms and an
+##     edge picked, the picks lit along their length.
+##   surf_blend_isoparms: Blend Curve between two temporary isoparms.
+##   surf_rail_spine: Rail along a wavy rail, square to a straight spine.
+##   surf_skin_crown: Skin of two lines with Proportional Crown.
+import preview_support
+from luce_3d.graphics import Vector3
+from app import Luce3D
+import node_commands
+import modeling_commands
+import selection_commands
+import edit_cad_commands
+import edit_cad_surfaces
+import edit_cad_curves
+import edit_cad_align
+import build_ops
+import placing_commands
+import tool_prompts
+import view_projection
+from workspace import Workspace
+from luce_std import math
+
+pub func scenes() -> list[str]:
+    return ["surf_cap", "surf_square_picks", "surf_blend_isoparms", "surf_rail_spine", "surf_skin_crown"]
+
+func look(editor: Luce3D, yaw: float, pitch: float, distance: float, target: Vector3) -> unit!:
+    let w = editor.workspace
+    w.view.yaw = yaw
+    w.view.pitch = pitch
+    w.view.distance = distance
+    w.view.target = target
+    w.view.update_camera()
+
+## A new CAD node, entered and empty, and an Edit CAD node in it.
+func edit_cad(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 40.0, 40.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 40.0, 40.0)
+    preview_support.settle(w)
+
+## An Edit CAD box unstitched into six squares, its top taken away.
+func open_box(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    edit_cad(editor)
+    modeling_commands.create(w, "Box")
+    preview_support.settle(w)
+    selection_commands.set_mode(w, 0)
+    preview_support.settle(w)
+    selection_commands.choose_component(w, 0, false)
+    edit_cad_commands.tool(w, edit_cad_surfaces.unstitch_verb)
+    preview_support.settle(w)
+    selection_commands.set_mode(w, 0)
+    preview_support.settle(w)
+    let mesh = preview_support.shown(w) else trap("no pick mesh")
+    for face in 0..<mesh.face_count():
+        if mesh.face_center(face).y > 0.99:
+            selection_commands.choose_component(w, face, false)
+            break
+    preview_support.settle(w)
+    edit_cad_commands.tool(w, "Remove")
+    preview_support.settle(w)
+
+## The +X, +Z, -X and -Z walls' top edges (k 0 to 3).
+func top_side(c: Vector3, n: Vector3, which: int) -> bool:
+    if math.abs(c.y - 1.0) > 1e-6:
+        return false
+    if which == 0:
+        return math.abs(c.x - 1.0) < 1e-6 and n.x > 0.99
+    if which == 1:
+        return math.abs(c.z - 1.0) < 1e-6 and n.z > 0.99
+    if which == 2:
+        return math.abs(c.x + 1.0) < 1e-6 and n.x < -0.99
+    return math.abs(c.z + 1.0) < 1e-6 and n.z < -0.99
+
+## At the Edges level, the pick mesh's edge `keep` takes clicked.
+func click_edge(w: Workspace, keep: func(Vector3, Vector3) -> bool) -> unit!:
+    selection_commands.set_mode(w, 2)
+    preview_support.settle(w)
+    let mesh = preview_support.shown(w) else trap("no pick mesh")
+    let polygon_models = mesh.find_attribute("cad_model", 2)
+    let edge_models = mesh.find_attribute("cad_edge_model", 4)
+    for edge in 0..<mesh.edge_count():
+        let a = mesh.point(mesh.edge_point(edge, 0))
+        let b = mesh.point(mesh.edge_point(edge, 1))
+        for polygon in 0..<mesh.face_count():
+            if int(mesh.attribute_value(polygon_models, polygon)) != int(mesh.attribute_value(edge_models, edge)):
+                continue
+            var on = 0
+            for k in 0..<mesh.face_size(polygon):
+                if edit_cad_align.on_segment(mesh.point(mesh.face_point(polygon, k)), a, b, 1e-6):
+                    on += 1
+            if on >= 2 and keep(a.add(b).multiply_scalar(0.5), mesh.face_normal(polygon)):
+                selection_commands.choose_component(w, edge, false)
+                preview_support.settle(w)
+                return
+    trap("no such edge")
+
+## A double-click on the model at `p` (a temporary isoparm while a tool
+## waits).
+func double_click(w: Workspace, p: Vector3) -> unit!:
+    let at = view_projection.project(w, p, 800.0, 600.0)
+    _ = edit_cad_commands.pick_isoparm(w, at[0], at[1], 800.0, 600.0)
+    preview_support.settle(w)
+
+## A CV curve through `points`.
+func cv_curve(w: Workspace, points: list[Vector3]) -> unit!:
+    modeling_commands.model(w, edit_cad_curves.cv_verb)
+    for p in points:
+        placing_commands.add_corner(w, p)
+    placing_commands.finish_placing(w)
+    preview_support.settle(w)
+
+## At the Curves level, every curve picked in the order made, then
+## builder `verb` on them (the last `rails` the rails).
+func build_on_curves(w: Workspace, verb: str, rails: int) -> unit!:
+    selection_commands.set_mode(w, 6)
+    preview_support.settle(w)
+    let mesh = preview_support.shown(w) else trap("no pick mesh")
+    let names = mesh.find_attribute("cad_curve_name", 4)
+    let order: list[str] = []
+    let first: list[int] = []
+    for edge in 0..<mesh.edge_count():
+        let name = mesh.attribute_text(names, edge)
+        if name != "" and not (name in order):
+            order.append(name)
+            first.append(edge)
+    let count = order.length - rails
+    for k in 0..<count:
+        selection_commands.choose_component(w, first[k], k > 0)
+    preview_support.settle(w)
+    edit_cad_commands.tool(w, verb)
+    preview_support.settle(w)
+    for k in count..<order.length:
+        selection_commands.choose_component(w, first[k], false)
+        preview_support.settle(w)
+    if w.prompt != none:
+        tool_prompts.accept_prompt(w)
+    preview_support.settle(w)
+
+## Scene `scene` before its first frame.
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    let w = editor.workspace
+    if scene == "surf_cap":
+        open_box(editor)
+        click_edge(w, func (c: Vector3, n: Vector3) -> bool: return top_side(c, n, 0))
+        edit_cad_commands.tool(w, build_ops.square_verb)
+        preview_support.settle(w)
+        for which in 1..<4:
+            click_edge(w, func (c: Vector3, n: Vector3) -> bool: return top_side(c, n, which))
+        for k in 0..<4:
+            modeling_commands.set_last_step(w, build_ops.continuity_slot + k, 2.0, 0.0, 6.0)
+        preview_support.settle(w)
+        look(editor, 0.7, 0.5, 8.0, Vector3(0.0, 0.4, 0.0))
+    elif scene == "surf_square_picks":
+        open_box(editor)
+        click_edge(w, func (c: Vector3, n: Vector3) -> bool: return top_side(c, n, 0))
+        edit_cad_commands.tool(w, build_ops.square_verb)
+        preview_support.settle(w)
+        look(editor, 0.7, 0.5, 8.0, Vector3(0.0, 0.0, 0.0))
+        preview_support.settle(w)
+        double_click(w, Vector3(-1.0, 0.0, 0.3))
+        double_click(w, Vector3(0.2, -1.0, 0.4))
+    elif scene == "surf_blend_isoparms":
+        open_box(editor)
+        selection_commands.set_mode(w, 6)
+        preview_support.settle(w)
+        look(editor, 0.7, 0.45, 8.0, Vector3(0.0, 0.0, 0.0))
+        preview_support.settle(w)
+        edit_cad_commands.tool(w, edit_cad_curves.blend_verb)
+        preview_support.settle(w)
+        double_click(w, Vector3(1.0, 0.2, 0.0))
+        double_click(w, Vector3(0.0, 0.3, 1.0))
+    elif scene == "surf_rail_spine":
+        edit_cad(editor)
+        cv_curve(w, [Vector3(0.0, 0.0, 0.0), Vector3(0.0, 1.0, 0.0)])
+        cv_curve(w, [Vector3(0.0, 0.0, 0.0), Vector3(1.0, 0.0, 1.5), Vector3(2.0, 0.0, -1.5), Vector3(3.0, 0.0, 0.0)])
+        cv_curve(w, [Vector3(0.0, -0.5, 0.0), Vector3(3.0, -0.5, 0.0)])
+        build_on_curves(w, build_ops.rail_verb, 2)
+        modeling_commands.set_last_step(w, build_ops.mode_slot, float(build_ops.spine_mode), 0.0, 3.0)
+        preview_support.settle(w)
+        look(editor, 0.4, 0.6, 7.0, Vector3(1.5, 0.3, 0.0))
+    elif scene == "surf_skin_crown":
+        edit_cad(editor)
+        cv_curve(w, [Vector3(-1.5, 0.0, -1.0), Vector3(1.5, 0.0, -1.0)])
+        cv_curve(w, [Vector3(-1.5, 0.0, 1.0), Vector3(1.5, 0.0, 1.0)])
+        build_on_curves(w, build_ops.skin_verb, 0)
+        modeling_commands.set_last_step(w, build_ops.crown_slot, 0.2, -0.25, 0.25)
+        preview_support.settle(w)
+        look(editor, 0.7, 0.4, 7.0, Vector3(0.0, 0.2, 0.0))
+    editor.panels.refresh()
+
+## Frame `frame` of scene `scene` (`last` is the frame captured).
+pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
+    _ = editor
+    _ = scene
+    _ = frame
+    _ = last
