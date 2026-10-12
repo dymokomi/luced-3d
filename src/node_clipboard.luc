@@ -1,15 +1,16 @@
-## Copy, Paste and Duplicate of nodes, after Houdini. The picked nodes travel
-## with their parameters, Edit steps and whole contents, and the wires among
-## them; wires from nodes left behind do not. They travel as a project
+## Cut, Copy, Paste and Duplicate of nodes, after Houdini. The picked nodes
+## travel with their parameters, Edit steps and whole contents, and the wires
+## among them; wires from nodes left behind do not. They travel as a project
 ## document (project_graph, the one node serializer) in text, on the system
 ## clipboard, so another Luced 3D window pastes them; the last copy is kept
 ## here too, for when there is no desktop clipboard or the copy is too large
 ## for it. A paste gives the copies new ids and, among their new siblings,
-## names of their own, picks them, and is one undo step. A relative node
-## path between copied nodes names the copy; an absolute one, and a relative
-## one reaching outside the copy, stays as written (docs/NODE-PATHS.md).
-## Nodes the network shown can't hold (node_catalog.refusal) are left out,
-## and the status line says why.
+## names of their own, picks them, and is one undo step; a cut copies and
+## removes the nodes in one undo step. A relative node path between copied
+## nodes names the copy; an absolute one, and a relative one reaching outside
+## the copy, stays as written (docs/NODE-PATHS.md). Nodes the network shown
+## can't hold (node_catalog.refusal) are left out, and the status line says
+## why.
 from luce_prism.prism import Document, Encoding
 from luce_clipboard import clipboard
 from luce_std import math
@@ -38,8 +39,9 @@ pub class NodeClipboard:
     ## leave the desktop's clipboard alone.
     pub var system: bool = false
 
-    ## Copy the picked nodes in the network shown.
-    pub func copy(self, w: Workspace) -> unit!:
+    ## Copy the picked nodes in the network shown; the status line says
+    ## `done` (Copied, or Cut) with how many.
+    pub func copy(self, w: Workspace, done: str = "Copied") -> unit!:
         let ids = w.network.selection()
         if ids.length == 0:
             return
@@ -51,8 +53,26 @@ pub class NodeClipboard:
                 _ = failure
                 self.shared = false
         let what = "1 node" if ids.length == 1 else f"{ids.length} nodes"
-        w.notice = f"Copied {what}" if self.shared or not self.system else f"Copied {what} (too large for the system clipboard: paste it in this window)"
+        w.notice = f"{done} {what}" if self.shared or not self.system else f"{done} {what} (too large for the system clipboard: paste it in this window)"
         w.revision += 1
+
+    ## Copy the picked nodes in the network shown, then remove them (and what
+    ## they hold): one undo step, "Cut".
+    pub func cut(self, w: Workspace) -> unit!:
+        let ids = w.network.selection()
+        if ids.length == 0:
+            return
+        self.copy(w, "Cut")
+        # The status line says what was cut once the network is rebuilt.
+        let notice = w.notice
+        w.perform("Cut", func () -> unit!:
+            for id in ids:
+                if w.network.find(id) != none:
+                    w.network.remove(id)
+            w.network.wires = []
+            w.selection = none
+            w.rebuild()
+            w.notice = notice)
 
     ## Paste the clipboard's nodes into the network shown, their top left
     ## at (`x`, `y`) of the network.
