@@ -26,7 +26,9 @@ from workspace import Workspace
 from node import Node
 from edit_types import object_level, edge_level, face_level, curve_level
 from edit_cad_sketches import SketchObject, sketch_step, feature_step, visibility_step, plane_step, next_name
-from edit_cad_picks import wait_for, target_label, tools_label, splitting_label, axis_label, object_label, plane_label, projection_label
+from edit_cad_picks import wait_for, target_label, tools_label, splitting_label, axis_label, object_label, plane_label, projection_label, master_label, second_label
+import edit_cad_align
+import align_ops
 import edit_cad_surfaces
 from edit_operations import EditStep
 import view_projection
@@ -34,6 +36,8 @@ import edit_cad_curves
 from sketch_node import face_plane
 import edit_cad
 import edit_cad_sketches
+import edit_cad_picks
+import modify_picks
 import modeling_commands
 import node_catalog
 
@@ -184,13 +188,19 @@ pub func tool(w: Workspace, name: str) -> unit!:
         move_copy(w)
     elif name == edit_cad_surfaces.project_verb:
         project_step(w)
+    elif name in edit_cad_align.verbs():
+        align_step(w, name)
     else:
         modeling_commands.model(w, name)
 
 ## A double-click at (`x`, `y`) on a surface at the Curves level with no
 ## curve under it: the isoparm through the point picked (Alias's), a step,
-## the curve selected. Whether it took the click.
+## the curve selected. While an Align waits for its master (a step's or a
+## node's), the isoparm there is its master instead: Alias's temporary pick
+## object, kept in the step as the point. Whether it took the click.
 pub func pick_isoparm(w: Workspace, x: float, y: float, width: float, height: float) -> bool!:
+    if align_isoparm(w, x, y, width, height):
+        return true
     if not active(w) or sketching(w) or w.level_index() != curve_level or w.prompt != none or w.placing != none:
         return false
     let node = model_node(w) else return false
@@ -205,6 +215,65 @@ pub func pick_isoparm(w: Workspace, x: float, y: float, width: float, height: fl
         w.pending_level = curve_level
         w.rebuild())
     return true
+
+## Align's master as a temporary isoparm (see pick_isoparm): a step
+## waiting in Edit CAD, or an Align node waiting for its master.
+func align_isoparm(w: Workspace, x: float, y: float, width: float, height: float) -> bool!:
+    let prompt = w.prompt else return false
+    if not (prompt.label in [master_label, second_label, "Pick master", "Pick second master"]):
+        return false
+    let way = view_projection.ray(w, x, y, width, height).normalized() catch failure:
+        return false
+    let hit = w.surface_at(w.view.camera.position(), way)
+    if not hit.found:
+        return false
+    let p = hit.point
+    let words = f"isoparm_at {p.x} {p.y} {p.z}"
+    let node = w.network.find(prompt.node) else return false
+    if node.kind == edit_cad.kind_name and node.edits.length > 0:
+        let step = node.edits[-1]
+        let texts = [step.text(0), step.text(1), step.text(2)]
+        texts[align_ops.second_text if prompt.label == second_label else align_ops.master_text] = words
+        node.edits[-1] = step.with_texts(texts)
+        edit_cad_picks.accept_pick(w, node)
+        return true
+    node.texts[align_ops.second_text if prompt.label == "Pick second master" else align_ops.master_text] = words
+    modify_picks.accept(w, node, prompt.label)
+    return true
+
+## Align or Symmetry Align (`verb`) on the picked edge or curve: the step
+## takes it as its input; Align then waits for its master. Esc takes it
+## away.
+pub func align_step(w: Workspace, verb: str) -> unit!:
+    let node = model_node(w) else return
+    if w.in_transaction():
+        return
+    let mesh = w.geometry else return
+    let chosen = w.current_selection() else return
+    let input = edit_cad_align.pick_words(mesh, chosen.next(-1), w.level_index(), false)
+    if input == "":
+        say(w, f"{verb}: select the input first: a surface's edge (Edges level) or a curve near its end (Curves level)")
+        return
+    let numbers = align_ops.symmetry_starting() if verb == edit_cad_align.symmetry_verb else align_ops.starting()
+    if verb == edit_cad_align.symmetry_verb:
+        w.perform(verb, func () -> unit!:
+            node.edits.append(EditStep(verb, "", 0, numbers, 0).with_texts([input, "", ""]))
+            w.network.invalidate(node.id)
+            w.selection = none
+            w.rebuild())
+        return
+    w.begin(verb)
+    node.edits.append(EditStep(verb, "", 0, numbers, 0).with_texts([input, "", ""]))
+    w.network.invalidate(node.id)
+    wait_for(w, node, master_label, w.level_index(), "Click the master: an edge (Edges level), a curve (Curves level) or a face for Project and U/V (Faces level); double-click a surface for an isoparm; Esc cancels")
+
+## The last Align step waits for its second master (from its tool bar).
+pub func pick_second_master(w: Workspace) -> unit!:
+    let node = model_node(w) else return
+    if w.in_transaction() or node.edits.length == 0 or node.edits[-1].verb != edit_cad_align.align_verb:
+        return
+    w.begin(second_label)
+    wait_for(w, node, second_label, edge_level, "Click the second master: an edge or a curve beside another side of the input (double-click a surface for an isoparm); Esc cancels")
 
 ## Project on the picked curves: the step takes the view's direction (for
 ## Along: View), then waits for the face to cast onto; Esc takes it away.

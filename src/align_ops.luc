@@ -1,0 +1,406 @@
+## Surfacing Stage 4's Align (docs/research/SURFACING-ALIAS-PLASTICITY.md
+## §4.2, §6.1; Alias's Object Edit › Align) on a CAD result, shared by Edit
+## CAD's step (edit_cad_align.luc) and the CAD network's node
+## (cad_surface_nodes.luc): luce-cad's CadSurfacing.aligned with the
+## option window's rows, and Symmetry Plane Align (a plane master).
+##
+## The input, the master and a second master are words (texts of the node
+## or step), as luce-cad reads them:
+##   input: "face <name> x y z" (the face's side nearest the point, an edge
+##     clicked) or "curve <name> x y z" (the curve's end nearest it);
+##   master: "edge <face> x y z", "curve <name>", "face <name>" (Project and
+##     U/V), "isoparm <face> <0 or 1> <fraction>" (Alias's temporary pick
+##     object: a double-click on a surface while the master is asked for).
+## The cook reports Alias's Diagnostic Feedback, and the viewport's lines
+## (align_view.luc) as state lines: the aligned rows tinted by the order
+## they set, the original hull (Enable Proxy Display), the temporary
+## isoparm, and the edge dashed where the match misses its limits.
+from luce_cad.surfacing import CadSurfacing, CadAlignEdit
+from luce_cad.curves import CadCurveTools
+from luce_cad.cad_curves import CadCurves
+from luce_cad.model import CadModel
+from luce_3d.graphics import Vector3
+from geometry_data import GeometryData
+from parameter_rows import Parameter, number, whole, toggle, menu, vector
+from handle_lines import HandleLine
+import handle_lines
+import surface_ops
+from luce_std import math
+from luce_ui import ui
+
+pub let align_verb = "Align"
+pub let symmetry_verb = "Symmetry Align"
+
+## The texts: the input, the master, the second master.
+pub let input_text = 0
+pub let master_text = 1
+pub let second_text = 2
+
+## The state lines the cook publishes (align_view.luc reads them).
+pub let row_head = "align_row "
+pub let proxy_head = "align_proxy "
+pub let iso_head = "align_iso "
+pub let missed_head = "align_missed "
+pub let side_head = "align_side "
+
+# -- The rows' slots (the node's values and the step's numbers alike).
+pub let continuity_slot = 0
+pub let type_slot = 1
+pub let vector_slot = 2
+pub let influence_slot = 5
+pub let balance_slot = 6
+pub let tangent_slot = 7
+pub let tangent_end_slot = 8
+pub let curvature_slot = 9
+pub let curvature_end_slot = 10
+pub let g3_slot = 11
+pub let g3_end_slot = 12
+pub let auto_g2_slot = 13
+pub let auto_g3_slot = 14
+pub let extra_slot = 15
+pub let blend_slot = 16
+pub let partial_slot = 17
+pub let start_slot = 18
+pub let end_slot = 19
+pub let both_slot = 20
+pub let explicit_slot = 21
+pub let degree_u_slot = 22
+pub let spans_u_slot = 23
+pub let degree_v_slot = 24
+pub let spans_v_slot = 25
+pub let refine_slot = 26
+pub let most_slot = 27
+pub let gap_slot = 28
+pub let angle_slot = 29
+pub let difference_slot = 30
+pub let skew_slot = 31
+pub let skew_end_slot = 32
+pub let attach_slot = 33
+pub let cos_slot = 34
+pub let shrink_slot = 35
+pub let second_near_slot = 36
+pub let proxy_slot = 39
+pub let feedback_slot = 40
+## Alias's Outer Edge: Edge Align (0) or Skew (1); a curve's Attach Point
+## used (1) or its nearest point (0).
+pub let outer_slot = 41
+pub let attach_on_slot = 42
+pub let align_count = 43
+
+## Symmetry Align's slots.
+pub let plane_slot = 1
+pub let offset_slot = 2
+pub let position_slot = 3
+
+## Align's starting values: G1 Edge, the input's own hull, Explicit
+## Control off (the multi-span quintic), Alias's check limits.
+pub func starting() -> list[float]:
+    let v: list[float] = []
+    for _ in 0..<align_count:
+        v.append(0.0)
+    v[continuity_slot] = 1.0
+    v[vector_slot + 1] = -1.0
+    for slot in [tangent_slot, tangent_end_slot, curvature_slot, curvature_end_slot, g3_slot, g3_end_slot]:
+        v[slot] = 1.0
+    v[end_slot] = 1.0
+    v[most_slot] = 10.0
+    v[gap_slot] = 0.001
+    v[angle_slot] = 0.1
+    v[difference_slot] = 0.5
+    v[attach_slot] = 0.0
+    v[cos_slot] = 1.0
+    v[shrink_slot] = 1.0
+    v[feedback_slot] = 1.0
+    return v
+
+## Symmetry Align's: G1 across the YZ plane, the edge onto it.
+pub func symmetry_starting() -> list[float]:
+    return [1.0, 0.0, 0.0, 1.0]
+
+## Align's rows, as Alias's option window has them.
+pub func rows() -> list[Parameter]:
+    let vector_row = vector("Vector", vector_slot, [0.0, -1.0, 0.0], "Project: the direction the input's edge is cast onto the master along (zero: the master's normals). Vector: the only way the tangent and curvature rows move.")
+    vector_row.hide_when = "{ type == 0 } { type == 2 }"
+    let uv = menu("U/V direction", vector_slot, "U|V", 0.0, "U/V: the master surface's direction the curve's end is matched to.")
+    uv.hide_when = "{ type != 2 }"
+    let curvature = number("Curvature scale", curvature_slot, 1.0, 0.0, 10.0, 0.05, "Alias's Starting Curvature Scale: how far behind the tangent row the curvature row lies, against the input's own (1).", slider = true)
+    curvature.hide_when = "{ continuity < 2 }"
+    let curvature_end = number("Curvature scale end", curvature_end_slot, 1.0, 0.0, 10.0, 0.05, "Ending Curvature Scale: at the edge's end (the scale runs between).", slider = true)
+    curvature_end.hide_when = "{ continuity < 2 }"
+    let g3 = number("G3 scale", g3_slot, 1.0, 0.0, 10.0, 0.05, "Alias's Starting G3 Scale: how far behind the curvature row the G3 row lies, against the input's own.", slider = true)
+    g3.hide_when = "{ continuity < 3 }"
+    let g3_end = number("G3 scale end", g3_end_slot, 1.0, 0.0, 10.0, 0.05, "Ending G3 Scale.", slider = true)
+    g3_end.hide_when = "{ continuity < 3 }"
+    let auto_g2 = toggle("AutoScale G2", auto_g2_slot, 0.0, "Alias's AutoScale G2: the curvature row follows the tangent scale, keeping the rows' lengths in proportion.")
+    auto_g2.hide_when = "{ continuity < 2 }"
+    let auto_g3 = toggle("AutoScale G3", auto_g3_slot, 0.0, "AutoScale G3: the G3 row follows the tangent (and curvature) scale.")
+    auto_g3.hide_when = "{ continuity < 3 }"
+    let blend = number("Blend factor", blend_slot, 0.0, -3.0, 3.0, 0.1, "Alias's Blend Factor: positive, the extra rows' change dies out faster; 0 evenly; negative, it lasts.")
+    blend.hide_when = "{ extra_cv_rows == 0 }"
+    let start = number("Start", start_slot, 0.0, 0.0, 1.0, 0.01, "Partial: where along the input's edge the aligned range starts.", slider = true)
+    start.hide_when = "{ partial == 0 }"
+    let end = number("End", end_slot, 1.0, 0.0, 1.0, 0.01, "Partial: where it ends.", slider = true)
+    end.hide_when = "{ partial == 0 }"
+    let explicit_rows: list[Parameter] = []
+    for (label, slot, doc) in [("Degree U", degree_u_slot, "Explicit Control: the input's degree across the edge (0: its own)."),
+                               ("Spans U", spans_u_slot, "Its spans across (0: its own)."),
+                               ("Degree V", degree_v_slot, "Its degree along the edge (0: its own)."),
+                               ("Spans V", spans_v_slot, "Its spans along (0: its own).")]:
+        let row = whole(label, slot, 0.0, 0.0, 64.0, doc)
+        row.hide_when = "{ explicit_control == 0 }"
+        explicit_rows.append(row)
+    let most = whole("Max new spans", most_slot, 10.0, 1.0, 256.0, "Refine: how many spans it may add along the edge.")
+    most.hide_when = "{ refine == 0 }"
+    let gap = number("Position limit", gap_slot, 0.001, 0.0000001, 1.0, 0.0005, "Refine and the feedback: the largest gap (G0) that passes.", soft = 0.1)
+    gap.length = true
+    let angle = number("Tangent limit", angle_slot, 0.1, 0.0001, 10.0, 0.05, "The largest angle (degrees, G1) that passes.", suffix = "°")
+    let difference = number("Curvature limit", difference_slot, 0.5, 0.001, 100.0, 0.1, "The largest curvature and G3 difference (percent) that passes.", suffix = "%")
+    gap.hide_when = "{ refine == 0 }"
+    for row in [angle, difference]:
+        row.hide_when = "{ continuity < 1 } { refine == 0 }"
+    let skew = number("Start skew", skew_slot, 0.0, -80.0, 80.0, 1.0, "Alias's Outer Edge Skew: the angle (degrees) the input leaves the edge at, turned from the master's own direction across, at the start.", suffix = "°")
+    let skew_end = number("End skew", skew_end_slot, 0.0, -80.0, 80.0, 1.0, "The skew at the edge's end (Edge Align at both: 0).", suffix = "°")
+    for row in [skew, skew_end]:
+        row.hide_when = "{ continuity < 1 } { outer_edge == 0 }"
+    let attach = number("Attach at", attach_slot, 0.0, 0.0, 1.0, 0.01, "Curves: where on the master curve the end attaches, 0 to 1.", slider = true)
+    attach.hide_when = "{ attach_point == 0 }"
+    let outer = menu("Outer edge", outer_slot, "Edge align|Skew", 0.0, "Alias's Outer Edge: the input leaves along the master's own direction across (Edge align), or turned by the skew angles.")
+    outer.hide_when = "{ continuity < 1 }"
+    let cos = toggle("Curve on surface", cos_slot, 1.0, "Project: leave a curve on the master face where the input meets it (off: Alias's NoCOS).")
+    cos.hide_when = "{ type != 1 }"
+    let shrink = toggle("Shrink to fit", shrink_slot, 1.0, "Project: the input's edge as cast must land on the face.")
+    shrink.hide_when = "{ type != 1 }"
+    let tangent = number("Tangent scale", tangent_slot, 1.0, 0.0, 10.0, 0.05, "Alias's Starting Tangent Scale: how far behind the edge the tangent row lies, against the input's own (1; the arrows in the viewport drag it).", slider = true)
+    let tangent_end = number("Tangent scale end", tangent_end_slot, 1.0, 0.0, 10.0, 0.05, "Ending Tangent Scale.", slider = true)
+    for row in [tangent, tangent_end]:
+        row.hide_when = "{ continuity < 1 }"
+    let result = [menu("Continuity", continuity_slot, "G0 Position|G1 Tangent|G2 Curvature|G3 Curvature", 1.0, "What the input's edge meets the master with: G0 its position, G1 its tangent plane, G2 its curvature, G3 the curvature's rate."),
+                  menu("Type", type_slot, "Edge|Project|U/V|Vector", 0.0, "Alias's Alignment Type: Edge (onto the master's edge or curve), Project (cast onto a face along the vector), U/V (a curve to a surface's direction), Vector (rows move only along the vector)."),
+                  vector_row, uv,
+                  number("Position influence", influence_slot, 0.0, 0.0, 1.0, 0.05, "0: the input keeps its own parameterization and its CVs move least; 1: it takes the master's (its ends on the master's ends, its knots).", slider = true),
+                  toggle("Tangent balance", balance_slot, 0.0, "Make the rows' start and end lengths follow the master's ratio (its inner hull)."),
+                  tangent, tangent_end, curvature, curvature_end, g3, g3_end, auto_g2, auto_g3,
+                  whole("Extra CV rows", extra_slot, 0.0, 0.0, 16.0, "Carry the change further into the surface over this many more rows (the continuity rows stay as set)."),
+                  blend,
+                  toggle("Partial", partial_slot, 0.0, "Align only a range of the input's edge; outside it, and a span beyond, the edge stays."),
+                  start, end,
+                  toggle("Modify both", both_slot, 0.0, "Move the master too: both to the middle of their edges and cross curves (Align 2008's Both)."),
+                  toggle("Explicit control", explicit_slot, 0.0, "On: the input's degree and spans as given (refused when the rows are too few). Off: quintic across at least, spans added for the rows the order needs.")]
+    result.extend(explicit_rows)
+    result.extend([toggle("Refine", refine_slot, 0.0, "Insert knots along the edge where the match misses the limits, up to Max new spans."), most, gap, angle, difference,
+                   outer, skew, skew_end, toggle("Attach point", attach_on_slot, 0.0, "Curves: attach the end at a place along the master curve (Alias's Attach Point); off, at its nearest point."), attach, cos, shrink,
+                   toggle("Proxy display", proxy_slot, 0.0, "Alias's Enable Proxy Display: the input's hull as it was, a ghost."),
+                   toggle("Diagnostic feedback", feedback_slot, 1.0, "Alias's Diagnostic Feedback: the gaps, angles and curvature differences along the edge in the viewport.")])
+    return result
+
+## Symmetry Align's rows (Alias's Symmetry Plane Align).
+pub func symmetry_rows() -> list[Parameter]:
+    return [menu("Continuity", continuity_slot, "G0 Position|G1 Tangent|G2 Curvature|G3 Curvature", 1.0, "What the input meets its mirror half with."),
+            menu("Plane", plane_slot, "YZ|XZ|XY", 0.0, "The symmetry plane, square to X, Y or Z."),
+            number("Offset", offset_slot, 0.0, -1000.0, 1000.0, 0.1, "Where the plane crosses its axis."),
+            toggle("Project for position", position_slot, 1.0, "Alias's Project For Position: the edge moved onto the plane (off: it stays, only its tangent set).")]
+
+## What Align waits for ("" when it has what it needs).
+pub func waits_for(texts: list[str]) -> str:
+    if texts[input_text].trim() == "":
+        return "Pick the input edge: a surface's edge (Edges level) or a curve's end (Curves level)"
+    if texts[master_text].trim() == "":
+        return "Pick the master: an edge, a curve, or double-click a surface for an isoparm"
+    return ""
+
+## A master picked as a point on a surface ("isoparm_at x y z", Alias's
+## temporary isoparm): the isoparm through the point of the face under it,
+## the one of its two running most nearly along the input's edge, as
+## "isoparm <face> <0 or 1> <fraction>"; other masters as they are.
+pub func resolved(data: GeometryData, master: str, input: str) -> str!:
+    let words = master.trim().split(" ")
+    if words.length != 4 or words[0] != "isoparm_at":
+        return master.trim()
+    let p = Vector3(float(words[1]), float(words[2]), float(words[3]))
+    let along = input_direction(data, input)
+    # The face whose surface passes nearest the point (the click lands on
+    # the display tessellation, a little off the exact surface).
+    var nearest = 1.0e300
+    var face = ""
+    var owner: CadModel? = none
+    for model in data.models():
+        for f in 0..<model.face_count():
+            let name = model.face_name(f)
+            let q = CadCurveTools.face_point(model, name, CadCurveTools.face_uv(model, name, p))
+            if q.subtract(p).length() < nearest:
+                nearest = q.subtract(p).length()
+                face = name
+                owner = model
+    if let model = owner:
+        var best = ""
+        var best_lean = -1.0
+        for direction in 0..<2:
+            let fraction = CadCurveTools.isoparm_fraction(model, face, direction, p)
+            let curve = CadCurveTools.isoparm(model, face, direction, fraction)
+            let tangent = CadCurveTools.derivative(curve, CadCurveTools.nearest(curve, p), 1)
+            let lean = math.abs(tangent.dot(along)) / math.max(1e-300, tangent.length())
+            if lean > best_lean:
+                best_lean = lean
+                best = f"isoparm {face} {direction} {fraction}"
+        return best
+    error(ui.invalid, f"Align: the isoparm's point {p} is on no face of the model; double-click on a surface again")
+
+## The direction the input's edge runs at its picked point: the input
+## face's isoparm through it that lies on its boundary (fraction 0 or 1);
+## a curve input's own direction there.
+func input_direction(data: GeometryData, input: str) -> Vector3!:
+    let words = input.trim().split(" ")
+    if words.length != 5:
+        return Vector3(1.0, 0.0, 0.0)
+    let p = Vector3(float(words[2]), float(words[3]), float(words[4]))
+    if words[0] == "curve":
+        let index = CadCurves.find(data.geometry, words[1])
+        if index >= 0:
+            let curve = CadCurves.curve(data.geometry, index)
+            return CadCurveTools.derivative(curve, CadCurveTools.nearest(curve, p), 1).normalized() catch failure:
+                recover Vector3(1.0, 0.0, 0.0)
+        return Vector3(1.0, 0.0, 0.0)
+    for model in data.models():
+        for f in 0..<model.face_count():
+            if model.face_name(f) != words[1]:
+                continue
+            var best = Vector3(1.0, 0.0, 0.0)
+            var edge_off = 2.0
+            for direction in 0..<2:
+                let fraction = CadCurveTools.isoparm_fraction(model, words[1], direction, p)
+                let off = math.min(fraction, 1.0 - fraction)
+                if off < edge_off:
+                    edge_off = off
+                    let curve = CadCurveTools.isoparm(model, words[1], direction, fraction)
+                    best = CadCurveTools.derivative(curve, CadCurveTools.nearest(curve, p), 1).normalized() catch failure:
+                        recover best
+            return best
+    return Vector3(1.0, 0.0, 0.0)
+
+## Align of the input by values `v` and texts `t` on `data`.
+pub func align(data: GeometryData, v: list[float], given: list[str]) -> GeometryData!:
+    let waiting = waits_for(given)
+    if waiting != "":
+        error(ui.invalid, waiting)
+    let t = [given[input_text], resolved(data, given[master_text], given[input_text]), resolved(data, given[second_text], given[input_text])]
+    let vector_value = Vector3(v[vector_slot], v[vector_slot + 1], v[vector_slot + 2])
+    let second_near = Vector3(v[second_near_slot], v[second_near_slot + 1], v[second_near_slot + 2])
+    let made = CadSurfacing.aligned(data.geometry, t[input_text].trim(), t[master_text].trim(), int(v[continuity_slot]), second = t[second_text].trim(), second_near = second_near,
+                                    kind = int(v[type_slot]), vector = vector_value, influence = v[influence_slot], balance = v[balance_slot] != 0.0,
+                                    tangent = v[tangent_slot], tangent_end = v[tangent_end_slot], curvature = v[curvature_slot], curvature_end = v[curvature_end_slot],
+                                    g3 = v[g3_slot], g3_end = v[g3_end_slot], auto_g2 = v[auto_g2_slot] != 0.0, auto_g3 = v[auto_g3_slot] != 0.0,
+                                    extra = int(v[extra_slot]), blend = v[blend_slot], partial = v[partial_slot] != 0.0, start = v[start_slot], end = v[end_slot],
+                                    both = v[both_slot] != 0.0, explicit = v[explicit_slot] != 0.0, degree_u = int(v[degree_u_slot]), spans_u = int(v[spans_u_slot]),
+                                    degree_v = int(v[degree_v_slot]), spans_v = int(v[spans_v_slot]), refine = v[refine_slot] != 0.0, most = int(v[most_slot]),
+                                    gap = v[gap_slot], angle = v[angle_slot], difference = v[difference_slot], skew = v[skew_slot] if v[outer_slot] != 0.0 else 0.0,
+                                    skew_end = v[skew_end_slot] if v[outer_slot] != 0.0 else 0.0, attach = v[attach_slot] if v[attach_on_slot] != 0.0 else -1.0, cos = v[cos_slot] != 0.0, shrink = v[shrink_slot] != 0.0)
+    return reported(data, made, v, t)
+
+## Symmetry Align of the input by values `v` and texts `t` (its input).
+pub func symmetry(data: GeometryData, v: list[float], t: list[str]) -> GeometryData!:
+    if t[input_text].trim() == "":
+        error(ui.invalid, "Pick the input edge: the surface's edge (Edges level) or the curve's end to meet the symmetry plane")
+    let axis = int(v[plane_slot])
+    let normal = Vector3(1.0, 0.0, 0.0) if axis == 0 else (Vector3(0.0, 1.0, 0.0) if axis == 1 else Vector3(0.0, 0.0, 1.0))
+    let origin = normal.multiply_scalar(v[offset_slot])
+    let free = "" if v[position_slot] != 0.0 else " free"
+    let master = f"plane {origin.x} {origin.y} {origin.z} {normal.x} {normal.y} {normal.z}{free}"
+    let made = CadSurfacing.aligned(data.geometry, t[input_text].trim(), master, int(v[continuity_slot]))
+    let values = starting()
+    values[continuity_slot] = v[continuity_slot]
+    return reported(data, made, values, [t[input_text], master, ""])
+
+## The result of an align: its geometry, Alias's feedback as the report (a
+## warning when the limits are missed), the rows and the edge's handles.
+func reported(data: GeometryData, made: CadAlignEdit, v: list[float], t: list[str]) -> GeometryData!:
+    let result = GeometryData(geometry = made.geometry())
+    let order = int(v[continuity_slot])
+    let parts = [f"G{order}", f"gap {made.gap_high:.2e}"]
+    if order >= 1:
+        parts.append(f"angle {made.angle_high:.3f}°")
+    if order >= 2:
+        parts.append(f"curvature {made.curvature_high:.2f}%")
+    if order >= 3:
+        parts.append(f"G3 {made.rate_high:.2f}%")
+    parts.append(f"start {made.start_angle:.1f}°, end {made.end_angle:.1f}°")
+    result.report = parts.join(" · ")
+    if not made.met:
+        result.warning = f"Align misses its limits along the edge (dashed): gap {made.gap_high:.2e}, angle {made.angle_high:.3f}°, curvature {made.curvature_high:.2f}%. Turn on Refine, raise the degree, or ease the limits"
+    let lines = [f"{side_head}{made.side} {made.order}"]
+    for row in 0..<made.row_count():
+        let points: list[Vector3] = []
+        for k in 0..<made.row_size:
+            points.append(made.row_point(row, k))
+        lines.append(f"{row_head}{row} {surface_ops.words(points)}")
+        if v[proxy_slot] != 0.0:
+            let before: list[Vector3] = []
+            for k in 0..<made.row_size:
+                before.append(made.proxy_point(row, k))
+            lines.append(f"{proxy_head}{row} {surface_ops.words(before)}")
+    if not made.met:
+        lines.append(missed_head + "1")
+    if let iso = isoparm_points(data, t[master_text]):
+        lines.append(iso_head + surface_ops.words(iso))
+    result.sketch_state = lines.join("\n")
+    result.handles = handles(made, v)
+    return result
+
+## The side an align's state says it set (luce-cad's: 0 u low, 1 u high,
+## 2 v low, 3 v high), and its order.
+pub func side_of(state: str) -> int:
+    for line in state.split("\n"):
+        if line.starts_with(side_head):
+            let words = line[side_head.length..].split(" ")
+            let value = int(words[0]) catch failure:
+                recover -1
+            return value
+    return -1
+
+pub func order_of(state: str) -> int:
+    for line in state.split("\n"):
+        if line.starts_with(side_head):
+            let words = line[side_head.length..].split(" ")
+            if words.length > 1:
+                let value = int(words[1]) catch failure:
+                    recover -1
+                return value
+    return -1
+
+## The temporary isoparm a master names ("isoparm <face> <dir> <f>"): its
+## points, for the viewport to draw dashed; none for other masters.
+func isoparm_points(data: GeometryData, master: str) -> list[Vector3]?!:
+    let words = master.trim().split(" ")
+    if words.length != 4 or words[0] != "isoparm":
+        return none
+    for model in data.models():
+        for f in 0..<model.face_count():
+            if model.face_name(f) == words[1]:
+                let curve = CadCurveTools.isoparm(model, words[1], int(float(words[2])), float(words[3]))
+                let points: list[Vector3] = []
+                for k in 0..<33:
+                    points.append(curve.at(curve.low() + (curve.high() - curve.low()) * float(k) / 32.0))
+                return points
+    return none
+
+## The Tangent Scale arrows at the edge's two ends: each from the edge
+## back along the tangent row, its tip where the row lies (its value the
+## scale); with Partial the range's start and end arrows along the edge.
+func handles(made: CadAlignEdit, v: list[float]) -> str!:
+    let found: list[HandleLine] = []
+    if made.row_count() >= 2 and made.row_size >= 2:
+        let last = made.row_size - 1
+        for (index, slot) in [(0, tangent_slot), (last, tangent_end_slot)]:
+            let foot = made.row_point(0, index)
+            let tip = made.row_point(1, index)
+            let scale = math.max(1e-9, v[slot])
+            let way = tip.subtract(foot)
+            if way.length() > 0.0:
+                found.append(HandleLine("arrow", slot, way.length() / scale, foot, way.normalized(), -1, Vector3()))
+        if v[partial_slot] != 0.0:
+            let a = made.row_point(0, 0)
+            let b = made.row_point(0, last)
+            let span = b.subtract(a)
+            if span.length() > 0.0:
+                found.append(HandleLine("arrow", start_slot, span.length(), a, span.normalized(), -1, Vector3()))
+                found.append(HandleLine("arrow", end_slot, span.length(), a, span.normalized(), -1, Vector3()))
+    return handle_lines.encode(found)

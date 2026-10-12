@@ -61,9 +61,16 @@ pub let both_faces_slot = 7
 
 pub let mode_slot = 0
 pub let show_slot = 1
-pub let count_slot = 2
+## Alias's 3D Trimming: the curves on the face only, or curves off it cast
+## along the direction or along the normals; faces picked after the first
+## (or the node's cutting faces) cut it too with Intersect faces.
+pub let cast_slot = 2
+pub let cast_direction_slot = 3
+pub let cutters_slot = 6
+pub let extend_slot = 7
+pub let count_slot = 8
 ## Trim's picks: count_slot of them, x y z each, from here.
-pub let picks_slot = 3
+pub let picks_slot = 9
 
 pub let all_slot = 0
 
@@ -75,6 +82,8 @@ pub let swap_slot = 4
 pub let keep_slot = 5
 
 pub let gap_slot = 0
+pub let periodic_slot = 1
+pub let single_slot = 2
 
 ## Project's rows (also the node's).
 pub func project_rows() -> list[Parameter]:
@@ -97,8 +106,14 @@ pub func intersect_rows() -> list[Parameter]:
 
 ## Trim's rows.
 pub func trim_rows() -> list[Parameter]:
+    let direction = vector("Cast direction", cast_direction_slot, [0.0, -1.0, 0.0], "3D Trimming along a vector: the direction curves off the face are cast along.")
+    direction.hide_when = "{ curves != 1 }"
     return [menu("Mode", mode_slot, "Keep|Discard|Divide", 0.0, "Alias's Trim: keep the regions clicked (their markers), discard them, or make every region a face of its own."),
-            toggle("Show intersections", show_slot, 1.0, "Mark where the curves cross the face's edges and each other (green) and the ends of curves that cut nothing (red), as Alias's Show Intersections.")]
+            toggle("Show intersections", show_slot, 1.0, "Mark where the curves cross the face's edges and each other (green) and the ends of curves that cut nothing (red), as Alias's Show Intersections."),
+            menu("Curves", cast_slot, "On face|Cast along vector|Cast along normals", 0.0, "Alias's 3D Trimming: only the curves on the face, or every curve of the model cast onto it as the trim runs (along a vector, or along its normals)."),
+            direction,
+            toggle("Intersect faces", cutters_slot, 0.0, "3D Trimming by Intersect: the faces picked after the first (the node's Cutting faces) cut it where they meet it."),
+            toggle("Extend curves", extend_slot, 0.0, "Carry curve ends that stop short of the face's edge on along the face, to its edge or the next curve (Alias's Extend).")]
 
 ## Untrim's rows.
 pub func untrim_rows() -> list[Parameter]:
@@ -117,10 +132,12 @@ pub func convert_rows() -> list[Parameter]:
 pub func stitch_rows() -> list[Parameter]:
     let gap = number("Gap", gap_slot, 0.001, 0.0000001, 1.0, 0.0005, "Edges whose ends and middles lie this close join (Alias's Stitch tolerance, 0.0001 to 1); the joined edges keep the gap as their precision.", soft = 0.1)
     gap.length = true
-    return [gap]
+    return [gap,
+            toggle("Detach periodic", periodic_slot, 0.0, "Alias's Detach periodic surfaces (for export): a face wrapping round its surface split in two, each meeting its seam once."),
+            toggle("Detach single-curve boundaries", single_slot, 0.0, "Alias's Detach single curve boundaries (for export): a loop of one closed edge split into two edges.")]
 
 pub func trim_numbers() -> list[float]:
-    return [0.0, 1.0, 0.0]
+    return [0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0]
 
 ## The tools, at the Curves, Faces, Patch and Object levels.
 pub func tools(curves: int, faces: int, patch: int, objects: int) -> list[EditTool]:
@@ -131,8 +148,15 @@ pub func tools(curves: int, faces: int, patch: int, objects: int) -> list[EditTo
             EditTool(untrim_verb, untrim_verb, [faces, patch], [0.0], untrim_rows()),
             EditTool(convert_verb, convert_verb, [faces, patch], [5.0, 5.0, 4.0, 4.0, 0.0, 0.0], convert_rows()),
             EditTool(shrink_verb, shrink_verb, [faces, patch], [0.0], none_shown),
-            EditTool(stitch_verb, stitch_verb, [objects], [0.001], stitch_rows()),
+            EditTool(stitch_verb, stitch_verb, [objects], [0.001, 0.0, 0.0], stitch_rows()),
             EditTool(unstitch_verb, unstitch_verb, [objects], [0.0], none_shown)]
+
+## Trim's 3D Trimming and Extend options from its numbers.
+pub func trim_options(v: list[float]) -> surface_ops.TrimOptions:
+    let start = trim_numbers()
+    let at = func (slot: int) -> float:
+        return v[slot] if v.length > slot else start[slot]
+    return surface_ops.TrimOptions(int(at(cast_slot)), Vector3(at(cast_direction_slot), at(cast_direction_slot + 1), at(cast_direction_slot + 2)), at(extend_slot) != 0.0)
 
 ## A Trim step's picks.
 pub func picks_of(numbers: list[float]) -> list[Vector3]:
@@ -148,7 +172,11 @@ pub func picks_of(numbers: list[float]) -> list[Vector3]:
 
 ## Trim's numbers with `picks` in place of its picks.
 pub func with_picks(numbers: list[float], picks: list[Vector3]) -> list[float]:
-    var made = [numbers[mode_slot] if numbers.length > mode_slot else 0.0, numbers[show_slot] if numbers.length > show_slot else 1.0, float(picks.length)]
+    let start = trim_numbers()
+    var made: list[float] = []
+    for slot in 0..<count_slot:
+        made.append(numbers[slot] if numbers.length > slot else start[slot])
+    made.append(float(picks.length))
     for p in picks:
         made = made + [p.x, p.y, p.z]
     return made
@@ -179,7 +207,7 @@ pub func run(step: EditStep, name: str, data: GeometryData, shown: Mesh?) -> Geo
                 result = surface_ops.unstitch(result, bodies[k])
                 k -= 1
             return result
-        return surface_ops.stitch(data, bodies, v[gap_slot])
+        return surface_ops.stitch(data, bodies, v[gap_slot], v[periodic_slot] != 0.0 if v.length > periodic_slot else false, v[single_slot] != 0.0 if v.length > single_slot else false)
     let faces = picked_faces(step, data, mesh)
     if faces.length == 0:
         error(ui.invalid, f"{step.verb}: pick a face at the Faces or Patch level")
@@ -189,11 +217,18 @@ pub func run(step: EditStep, name: str, data: GeometryData, shown: Mesh?) -> Geo
             error(ui.invalid, "Intersect: pick two faces (Shift adds), or choose With: Plane")
         return surface_ops.intersect(data, faces[0], faces[1] if faces.length > 1 else "", plane, Vector3(v[origin_slot], v[origin_slot + 1], v[origin_slot + 2]),
                                      Vector3(v[normal_slot], v[normal_slot + 1], v[normal_slot + 2]), v[both_faces_slot] != 0.0)
-    if faces.length > 1 and step.verb != untrim_verb:
-        error(ui.invalid, f"{step.verb} works on one face: pick one")
     let face = faces[0]
     if step.verb == trim_verb:
-        return surface_ops.trim(data, face, picks_of(v), int(v[mode_slot]), v[show_slot] != 0.0, [], name)
+        # 3D Trimming by Intersect: the faces after the first cut it.
+        let cutting: list[str] = []
+        if v.length > cutters_slot and v[cutters_slot] != 0.0:
+            for k in 1..<faces.length:
+                cutting.append(faces[k])
+        if faces.length > 1 and cutting.length == 0:
+            error(ui.invalid, "Trim works on one face: pick one (or turn on Intersect faces to cut it by the others)")
+        return surface_ops.trim(data, face, picks_of(v), int(v[mode_slot]), v[show_slot] != 0.0, [], name, trim_options(v), cutting)
+    if faces.length > 1 and step.verb != untrim_verb:
+        error(ui.invalid, f"{step.verb} works on one face: pick one")
     if step.verb == untrim_verb:
         var result = data
         for each in faces:

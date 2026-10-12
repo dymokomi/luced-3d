@@ -1,0 +1,99 @@
+## Align's lines in the viewport (Alias's Align display): while an Edit CAD
+## node's last step is Align or Symmetry Align, or such a node is selected
+## and displayed, the rows it set are drawn over the model tinted by the
+## order each sets (the edge's row green, G1's yellow, G2's red, G3's
+## purple, the extra rows grey), the hull as it was a ghost (Enable Proxy
+## Display), a temporary isoparm master dashed yellow, and the edge dashed
+## red where the match misses its limits. The lines come from the cook's
+## state (align_ops.luc), so the worker's results serve and the viewport
+## never cooks. Tangent Scale's and Partial's arrows are the feature
+## handles (feature_handles.luc).
+from luce_ui.ui import Painter, Rect, Point
+from luce_gpu.gpu import Color
+from workspace import Workspace
+from luce_3d.graphics import Vector3
+import edit_cad
+import align_ops
+import surface_ops
+import view_projection as gm
+import theme
+from luce_std import math
+
+pub class AlignLines:
+    let w: Workspace
+
+    pub func init(self, w: Workspace):
+        self.w = w
+
+    ## The state of the align on show ("" none).
+    func state(self) -> str:
+        let node = self.w.selected() else return ""
+        if node.id != self.w.network.display or self.w.sketching():
+            return ""
+        if node.kind == edit_cad.kind_name:
+            if node.edits.length == 0 or not self.w.editing() or not (node.edits[-1].verb in [align_ops.align_verb, align_ops.symmetry_verb]):
+                return ""
+            return node.sketch_state
+        if node.kind in [align_ops.align_verb, align_ops.symmetry_verb]:
+            return node.sketch_state
+        return ""
+
+    ## The lines (see the file's header).
+    pub func draw(self, painter: Painter, width: float, height: float) -> unit!:
+        let state = self.state()
+        if state == "":
+            return
+        let missed = state.contains(align_ops.missed_head)
+        let order = align_ops.order_of(state)
+        for line in state.split("\n"):
+            if line.starts_with(align_ops.proxy_head):
+                let (_, points) = row_of(line[align_ops.proxy_head.length..])
+                self.polyline(painter, points, theme.ghost(), 1.5, false, width, height)
+        for line in state.split("\n"):
+            if line.starts_with(align_ops.row_head):
+                let (row, points) = row_of(line[align_ops.row_head.length..])
+                let color = theme.check_group(row) if row <= order else theme.grey(150.0)
+                self.polyline(painter, points, theme.check_group(2) if row == 0 and missed else color, 2.5 if row == 0 else 1.5, row == 0 and missed, width, height)
+                for p in points:
+                    let s = gm.project(self.w, p, width, height)
+                    if s[2] > 0.0:
+                        painter.rectangle(gm_rect(s[0], s[1], 5.0), color)
+            if line.starts_with(align_ops.iso_head):
+                let points = surface_ops.points_of(line, align_ops.iso_head)
+                self.polyline(painter, points, theme.check_group(1), 2.0, true, width, height)
+
+    ## `points` joined on screen, dashed with `dashed`.
+    func polyline(self, painter: Painter, points: list[Vector3], color: Color, line_width: float, dashed: bool, width: float, height: float) -> unit!:
+        var previous: list[float]? = none
+        var gap = false
+        for p in points:
+            let s = gm.project(self.w, p, width, height)
+            if s[2] <= 0.0:
+                previous = none
+                continue
+            if let before = previous:
+                if not dashed:
+                    painter.line(Point(before[0], before[1]), Point(s[0], s[1]), line_width, color)
+                else:
+                    # Dashes of 8 points along the segment.
+                    let length = Point(s[0] - before[0], s[1] - before[1])
+                    let total = math.hypot(length.x, length.y)
+                    var at = 0.0
+                    while at < total:
+                        let next = at + 8.0 if at + 8.0 < total else total
+                        if not gap:
+                            painter.line(Point(before[0] + length.x * at / total, before[1] + length.y * at / total), Point(before[0] + length.x * next / total, before[1] + length.y * next / total), line_width, color)
+                        gap = not gap
+                        at = next
+            previous = s
+
+## A row line's words: its row number, then its points.
+func row_of(text: str) -> (int, list[Vector3]):
+    let space = text.index_of(" ") else return (0, [])
+    let row = int(text[0..<space]) catch failure:
+        recover 0
+    return (row, surface_ops.points_of("p " + text[space + 1..], "p "))
+
+## A square of `size` about (x, y).
+func gm_rect(x: float, y: float, size: float) -> Rect:
+    return Rect(x - size * 0.5, y - size * 0.5, size, size)

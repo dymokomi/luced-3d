@@ -14,6 +14,9 @@ import cad_features
 import cad_moves
 import cad_names
 from edit_types import edge_level
+from luce_3d.graphics import Vector3
+import edit_cad_align
+import align_ops
 
 ## The prompts Edit CAD's steps wait in.
 pub let target_label = "Pick target faces"
@@ -29,6 +32,10 @@ pub let pivot_label = "Pick pivot"
 pub let rotate_label = "Pick rotate axis"
 ## Project's face (edit_cad_surfaces.luc).
 pub let projection_label = "Pick projection face"
+## Align's master and second master (edit_cad_align.luc): an edge, a curve,
+## a face, or a double-click for an isoparm (edit_cad_commands.luc).
+pub let master_label = "Pick align master"
+pub let second_label = "Pick second align master"
 
 ## The last step waits for prompt `label` at level `level`: the model as
 ## the steps before it left it shows, and what is picked goes into it.
@@ -42,7 +49,7 @@ pub func wait_for(w: Workspace, node: Node, label: str, level: int, hint: str) -
 
 ## Whether prompt `label` is one of Edit CAD's.
 pub func waits(label: str) -> bool:
-    return label in [target_label, tools_label, splitting_label, axis_label, object_label, plane_label, from_label, to_label, pivot_label, rotate_label, projection_label]
+    return label in [target_label, tools_label, splitting_label, axis_label, object_label, plane_label, from_label, to_label, pivot_label, rotate_label, projection_label, master_label, second_label]
 
 ## The selection changed while the last step waits: what was picked goes
 ## into it (a face's name, the tool bodies' group, an edge as the axis);
@@ -83,6 +90,28 @@ pub func follow_pick(w: Workspace, node: Node, mesh: Mesh, chosen: Selection) ->
         return
     if prompt.label in [from_label, to_label, pivot_label, rotate_label]:
         moved_pick(w, node, prompt.label, mesh, first)
+        return
+    if prompt.label in [master_label, second_label]:
+        let words = edit_cad_align.pick_words(mesh, first, w.level_index(), true)
+        if words == "":
+            say(w, "Align's master is an edge, a curve, or a face for Project and U/V")
+            return
+        let texts = [step.text(0), step.text(1), step.text(2)]
+        if prompt.label == master_label:
+            texts[align_ops.master_text] = words
+            node.edits[-1] = step.with_texts(texts)
+        else:
+            texts[align_ops.second_text] = words
+            # The input's side beside the second master: nearest its pick.
+            let numbers = step.numbers.copy()
+            let near = edit_cad_align.words_point(words) else Vector3()
+            while numbers.length < align_ops.align_count:
+                numbers.append(align_ops.starting()[numbers.length])
+            numbers[align_ops.second_near_slot] = near.x
+            numbers[align_ops.second_near_slot + 1] = near.y
+            numbers[align_ops.second_near_slot + 2] = near.z
+            node.edits[-1] = step.with_texts(texts).with_numbers(numbers)
+        finish_pick(w, node)
         return
     if prompt.label == axis_label:
         let references = mesh.find_attribute("cad_edge_reference", 4)

@@ -94,7 +94,7 @@ remaining blend options on solids come last.
 | 1 | The NURBS toolkit in luce-cad, and CV editing at Edit CAD's CVs level. **Done** (§8) |
 | 2 | 3D CAD curves and curves on surfaces; Blend Curve in 3D, G0–G4. **Done** (§8) |
 | 3 | Project, Intersect, Trim, Untrim, Divide, Trim Convert, Stitch; open surface bodies throughout. **Done** (§8) |
-| 4 | Align (match) G0–G3, with every Alias option |
+| 4 | Align (match) G0–G3, with every Alias option. **Done** (§8) |
 | 5 | Surfaces from curves: Square, Skin, Rail, Profile, Set Planar, Extend |
 | 6 | Blends between surfaces: Freeform Blend, Profile Blend, Surface Fillet between face sets |
 | 7 | Fill: N-sided and four-sided variational patches (xNURBS parity) |
@@ -1562,8 +1562,8 @@ Left for later, and what became of it (2026-10-12, with Stage 2):
 - ~~**Two falloffs.**~~ The CVs level's Parameters hold one falloff (Radius, Rows or Hull, each
   with only its own rows) beside Symmetry, which mirrors CV moves too; Keep selection is gone
   there.
-- **Aligned rows.** The re-run of an Align step after a CV drag on its rows waits for Align
-  (Stage 4).
+- ~~**Aligned rows.**~~ Done with Stage 4: a CV drag on rows an Align step set runs that Align
+  again afterwards (`edit_cad_align.realigned`).
 - ~~**Converting caps.**~~ Done: a face going round its axis with no seam is split through the
   axis first, then converted.
 - ~~**Curve tools.**~~ Stage 2.
@@ -1735,16 +1735,25 @@ Answers from the reference tools (the doc's questions that Stage 3 met):
 - **Stitch's gap.** Alias's range is 0.0001 to 1 and keeps the originals by default; ours takes
   the same range; the originals stay in the history (Undo or the node upstream).
 
-Left for later:
+Left for later, and what became of it (2026-10-12, with Stage 4):
 
-- **3D Trimming** (Alias: curves off the surface projected or intersected as the trim runs) and
-  Trim Convert's Show deviations as a map; Keep originals on Untrim.
-- **Curve ends short of the boundary** are left out (Alias extends them with its Curve Trim tool,
-  2026); Stitch's detach of periodic surfaces and single-curve boundaries for export.
-- **Per-edge precision in the booleans** is the largest one, as in the tessellator (Parasolid
-  reads each edge's); a cone's band through its apex does not untrim.
-- **Isoparm picking** creates the curve (a step); Alias's temporary pick objects for other
-  tools are not separate from curves here.
+- ~~**3D Trimming**~~ Done: Trim's Curves row casts every curve of the model onto the face as the
+  trim runs (along a vector or the normals), and Intersect faces cuts it by other faces where
+  they meet it (luce-cad `trim_curves.lucb`). Still left: Trim Convert's Show deviations as a
+  map; Keep originals on Untrim.
+- ~~**Curve ends short of the boundary**~~ Done: Extend curves carries a loose end on along the
+  face, straight on in its chart, to the boundary or the next curve. ~~Stitch's detach~~ Done:
+  Detach periodic (split through the axis and the seam; a periodic B-spline face refused) and
+  Detach single-curve boundaries (a closed edge in two).
+- ~~**Per-edge precision in the booleans**~~ Done: the booleans merge and match by each edge's and
+  vertex's own precision and the pieces of a tolerant edge keep it (the tessellator's side is
+  another agent's). ~~A cone's band through its apex~~ Done: it untrims to the pointed side.
+- ~~**Isoparm picking**~~ Done for Align's masters: a double-click on a surface while the master
+  is asked for is a temporary isoparm (kept as its point, drawn dashed), not a curve of the
+  model; the Curves level's double-click still makes a curve (a step). Other tools taking
+  curves (Project, Blend Curve) take curves of the model only.
+- Also done: Trim waiting for its region clicks, and the drawn curves and isoparm steps waiting
+  for their clicks, read a neutral "waiting" instead of a warning badge.
 
 **Stage 4: Align** (S8).
 
@@ -1760,6 +1769,70 @@ Left for later:
   - a G3 request on a patch with fewer than eight rows is refused with "needs 8 rows across, has 6"
     (Explicit Control on), or adds spans (off);
   - Partial 0.2–0.8 leaves the edge outside the range where it was.
+
+**Stage 4: done** (2026-10-12). What was built:
+
+- **luce-cad** (`surfacing/align_rows.lucb`, `align_master.lucb`, `align.lucb`,
+  `align_apply.lucb`; `CadSurfacing.aligned`, `CadAlignEdit`, `CadSurfacing.patch`; luce-cad
+  MODELING.md, Align): §6.1 as written, with the cross curve handed on by its arc-length jet:
+  rows solved one by one, A' = vT, A'' = v'T + v²K, A''' = v''T + 3vv'K + v³K', the speeds set
+  by Alias's sliders on the hull (the input's own distances times the scales, start to end,
+  AutoScale, Tangent Balance by the master's speed, Skew turning the chart direction); each
+  row fitted at stations, ends exact; Edge, Project (with its curve on surface), U/V and
+  Vector types; Position Influence; Extra CV Rows and Blend Factor; Partial (full-multiplicity
+  knots and a span outside each end); two masters; Modify Both (averaged edge and jet);
+  Explicit Control on (refused with the rows it needs) and off (quintic across, spans
+  inserted, the master's degree and knots at Influence 1); Refine to the limits; curves (one
+  CV a row; Attach Point; Modify Both of two curves); Symmetry Plane Align (with Project For
+  Position). Diagnostic Feedback, the rows and the proxy hull come back with the result.
+- **luced-3d**: the Align and Symmetry Align steps (`edit_cad_align.luc`), the nodes
+  (`cad_surface_nodes.luc`), the shared rows and cook (`align_ops.luc`), the row tints, proxy,
+  temporary isoparm and missed-edge dashes (`align_view.luc`), Tangent Scale and Partial arrows
+  as feature handles, the master picks (`edit_cad_picks.luc`, `modify_picks.luc`), the
+  right-click on edges, S and Modify menus; the CV drag that re-runs an Align; a tall tool bar
+  docked at the viewport's left.
+
+Captures: `tools/preview.py --scene` with `surf_align_waiting`, `surf_align`,
+`surf_align_proxy`, `surf_align_isoparm`, `surf_align_node`, `surf_symmetry`, `surf_trim_3d`
+(each also with `--background`).
+
+Tests, against closed forms (luce-cad `align_tests.luc`, `trim_followup_tests.luc`; luced-3d
+`edit_cad_align_tests.luc`, `edit_cad_surfaces_tests.luc`):
+
+- a flat quintic strip aligned to a quarter cylinder of radius 2 measures exactly G1, G2 and G3
+  as asked by the Check tools across the stitched edge (and fails the next order), its normal
+  curvature across the edge 1/2 to 1e-6 from G2 on; an unstitched box's top (a plane) aligned
+  G2 and G3 to its side does too, as a whole B-spline face;
+- with Position Influence 0 the knots along the edge stay; Extra CV Rows 2 moves rows 2 and 3
+  by 2/3 and 1/3 of row 1's change and row 4 not at all;
+- Explicit Control on refuses G3 on six rows ("needs 8 rows across, has 6"), off adds spans;
+- Partial 0.2–0.8 aligns only that range: the edge outside it (and the span beyond) stays to
+  1e-9, inside it lies on the cylinder's edge;
+- Modify Both on a symmetric roof moves both halves as mirror images, the ridge in place;
+- Tangent Scale, AutoScale G2, Tangent Balance, Skew (10° reported at both ends, still G1), an
+  isoparm master (G2), U/V for a curve, Vector, two masters, Symmetry Plane Align, Refine
+  meeting a quarter circle a cubic edge misses, a curve's end G2 to a circle, Project leaving
+  Align1 on the floor;
+- in the editor: Align from the right-click on an edge waits neutrally for its master, aligns
+  G1, draws its rows and arrows; a CV dragged off the tangent row goes back onto it (the
+  Align runs again); a double-click makes a temporary isoparm master; the node follows the box
+  upstream; Symmetry Align meets its plane.
+
+Answers from the reference tools (the doc's questions that Stage 4 met):
+
+- **Partial's range** is on the input's edge, as the plan's test reads (the master's nearest
+  part matched inside it); Alias's Start and End arrows are the range's ends.
+- **The far side's rows** are kept to the same order (2(k + 1) rows across), as the plan's
+  "needs 8 rows across" reads: the far edge keeps whatever continuity it had.
+- **Explicit Control off** gives the multi-span quintic: quintic across, spans added.
+- **Accept / Restore** are the recipe itself: each Align is one step, the next starts from it.
+
+Left for later:
+
+- The middle Tangent Scale arrow that slides a whole row (the end arrows and sliders do it).
+- Temporary isoparms for tools other than Align's masters.
+- Modify Both of a curve with a surface's edge (curves with free curves only).
+- Vector type at G3 (Alias offers it at G1 and G2).
 
 **Stage 5: surfaces from curves** (S9, S10).
 

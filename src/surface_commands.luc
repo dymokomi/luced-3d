@@ -1,6 +1,7 @@
-## Surfacing Stage 3's commands (the right-click menu, the S marking menu
-## and Modify › Surfaces): Project, Intersect, Trim, Untrim, Trim Convert,
-## Shrink, Stitch and Unstitch. In a CAD network each makes its node
+## Surfacing's commands (the right-click menu, the S marking menu and
+## Modify › Surfaces): Project, Intersect, Trim, Untrim, Trim Convert,
+## Shrink, Stitch, Unstitch (Stage 3), Align and Symmetry Align (Stage 4,
+## on a picked edge or curve end). In a CAD network each makes its node
 ## (cad_surface_nodes.luc) after the displayed one, taking what is selected
 ## (faces by name, Project's curves, the bodies the faces are on), then
 ## waits for what it still needs (modify_picks.luc); a Trim then shows its
@@ -21,6 +22,8 @@ import cad_surface_nodes
 import edit_cad_commands
 import edit_cad_surfaces
 import modify_picks
+import edit_cad_align
+import align_ops
 
 ## The commands, in Alias's Surface Edit order.
 pub func command_names() -> list[str]:
@@ -72,6 +75,14 @@ pub class SurfaceActions:
             any = any or enabled
         self.menu.set_enabled(any)
 
+    ## The commands acting on a picked edge or curve end (Align's input).
+    pub func on_edges(self) -> list[Command]:
+        let result: list[Command] = []
+        for command in self.commands:
+            if command.text() in [cad_surface_nodes.align_kind, cad_surface_nodes.symmetry_kind]:
+                result.append(command)
+        return result
+
     ## The commands acting on picked faces.
     pub func on_faces(self) -> list[Command]:
         let result: list[Command] = []
@@ -99,6 +110,7 @@ pub func surface(w: Workspace, kind: str) -> unit!:
     let faces = cad_commands.selected_faces(w)
     let curves = selected_curves(w)
     let bodies = selected_bodies(w)
+    let align_input = selected_align_input(w)
     w.perform(kind, func () -> unit!:
         let node = insert_after_display(w, ToolRun(kind, cad_surface_nodes.starting(kind)))
         let first = cad_surface_nodes.first_text
@@ -108,6 +120,8 @@ pub func surface(w: Workspace, kind: str) -> unit!:
             node.texts[first] = bodies.join(";")
         elif kind == cad_surface_nodes.unstitch_kind:
             node.texts[first] = bodies[0] if bodies.length > 0 else ""
+        elif kind in [cad_surface_nodes.align_kind, cad_surface_nodes.symmetry_kind]:
+            node.texts[align_ops.input_text] = align_input
         elif faces.length > 0:
             node.texts[first] = faces[0]
             if kind == cad_surface_nodes.intersect_kind and faces.length > 1:
@@ -120,6 +134,17 @@ pub func surface(w: Workspace, kind: str) -> unit!:
         return
     if let input = modify_picks.next_input(made):
         modify_picks.start(w, made.id, input)
+
+## Align's input as words: the edge selected (the Edges level) or the
+## curve's end nearest its picked segment (the Curves level); "" none.
+func selected_align_input(w: Workspace) -> str!:
+    if w.sketching() or not w.selecting():
+        return ""
+    let mesh = w.geometry else return ""
+    let chosen = w.current_selection() else return ""
+    let words = edit_cad_align.pick_words(mesh, chosen.next(-1), w.level_index(), false) catch failure:
+        recover ""
+    return words
 
 ## The names of the curves selected (the Curves level), each once.
 func selected_curves(w: Workspace) -> list[str]!:

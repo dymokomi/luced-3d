@@ -48,6 +48,7 @@ import edit_cad_faces
 import edit_cad_nets
 import edit_cad_curves
 import edit_cad_surfaces
+import edit_cad_align
 from luce_cad.cad_curves import CadCurves
 from luce_ui import ui
 
@@ -106,6 +107,8 @@ func tool_list() -> list[EditTool]:
     # Project, Intersect, Trim, Untrim, Trim Convert, Shrink, Stitch and
     # Unstitch (edit_cad_surfaces.luc).
     result.extend(edit_cad_surfaces.tools(curve_level, face_level, patch_level, object_level))
+    # Align and Symmetry Align (edit_cad_align.luc).
+    result.extend(edit_cad_align.tools(edge_level, curve_level))
     return result
 
 ## The CAD nodes that are Edit CAD tools on picked edges.
@@ -185,10 +188,16 @@ pub func pick_mesh(data: GeometryData) -> Mesh!:
 ## the isoparm under the pointer from it, knot_place.luc), and after Trim
 ## its region markers (surface_ops: trim_regions.luc draws them).
 func run(step: EditStep, at: int, data: GeometryData, tag: str) -> GeometryData!:
-    let made = ran(step, f"{tag}s{at}", data)
+    var made = ran(step, f"{tag}s{at}", data)
+    # Aligned rows stay aligned: a CV drag on them runs their Align again;
+    # the Aligns so far carry on to later steps.
+    if step.verb == edit_cad_nets.move_verb or (step.group_type == 1 and step.verb in cv_verbs()):
+        made = edit_cad_align.realigned(data, made)
+    elif not (step.verb in edit_cad_align.verbs()):
+        made.aligns = data.aligns
     let kept: list[str] = []
     for line in made.sketch_state.split("\n"):
-        if line.starts_with(edit_cad_nets.probe_head) or line.starts_with("trim_") or line.starts_with("stretch_"):
+        if line.starts_with(edit_cad_nets.probe_head) or line.starts_with("trim_") or line.starts_with("stretch_") or line.starts_with("align_"):
             kept.append(line)
     let result = stated(made)
     if kept.length > 0:
@@ -211,6 +220,8 @@ func ran(step: EditStep, name: str, data: GeometryData) -> GeometryData!:
     # Curves: drawn ones and those on picked curves need no model.
     if step.verb in edit_cad_curves.draw_verbs() or step.verb in edit_cad_curves.curve_verbs():
         return edit_cad_curves.run(step, data, none)
+    if step.verb in edit_cad_align.verbs():
+        return edit_cad_align.run(step, data)
     if step.group_type == 1 and data.has_curves() and not data.has_cad():
         return moved_cvs(step, data)
     if not data.has_cad():

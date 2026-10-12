@@ -79,17 +79,33 @@ pub func intersect(data: GeometryData, face: str, other: str, plane: bool, origi
     result.report = f"{made.count} curve{"" if made.count == 1 else "s"} where the faces meet"
     return result
 
+## Trim's 3D Trimming and Extend options: `cast` 0 the curves on the face,
+## 1 every curve cast along `direction`, 2 along the normals; `extend`
+## carries short curve ends on to the face's edge or the next curve.
+pub class TrimOptions:
+    pub let cast: int
+    pub let direction: Vector3
+    pub let extend: bool
+
+    pub func init(self, cast: int, direction: Vector3, extend: bool):
+        self.cast = cast
+        self.direction = direction
+        self.extend = extend
+
 ## Trim: face `face` cut by its curves (or `curves`), the regions holding
-## `picks` kept or discarded by `mode`, or divided. Without picks (Keep or
+## `picks` kept or discarded by `mode`, or divided; by `options` curves off
+## the face cast onto it and short ends extended, and `cutters` (faces of
+## the model) cutting it where they meet it. Without picks (Keep or
 ## Discard) the input passes through, waiting for them. The face's region
 ## markers, the picks and, with `show`, the crossings and loose ends are
 ## the result's state lines.
-pub func trim(data: GeometryData, face: str, picks: list[Vector3], mode: int, show: bool, curves: list[str], tag: str) -> GeometryData!:
+pub func trim(data: GeometryData, face: str, picks: list[Vector3], mode: int, show: bool, curves: list[str], tag: str, options: TrimOptions, cutters: list[str]) -> GeometryData!:
     if face == "":
         error(ui.invalid, "Trim: pick the face to trim")
     let body = body_with(data, face)
     let names = curves.join(";")
-    let regions = CadSurfacing.trim_regions(data.geometry, body, face, curves = names)
+    let cutting = cutters.join(";")
+    let regions = CadSurfacing.trim_regions(data.geometry, body, face, curves = names, cast = options.cast, direction = options.direction, cutters = cutting, extend = options.extend)
     let lines: list[str] = []
     let markers: list[Vector3] = []
     for k in 0..<regions.marker_count():
@@ -110,9 +126,11 @@ pub func trim(data: GeometryData, face: str, picks: list[Vector3], mode: int, sh
     if markers.length < 2:
         result = data.passed("Trim: the curves on the face cut it into no regions; each must cross it or close on it (Show intersections marks loose ends)")
     elif mode != divide_mode and picks.length == 0:
-        result = data.passed(f"Trim: click the regions to {"keep" if mode == keep_mode else "discard"}")
+        # Waiting for clicks is no fault: the node shows "waiting".
+        result = data.passed(f"Pick the regions to {"keep" if mode == keep_mode else "discard"}: click their markers on the face")
     else:
-        result = GeometryData(geometry = CadSurfacing.trimmed(data.geometry, body, face, picks, mode, curves = names, tag = tag))
+        result = GeometryData(geometry = CadSurfacing.trimmed(data.geometry, body, face, picks, mode, curves = names, tag = tag, cast = options.cast, direction = options.direction,
+                                                              cutters = cutting, extend = options.extend))
         result.report = "every region a face of its own" if mode == divide_mode else f"{picks.length} region{"" if picks.length == 1 else "s"} {"kept" if mode == keep_mode else "discarded"}"
     result.sketch_state = lines.join("\n")
     return result
@@ -143,11 +161,15 @@ pub func shrink(data: GeometryData, face: str) -> GeometryData!:
         error(ui.invalid, "Shrink: pick the face")
     return GeometryData(geometry = CadSurfacing.shrunk(data.geometry, body_with(data, face), face))
 
-## Stitch: bodies `bodies` (indices; empty: all) joined within `gap`.
-pub func stitch(data: GeometryData, bodies: list[int], gap: float) -> GeometryData!:
-    let made = CadSurfacing.stitched(data.geometry, bodies, gap)
+## Stitch: bodies `bodies` (indices; empty: all) joined within `gap`; with
+## `periodic` and `single` Alias's Detach options for export.
+pub func stitch(data: GeometryData, bodies: list[int], gap: float, periodic: bool, single: bool) -> GeometryData!:
+    let made = CadSurfacing.stitched(data.geometry, bodies, gap, detach_periodic = periodic, detach_single = single)
     let result = GeometryData(geometry = made.geometry())
-    result.report = f"{made.count} edge{"" if made.count == 1 else "s"} joined, the widest gap {made.widest:.2e}; {"a closed solid" if made.closed else "open"}"
+    var detached = ""
+    if periodic or single:
+        detached = f"; detached {made.periodic} periodic face{"" if made.periodic == 1 else "s"}, {made.single} closed edge{"" if made.single == 1 else "s"}"
+    result.report = f"{made.count} edge{"" if made.count == 1 else "s"} joined, the widest gap {made.widest:.2e}; {"a closed solid" if made.closed else "open"}{detached}"
     return result
 
 ## Unstitch: body `body`'s faces each a body of its own.

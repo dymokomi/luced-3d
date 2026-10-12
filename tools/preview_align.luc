@@ -1,0 +1,226 @@
+## The captures of the surfacing plan's Stage 4, Align (edit_cad_align.luc,
+## align_ops.luc, align_view.luc; preview_surfacing.luc hands these scenes
+## here), and of Stage 3's follow-ups. Each on an Edit CAD box unstitched
+## into six squares, unless it says otherwise:
+##   surf_align_waiting: the top's edge at x = 1 picked, Align waiting for
+##     its master: the node's neutral "waiting", the prompt.
+##   surf_align: the +X side's edge picked as the master, G2: the top rolls
+##     over into the side, its rows tinted by order, the tangent arrows,
+##     Align's tool bar.
+##   surf_align_proxy: the same at G3 with two extra rows and Proxy
+##     display: the hull as it was, a ghost.
+##   surf_align_isoparm: a second Align from the top's far edge to a
+##     temporary isoparm of the -X side (double-clicked), dashed yellow.
+##   surf_align_node: a CAD network's Align node (Solid Box, Unstitch,
+##     Align G2), its parameters.
+##   surf_symmetry: a Symmetry Align node, the top's edge on the plane x = 1.
+##   surf_trim_3d: Trim with 3D Trimming: a free circle above the box cast
+##     onto its top as the trim runs, its markers waiting ("waiting", not
+##     a warning).
+import preview_support
+from luce_3d.graphics import Vector3
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+from app import Luce3D
+from workspace import Workspace
+import node_commands
+import modeling_commands
+import selection_commands
+import edit_cad_commands
+import edit_cad_align
+import edit_cad_surfaces
+import edit_cad_curves
+import cad_surface_nodes
+import align_ops
+import placing_commands
+from view_projection import project
+from luce_ui.ui import Event
+from luce_window.input import EventKind
+from luce_std import math
+
+pub func scenes() -> list[str]:
+    return ["surf_align_waiting", "surf_align", "surf_align_proxy", "surf_align_isoparm", "surf_align_node", "surf_symmetry", "surf_trim_3d"]
+
+func look(editor: Luce3D, yaw: float, pitch: float, distance: float, target: Vector3) -> unit!:
+    let w = editor.workspace
+    w.view.yaw = yaw
+    w.view.pitch = pitch
+    w.view.distance = distance
+    w.view.target = target
+    w.view.update_camera()
+
+## A new CAD node, entered and empty.
+func cad(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 40.0, 40.0)
+    node_commands.enter_group(w, w.network.selected)
+
+## An Edit CAD box unstitched into six square bodies.
+func squares(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    cad(editor)
+    node_commands.add_node(w, "Edit CAD", 40.0, 40.0)
+    preview_support.settle(w)
+    modeling_commands.create(w, "Box")
+    preview_support.settle(w)
+    selection_commands.set_mode(w, 0)
+    preview_support.settle(w)
+    selection_commands.choose_component(w, 0, false)
+    edit_cad_commands.tool(w, edit_cad_surfaces.unstitch_verb)
+    preview_support.settle(w)
+
+## At the Edges level, the edge whose middle `keep` takes with the normal
+## of a polygon of its body lying along it, picked.
+func pick_edge(w: Workspace, keep: func(Vector3, Vector3) -> bool) -> unit!:
+    selection_commands.set_mode(w, 2)
+    preview_support.settle(w)
+    let mesh = preview_support.shown(w) else trap("no pick mesh")
+    let polygon_models = mesh.find_attribute("cad_model", 2)
+    let edge_models = mesh.find_attribute("cad_edge_model", 4)
+    for edge in 0..<mesh.edge_count():
+        let a = mesh.point(mesh.edge_point(edge, 0))
+        let b = mesh.point(mesh.edge_point(edge, 1))
+        for polygon in 0..<mesh.face_count():
+            if int(mesh.attribute_value(polygon_models, polygon)) != int(mesh.attribute_value(edge_models, edge)):
+                continue
+            var on = 0
+            for k in 0..<mesh.face_size(polygon):
+                if edit_cad_align.on_segment(mesh.point(mesh.face_point(polygon, k)), a, b, 1e-6):
+                    on += 1
+            if on >= 2 and keep(a.add(b).multiply_scalar(0.5), mesh.face_normal(polygon)):
+                selection_commands.choose_component(w, edge, false)
+                preview_support.settle(w)
+                return
+    trap("no such edge")
+
+func top_edge(c: Vector3, n: Vector3) -> bool:
+    return math.abs(c.x - 1.0) < 1e-6 and math.abs(c.y - 1.0) < 1e-6 and n.y > 0.99
+
+func side_edge(c: Vector3, n: Vector3) -> bool:
+    return math.abs(c.x - 1.0) < 1e-6 and math.abs(c.y - 1.0) < 1e-6 and n.x > 0.99
+
+## The top's edge at x = 1 aligned to the side's: Align picked and waiting
+## (`master` false), or its master picked and the order set.
+func aligned(editor: Luce3D, master: bool, order: float) -> unit!:
+    let w = editor.workspace
+    squares(editor)
+    pick_edge(w, top_edge)
+    edit_cad_commands.tool(w, edit_cad_align.align_verb)
+    preview_support.settle(w)
+    if not master:
+        return
+    pick_edge(w, side_edge)
+    modeling_commands.set_last_step(w, align_ops.continuity_slot, order, 0.0, 3.0)
+    preview_support.settle(w)
+
+func align_look(editor: Luce3D) -> unit!:
+    look(editor, 0.75, 0.42, 7.0, Vector3(0.3, 0.3, 0.0))
+
+## Scene `scene` before its first frame.
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    let w = editor.workspace
+    if scene == "surf_align_waiting":
+        aligned(editor, false, 1.0)
+        align_look(editor)
+    elif scene == "surf_align":
+        aligned(editor, true, 2.0)
+        align_look(editor)
+    elif scene == "surf_align_proxy":
+        aligned(editor, true, 3.0)
+        modeling_commands.set_last_step(w, align_ops.extra_slot, 2.0, 0.0, 16.0)
+        modeling_commands.set_last_step(w, align_ops.proxy_slot, 1.0, 0.0, 1.0)
+        preview_support.settle(w)
+        align_look(editor)
+    elif scene == "surf_align_isoparm":
+        aligned(editor, true, 2.0)
+        pick_edge(w, func (c: Vector3, n: Vector3) -> bool: return math.abs(c.x + 1.0) < 1e-6 and math.abs(c.y - 1.0) < 1e-6 and n.y > 0.99)
+        edit_cad_commands.tool(w, edit_cad_align.align_verb)
+        preview_support.settle(w)
+        look(editor, -0.8, 0.42, 8.0, Vector3(-0.3, -0.5, 0.0))
+    elif scene == "surf_align_node":
+        cad(editor)
+        node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+        let box = w.network.selected
+        let model = CadGeometry.model(preview_support.cooked(w, box).geometry, 0)
+        let top = facing(model, Vector3(0.0, 1.0, 0.0))
+        let side = facing(model, Vector3(1.0, 0.0, 0.0))
+        node_commands.add_node(w, cad_surface_nodes.unstitch_kind, 40.0, 120.0)
+        node_commands.set_text(w, 0, top)
+        node_commands.add_node(w, cad_surface_nodes.align_kind, 40.0, 200.0)
+        node_commands.set_text(w, align_ops.input_text, f"face {top} 10 10 0")
+        node_commands.set_text(w, align_ops.master_text, f"edge {side} 10 10 0")
+        node_commands.set_parameter(w, align_ops.continuity_slot, 2.0)
+        node_commands.set_parameter(w, align_ops.proxy_slot, 1.0)
+        node_commands.display_selected(w)
+        preview_support.settle(w)
+        look(editor, 0.75, 0.45, 65.0, Vector3(3.0, 9.0, 0.0))
+    elif scene == "surf_symmetry":
+        cad(editor)
+        node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+        let box = w.network.selected
+        let model = CadGeometry.model(preview_support.cooked(w, box).geometry, 0)
+        let top = facing(model, Vector3(0.0, 1.0, 0.0))
+        node_commands.add_node(w, cad_surface_nodes.unstitch_kind, 40.0, 120.0)
+        node_commands.set_text(w, 0, top)
+        node_commands.add_node(w, cad_surface_nodes.symmetry_kind, 40.0, 200.0)
+        node_commands.set_text(w, align_ops.input_text, f"face {top} 10 10 0")
+        node_commands.set_parameter(w, align_ops.offset_slot, 12.0)
+        node_commands.set_parameter(w, align_ops.continuity_slot, 2.0)
+        node_commands.display_selected(w)
+        preview_support.settle(w)
+        look(editor, 0.75, 0.45, 65.0, Vector3(3.0, 9.0, 0.0))
+    elif scene == "surf_trim_3d":
+        cad(editor)
+        node_commands.add_node(w, "Edit CAD", 40.0, 40.0)
+        preview_support.settle(w)
+        modeling_commands.create(w, "Box")
+        preview_support.settle(w)
+        # A free circle above the top: a CV curve round, not projected.
+        let points: list[Vector3] = []
+        for k in 0..<9:
+            let angle = math.pi * 2.0 * float(k) / 8.0
+            points.append(Vector3(0.5 * math.cos(angle), 2.0, 0.5 * math.sin(angle)))
+        modeling_commands.model(w, edit_cad_curves.cv_verb)
+        for p in points:
+            placing_commands.add_corner(w, p)
+        placing_commands.finish_placing(w)
+        preview_support.settle(w)
+        selection_commands.set_mode(w, 3)
+        preview_support.settle(w)
+        let mesh = preview_support.shown(w) else trap("no pick mesh")
+        var best = -1
+        for face in 0..<mesh.face_count():
+            if mesh.face_center(face).y > 0.99 and best < 0:
+                best = face
+        selection_commands.choose_component(w, best, false)
+        edit_cad_commands.tool(w, edit_cad_surfaces.trim_verb)
+        modeling_commands.set_last_step(w, edit_cad_surfaces.cast_slot, 1.0, 0.0, 2.0)
+        preview_support.settle(w)
+        look(editor, 0.6, 0.62, 6.5, Vector3(0.0, 0.8, 0.0))
+    editor.panels.refresh()
+
+## Frame `frame` of scene `scene` (`last` is the frame captured).
+pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
+    let w = editor.workspace
+    if frame != last - 1:
+        return
+    if scene == "surf_align_isoparm":
+        # A double-click on the -X side, as a user picks the isoparm there.
+        let area = editor.panels.view.layout().bounds()
+        let s = project(w, Vector3(-1.0, 0.3, 0.2), area.width, area.height)
+        for _ in 0..<2:
+            for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+                editor.app.dispatch(Event(kind = kind, x = area.x + s[0], y = area.y + s[1], button = 0))
+        preview_support.settle(w)
+        editor.panels.refresh()
+
+## The name of `model`'s flat face facing `normal`.
+func facing(model: CadModel, normal: Vector3) -> str!:
+    for f in 0..<model.face_count():
+        let name = CadModeling.face_name_of(model, f)
+        let frame = CadModeling.face_frame(model, name)
+        if frame.found and frame.u.cross(frame.v).dot(normal) > 0.999:
+            return name
+    trap("no such face")

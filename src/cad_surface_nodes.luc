@@ -1,7 +1,8 @@
-## Surfacing Stage 3 as nodes of a CAD network (§7.1): Alias's construction
-## history for Project, Intersect, Trim, Untrim, Trim Convert, Shrink,
-## Stitch and Unstitch. Each passes its input on changed (surface_ops.luc),
-## made again whenever the input changes; faces and bodies are kept by
+## Surfacing Stages 3 and 4 as nodes of a CAD network (§7.1): Alias's
+## construction history for Project, Intersect, Trim, Untrim, Trim Convert,
+## Shrink, Stitch, Unstitch, Align and Symmetry Align (align_ops.luc).
+## Each passes its input on changed (surface_ops.luc, align_ops.luc), made
+## again whenever the input changes; faces and bodies are kept by
 ## name, curves by name, Trim's regions by the points clicked on their
 ## markers (trim_regions.luc). Their picks are rows of the parameter panel
 ## and prompts in the viewport, as the Modify features' (modify_picks.luc).
@@ -10,6 +11,7 @@ from geometry_data import GeometryData
 from parameter_rows import Parameter
 import edit_cad_surfaces
 import surface_ops
+import align_ops
 from luce_ui import ui
 
 pub let project_kind = "Project"
@@ -20,15 +22,19 @@ pub let convert_kind = "Trim Convert"
 pub let shrink_kind = "Shrink"
 pub let stitch_kind = "Stitch"
 pub let unstitch_kind = "Unstitch"
+pub let align_kind = "Align"
+pub let symmetry_kind = "Symmetry Align"
 
 pub func kinds() -> list[str]:
-    return [project_kind, intersect_kind, trim_kind, untrim_kind, convert_kind, shrink_kind, stitch_kind, unstitch_kind]
+    return [project_kind, intersect_kind, trim_kind, untrim_kind, convert_kind, shrink_kind, stitch_kind, unstitch_kind, align_kind, symmetry_kind]
 
 ## The texts each node keeps: Project's curves then its face; the face
 ## (and Intersect's second face, Trim's picked points); Stitch's bodies
 ## (one face's name each, empty: all) and Unstitch's body.
 pub let first_text = 0
 pub let second_text = 1
+## Trim's cutting faces (3D Trimming by Intersect).
+pub let cutters_text = 2
 
 ## The nodes' parameters (their values are Edit CAD's steps' numbers).
 pub func fields(kind: str) -> list[Parameter]:
@@ -44,11 +50,19 @@ pub func fields(kind: str) -> list[Parameter]:
         return edit_cad_surfaces.convert_rows()
     if kind == stitch_kind:
         return edit_cad_surfaces.stitch_rows()
+    if kind == align_kind:
+        return align_ops.rows()
+    if kind == symmetry_kind:
+        return align_ops.symmetry_rows()
     let none_shown: list[Parameter] = []
     return none_shown
 
 ## A new node's values.
 pub func starting(kind: str) -> list[float]:
+    if kind == align_kind:
+        return align_ops.starting()
+    if kind == symmetry_kind:
+        return align_ops.symmetry_starting()
     for tool in edit_cad_surfaces.tools(0, 1, 2, 3):
         if tool.verb == kind:
             return tool.numbers else [0.0]
@@ -56,6 +70,10 @@ pub func starting(kind: str) -> list[float]:
 
 ## What `kind` waits for ("" when it has what it needs).
 pub func waits_for(kind: str, v: list[float], t: list[str]) -> str:
+    if kind == align_kind:
+        return align_ops.waits_for(t)
+    if kind == symmetry_kind:
+        return "Pick the input edge" if t[first_text].trim() == "" else ""
     if kind == project_kind:
         if t[first_text].trim() == "":
             return "Pick the curves to project"
@@ -78,6 +96,10 @@ pub func evaluate(kind: str, v: list[float], t: list[str], data: GeometryData, t
     let waiting = waits_for(kind, v, t)
     if waiting != "":
         return data.passed(waiting)
+    if kind == align_kind:
+        return align_ops.align(data, v, t)
+    if kind == symmetry_kind:
+        return align_ops.symmetry(data, v, t)
     if kind == project_kind:
         let curves: list[str] = []
         for name in t[first_text].split(";"):
@@ -95,14 +117,20 @@ pub func evaluate(kind: str, v: list[float], t: list[str], data: GeometryData, t
         if kind == unstitch_kind:
             return surface_ops.unstitch(data, bodies[0])
         bodies.sort()
-        return surface_ops.stitch(data, bodies, v[edit_cad_surfaces.gap_slot])
+        return surface_ops.stitch(data, bodies, v[edit_cad_surfaces.gap_slot], v[edit_cad_surfaces.periodic_slot] != 0.0, v[edit_cad_surfaces.single_slot] != 0.0)
     let face = t[first_text].trim()
     if kind == intersect_kind:
         let origin = Vector3(v[edit_cad_surfaces.origin_slot], v[edit_cad_surfaces.origin_slot + 1], v[edit_cad_surfaces.origin_slot + 2])
         let normal = Vector3(v[edit_cad_surfaces.normal_slot], v[edit_cad_surfaces.normal_slot + 1], v[edit_cad_surfaces.normal_slot + 2])
         return surface_ops.intersect(data, face, t[second_text].trim(), int(v[edit_cad_surfaces.with_slot]) == 1, origin, normal, v[edit_cad_surfaces.both_faces_slot] != 0.0)
     if kind == trim_kind:
-        return surface_ops.trim(data, face, surface_ops.parse_points(t[second_text]), int(v[edit_cad_surfaces.mode_slot]), v[edit_cad_surfaces.show_slot] != 0.0, [], tag)
+        let cutters: list[str] = []
+        if v[edit_cad_surfaces.cutters_slot] != 0.0:
+            for name in t[cutters_text].split(";"):
+                if name.trim() != "":
+                    cutters.append(name.trim())
+        return surface_ops.trim(data, face, surface_ops.parse_points(t[second_text]), int(v[edit_cad_surfaces.mode_slot]), v[edit_cad_surfaces.show_slot] != 0.0, [], tag,
+                                edit_cad_surfaces.trim_options(v), cutters)
     if kind == untrim_kind:
         return surface_ops.untrim(data, face, v[edit_cad_surfaces.all_slot] != 0.0)
     if kind == convert_kind:

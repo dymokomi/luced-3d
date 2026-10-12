@@ -1,0 +1,213 @@
+## Surfacing Stage 4 in Edit CAD and CAD networks (edit_cad_align.luc,
+## align_ops.luc, cad_surface_nodes.luc): a box unstitched, its top's edge
+## at x = 1 picked at the Edges level, Align from the right-click waits
+## (neutral "waiting") for its master, the side's edge clicked aligns it G1
+## (the top's tangent row square above the edge, on x = 1), its rows drawn
+## and Tangent Scale's arrows handles; a CV of that row dragged off the
+## tangent plane goes back onto it (the Align runs again); a double-click on
+## a surface while the master is asked for makes a temporary isoparm
+## master. In a network the Align node follows the box when it grows
+## upstream; Symmetry Align meets the plane.
+from workspace import Workspace
+from node import Node
+import node as nodes
+from app import Luce3D
+from geometry_data import GeometryData
+from edit_operations import EditStep
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+from luce_3d.graphics import Vector3
+import align_ops
+import edit_cad_align
+import edit_cad_commands
+import edit_cad_picks
+import edit_cad_surfaces
+import edit_cad_nets
+import cad_surface_nodes
+import modeling_commands
+import node_commands
+import selection_commands
+import view_projection
+from luce_std import math
+
+pub func edit_cad_align_tests() -> unit!:
+    in_edit_cad()
+    in_a_network()
+    print("PASS Edit CAD Align: an unstitched box's top edge aligned G1 to its side from the right-click (waiting, not warning, for the master), its rows drawn and its tangent arrows handles; a CV dragged off the aligned row goes back (the Align runs again); a double-click makes a temporary isoparm master; the Align node follows the box upstream; Symmetry Align meets its plane")
+
+func data_of(w: Workspace, node: Node) -> GeometryData!:
+    return w.network.evaluate_data(node.id)
+
+## The name of `model`'s flat face facing `normal`.
+func facing(model: CadModel, normal: Vector3) -> str!:
+    for f in 0..<model.face_count():
+        let name = model.face_name(f)
+        let frame = CadModeling.face_frame(model, name)
+        if frame.found and frame.u.cross(frame.v).dot(normal) > 0.999:
+            return name
+    trap("no such face")
+
+## The face named `name` among `data`'s models: its model.
+func holding(data: GeometryData, name: str) -> CadModel!:
+    for model in data.models():
+        for f in 0..<model.face_count():
+            if model.face_name(f) == name:
+                return model
+    trap(f"no face {name}")
+
+## At the Edges level, select the first mesh edge whose middle `keep`
+## takes with the normal of a polygon of its body with corners at its ends.
+func select_edge(w: Workspace, keep: func(Vector3, Vector3) -> bool) -> unit!:
+    selection_commands.set_mode(w, 2)
+    let mesh = w.geometry else trap("pick geometry")
+    let polygon_models = mesh.find_attribute("cad_model", 2)
+    let edge_models = mesh.find_attribute("cad_edge_model", 4)
+    for edge in 0..<mesh.edge_count():
+        let a = mesh.point(mesh.edge_point(edge, 0))
+        let b = mesh.point(mesh.edge_point(edge, 1))
+        let middle = a.add(b).multiply_scalar(0.5)
+        for polygon in 0..<mesh.face_count():
+            if int(mesh.attribute_value(polygon_models, polygon)) != int(mesh.attribute_value(edge_models, edge)):
+                continue
+            var ends = 0
+            for k in 0..<mesh.face_size(polygon):
+                if edit_cad_align.on_segment(mesh.point(mesh.face_point(polygon, k)), a, b, 1e-6):
+                    ends += 1
+            if ends >= 2 and keep(middle, mesh.face_normal(polygon)):
+                selection_commands.choose_component(w, edge, false)
+                return
+    trap("no such edge")
+
+## The entries of the viewport's right-click menu now.
+func menu_entries(editor: Luce3D) -> list[str]!:
+    editor.panels.refresh()
+    let offered: list[str] = []
+    for command in editor.panels.viewport_menu.entries():
+        offered.append(command.text())
+    return offered
+
+## The six squares of a 2-box as bodies of an Edit CAD node.
+func unstitched_box(w: Workspace) -> Node!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    let node = w.selected() else trap("Edit CAD")
+    modeling_commands.create(w, "Box")
+    selection_commands.set_mode(w, 0)
+    selection_commands.choose_component(w, 0, false)
+    edit_cad_commands.tool(w, edit_cad_surfaces.unstitch_verb)
+    assert(data_of(w, node).models().length == 6, node.warning)
+    return node
+
+## The top's edge at x = 1 (beside the +X side's), and the side's there.
+func top_edge(c: Vector3, n: Vector3) -> bool:
+    return math.abs(c.x - 1.0) < 1e-6 and math.abs(c.y - 1.0) < 1e-6 and n.y > 0.99
+
+func side_edge(c: Vector3, n: Vector3) -> bool:
+    return math.abs(c.x - 1.0) < 1e-6 and math.abs(c.y - 1.0) < 1e-6 and n.x > 0.99
+
+func in_edit_cad() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let node = unstitched_box(w)
+    select_edge(w, top_edge)
+    assert(edit_cad_align.align_verb in menu_entries(editor) and edit_cad_align.symmetry_verb in menu_entries(editor), "the right-click on an edge offers Align")
+    edit_cad_commands.tool(w, edit_cad_align.align_verb)
+    let prompt = w.prompt else trap("Align waits for its master")
+    assert(prompt.label == edit_cad_picks.master_label)
+    _ = data_of(w, node)
+    assert(nodes.waiting(node.warning), f"waiting, not a warning: {node.warning}")
+    select_edge(w, side_edge)
+    assert(w.prompt == none, "the master's pick finishes it")
+    let data = data_of(w, node)
+    assert(node.warning == "", node.warning)
+    let step = node.edits[-1]
+    let face = step.text(0).split(" ")[1]
+    let aligned = holding(data, face)
+    # G1 to the vertical side: the top's tangent row above the edge, on x = 1.
+    var row_one = -1
+    let cloud = CadGeometry.cv_cloud(data.geometry)
+    for i in 0..<cloud.point_count():
+        let p = cloud.point(i)
+        if math.abs(p.x - 1.0) < 1e-9 and p.y > 1.01:
+            row_one = i
+    assert(row_one >= 0, "no CV of the tangent row above the edge")
+    assert(aligned.face_surface_kind(0) == 3)
+    # Its rows for the viewport, and the tangent arrows.
+    assert(node.sketch_state.contains(align_ops.row_head + "1 ") and node.handles.contains("arrow"), node.sketch_state)
+    # A CV of that row dragged off the tangent plane (0.3 along X): the
+    # Align runs again and it goes back onto x = 1.
+    let cv = row_one
+    w.perform("Move CVs", func () -> unit!:
+        node.edits.append(EditStep(edit_cad_nets.move_verb, f"{cv}", 1, [0.0, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 3.0], cloud.topology_hash()))
+        w.network.invalidate(node.id)
+        w.rebuild())
+    let after = CadGeometry.cv_cloud(data_of(w, node).geometry)
+    assert(math.abs(after.point(cv).x - 1.0) < 1e-9, f"the dragged CV stayed off the tangent plane: {after.point(cv)} ({node.warning})")
+    # A double-click on a surface while the master is asked for: the
+    # isoparm there is the master (a temporary pick object). The top's far
+    # edge (x = -1, still flat there) is the input.
+    select_edge(w, func (c: Vector3, n: Vector3) -> bool: return math.abs(c.x + 1.0) < 1e-6 and math.abs(c.y - 1.0) < 1e-6 and n.y > 0.99)
+    edit_cad_commands.tool(w, edit_cad_align.align_verb)
+    # (The test has no window: a view of 800 by 600 points.)
+    let s = view_projection.project(w, Vector3(0.0, 1.0, 0.3), 800.0, 600.0)
+    assert(edit_cad_commands.pick_isoparm(w, s[0], s[1], 800.0, 600.0), "the double-click took no isoparm")
+    assert(w.prompt == none and node.edits[-1].text(1).starts_with("isoparm_at "), node.edits[-1].text(1))
+    _ = data_of(w, node)
+    assert(node.sketch_state.contains(align_ops.iso_head), f"no isoparm drawn: {node.warning}")
+
+func in_a_network() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let box = w.network.selected
+    w.network.require(box).values[0] = 2.0
+    w.network.require(box).values[1] = 2.0
+    w.network.require(box).values[2] = 2.0
+    w.network.invalidate(box)
+    node_commands.add_node(w, edit_cad_surfaces.unstitch_verb, 0.0, 80.0)
+    let apart = w.network.require(w.network.selected)
+    w.network.connect(box, apart.id, 0)
+    let first = CadGeometry.model(w.network.evaluate_data(box).geometry, 0)
+    let top = facing(first, Vector3(0.0, 1.0, 0.0))
+    let side = facing(first, Vector3(1.0, 0.0, 0.0))
+    apart.texts[0] = top
+    w.network.invalidate(apart.id)
+    node_commands.add_node(w, cad_surface_nodes.align_kind, 0.0, 160.0)
+    let align = w.network.require(w.network.selected)
+    w.network.connect(apart.id, align.id, 0)
+    _ = w.network.evaluate_data(align.id)
+    assert(nodes.waiting(align.warning), align.warning)
+    align.texts[align_ops.input_text] = f"face {top} 1 1 0"
+    align.texts[align_ops.master_text] = f"edge {side} 1 1 0"
+    w.network.invalidate(align.id)
+    let made = w.network.evaluate_data(align.id)
+    assert(align.warning == "", align.warning)
+    var above = false
+    for i in 0..<CadGeometry.cv_cloud(made.geometry).point_count():
+        let p = CadGeometry.cv_cloud(made.geometry).point(i)
+        above = above or (math.abs(p.x - 1.0) < 1e-9 and p.y > 1.01)
+    assert(above, f"the node's top does not rise square from the edge: {made.report} {align.warning}")
+    # The box made 2.5 wide upstream: the top's edge follows to x = 1.25.
+    w.network.require(box).values[0] = 2.5
+    w.network.invalidate(box)
+    let wider = w.network.evaluate_data(align.id)
+    var moved = false
+    for i in 0..<CadGeometry.cv_cloud(wider.geometry).point_count():
+        let p = CadGeometry.cv_cloud(wider.geometry).point(i)
+        moved = moved or (math.abs(p.x - 1.25) < 1e-9 and p.y > 1.01)
+    assert(moved and align.warning == "", f"the Align did not follow: {align.warning}")
+    # Symmetry Align on the plane x = 1.25: the top's edge stays on it.
+    node_commands.add_node(w, cad_surface_nodes.symmetry_kind, 200.0, 160.0)
+    let mirror = w.network.require(w.network.selected)
+    w.network.connect(apart.id, mirror.id, 0)
+    mirror.values[align_ops.offset_slot] = 1.25
+    mirror.texts[align_ops.input_text] = f"face {top} 1.25 1 0"
+    w.network.invalidate(mirror.id)
+    _ = w.network.evaluate_data(mirror.id)
+    assert(mirror.warning == "", mirror.warning)

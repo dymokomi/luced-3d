@@ -1,0 +1,199 @@
+## Edit CAD's Align and Symmetry Align steps (surfacing Stage 4; Alias's
+## Object Edit › Align and Symmetry Plane Align; align_ops.luc does the
+## work). Align starts on a picked edge (the Edges level) or a curve's end
+## (the Curves level): the step takes it as its input, then waits for its
+## master (edit_cad_picks.luc): an edge, a curve, a face for Project and
+## U/V, or a double-click on a surface for a temporary isoparm. A second
+## master is picked from the step's tool bar. Each align is one step and
+## one undo, Alias's Accept chaining them: the next Align starts from
+## what this one left.
+##
+## Aligned rows stay aligned: a CV drag later in the recipe on rows an
+## Align set runs that Align again afterwards (the owner's rule, §10 of
+## the research doc), so moving a CV of the tangent row slides it along
+## the tangent plane's constraint instead of breaking G1.
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.nurbs import CadNurbs
+from luce_geocore.geocore import Mesh
+from luce_3d.graphics import Vector3
+from geometry_data import GeometryData
+from edit_operations import EditStep
+from edit_types import EditTool, edge_level, face_level, patch_level, curve_level
+import align_ops
+from luce_ui import ui
+
+pub let align_verb = "Align"
+pub let symmetry_verb = "Symmetry Align"
+
+pub func verbs() -> list[str]:
+    return [align_verb, symmetry_verb]
+
+## The tools, at the Edges and Curves levels (the input edge or curve end).
+pub func tools(edges: int, curves: int) -> list[EditTool]:
+    return [EditTool(align_verb, align_verb, [edges, curves], align_ops.starting(), align_ops.rows()),
+            EditTool(symmetry_verb, symmetry_verb, [edges, curves], align_ops.symmetry_starting(), align_ops.symmetry_rows())]
+
+## Step `step` on `data`: its texts the input, master and second master.
+pub func run(step: EditStep, data: GeometryData) -> GeometryData!:
+    let texts = [step.text(0), step.text(1), step.text(2)]
+    let numbers = filled(step)
+    let made = align_ops.symmetry(data, numbers, texts) if step.verb == symmetry_verb else align_ops.align(data, numbers, texts)
+    made.aligns = data.aligns + [constraint(step.verb, numbers, texts, made)]
+    return made
+
+## A step's numbers, the ones added since it was made at their start.
+func filled(step: EditStep) -> list[float]:
+    let start = align_ops.symmetry_starting() if step.verb == symmetry_verb else align_ops.starting()
+    let numbers = step.numbers.copy()
+    while numbers.length < start.length:
+        numbers.append(start[numbers.length])
+    return numbers
+
+## The record a later CV drag reads: the verb, the input face, the side and
+## order the rows were set on (align_ops's state), the numbers and texts.
+func constraint(verb: str, numbers: list[float], texts: list[str], made: GeometryData) -> str:
+    let words = texts[0].trim().split(" ")
+    let face = words[1] if words.length == 5 and words[0] == "face" else ""
+    let values: list[str] = []
+    for n in numbers:
+        values.append(str(n))
+    return [verb, face, str(align_ops.side_of(made.sketch_state)), str(align_ops.order_of(made.sketch_state)), values.join(","), texts[0], texts[1], texts[2]].join("\t")
+
+## After a CV drag (`before` the step's input, `after` its result): each
+## Align whose rows hold a moved CV runs again on the result, in recipe
+## order; the records carry on.
+pub func realigned(before: GeometryData, after: GeometryData) -> GeometryData!:
+    if before.aligns.length == 0 or not after.has_cad():
+        after.aligns = before.aligns
+        return after
+    let cloud_before = CadGeometry.cv_cloud(before.geometry)
+    let cloud_after = CadGeometry.cv_cloud(after.geometry)
+    if cloud_before.point_count() != cloud_after.point_count():
+        after.aligns = before.aligns
+        return after
+    let surfaces = cloud_after.find_attribute("cad_cv_surface", 0)
+    let models = cloud_after.find_attribute("cad_cv_model", 0)
+    let us = cloud_after.find_attribute("cad_cv_u", 0)
+    let vs = cloud_after.find_attribute("cad_cv_v", 0)
+    var result = after
+    for record in before.aligns:
+        let parts = record.split("\t")
+        if parts.length != 8 or parts[1] == "":
+            continue
+        let face = parts[1]
+        let side = int(parts[2])
+        let order = int(parts[3])
+        # The model and surface of the aligned face, and the rows it set.
+        var model_index = -1
+        var surface = -1
+        for index in 0..<CadGeometry.model_count(after.geometry):
+            let model = CadGeometry.model(after.geometry, index)
+            for f in 0..<model.face_count():
+                if model.face_name(f) == face:
+                    model_index = index
+                    surface = CadNurbs.surface_of_face(model, face)
+        if surface < 0:
+            continue
+        let shape = CadNurbs.structure(CadGeometry.model(after.geometry, model_index), surface)
+        var touched = false
+        for i in 0..<cloud_after.point_count():
+            if int(cloud_after.attribute_value(models, i)) != model_index or int(cloud_after.attribute_value(surfaces, i)) != surface:
+                continue
+            if cloud_after.point(i).subtract(cloud_before.point(i)).length() == 0.0:
+                continue
+            let u = int(cloud_after.attribute_value(us, i))
+            let v = int(cloud_after.attribute_value(vs, i))
+            let row = u if side == 0 else (shape.nu - 1 - u if side == 1 else (v if side == 2 else shape.nv - 1 - v))
+            if row <= order:
+                touched = true
+        if not touched:
+            continue
+        let numbers: list[float] = []
+        for word in parts[4].split(","):
+            numbers.append(float(word))
+        let texts = [parts[5], parts[6], parts[7]]
+        let again = align_ops.symmetry(result, numbers, texts) if parts[0] == symmetry_verb else align_ops.align(result, numbers, texts)
+        again.warning = result.warning if again.warning == "" else again.warning
+        result = again
+    result.aligns = before.aligns
+    return result
+
+## The words for an edge picked on `mesh` (an Edges level pick mesh): the
+## face of a polygon beside it (its first) and the clicked edge's middle;
+## "face ..." for an input, "edge ..." for a master.
+pub func edge_words(mesh: Mesh, edge: int, master: bool) -> str!:
+    let names = mesh.find_attribute("cad_face_name", 2)
+    let polygon_models = mesh.find_attribute("cad_model", 2)
+    let edge_models = mesh.find_attribute("cad_edge_model", 4)
+    if names < 0 or polygon_models < 0 or edge_models < 0:
+        error(ui.invalid, "Align: pick an edge of a CAD body")
+    let model = int(mesh.attribute_value(edge_models, edge))
+    let a = mesh.point(mesh.edge_point(edge, 0))
+    let b = mesh.point(mesh.edge_point(edge, 1))
+    let reach = 1e-6 * (1.0 + a.length() + b.length())
+    # The edge's face: a polygon of its model with two corners on the edge's
+    # segment (the display tessellation's boundary runs along the edge).
+    var face = ""
+    for polygon in 0..<mesh.face_count():
+        if int(mesh.attribute_value(polygon_models, polygon)) != model:
+            continue
+        var on = 0
+        for k in 0..<mesh.face_size(polygon):
+            if on_segment(mesh.point(mesh.face_point(polygon, k)), a, b, reach):
+                on += 1
+        if on >= 2:
+            face = mesh.attribute_text(names, polygon)
+            break
+    if face == "":
+        error(ui.invalid, "Align: the edge's face has no name to keep")
+    let p = a.add(b).multiply_scalar(0.5)
+    return f"{"edge" if master else "face"} {face} {p.x} {p.y} {p.z}"
+
+## The words for a pick on `mesh` at `level` (edit_types' levels): a
+## curve (its end nearest the clicked segment for an input, the curve for
+## a master), an edge (edge_words) or, for a master, a face ("face
+## <name>": Project and U/V); "" when the pick is none of them.
+pub func pick_words(mesh: Mesh, index: int, level: int, master: bool) -> str!:
+    if index < 0:
+        return ""
+    if level == curve_level:
+        let names = mesh.find_attribute("cad_curve_name", 4)
+        let name = mesh.attribute_text(names, index) if names >= 0 else ""
+        if name == "":
+            return ""
+        if master:
+            return f"curve {name}"
+        let p = mesh.point(mesh.edge_point(index, 0)).add(mesh.point(mesh.edge_point(index, 1))).multiply_scalar(0.5)
+        return f"curve {name} {p.x} {p.y} {p.z}"
+    if level == edge_level:
+        return edge_words(mesh, index, master)
+    if master and (level == face_level or level == patch_level):
+        let names = mesh.find_attribute("cad_face_name", 2)
+        let name = mesh.attribute_text(names, index) if names >= 0 else ""
+        return f"face {name}" if name != "" else ""
+    return ""
+
+## The middle of what `words` picked ("face <name> x y z", "edge <face> x y
+## z", "curve <name> x y z"), or none.
+pub func words_point(words: str) -> Vector3?:
+    let parts = words.trim().split(" ")
+    if parts.length != 5:
+        return none
+    let x = float(parts[2]) catch failure:
+        recover 0.0
+    let y = float(parts[3]) catch failure:
+        recover 0.0
+    let z = float(parts[4]) catch failure:
+        recover 0.0
+    return Vector3(x, y, z)
+
+## Whether `q` lies on the segment from `a` to `b`, within `reach`.
+pub func on_segment(q: Vector3, a: Vector3, b: Vector3, reach: float) -> bool:
+    let d = b.subtract(a)
+    let length = d.dot(d)
+    if length <= 0.0:
+        return q.subtract(a).length() <= reach
+    let t = q.subtract(a).dot(d) / length
+    if t < -1e-9 or t > 1.0 + 1e-9:
+        return false
+    return q.subtract(a.add(d.multiply_scalar(t))).length() <= reach

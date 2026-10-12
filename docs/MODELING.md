@@ -470,14 +470,21 @@ model back exactly.
     (Discard) that region and a second click lets it go; Divide makes every
     region its own face; Show intersections marks the crossings green and
     the loose ends of curves that cut nothing red. A trimmed solid is an
-    open body; each trim keeps the face as it was as a stage.
+    open body; each trim keeps the face as it was as a stage. **Curves**:
+    On face, or Alias's 3D Trimming (every curve of the model Cast along a
+    vector or along the normals as the trim runs); **Intersect faces** (the
+    faces picked after the first, a Trim node's Cutting faces, cut it where
+    they meet it); **Extend curves** (an end stopping short runs on along
+    the face to its edge or the next curve). While it waits for clicks the
+    node reads a neutral "waiting", not a warning.
   - **Untrim** (Last or All of the stages; a face with none back to its
     natural surface), **Trim Convert** (degrees, spans, Switch U/V, Keep
     originals; the tool bar's last line reports the surface and edge
     deviations) and **Shrink** (the B-spline's net cut to its trims).
   - **Stitch** (at Object: the picked bodies joined within Gap; joined
     edges keep the gap as their precision; a body closed all round becomes
-    a solid) and **Unstitch** (every face of a body a body of its own).
+    a solid; for export, Detach periodic and Detach single-curve
+    boundaries) and **Unstitch** (every face of a body a body of its own).
   - The same eight are nodes of CAD networks (`cad_surface_nodes.luc`,
     category Surfaces), their faces, curves and bodies picked as the Modify
     features' are (`modify_picks.luc`); a Trim node shows its markers while
@@ -486,6 +493,43 @@ model back exactly.
   - The sketch's Blend Curve takes its control points from the same 3D
     kernel (luce-cad's Blend Curve in the sketch's plane), its continuity
     then kept by the sketch's constraints.
+- **Surfacing Stage 4, Align** (`edit_cad_align.luc`, `align_ops.luc`,
+  `align_view.luc`; luce-cad's `CadSurfacing.aligned`), Alias's Align with
+  its whole option window:
+  - **Align** (at Edges: a surface's edge; at Curves: a curve near its end)
+    from the right-click on an edge, the S and Modify menus: the step takes
+    the input, then waits ("waiting", with the prompt) for the master: an
+    edge (Edges), a curve (Curves), a face for Project and U/V (Faces), or
+    a double-click on a surface for a temporary isoparm (Alias's pick
+    object: kept as the point, resolved to the isoparm through it running
+    along the input's edge, drawn dashed yellow). A second master comes from
+    the tool bar (Pick second align master).
+  - The rows: Continuity G0–G3; Type Edge, Project (Vector, Curve on
+    surface, Shrink to fit), U/V, Vector; Position influence; Tangent
+    balance; Tangent, Curvature and G3 scale (start and end) with AutoScale
+    G2 and G3; Extra CV rows and Blend factor; Partial (Start, End); Modify
+    both; Explicit control (degrees and spans); Refine (Max new spans and
+    the limits); Outer edge (Edge align or Skew, start and end angles);
+    Attach point (curves); Proxy display; Diagnostic feedback. A tall tool
+    bar stands at the viewport's left, the model in sight.
+  - The viewport draws the aligned rows tinted by their order (edge green,
+    G1 yellow, G2 red, G3 purple, extra rows grey), the original hull as a
+    ghost with Proxy display, and the edge dashed red when the limits are
+    missed (then the node warns how far); the Tangent scale arrows at the
+    edge's ends and Partial's range arrows are handles. The report line is
+    Alias's Diagnostic Feedback (gap, angle, curvature and G3 differences,
+    start and end angles).
+  - **Aligned rows stay aligned**: a Move CVs or CV transform step later in
+    the recipe that moves a CV of the rows an Align set runs that Align
+    again afterwards (the owner's rule), so the tangent row cannot be
+    dragged off the tangent plane.
+  - **Symmetry Align** (Alias's Symmetry Plane Align): the input's edge
+    onto a plane square to X, Y or Z at an offset (Project for position),
+    G0–G3 with its mirror half.
+  - Both are CAD network nodes too (category Surfaces): Align's Input edge,
+    Master and Second master picked as the Modify features' inputs, a
+    double-click a temporary isoparm master; the node follows its input
+    upstream.
 - Primitives are luce-cad's analytic solids: Box, Cylinder, Cone, Sphere and
   Torus. Faces a step makes are named for the node and the step's place in
   the recipe (`#<node>s<n>`), so later steps find them and two Edit CAD nodes

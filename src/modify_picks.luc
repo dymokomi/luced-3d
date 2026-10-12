@@ -21,6 +21,9 @@ from luce_cad.cad_curves import CadCurves
 import cad_moves
 import cad_names
 import edit_cad_faces
+import edit_cad_align
+import align_ops
+from luce_3d.graphics import Vector3
 
 ## What one input takes.
 pub let faces = 0
@@ -34,6 +37,11 @@ pub let point = 5
 pub let curve_or_edge = 6
 ## Curves of the input, by name (Project's), several (Enter finishes).
 pub let curves = 7
+## Align's input: an edge (the Edges level) or a curve's end (the Curves
+## level), as words (align_ops.luc); its masters: an edge, a curve, a face
+## (Project, U/V) or a double-click for a temporary isoparm.
+pub let align_input = 8
+pub let align_master = 9
 
 ## A selection input: its label in the panel, the node's text (or for a
 ## point, the value slots) it writes, what it takes, when it shows (a
@@ -102,13 +110,21 @@ pub func inputs(kind: str) -> list[PickInput]:
     if kind == cad_surface_nodes.intersect_kind:
         return [PickInput("Face", s_first, face, "", "The face the meeting curves lie on."),
                 PickInput("Second face", s_second, face, "{ with == 1 }", "The face it meets.")]
-    if kind in [cad_surface_nodes.trim_kind, cad_surface_nodes.untrim_kind, cad_surface_nodes.convert_kind, cad_surface_nodes.shrink_kind]:
-        let doc = "The face trimmed by its curves; then click its region markers in the viewport." if kind == cad_surface_nodes.trim_kind else "The face, kept by its name."
-        return [PickInput("Face", s_first, face, "", doc)]
+    if kind == cad_surface_nodes.trim_kind:
+        return [PickInput("Face", s_first, face, "", "The face trimmed by its curves; then click its region markers in the viewport."),
+                PickInput("Cutting faces", cad_surface_nodes.cutters_text, faces, "{ intersect_faces == 0 }", "3D Trimming by Intersect: the faces that cut it where they meet it.")]
+    if kind in [cad_surface_nodes.untrim_kind, cad_surface_nodes.convert_kind, cad_surface_nodes.shrink_kind]:
+        return [PickInput("Face", s_first, face, "", "The face, kept by its name.")]
     if kind == cad_surface_nodes.stitch_kind:
         return [PickInput("Bodies", s_first, bodies, "", "The bodies joined (none picked: every body of the input).")]
     if kind == cad_surface_nodes.unstitch_kind:
         return [PickInput("Body", s_first, body, "", "The body whose faces each become a body.")]
+    if kind == cad_surface_nodes.align_kind:
+        return [PickInput("Input edge", align_ops.input_text, align_input, "", "The edge that moves (a surface's edge; at the Curves level a curve's end), kept as its face and where it was clicked."),
+                PickInput("Master", align_ops.master_text, align_master, "", "What it aligns to: an edge, a curve, a face (Project, U/V), or a double-click on a surface for an isoparm."),
+                PickInput("Second master", align_ops.second_text, align_master, "", "A second master for another side of the input (optional).")]
+    if kind == cad_surface_nodes.symmetry_kind:
+        return [PickInput("Input edge", align_ops.input_text, align_input, "", "The edge that meets the symmetry plane (a surface's edge, or a curve's end).")]
     return []
 
 ## The input of `kind` whose prompt is `label`, or none.
@@ -133,6 +149,11 @@ pub func summary(node: Node, input: PickInput) -> str:
     if input.takes == curves:
         let named = text.split(";").length
         return "1 curve" if named == 1 else f"{named} curves"
+    if input.takes in [align_input, align_master]:
+        let words = text.split(" ")
+        if words[0] == "isoparm" or words[0] == "isoparm_at":
+            return "An isoparm"
+        return f"{words[1]} ({words[0]})" if words.length > 1 else text
     let count = text.split(";").length
     var noun = "face" if input.takes in [faces, face] else "body"
     if node.kind == "Move" and input.slot == cad_modify.first_text:
@@ -161,11 +182,17 @@ func begin_waiting(w: Workspace, node: Node, input: PickInput) -> unit!:
         level = curve_level if input_has_curves(w, node) else edge_level
     if input.takes == curves:
         level = curve_level
+    if input.takes == align_input:
+        level = edge_level
+    if input.takes == align_master:
+        level = face_level if int(node.values[align_ops.type_slot]) in [1, 2] else edge_level
     w.adopt_level(level)
     w.selection = none
     w.pending_changed = true
     let many = input.takes in [faces, bodies, curves]
     w.notice = f"{input.prompt()}: click {"them (Shift adds), then Enter" if many else "one"}; Esc cancels"
+    if input.takes == align_master:
+        w.notice = f"{input.prompt()}: click an edge, a curve (Curves level) or a face (Project, U/V); double-click a surface for an isoparm; Esc cancels"
     w.revision += 1
     w.rebuild()
 
@@ -197,6 +224,8 @@ pub func next_input(node: Node) -> PickInput?:
 func needed(node: Node, input: PickInput) -> bool:
     if input.label == "Splitting face":
         return int(node.values[edit_cad_faces.split_tool_slot]) == 0
+    if input.label in ["Second master", "Cutting faces"]:
+        return false
     if input.label == "Second face":
         return node.kind == cad_surface_nodes.intersect_kind and int(node.values[0]) == 0
     if input.label == "Rotate axis":
@@ -217,6 +246,18 @@ pub func waits(node: Node, label: str) -> bool:
 pub func follow(w: Workspace, node: Node, label: str, mesh: Mesh, chosen: Selection) -> unit!:
     let input = input_named(node.kind, label) else return
     let first = chosen.next(-1)
+    if input.takes in [align_input, align_master]:
+        let words = edit_cad_align.pick_words(mesh, first, w.level_index(), input.takes == align_master) if first >= 0 else ""
+        if words == "":
+            return
+        node.texts[input.slot] = words
+        if input.slot == align_ops.second_text:
+            let near = edit_cad_align.words_point(words) else Vector3()
+            node.values[align_ops.second_near_slot] = near.x
+            node.values[align_ops.second_near_slot + 1] = near.y
+            node.values[align_ops.second_near_slot + 2] = near.z
+        finish(w, node, label)
+        return
     # Curves by name, each once; Enter finishes.
     if input.takes == curves:
         let names = mesh.find_attribute("cad_curve_name", 4)
