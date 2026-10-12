@@ -10,6 +10,7 @@ from edit_steps import edit_step, insert_after_display
 from edit_operations import EditStep
 from edit_types import point_level
 import edit_cad_nets
+from snapping import grid_step
 
 pub func move_selection(w: Workspace, delta: Vector3) -> unit!:
     if w.selected_count() == 0:
@@ -69,10 +70,44 @@ func append_cv_move(w: Workspace, mesh: Mesh, delta: Vector3) -> unit!:
     let chosen = w.current_selection() else return
     let node = w.selected() else return
     let mode = int(node.values[edit_cad_nets.move_mode_slot])
-    let amount = edit_cad_nets.amount_of(mode, delta, w.cv_frame if w.cv_frame != none else cv_axes(w))
+    let amount = edit_cad_nets.adjusted(node.values, edit_cad_nets.amount_of(mode, delta, w.cv_frame if w.cv_frame != none else cv_axes(w)))
     let numbers = edit_cad_nets.move_numbers(node.values, amount)
     node.edits.append(EditStep(edit_cad_nets.move_verb, chosen.expression(mesh), 1, numbers, mesh.topology_hash()))
     w.network.invalidate(node.id)
+
+## Whether the arrow keys nudge CVs now (Alias's Lock step size): CVs
+## picked at Edit CAD's CVs level with the Move tool on.
+pub func nudges(w: Workspace) -> bool:
+    return at_cvs(w) and w.selected_count() > 0 and w.edit_tool == "Move" and w.selecting()
+
+## One arrow-key nudge of the picked CVs along gizmo axis `axis` (0 to 2,
+## the CV move mode's frame or World's) by `sign` steps: the node's Step
+## size, else the grid's. One undo each.
+pub func nudge(w: Workspace, axis: int, sign: float) -> unit!:
+    if not nudges(w) or w.in_transaction():
+        return
+    let node = w.selected() else return
+    let mesh = w.geometry else return
+    var step = node.values[edit_cad_nets.step_slot]
+    if not (step > 0.0):
+        step = grid_step(w.view.distance)
+    let axes = cv_axes(w) else [Vector3(1.0, 0.0, 0.0), Vector3(0.0, 1.0, 0.0), Vector3(0.0, 0.0, 1.0)]
+    let locked = node.values[[edit_cad_nets.lock_x_slot, edit_cad_nets.lock_y_slot, edit_cad_nets.lock_z_slot][axis]] != 0.0
+    if locked:
+        w.notice = f"That axis is locked (Lock {["X", "Y", "Z"][axis]})"
+        w.revision += 1
+        return
+    let delta = axes[axis].multiply_scalar(step * sign)
+    w.perform("Nudge CVs", func () -> unit!:
+        if moves_cvs_by_mode(w):
+            let mode = int(node.values[edit_cad_nets.move_mode_slot])
+            let numbers = edit_cad_nets.move_numbers(node.values, edit_cad_nets.amount_of(mode, delta, axes))
+            let chosen = w.current_selection() else return
+            node.edits.append(EditStep(edit_cad_nets.move_verb, chosen.expression(mesh), 1, numbers, mesh.topology_hash()))
+            w.network.invalidate(node.id)
+        else:
+            append_transform(w, mesh, transform_numbers(delta, Vector3(), Vector3(1.0, 1.0, 1.0)))
+        w.rebuild())
 
 ## Preview each gizmo delta against the original gesture snapshot, not
 ## against the last frame. A whole drag becomes one undo entry.
@@ -113,7 +148,12 @@ pub func preview_transform(w: Workspace, delta: Vector3, rotate: Vector3, scale:
         w.pending_changed = true
     elif w.selecting() and w.selected_count() > 0:
         let mesh = w.geometry else return
-        append_transform(w, mesh, transform_numbers(delta, rotate, scale)) catch failure:
+        # CVs take Edit CAD's Drag strength, Step size and locks (World axes).
+        var moved = delta
+        if at_cvs(w):
+            let node = w.selected() else return
+            moved = edit_cad_nets.adjusted(node.values, delta)
+        append_transform(w, mesh, transform_numbers(moved, rotate, scale)) catch failure:
             w.cancel()
             w.notice = failure.message
             w.revision += 1

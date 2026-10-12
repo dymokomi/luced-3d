@@ -20,6 +20,7 @@ from viewport_chrome import shading_button, on_shading_button, snap_row_end
 from snapping import grid_step
 from sketch_view import SketchView
 from model_sketch_view import ModelSketchView
+from knot_place import KnotPlacer
 import sketch_input
 from combine_target import CombineTarget
 from profile_pick import ProfilePick
@@ -39,6 +40,7 @@ from shading_menu import mode_icon
 from context_view import is_outside
 import context_display
 import modeling_commands
+import component_moves
 import placing_commands
 from luce_geocore.geocore import Domain, Mesh, Selection
 import tool_prompts
@@ -52,6 +54,8 @@ pub class SceneViewport: Widget:
     pub let sketch: SketchView
     ## An Edit CAD model's sketches, shown.
     pub let model_sketches: ModelSketchView
+    ## Insert and Remove Knot's isoparm under the pointer, and its click.
+    pub let knots: KnotPlacer
     ## Pick profiles, while an Extrude or Revolve takes them.
     pub let profiles: ProfilePick
     ## Combine's target lit while its tools are picked.
@@ -112,6 +116,7 @@ pub class SceneViewport: Widget:
         self.tools = ViewportTools(workspace, actions)
         self.sketch = SketchView(workspace)
         self.model_sketches = ModelSketchView(workspace)
+        self.knots = KnotPlacer(workspace)
         self.profiles = ProfilePick(workspace)
         self.combine_target = CombineTarget(workspace)
         self.arrow = FeatureHandles(workspace)
@@ -250,6 +255,7 @@ pub class SceneViewport: Widget:
             let label = self.render.label()
             overlay.text(label, size.width - float(label.length) * 7.5 - 16.0, size.height - 32.0, theme.text_muted())
         self.tools.draw(overlay, size.width, size.height)
+        self.knots.draw(overlay)
         self.arrow.draw(overlay, size.width, size.height)
         self.axes.draw(overlay, size.width, size.height)
         self.sketch.draw(overlay, size.width, size.height)
@@ -372,6 +378,17 @@ pub class SceneViewport: Widget:
 
     pub func event(self, event: Event) -> unit!:
         let bounds = self.layout().bounds()
+        self.workspace.viewport_focus = self.view.layout().is_focused()
+        # The arrows nudge picked CVs by the step size (Alias's), only while
+        # a CV move is on and the viewport has the keyboard: left and right
+        # along the gizmo's first axis, up and down its second, with Shift
+        # its third.
+        if event.kind == EventKind.key_down and event.key in [Key.left, Key.right, Key.up, Key.down] and component_moves.nudges(self.workspace) and self.workspace.viewport_focus:
+            let sign = 1.0 if event.key in [Key.right, Key.up] else -1.0
+            let axis = 0 if event.key in [Key.left, Key.right] else (2 if event.shift else 1)
+            component_moves.nudge(self.workspace, axis, sign)
+            self.layout().invalidate()
+            return
         if event.kind == EventKind.pointer_moved or event.kind == EventKind.pointer_down:
             self.pointer_x = event.x
             self.pointer_y = event.y
@@ -444,6 +461,17 @@ pub class SceneViewport: Widget:
         if event.kind == EventKind.pointer_moved and event.inside:
             if self.model_sketches.hover(event.x, event.y, bounds.width, bounds.height):
                 self.layout().invalidate()
+        # Insert and Remove Knot: the isoparm under the pointer, placed by a
+        # click (Alias's); Esc lets the clicks select again.
+        if self.knots.active():
+            if event.kind == EventKind.pointer_moved and event.inside and self.knots.hover(event.x, event.y, bounds.width, bounds.height):
+                self.layout().invalidate()
+            if event.kind == EventKind.pointer_down and event.inside and event.button == 0 and not event.alt and self.knots.click(event.x, event.y, bounds.width, bounds.height):
+                self.layout().invalidate()
+                return
+            if event.kind == EventKind.key_down and event.key == Key.escape and self.knots.dismiss():
+                self.layout().invalidate()
+                return
         # The sketch editor, then Pick profiles, Pick axis's lines, the
         # feature's handles and the shown sketch's profiles, before other
         # tools.

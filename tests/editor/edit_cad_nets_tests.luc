@@ -7,7 +7,10 @@
 ## mode moves along the frame fixed at its press as one Move CVs step, with
 ## a ghost of the hull; a second click takes a hull row; Insert Knot and
 ## Rebuild (Explicit Control: multi-span quintic, then a single span of
-## degree 7) make one undo each and say what they did.
+## degree 7) make one undo each and say what they did; one falloff
+## control (Alias's) at the CVs level; NUV's frame the surface's; Step
+## size, Drag strength and locks; an arrow-key nudge; Insert Knot placed
+## by a click on its green isoparm.
 from workspace import Workspace
 from node import Node
 from app import Luce3D
@@ -24,12 +27,17 @@ import modeling_commands
 import node_commands
 import selection_commands
 import component_moves
+import node_catalog
+from knot_place import KnotPlacer
+import view_projection as gm
+from luce_3d.graphics import Vector3
 from luce_std import math
 
 pub func edit_cad_nets_tests() -> unit!:
     steps_on_a_dome()
+    one_falloff()
     in_the_workspace()
-    print("PASS Edit CAD CVs: NUV and Rows falloff steps, a converted face's CVs, structure tools in the right-click and S menus, the NUV gizmo's fixed frame and ghost, hull rows, Insert Knot and Rebuild (multi-span quintic, single span degree 7) as one undo each")
+    print("PASS Edit CAD CVs: NUV and Rows falloff steps, NUV on the surface frame, one falloff control with step, strength and locks, a converted face's CVs, structure tools in the right-click and S menus, the NUV gizmo's fixed frame and ghost, hull rows, an arrow nudge, Insert Knot placed by a click and Rebuild (multi-span quintic, single span degree 7) as one undo each")
 
 func steps_on_a_dome() -> unit!:
     let kind = edit_cad.kind()
@@ -44,6 +52,41 @@ func steps_on_a_dome() -> unit!:
     # corner a quarter.
     let rows = CadGeometry.model(kind.run(EditStep(edit_cad_nets.move_verb, "4", 1, [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 3.0], cloud.topology_hash()), 0, dome, "#1").geometry, 0)
     assert(math.abs(rows.cv_position(1).z - 0.5) < 1e-6 and math.abs(rows.cv_position(0).z - 0.25) < 1e-6 and math.abs(rows.cv_position(4).z - 5.0) < 1e-6)
+    # NUV's gizmo stands in each CV's surface frame (Alias's), not its
+    # hull's: on the dome's side CV they differ.
+    let model = CadGeometry.model(dome.geometry, 0)
+    let axes = edit_cad_nets.gizmo_axes(1, cloud, 1, []) else trap("no NUV axes")
+    for which in 0..<3:
+        assert(axes[which].subtract(CadNurbs.cv_frame(model, 1, which)).length() < 1e-6, f"axis {which}")
+    assert(axes[0].subtract(CadNurbs.cloud_hull_frame(cloud, 1, 0)).length() > 1e-3)
+
+## Edit CAD's parameters at the CVs level: one falloff (Alias's), its own
+## rows for each kind, Symmetry kept (it mirrors CV moves), Keep selection
+## gone; Step size, Drag strength and the locks shape a move.
+func one_falloff() -> unit!:
+    let rows = node_catalog.fields("Edit CAD")
+    var labels: list[str] = []
+    for row in rows:
+        labels.append(row.name)
+    for label in ["CV move", "Falloff", "Soft radius", "Radius curve", "Rows U", "Falloff exponent", "Symmetry", "Step size", "Drag strength", "Lock X", "Lock Y", "Lock Z"]:
+        assert(label in labels, f"no {label}: {labels}")
+    var falloffs = 0
+    for label in labels:
+        if label == "Falloff": falloffs += 1
+    assert(falloffs == 1 and not ("Keep selection" in labels) and not ("CV falloff" in labels), f"{labels}")
+    for row in rows:
+        if row.name == "Soft radius":
+            assert(row.hide_when == "{ falloff != 0 }")
+    let values: list[float] = []
+    for _ in 0..<32:
+        values.append(0.0)
+    values[edit_cad_nets.strength_slot] = 0.5
+    values[edit_cad_nets.step_slot] = 0.25
+    values[edit_cad_nets.lock_y_slot] = 1.0
+    let made = edit_cad_nets.adjusted(values, Vector3(1.1, 3.0, -0.9))
+    assert(made.subtract(Vector3(0.5, 0.0, -0.5)).length() < 1e-12, f"{made}")
+    values[2] = 1.0
+    assert(edit_cad_nets.move_numbers(values, Vector3())[10] == 1.0)
 
 ## The cloud point of the displayed model's CV (u, v) on its surface.
 func cv_at(w: Workspace, u: int, v: int) -> int!:
@@ -117,12 +160,35 @@ func in_the_workspace() -> unit!:
     assert(w.selected_count() == 3)
     selection_commands.choose_component(w, cv_at(w, 1, 1), false, row = 2)
     assert(w.selected_count() == 9)
+    # Arrow keys with the Move tool: a nudge of a step (the node's Step
+    # size) along the gizmo's first axis, one undo.
+    selection_commands.choose_component(w, cv_at(w, 1, 1), false)
+    node_commands.set_parameter(w, edit_cad_nets.step_slot, 0.125)
+    modeling_commands.choose_tool(w, "Move")
+    assert(component_moves.nudges(w))
+    let axis = component_moves.cv_axes(w) else trap("no axes")
+    let held = CadGeometry.model(w.network.evaluate_data(shown(w).id).geometry, 0)
+    component_moves.nudge(w, 0, 1.0)
+    let nudged = CadGeometry.model(w.network.evaluate_data(shown(w).id).geometry, 0)
+    assert(nudged.cv_position(first + 4).subtract(held.cv_position(first + 4)).subtract(axis[0].multiply_scalar(0.125)).length() < 1e-6)
+    w.undo()
+    modeling_commands.choose_tool(w, "Select")
     # Insert Knot: one undo, a row more, said in the tool bar's line.
     selection_commands.choose_component(w, cv_at(w, 1, 1), false)
     edit_cad_commands.tool(w, edit_cad_nets.insert_verb)
     let inserted = CadGeometry.model(w.network.evaluate_data(shown(w).id).geometry, 0)
     assert(CadNurbs.structure(inserted, spline).nu == 4)
     assert(shown(w).summary.starts_with("Inserted 1 knot"), shown(w).summary)
+    # Alias's click: the isoparm under the pointer, a click puts the knot
+    # there (the surface told to the editor by the step's cook).
+    assert(edit_cad_nets.probe_words(shown(w).sketch_state) != "", shown(w).sketch_state)
+    let placer = KnotPlacer(w)
+    assert(placer.active())
+    let target = CadNurbs.point_at(inserted, spline, 0.3, 0.6)
+    let at = gm.project(w, target, 900.0, 600.0)
+    assert(placer.click(at[0], at[1], 900.0, 600.0))
+    assert(math.abs(shown(w).edits[-1].numbers[edit_cad_nets.fraction_slot] - 0.3) < 1e-3, f"{shown(w).edits[-1].numbers}")
+    w.undo()
     w.undo()
     assert(CadNurbs.structure(CadGeometry.model(w.network.evaluate_data(shown(w).id).geometry, 0), spline).nu == 3)
     # Rebuild: Explicit Control's multi-span quintic (4 spans, held G2: 9

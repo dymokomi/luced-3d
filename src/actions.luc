@@ -8,6 +8,7 @@ from edit_kinds import is_edit, edit_tool_names, edit_primitive_names
 from edit_types import level_names, sketch_level_names
 from tools import transform_tools, transform_keys
 import modeling_commands
+import component_moves
 import cad_commands
 import edit_cad_commands
 from edit_cad_actions import EditCadActions
@@ -211,9 +212,10 @@ pub class Actions:
             let command = Command(walks[index], id = "select_walk_" + str(index))
             self.selection_tools.append(command)
             self.connections.append(command.on_trigger(func () -> unit!: selection_commands.walk_selection(workspace, operation)))
-        # Selection levels 1-5 (Object, Point, Edge, Face, Smart): their
-        # labels follow the Edit kind's levels (Vertices, CVs, …).
-        let keys = [Key.digit_1, Key.digit_2, Key.digit_3, Key.digit_4, Key.digit_5, Key.digit_6]
+        # Selection levels 1-7 (Object, Point, Edge, Face, Smart, then Edit
+        # CAD's Patch and Curves): their labels follow the Edit kind's levels
+        # (Vertices, CVs, …).
+        let keys = [Key.digit_1, Key.digit_2, Key.digit_3, Key.digit_4, Key.digit_5, Key.digit_6, Key.digit_7]
         self.modes = []
         for index in 0..<keys.length:
             self.modes.append(Command(level_names()[index], Shortcut(keys[index]), id = f"select_level_{index + 1}"))
@@ -286,6 +288,15 @@ pub class Actions:
             result.append(self.extrude)
         for command in self.modeling:
             if kind.tool(command.text()) != none: result.append(command)
+        return result
+
+    ## The active Edit kind's drawing tools (Edit CAD's CV Curve, EP Curve,
+    ## Curve on Surface; Edit Mesh's PolyDraw): clicks place their points.
+    pub func draw_commands(self) -> list[Command]:
+        let kind = self.workspace.strip_kind()
+        let result: list[Command] = []
+        for command in self.modeling:
+            if command.text() in kind.draw_tools: result.append(command)
         return result
 
     ## The Create marking menu's primitives inside an Edit node.
@@ -364,6 +375,12 @@ pub class Actions:
             command.set_enabled(selecting and w.tool_available(command.text()) and (not w.editing() or w.selected_count() > 0 or command.text() in ["Subdivide", "Clean"] or command.text() in w.strip_kind().draw_tools))
         for command in self.selection_tools:
             command.set_enabled(selecting and w.selected_count() > 0 and (command is self.selection_tools[0] or w.network.context() == "geometry"))
+        # The arrows nudge picked CVs while the viewport has the keyboard and
+        # the Move tool is on (Alias's step size); the timeline keeps them
+        # otherwise.
+        let nudging = w.viewport_focus and component_moves.nudges(w)
+        for command in [self.play, self.previous_frame, self.next_frame, self.first_frame]:
+            command.set_enabled(not nudging)
         self.grid.set_checked(w.view.grid_visible)
         self.hulls.set_checked(w.view.hulls_visible)
 

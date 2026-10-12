@@ -14,6 +14,9 @@
 ##                          control point spline between them, G1, G2 or G3
 ##                          to each line or arc (Tangent, Curvature, Smooth)
 from luce_cad.sketch import CadSketch
+from luce_cad.curves import CadCurveTools
+from luce_cad.nurbs import CadSpline
+from luce_3d.graphics import Vector3
 from overlay_lines import OverlayLines
 from sketch_editor import SketchEditor
 from sketch_kinds import point_kind, line_kind, circle_kind, arc_kind, spline_kind, ellipse_kind, conic_kind, curvature, smooth, tangent
@@ -119,16 +122,17 @@ pub func blend_click(e: SketchEditor, curve: int, x: float, y: float) -> unit!:
     if start.point == finish.point:
         e.say("Blend Curve joins the ends of two curves")
         return
-    # A quintic: six control points (eight for G3, which holds four at each
-    # end), each end's on along the way it leaves its curve.
-    let span = math.hypot(sketch.x(finish.point) - sketch.x(start.point), sketch.y(finish.point) - sketch.y(start.point))
+    # The 3D kernel's blend (luce-cad's Blend Curve, in the sketch's plane):
+    # a quintic of six control points (eight for G3, which holds four at
+    # each end), each end's taken from its curve's jet there; the solver's
+    # constraints below then keep them so as the sketch changes.
     let g3 = e.tool.ends_with("G3")
-    let reaches = [0.15, 0.3, 0.45] if g3 else [0.2, 0.4]
+    let order = 1 if e.tool.ends_with("G1") else (3 if g3 else 2)
+    let made = CadCurveTools.blend(going_back(sketch, picked[0], start), 0.0, -1, order, going_back(sketch, picked[1], finish), 0.0, -1, order, 5, [])
     let points = [start.point]
-    for reach in reaches:
-        points.append(start.out(sketch, span * reach))
-    for at in 0..<reaches.length:
-        points.append(finish.out(sketch, span * reaches[reaches.length - 1 - at]))
+    for at in 1..<made.count() - 1:
+        let q = made.point(at)
+        points.append(sketch.add_point(q.x, q.y))
     points.append(finish.point)
     let spline = sketch.add_spline(points, false)
     # Along (G1), as curved as (G2), or as curved and changing as (G3) a
@@ -142,6 +146,20 @@ pub func blend_click(e: SketchEditor, curve: int, x: float, y: float) -> unit!:
     if not sketch.solve():
         e.say("The blend cannot be as curved as both ends at once")
     e.commit("Blend Curve")
+
+## The curve `curve` ends in, run back from its end `end` into itself (a
+## line along it, an arc a quarter turn round its center), as the 3D
+## kernel's blend end takes it (leaving its low end backwards).
+func going_back(sketch: CadSketch, curve: int, end: CurveEnd) -> CadSpline!:
+    let p = Vector3(sketch.x(end.point), sketch.y(end.point), 0.0)
+    let back = Vector3(-end.dx, -end.dy, 0.0)
+    if sketch.kind(curve) == arc_kind:
+        let c = sketch.part(curve, 0)
+        let inward = Vector3(sketch.x(c), sketch.y(c), 0.0).subtract(p)
+        let r = inward.length()
+        let corner = p.add(back.multiply_scalar(r))
+        return CadSpline.make([p, corner, corner.add(inward)], [1.0, math.sqrt(0.5), 1.0], 2, [0.0, 0.0, 0.0, 1.0, 1.0, 1.0])
+    return CadCurveTools.by_points([p, p.add(back)], 1)
 
 ## A curve's end: its point and the direction leaving the curve there.
 pub class CurveEnd:

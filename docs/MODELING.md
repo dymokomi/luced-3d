@@ -369,43 +369,84 @@ model back exactly.
   arrow and tool bar as the nodes'. CVs move with the gizmo, Rotate, Scale,
   Noise, Flatten and Snap; a moved boundary CV takes its trims along.
 - **The CVs level** (surfacing Stage 1, `edit_cad_nets.luc`; luce-cad's
-  `nurbs/`), as Alias's Transform CV:
+  `nurbs/`), as Alias's Transform CV, its settings in one place in the
+  Parameters panel (shown only at this level):
   - **Move modes**, a row under the levels (the Edit CAD node's CV move):
     World; NUV (the gizmo's axes become N, U and V at the first picked CV,
-    and each CV moves in its own frame: its hull's normal and U and V
-    directions); Slide (along each CV's hull polyline, staying on it);
-    Project (along each CV's hull lines, off the polyline); Parallel (every
-    CV along the first one's hull lines); View (the screen plane). A drag's
-    frame is fixed when it starts, and the hull as it was then is drawn as a
-    blue ghost under the moving one (Alias's Proxy Display).
-  - **Falloff** (CV falloff, beside the modes): Radius (the soft radius and
-    its curve, as before), Rows (Rows U and Rows V before and after each
-    picked CV on its net, Alias's Preceding and Succeeding, weighted
-    `(1 - k / (rows + 1))^e` with Falloff exponent e from -5 to 5: 0 moves
-    them fully, negative values push them the other way) or Hull (a
-    distance along the hull lines, Plasticity's). World with Radius falloff
-    stays a Transform Components step; the rest make a **Move CVs** step.
+    and each CV moves in its own frame: its surface's normal and U and V
+    tangents at its Greville point, as Alias's and Rhino's); Slide (along
+    each CV's hull polyline, staying on it); Project (along each CV's hull
+    lines, off the polyline); Parallel (every CV along the first one's hull
+    lines); View (the screen plane). A drag's frame is fixed when it
+    starts, and the hull as it was then is drawn as a blue ghost under the
+    moving one (Alias's Proxy Display).
+  - **Falloff**, one control (Alias's Proportional Modification), each kind
+    showing only its own rows: Radius (Soft radius and Radius curve), Rows
+    (Rows U and Rows V before and after each picked CV on its net, Alias's
+    Preceding and Succeeding, weighted `(1 - k / (rows + 1))^e` with Falloff
+    exponent e from -5 to 5: 0 moves them fully, negative values push them
+    the other way) or Hull (a distance along the hull lines, Plasticity's).
+    World with Radius falloff stays a Transform Components step; the rest
+    make a **Move CVs** step.
+  - **Symmetry** mirrors every CV move across X, Y or Z: a moved CV's
+    mirror partner moves as its reflection, a CV on the plane stays on it.
+  - **Step size, Drag strength, Lock X/Y/Z** (Alias's step and locks,
+    Rhino's drag strength): a drag's move is scaled, taken in steps and
+    kept off the locked axes of the mode's frame (N, U, V in NUV). With the
+    Move tool on and CVs picked, the **arrow keys** nudge them one step
+    (the grid's without a Step size) along the gizmo's first axis (left,
+    right), its second (up, down) or with Shift its third, one undo each;
+    only while the viewport has the keyboard, the timeline keeping them
+    otherwise.
   - **Hull picking**: a second click on a CV takes its row along V, a third
     its row along U, a fourth its whole net; with Pick hull rows the first
     click takes the row.
   - **Structure steps**, on the surface of the first picked CV (or face, at
     Faces and Patch), from the right-click menu, the S menu and Modify, each
     one undo with its tool bar: **Insert Knot** (Direction, Parameter,
-    Times: the new row shows as the hull's), **Remove Knot** (within a
-    Tolerance), **Raise Degree**, **Rebuild** (Alias's types: Explicit,
-    Within tolerance, Reduce spans, Del multi knots, Non-rational, Bezier;
-    Explicit Control: multi-span quintic by default, a single span of
-    degree 7, or Custom degrees and spans; Keep U ends and Keep V ends hold
-    G0 to G3 with what the edges meet, G2 by default) and **Convert to
-    B-spline** (an analytic face, at Faces and Patch). The tool bar's last
-    line says what the step did: "Rebuilt: degree 5 by 5, 4 by 4 spans; the
-    surface moved at most 0.0012".
+    Times; Alias's click: while it is the last step, the isoparm under the
+    pointer shows green on the surface in its direction and a click puts the
+    knot there, `knot_place.luc`; Esc lets clicks select again), **Remove
+    Knot** (within a Tolerance; the knot line nearest the pointer is lit and
+    a click removes that one), **Raise Degree**, **Rebuild** (Alias's types:
+    Explicit, Within tolerance, Reduce spans, Del multi knots, Non-rational,
+    Bezier; Explicit Control: multi-span quintic by default, a single span
+    of degree 7, or Custom degrees and spans; Keep U ends and Keep V ends
+    hold G0 to G3 with what the edges meet, G2 by default) and **Convert to
+    B-spline** (an analytic face, at Faces and Patch; a sphere's cap is
+    split through the axis first). The tool bar's last line says what the
+    step did: "Rebuilt: degree 5 by 5, 4 by 4 spans; the surface moved at
+    most 0.0012".
+- **Curves** (surfacing Stage 2, `edit_cad_curves.luc`; luce-cad's
+  `curves/` and `cad_curves`): free 3D curves, blend curves and curves on
+  faces are objects of the model beside its bodies and sketches (named
+  Curve1, Curve2…, listed in the outliner), drawn white, their control
+  polygons with the nets at the CVs level, where their control points move
+  with every mode above.
+  - **Drawing** (the A menu, Create › Curves, the right-click with nothing
+    picked): **CV Curve** (clicks place control points), **EP Curve**
+    (clicks the curve passes through) and **Curve on Surface** (clicks on
+    one face: the curve lies on it, its chart curve through the clicks);
+    Enter finishes; degree 5 by default (the tool bar's Degree).
+  - **The Curves level** (key 7) picks whole curves. On picked curves (the
+    right-click, S, Modify): **Blend Curve** (two curves, from the end of
+    the first nearest the second to the end of the second nearest the first,
+    or their other ends; Start and End continuity G0 to G4, degree 5 on the
+    spans the ends need, Extra spans, each end's tangent, curvature, rate
+    and G4 shape), **Attach** (Blend at Blend bias with G0–G3, or Connect),
+    **Detach** (at a parameter), **Close** (Preserve shape), **Stretch**
+    (the start's and end's moves; Locked or Floating), **Reverse**, Delete.
+  - At **Edges**: **Duplicate Curve** (each picked edge as a curve, exactly)
+    and **Blend Curve** between two picked edges; at **Faces** and
+    **Patch**: Duplicate Curve of the face's isoparm (Direction, Parameter).
+  - The sketch's Blend Curve takes its control points from the same 3D
+    kernel (luce-cad's Blend Curve in the sketch's plane), its continuity
+    then kept by the sketch's constraints.
 - Primitives are luce-cad's analytic solids: Box, Cylinder, Cone, Sphere and
   Torus. Faces a step makes are named for the node and the step's place in
   the recipe (`#<node>s<n>`), so later steps find them and two Edit CAD nodes
   in one chain never clash; an imported model's unnamed faces are named when
-  the recipe starts. The panel shows Soft radius, Falloff, Symmetry and Keep
-  selection only at the CVs level, the one level they act on.
+  the recipe starts.
 
 The last step's handles, value box and tool bar rows are the nodes'; a step
 that cannot be built says why under its rows and on the node, while the model
@@ -734,6 +775,19 @@ corner, as Fusion's). A chamfer's distance on a curved face is straight from the
 edge (a chord), as Fusion's; a dome's rim chamfers too (every type checked
 against Fusion, domes cut at and off their middle, and a D-shaft's flat). In Edit CAD a
 Fillet step blends the edges picked; the rule is the node's.
+
+**Curve** and **Blend Curve** (`cad_curve_nodes.luc`; Curves in the CAD
+menus): Alias's construction history for curves. Each passes its input on
+with one curve added (named in its Name row, else `Curve<id>`), made again
+whenever the input changes. Curve's Type: Through points or Control points
+(typed x y z apart by `;`, degree 5 by default), From edge (a picked edge,
+kept by its reference), Isoparm (a picked face, Direction and Parameter) or
+On face (a picked face, the points typed in its chart coordinates). Blend
+Curve takes its From and To curves picked in the viewport, the input's
+curves at the Curves level or, when it has none, its edges (kept by
+reference): so a blend between two of a body's edges follows them when the
+body changes upstream. Its rows are Edit CAD's Blend Curve's (G0 to G4 each
+end, degree, spans, the ends' shape).
 
 **Check** (`cad_check.luc`; Inspect in the CAD menus, the S menu, and Check
 continuity on the right-click menu for selected edges). Check is Alias's

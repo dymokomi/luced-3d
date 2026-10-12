@@ -92,7 +92,7 @@ remaining blend options on solids come last.
 |---|---|
 | 0 | Measuring: exact curvature combs, continuity checks, deviation (Base: third derivatives). **Done** (§8) |
 | 1 | The NURBS toolkit in luce-cad, and CV editing at Edit CAD's CVs level. **Done** (§8) |
-| 2 | 3D CAD curves and curves on surfaces; Blend Curve in 3D, G0–G4 |
+| 2 | 3D CAD curves and curves on surfaces; Blend Curve in 3D, G0–G4. **Done** (§8) |
 | 3 | Project, Intersect, Trim, Untrim, Divide, Trim Convert, Stitch; open surface bodies throughout |
 | 4 | Align (match) G0–G3, with every Alias option |
 | 5 | Surfaces from curves: Square, Skin, Rail, Profile, Set Planar, Extend |
@@ -1549,18 +1549,24 @@ Tests, against closed forms (luce-cad `nurbs_toolkit_tests.luc`, luced-3d
 - an NUV move of a planar net's middle CV moves it along the normal alone; Rows falloff with
   one row moves a neighbor by 0.5^e and a corner by its square.
 
-Left for later:
+Left for later, and what became of it (2026-10-12, with Stage 2):
 
-- **Insert's parameter by click.** Insert takes its parameter from the tool bar (the new row
-  is drawn as the hull changes), not from a click on the surface with a green isoparm.
-- **Frames.** NUV's frame is the hull's (exact on planar nets), not the surface's at the CV's
-  Greville point (`CadNurbs.cv_frame` gives that one).
-- **Step size, Drag strength, arrow-key nudges, locks.** Not built.
+- ~~**Insert's parameter by click.**~~ Done: while Insert Knot is the last step the isoparm
+  under the pointer shows green on the surface (the tool bar's direction) and a click puts the
+  knot there; Remove Knot lights the knot line nearest the pointer and a click removes it
+  (`knot_place.luc`; the surface reaches the viewport as text, luce-cad's `CadNetProbe`).
+- ~~**Frames.**~~ Done: NUV moves along the surface's frame at each CV's Greville point (the
+  cloud carries it), as Alias does.
+- ~~**Step size, Drag strength, arrow-key nudges, locks.**~~ Done: rows of the Edit CAD node; the
+  arrow keys nudge picked CVs with the Move tool on and the viewport holding the keyboard.
+- ~~**Two falloffs.**~~ The CVs level's Parameters hold one falloff (Radius, Rows or Hull, each
+  with only its own rows) beside Symmetry, which mirrors CV moves too; Keep selection is gone
+  there.
 - **Aligned rows.** The re-run of an Align step after a CV drag on its rows waits for Align
   (Stage 4).
-- **Converting caps.** A face going round its axis with no seam edge (a sphere's cap) is
-  refused: split it first.
-- **Curve tools.** CadSpline has the toolkit; curves as objects arrive in Stage 2.
+- ~~**Converting caps.**~~ Done: a face going round its axis with no seam is split through the
+  axis first, then converted.
+- ~~**Curve tools.**~~ Stage 2.
 
 **Stage 2: 3D curves and Blend Curve** (S4, S11 in part).
 
@@ -1579,6 +1585,61 @@ Left for later:
   - G0–G4 ends measure their continuity, and the CV count follows §6.2's table;
   - a blend's end follows its edge when the body changes upstream;
   - Attach Blend at 0.5 meets in the middle.
+
+**Stage 2: done** (2026-10-12). What was built:
+
+- **luce-cad**:
+  - `cad_curves` (public `CadCurves`): curves as objects of a geometry set beside its bodies and
+    sketches: exact rational B-splines, named, shown or hidden, with their source and, for a
+    curve on a face, the face and the curve in its chart coordinates; placed, joined, filtered,
+    saved; drawn (a curve on a face lifted off it a hair), picked (a pick mesh of the segments)
+    and edited in the CV cloud (a curve on a face's control points stay on the face);
+  - `curves` (public `CadCurveTools`): derivatives to the fifth order and by arc length; Blend
+    Curve G0–G4 as §6.2 has it (each end the curve reparameterized, k + 1 control points fixed by
+    a triangular solve, the rest minimizing ∫|B‴|², degree 5 on the spans §6.2's table gives,
+    degree 7 a single span to G3, extra spans, each end's tangent, curvature, rate and G4 shape);
+    CV and EP curves; edges and isoparms as curves, exactly; curves on faces (a 3D fit within a
+    tolerance); Attach (Blend at a bias to G3, or Connect), Close (Preserve Shape), Stretch
+    (Locked or Floating), Reverse; Detach is the toolkit's `piece`;
+  - `CadMeasure.curve_join`: G0–G4 between curves by arc-length derivatives (the Check tools'
+    measure for curves).
+- **luced-3d**:
+  - Edit CAD's **Curves** level (key 7) and its steps (`edit_cad_curves.luc`): CV Curve, EP Curve
+    and Curve on Surface drawn with clicks; Duplicate Curve (edges, a face's isoparm); Blend Curve
+    between curves or edges; Attach, Detach, Close, Stretch, Reverse, Delete; curves' control
+    points at the CVs level with the surfaces'; from the right-click, A, S, Create and Modify
+    menus;
+  - the **Curve** and **Blend Curve** nodes of CAD networks (`cad_curve_nodes.luc`), their edges,
+    faces and curves picked in the viewport: a blend on a body's edges follows them;
+  - the sketch's Blend Curve takes its control points from the 3D kernel.
+
+Captures: `tools/preview.py --scene` with `surf_curves`, `surf_curve_menu`, `surf_blend`,
+`surf_blend_g4`, `surf_curve_cvs` and `surf_blend_node`, and for Stage 1's follow-ups
+`surf_insert_click` (each also with `--background`).
+
+Tests, against closed forms (luce-cad `curve_tests.luc`, luced-3d `edit_cad_curves_tests.luc`,
+`edit_cad_nets_tests.luc`):
+
+- blends G0–G4 measure the order asked at both ends by `curve_join` (and not one more by chance),
+  with 6 + spans − 1 control points as §6.2's table says, in luce-cad and from Edit CAD's tool
+  bar; a G2 blend leaving a circle of radius 2 starts at curvature 1/2;
+- a Blend Curve node between two of a box's edges starts at the edge's end, and when the box is
+  made wider upstream its end moves with the edge;
+- Attach Blend at 0.5 meets in the middle, G1; Close keeps G2 at its seam; Stretch lands its
+  handles exactly;
+- edges and isoparms come out exactly (a circle's radius to 1e-12); a curve on a face lies on it.
+
+Left for later:
+
+- **Ends on surfaces.** A blend's end is a curve's or an edge's (continuity along it). Alias's
+  blend to a surface across its edge (Parametric or Geometric curvature type) waits for the
+  surface tools (Stage 4's Align reads the same cross derivatives).
+- **Blend handles.** Alias's blend point handles in the viewport (tangent and curvature arrows)
+  are numbers in the tool bar for now.
+- **Isoparms as objects** to pick (rather than Duplicate Curve's parameter), and combs on curves
+  in the Check node.
+- **Stretch's handles** are the curve's two ends from the tool bar; the kernel takes up to
+  degree + 1 anywhere on it.
 
 **Stage 3: project, intersect, trim, stitch** (S5–S7).
 

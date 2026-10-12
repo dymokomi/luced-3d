@@ -1,0 +1,236 @@
+## Edit CAD's curves and the curve nodes, surfacing Stage 2
+## (edit_cad_curves.luc, cad_curve_nodes.luc): CV and EP curves drawn with
+## clicks, a curve on the box's top face lying on it, an edge duplicated
+## exactly; at the Curves level Blend Curve between two curves measures
+## the continuity asked at both ends (G2, then G4 by the tool bar) by the
+## Check tools; Attach Blend meets halfway; Detach, Close, Stretch,
+## Reverse and Delete do one undo each; the right-click, A and S menus
+## offer them; a curve's CVs move at the CVs level. In a CAD network a
+## Blend Curve node on two of a box's edges follows them when the box
+## changes upstream.
+from workspace import Workspace
+from node import Node
+from app import Luce3D
+from edit_operations import EditStep
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.cad_curves import CadCurves
+from luce_cad.measure import CadMeasure
+from luce_cad.modeling import CadModeling
+from luce_cad.nurbs import CadSpline
+from luce_cad.curves import CadCurveTools
+from luce_3d.graphics import Vector3
+import edit_cad_curves
+import edit_cad_nets
+import cad_curve_nodes
+import edit_cad_commands
+import marking_items
+import modeling_commands
+import node_commands
+import placing_commands
+import selection_commands
+from luce_std import math
+
+pub func edit_cad_curves_tests() -> unit!:
+    in_edit_cad()
+    in_a_network()
+    print("PASS Edit CAD curves: CV, EP and on-face curves drawn, an edge duplicated, Blend Curve G2 and G4 measured, Attach, Detach, Close, Stretch, Reverse and Delete as one undo each, in the menus, curve CVs moved; a Blend Curve node follows its edges")
+
+## The displayed Edit CAD node's result.
+func result(w: Workspace) -> Node!:
+    return w.selected() else trap("no Edit node")
+
+## Draw `tool` through `points` and finish.
+func draw(w: Workspace, tool: str, points: list[Vector3]) -> unit!:
+    modeling_commands.model(w, tool)
+    for p in points:
+        placing_commands.add_corner(w, p)
+    placing_commands.finish_placing(w)
+
+## The Curves level's pick edge of curve `index`.
+func curve_edge(w: Workspace, index: int) -> int!:
+    let mesh = w.geometry else trap("no curve pick mesh")
+    let owners = mesh.find_attribute("cad_curve", 4)
+    for edge in 0..<mesh.edge_count():
+        if int(mesh.attribute_value(owners, edge)) == index:
+            return edge
+    trap(f"no edge of curve {index}")
+
+## Pick curves `indices` at the Curves level.
+func pick_curves(w: Workspace, indices: list[int]) -> unit!:
+    selection_commands.set_mode(w, 6)
+    var first = true
+    for index in indices:
+        selection_commands.choose_component(w, curve_edge(w, index), not first)
+        first = false
+    assert(w.selected_count() > 0)
+
+func in_edit_cad() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    modeling_commands.create(w, "Box")
+    # A CV curve and an EP curve beside the box (the box spans -1 to 1).
+    draw(w, edit_cad_curves.cv_verb, [Vector3(2.0, 0.0, 0.0), Vector3(3.0, 1.0, 0.0), Vector3(4.0, 0.0, 0.5), Vector3(5.0, 1.0, 1.0)])
+    draw(w, edit_cad_curves.ep_verb, [Vector3(2.0, 0.0, 3.0), Vector3(3.0, 0.5, 4.0), Vector3(4.0, 0.0, 5.0)])
+    var held = w.network.evaluate_data(result(w).id).geometry
+    assert(CadCurves.count(held) == 2, result(w).warning)
+    let ep = CadCurves.curve(held, 1)
+    assert(ep.at(CadCurveTools.nearest(ep, Vector3(3.0, 0.5, 4.0))).subtract(Vector3(3.0, 0.5, 4.0)).length() < 1e-9)
+    # On the top face (y = 1): the curve lies on it.
+    draw(w, edit_cad_curves.surface_verb, [Vector3(-0.5, 1.0, -0.5), Vector3(0.0, 1.0, 0.3), Vector3(0.5, 1.0, -0.2)])
+    held = w.network.evaluate_data(result(w).id).geometry
+    assert(CadCurves.count(held) == 3 and CadCurves.face(held, 2) != "", result(w).warning)
+    let on = CadCurves.curve(held, 2)
+    for k in 0..<9:
+        assert(math.abs(on.at(on.low() + (on.high() - on.low()) * float(k) / 8.0).y - 1.0) < 1e-6)
+    # Duplicate Curve: a picked edge as a curve, exactly.
+    selection_commands.set_mode(w, 2)
+    let edges = w.geometry else trap("edges")
+    let tag = edges.find_attribute("cad_edge", 4)
+    var edge = -1
+    for at in 0..<edges.edge_count():
+        if edge < 0 and edges.attribute_value(tag, at) >= 0.0: edge = at
+    selection_commands.choose_component(w, edge, false)
+    edit_cad_commands.tool(w, edit_cad_curves.duplicate_verb)
+    held = w.network.evaluate_data(result(w).id).geometry
+    assert(CadCurves.count(held) == 4 and CadCurves.source(held, 3).starts_with("edge "), result(w).warning)
+    let duplicate = CadCurves.curve(held, 3)
+    assert(duplicate.at(duplicate.low()).subtract(duplicate.at(duplicate.high())).length() > 1.99)
+    w.undo()
+    # The right-click at the Curves level offers the curve tools; A offers
+    # the drawing tools; S at Curves the curve tools.
+    pick_curves(w, [0, 1])
+    editor.panels.refresh()
+    var offered: list[str] = []
+    for command in editor.panels.viewport_menu.entries():
+        offered.append(command.text())
+    for name in [edit_cad_curves.blend_verb, edit_cad_curves.attach_verb, edit_cad_curves.close_verb, "Delete"]:
+        assert(name in offered, f"right-click lacks {name}: {offered}")
+    assert(not ("Press Pull" in offered) and not (edit_cad_nets.insert_verb in offered), f"{offered}")
+    var marked: list[str] = []
+    for item in marking_items.modify_items(w, editor.panels.actions, no_add, editor.panels.view.sketch.editor):
+        marked.append(item.name)
+    assert(edit_cad_curves.blend_verb in marked and not (edit_cad_curves.cv_verb in marked), f"S menu: {marked}")
+    var created: list[str] = []
+    for item in marking_items.create_items(w, editor.panels.actions, no_add, editor.panels.view.sketch.editor):
+        created.append(item.name)
+    assert(edit_cad_curves.cv_verb in created and edit_cad_curves.surface_verb in created, f"A menu: {created}")
+    # Blend Curve between the CV curve and the EP curve: G2 both ends by
+    # default, checked by the Check tools at the joints.
+    edit_cad_commands.tool(w, edit_cad_curves.blend_verb)
+    held = w.network.evaluate_data(result(w).id).geometry
+    assert(CadCurves.count(held) == 4, result(w).warning)
+    let first = CadCurves.curve(held, 0)
+    let second = CadCurves.curve(held, 1)
+    assert(joined_at(first, second, CadCurves.curve(held, 3)) >= 2)
+    # G4 at both ends from the tool bar: five quintic spans, G4 measured.
+    modeling_commands.set_last_step(w, edit_cad_curves.start_g_slot, 4.0, 0.0, 4.0)
+    modeling_commands.set_last_step(w, edit_cad_curves.end_g_slot, 4.0, 0.0, 4.0)
+    held = w.network.evaluate_data(result(w).id).geometry
+    let g4 = CadCurves.curve(held, 3)
+    assert(g4.count() == 10 and joined_at(first, second, g4) >= 4, f"{g4.count()} {result(w).warning}")
+    w.undo()
+    w.undo()
+    w.undo()
+    # Attach Blend at 0.5: one curve meeting halfway between the ends.
+    pick_curves(w, [0, 1])
+    edit_cad_commands.tool(w, edit_cad_curves.attach_verb)
+    held = w.network.evaluate_data(result(w).id).geometry
+    assert(CadCurves.count(held) == 2 and CadCurves.name(held, 0) == "Curve1", result(w).warning)
+    w.undo()
+    # Detach at 0.5: two curves; Close; Reverse; Stretch; Delete.
+    pick_curves(w, [0])
+    edit_cad_commands.tool(w, edit_cad_curves.detach_verb)
+    assert(CadCurves.count(w.network.evaluate_data(result(w).id).geometry) == 4, result(w).warning)
+    w.undo()
+    pick_curves(w, [0])
+    edit_cad_commands.tool(w, edit_cad_curves.close_verb)
+    let closed = CadCurves.curve(w.network.evaluate_data(result(w).id).geometry, 0)
+    assert(closed.at(closed.low()).subtract(closed.at(closed.high())).length() < 1e-9, result(w).warning)
+    w.undo()
+    pick_curves(w, [0])
+    edit_cad_commands.tool(w, edit_cad_curves.reverse_verb)
+    assert(CadCurves.curve(w.network.evaluate_data(result(w).id).geometry, 0).at(0.0).subtract(Vector3(5.0, 1.0, 1.0)).length() < 1e-9, result(w).warning)
+    w.undo()
+    pick_curves(w, [0])
+    edit_cad_commands.tool(w, edit_cad_curves.stretch_verb)
+    modeling_commands.set_last_step(w, 4, 2.0, -1000.0, 1000.0)
+    let stretched = CadCurves.curve(w.network.evaluate_data(result(w).id).geometry, 0)
+    assert(stretched.at(stretched.high()).subtract(Vector3(5.0, 3.0, 1.0)).length() < 1e-9 and stretched.at(stretched.low()).subtract(Vector3(2.0, 0.0, 0.0)).length() < 1e-9, result(w).warning)
+    w.undo()
+    w.undo()
+    pick_curves(w, [1])
+    edit_cad_commands.tool(w, "Delete")
+    assert(CadCurves.count(w.network.evaluate_data(result(w).id).geometry) == 2, result(w).warning)
+    w.undo()
+    # The CVs level carries the curves' CVs after the box's: the CV curve's
+    # last one moved up 1 by a Move CVs step moves only it.
+    selection_commands.set_mode(w, 1)
+    let cloud = w.geometry else trap("cloud")
+    let model = CadGeometry.model(w.network.evaluate_data(result(w).id).geometry, 0)
+    let last = model.cv_count() + 3
+    assert(cloud.point(last).subtract(Vector3(5.0, 1.0, 1.0)).length() < 1e-6)
+    selection_commands.choose_component(w, last, false)
+    let node = result(w)
+    w.perform("Move", func () -> unit!:
+        node.edits.append(EditStep(edit_cad_nets.move_verb, f"{last}", 1, [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 3.0, 0.0], cloud.topology_hash()))
+        w.network.invalidate(node.id)
+        w.rebuild())
+    let moved = CadCurves.curve(w.network.evaluate_data(result(w).id).geometry, 0)
+    assert(moved.point(3).subtract(Vector3(5.0, 2.0, 1.0)).length() < 1e-6 and moved.point(2).subtract(Vector3(4.0, 0.0, 0.5)).length() < 1e-9, result(w).warning)
+
+## The lower of the continuity orders the blend `made` meets `a` and `b`
+## with, at the ends nearest each other.
+func joined_at(a: CadSpline, b: CadSpline, made: CadSpline) -> int!:
+    let (sa, sb) = edit_cad_curves.nearest_ends(a, b)
+    let start = CadMeasure.curve_join(a, a.high() if sa == 1 else a.low(), sa, made, made.low(), -1)
+    let finish = CadMeasure.curve_join(made, made.high(), 1, b, b.high() if sb == 1 else b.low(), sb)
+    return int(math.min(float(start.level), float(finish.level)))
+
+func in_a_network() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let box = w.network.selected
+    node_commands.add_node(w, cad_curve_nodes.blend_kind, 0.0, 80.0)
+    let blend = w.network.selected
+    w.network.connect(box, blend, 0)
+    # Two of the box's top edges that do not touch: a 20 box's edges along
+    # x at y = 10, z = -10 and z = 10, the blend between their nearest ends.
+    let body = CadGeometry.model(w.network.evaluate_data(box).geometry, 0)
+    let found: list[int] = []
+    for face in 0..<body.face_count():
+        for use in 0..<body.face_edge_count(face):
+            let a = body.face_edge_point(face, use, 0.0)
+            let b = body.face_edge_point(face, use, 1.0)
+            let id = body.face_edge_id(face, use)
+            if math.abs(a.y - 10.0) < 1e-9 and math.abs(b.y - 10.0) < 1e-9 and math.abs(a.z - b.z) < 1e-9 and not (id in found):
+                found.append(id)
+    assert(found.length == 2, f"{found}")
+    let node = w.network.require(blend)
+    node.texts[0] = "edge " + CadModeling.edge_references(body, [found[0]])
+    node.texts[1] = "edge " + CadModeling.edge_references(body, [found[1]])
+    node.values[edit_cad_curves.start_g_slot] = 1.0
+    node.values[edit_cad_curves.end_g_slot] = 1.0
+    w.network.invalidate(blend)
+    let made = w.network.evaluate_data(blend)
+    assert(CadCurves.count(made.geometry) == 1 and CadGeometry.model_count(made.geometry) == 1, node.warning)
+    let curve = CadCurves.curve(made.geometry, 0)
+    let start = curve.at(curve.low())
+    assert(math.abs(math.abs(start.x) - 10.0) < 1e-9 and math.abs(start.y - 10.0) < 1e-9, f"{start}")
+    # The box made 30 wide upstream: the blend's ends follow its edges.
+    let source = w.network.require(box)
+    source.values[0] = 30.0
+    w.network.invalidate(box)
+    let again = CadCurves.curve(w.network.evaluate_data(blend).geometry, 0)
+    let moved = again.at(again.low())
+    assert(math.abs(math.abs(moved.x) - 15.0) < 1e-9 and math.abs(moved.y - 10.0) < 1e-9, f"{moved} {node.warning}")
+
+func no_add(kind: str) -> unit!:
+    _ = kind

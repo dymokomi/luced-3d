@@ -1,0 +1,345 @@
+## Edit CAD's curves, surfacing Stage 2 (docs/research/
+## SURFACING-ALIAS-PLASTICITY.md §7.1): free 3D curves, blend curves and
+## curves on faces as objects of the model (luce-cad's CadCurves), picked
+## whole at the Curves level, their control points at the CVs level with
+## the surfaces' (the CV moves of edit_cad_nets.luc work on them). Each
+## tool is one step and one undo, Alias's:
+##   CV Curve, EP Curve: clicks place control points (EP: points the curve
+##     passes through), Enter finishes; degree 5 by default.
+##   Curve on Surface: clicks on one face; the curve lies on it (its chart
+##     curve through the clicks, its 3D curve fitted to the surface).
+##   Duplicate Curve: picked edges as free curves, exactly; at the Faces
+##     and Patch levels, the face's isoparm at a parameter.
+##   Blend Curve: between two picked curves or edges, at the ends nearest
+##     each other, G0 to G4 at each end (G4: blend curves only, the
+##     owner's answer), degree 5 on the spans the ends need (§6.2).
+##   Attach (Blend or Connect), Detach, Close (Preserve Shape), Stretch,
+##     Reverse; Delete removes the picked curves.
+## A Curve node and a Blend Curve node (cad_curve_nodes.luc) make the same
+## curves with history: a blend on edges follows them as the body changes.
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.cad_curves import CadCurves
+from luce_cad.cad_edits import CadEdits
+from luce_cad.curves import CadCurveTools
+from luce_cad.nurbs import CadSpline
+from luce_geocore.geocore import Mesh, Selection
+from luce_3d.graphics import Vector3
+from geometry_data import GeometryData
+from edit_operations import EditStep
+from edit_types import EditTool
+from parameter_rows import Parameter, number, whole, toggle, menu, vector
+from luce_ui import ui
+from luce_std import math
+
+pub let cv_verb = "CV Curve"
+pub let ep_verb = "EP Curve"
+pub let surface_verb = "Curve on Surface"
+pub let duplicate_verb = "Duplicate Curve"
+pub let blend_verb = "Blend Curve"
+pub let attach_verb = "Attach"
+pub let detach_verb = "Detach"
+pub let close_verb = "Close"
+pub let stretch_verb = "Stretch"
+pub let reverse_verb = "Reverse"
+## The steps of Blend Curve between edges and of Delete at the Curves level
+## (tools of those names at their levels: EditKind.tool_at).
+pub let blend_edges_verb = "Blend Edges"
+pub let delete_verb = "Delete Curves"
+
+## The drawing tools (Edit CAD's draw_tools): clicks place their points.
+pub func draw_verbs() -> list[str]:
+    return [cv_verb, ep_verb, surface_verb]
+
+## The steps on picked curves (the Curves level).
+pub func curve_verbs() -> list[str]:
+    return [blend_verb, attach_verb, detach_verb, close_verb, stretch_verb, reverse_verb, delete_verb]
+
+## The steps on picked edges or faces (their levels' pick mesh).
+pub func model_verbs() -> list[str]:
+    return [duplicate_verb, blend_edges_verb]
+
+## The whole curve under a picked segment (the Curves level's piece).
+pub func curve_piece(mesh: Mesh, edge: int) -> str!:
+    let owner = int(mesh.attribute_value(mesh.find_attribute("cad_curve", 4), edge))
+    return f"@cad_curve={owner}" if owner >= 0 else "!*"
+
+# -- Blend Curve's numbers (the step's and the node's values).
+
+pub let start_g_slot = 0
+pub let end_g_slot = 1
+pub let degree_slot = 2
+pub let extra_slot = 3
+pub let start_tangent_slot = 4
+pub let end_tangent_slot = 5
+pub let start_curvature_slot = 6
+pub let end_curvature_slot = 7
+pub let start_rate_slot = 8
+pub let end_rate_slot = 9
+pub let start_fourth_slot = 10
+pub let end_fourth_slot = 11
+pub let flip_start_slot = 12
+pub let flip_end_slot = 13
+
+pub func blend_numbers() -> list[float]:
+    return [2.0, 2.0, 5.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+## Blend Curve's rows (Alias's Blend Curve options and its blend point
+## handles as numbers): each end's continuity and shape, the degree.
+pub func blend_rows() -> list[Parameter]:
+    let continuity = "G0 Position|G1 Tangent|G2 Curvature|G3 Curvature rate|G4"
+    let start_curvature = number("Start curvature", start_curvature_slot, 0.0, -10.0, 10.0, 0.05, "The start's curvature shape (Alias's curvature handle): how far its second control points lean along the tangent, in chords.", slider = true)
+    start_curvature.hide_when = "{ start < 2 }"
+    let end_curvature = number("End curvature", end_curvature_slot, 0.0, -10.0, 10.0, 0.05, "The end's curvature shape.", slider = true)
+    end_curvature.hide_when = "{ end < 2 }"
+    let start_rate = number("Start rate", start_rate_slot, 0.0, -10.0, 10.0, 0.05, "G3 at the start: the third control points' lean.", slider = true)
+    start_rate.hide_when = "{ start < 3 }"
+    let end_rate = number("End rate", end_rate_slot, 0.0, -10.0, 10.0, 0.05, "G3 at the end.", slider = true)
+    end_rate.hide_when = "{ end < 3 }"
+    let start_fourth = number("Start G4 shape", start_fourth_slot, 0.0, -10.0, 10.0, 0.05, "G4 at the start: the fourth control points' lean.", slider = true)
+    start_fourth.hide_when = "{ start < 4 }"
+    let end_fourth = number("End G4 shape", end_fourth_slot, 0.0, -10.0, 10.0, 0.05, "G4 at the end.", slider = true)
+    end_fourth.hide_when = "{ end < 4 }"
+    return [menu("Start", start_g_slot, continuity, 2.0, "The continuity with the first curve or edge where the blend leaves it (G4: blend curves only, as Alias and Rhino)."),
+            menu("End", end_g_slot, continuity, 2.0, "The continuity with the second curve or edge where the blend meets it."),
+            whole("Degree", degree_slot, 5.0, 1.0, 11.0, "The blend's degree: 5 by default on as many spans as its ends need (G1 and G2 one, G3 three, G4 five); 7 gives a single span up to G3 (Explicit Control)."),
+            whole("Extra spans", extra_slot, 0.0, 0.0, 32.0, "Spans beyond what the ends need: free control points that bend as little as they can."),
+            number("Start tangent", start_tangent_slot, 1.0, 0.01, 10.0, 0.05, "How long the blend's tangent is at its start, in chords (Alias's tangent handle; 1 is Relax, less is Tight).", slider = true),
+            number("End tangent", end_tangent_slot, 1.0, 0.01, 10.0, 0.05, "How long the tangent is at its end, in chords.", slider = true),
+            start_curvature, end_curvature, start_rate, end_rate, start_fourth, end_fourth,
+            toggle("Other start end", flip_start_slot, 0.0, "Leave the first curve at its other end (by default the ends nearest each other)."),
+            toggle("Other end end", flip_end_slot, 0.0, "Meet the second curve at its other end.")]
+
+## The tools, at the Curves level (`curves`), Edges, Faces and Patch.
+pub func tools(curves: int, edges: int, faces: int, patch: int) -> list[EditTool]:
+    let none_shown: list[Parameter] = []
+    let degree = [whole("Degree", 0, 5.0, 1.0, 11.0, "The curve's degree (lowered to what its points allow): 5 by default, Alias's 3 or 7 on request.")]
+    let result: list[EditTool] = []
+    # Drawing tools are offered nowhere: they draw (placing_commands.luc).
+    for verb in draw_verbs():
+        result.append(EditTool(verb, verb, [-1], [5.0], degree))
+    let duplicate = [menu("Direction", 0, "U|V", 0.0, "At a face: the isoparm along v at a u (U) or along u at a v."),
+                     number("Parameter", 1, 0.5, 0.0, 1.0, 0.01, "At a face: where along it, 0 to 1.", slider = true)]
+    result.append(EditTool(duplicate_verb, duplicate_verb, [edges, faces, patch], [0.0, 0.5], duplicate))
+    result.append(EditTool(blend_verb, blend_verb, [curves], blend_numbers(), blend_rows()))
+    result.append(EditTool(blend_verb, blend_edges_verb, [edges], blend_numbers(), blend_rows()))
+    result.append(EditTool(attach_verb, attach_verb, [curves], [1.0, 0.5, 1.0],
+                           [menu("Method", 0, "Connect|Blend", 1.0, "Blend moves both ends to meet at Blend Bias, continuous there; Connect keeps them and bridges a gap with a straight span."),
+                            number("Blend bias", 1, 0.5, 0.0, 1.0, 0.05, "Blend: where the ends meet, 0 at the first curve's end, 1 at the second's start.", slider = true),
+                            menu("Continuity", 2, "G0|G1|G2|G3", 1.0, "Blend: the continuity at the joint.")]))
+    result.append(EditTool(detach_verb, detach_verb, [curves], [0.5], [number("Parameter", 0, 0.5, 0.001, 0.999, 0.01, "Where the curve is cut, 0 at its start to 1 at its end.", slider = true)]))
+    result.append(EditTool(close_verb, close_verb, [curves], [1.0], [toggle("Preserve shape", 0, 1.0, "On: a G2 blend span closes the gap and the curve keeps its shape. Off: its ends move to meet halfway (G1).")]))
+    result.append(EditTool(stretch_verb, stretch_verb, [curves], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                           [vector("Start move", 0, [0.0, 0.0, 0.0], "How far the curve's start moves; the curve follows smoothly, its control points kept."),
+                            vector("End move", 3, [0.0, 0.0, 0.0], "How far its end moves."),
+                            toggle("Floating", 6, 0.0, "Off (Locked): the handles stay at their parameters. On: each finds the point of the new curve nearest it.")]))
+    result.append(EditTool(reverse_verb, reverse_verb, [curves], [0.0], none_shown))
+    result.append(EditTool("Delete", delete_verb, [curves], [0.0], none_shown))
+    return result
+
+# -- Drawing.
+
+## A drawing tool's clicked points as its step (none with too few).
+pub func drawn(tool: str, corners: list[Vector3]) -> EditStep?!:
+    if not (tool in draw_verbs()) or corners.length < 2:
+        return none
+    var numbers = [5.0, float(corners.length)]
+    for corner in corners:
+        numbers = numbers + [corner.x, corner.y, corner.z]
+    return EditStep(tool, "", 0, numbers, 0)
+
+## A drawn step's points.
+func points_of(step: EditStep) -> list[Vector3]!:
+    let n = step.numbers
+    if n.length < 2:
+        error(ui.invalid, f"{step.verb} has no points")
+    let count = int(n[1])
+    if n.length < 2 + 3 * count or count < 2:
+        error(ui.invalid, f"{step.verb} needs two points or more")
+    let points: list[Vector3] = []
+    for at in 0..<count:
+        points.append(Vector3(n[2 + 3 * at], n[3 + 3 * at], n[4 + 3 * at]))
+    return points
+
+# -- Running the steps.
+
+## Curve step `step` on `data`; `shown` the pick mesh an Edges, Faces or
+## Patch level step was selected on.
+pub func run(step: EditStep, data: GeometryData, shown: Mesh?) -> GeometryData!:
+    let v = step.numbers
+    if step.verb in draw_verbs():
+        return drawn_curve(step, data)
+    if step.verb == duplicate_verb:
+        return duplicated(step, data, shown)
+    if step.verb == blend_edges_verb:
+        let mesh = shown else error(ui.invalid, "Blend Curve between edges: pick two edges")
+        let ends = edge_ends(step, data, mesh)
+        if ends.length != 2:
+            error(ui.invalid, "Blend Curve between edges: pick two edges")
+        return added(data, "Curve", blended(ends[0], ends[1], v), "blend")
+    let picked = picked_curves(step, data)
+    if picked.length == 0:
+        error(ui.invalid, f"{step.verb}: pick curves at the Curves level")
+    let geometry = data.geometry
+    if step.verb == blend_verb:
+        if picked.length != 2:
+            error(ui.invalid, "Blend Curve: pick two curves")
+        return added(data, "Curve", blended(CadCurves.curve(geometry, picked[0]), CadCurves.curve(geometry, picked[1]), v), "blend")
+    if step.verb == attach_verb:
+        if picked.length != 2:
+            error(ui.invalid, "Attach: pick two curves")
+        let (first, second) = facing(CadCurves.curve(geometry, picked[0]), CadCurves.curve(geometry, picked[1]))
+        let joined = CadCurveTools.attached(first, second, int(v[0]) == 1, v[1], int(v[2]))
+        let name = CadCurves.name(geometry, picked[0])
+        let kept = CadCurves.with_curve(geometry, name, joined, source = "attach")
+        return GeometryData(geometry = CadCurves.without_curve(kept, CadCurves.name(geometry, picked[1])))
+    var result = geometry
+    for index in picked:
+        let name = CadCurves.name(geometry, index)
+        let curve = CadCurves.curve(geometry, index)
+        if step.verb == delete_verb:
+            result = CadCurves.without_curve(result, name)
+        elif step.verb == reverse_verb:
+            result = CadCurves.with_curve(result, name, CadCurveTools.reversed(curve), source = CadCurves.source(geometry, index))
+        elif step.verb == close_verb:
+            result = CadCurves.with_curve(result, name, CadCurveTools.closed(curve, v[0] != 0.0), source = "closed")
+        elif step.verb == detach_verb:
+            let cut = curve.low() + (curve.high() - curve.low()) * v[0]
+            result = CadCurves.with_curve(result, name, curve.piece(curve.low(), cut), source = "detached")
+            result = CadCurves.with_curve(result, CadCurves.free_name(result, "Curve"), curve.piece(cut, curve.high()), source = "detached")
+        elif step.verb == stretch_verb:
+            let moved = CadCurveTools.stretched(curve, [curve.low(), curve.high()], [Vector3(v[0], v[1], v[2]), Vector3(v[3], v[4], v[5])], v[6] != 0.0)
+            result = CadCurves.with_curve(result, name, moved, source = "stretched")
+        else:
+            error(ui.invalid, f"{step.verb} does not apply to curves")
+    return GeometryData(geometry = result)
+
+## The curves a step's group picked on the Curves level's pick mesh, in
+## index order.
+pub func picked_curves(step: EditStep, data: GeometryData) -> list[int]!:
+    let found: list[int] = []
+    if step.group == "":
+        return found
+    let mesh = CadCurves.pick_mesh(data.geometry)
+    let owners = mesh.find_attribute("cad_curve", 4)
+    let chosen = Selection.of(mesh, step.group, 4)
+    var at = chosen.next(-1)
+    while at >= 0:
+        let index = int(mesh.attribute_value(owners, at))
+        if index >= 0 and not (index in found):
+            found.append(index)
+        at = chosen.next(at)
+    found.sort()
+    return found
+
+## `data` with `curve` added as a new curve named `stem` and the first free
+## number, from `source`.
+func added(data: GeometryData, stem: str, curve: CadSpline, source: str) -> GeometryData!:
+    return GeometryData(geometry = CadCurves.with_curve(data.geometry, CadCurves.free_name(data.geometry, stem), curve, source = source))
+
+## A CV, EP or on-surface curve from its drawn points.
+func drawn_curve(step: EditStep, data: GeometryData) -> GeometryData!:
+    let points = points_of(step)
+    let degree = int(step.numbers[0])
+    if step.verb == cv_verb:
+        return added(data, "Curve", CadCurveTools.by_points(points, degree), "cv")
+    if step.verb == ep_verb:
+        return added(data, "Curve", CadCurveTools.through(points, degree), "ep")
+    # On a face: the face every point lies on, then its chart.
+    var low = points[0]
+    var high = points[0]
+    for p in points:
+        low = Vector3(math.min(low.x, p.x), math.min(low.y, p.y), math.min(low.z, p.z))
+        high = Vector3(math.max(high.x, p.x), math.max(high.y, p.y), math.max(high.z, p.z))
+    let tolerance = high.subtract(low).length() * 0.00001 + 0.000001
+    for model in data.models():
+        let face = CadCurveTools.face_at(model, points[0])
+        if face == "":
+            continue
+        let chart: list[Vector3] = []
+        for p in points:
+            if CadCurveTools.face_at(model, p) != face:
+                error(ui.invalid, "Curve on Surface lies on one face: click its points on the same face")
+            chart.append(CadCurveTools.face_uv(model, face, p))
+        let uv = CadCurveTools.through(chart, degree)
+        let curve = CadCurveTools.on_face(model, face, uv, tolerance)
+        let name = CadCurves.free_name(data.geometry, "Curve")
+        return GeometryData(geometry = CadCurves.with_curve(data.geometry, name, curve, source = "on face", face = face, chart = uv))
+    error(ui.invalid, "Curve on Surface: click its points on a face of the model")
+
+## Duplicate Curve: picked edges, each as a free curve; at a face, its
+## isoparm (direction, parameter).
+func duplicated(step: EditStep, data: GeometryData, shown: Mesh?) -> GeometryData!:
+    let mesh = shown else error(ui.invalid, "Duplicate Curve: pick edges, or a face for its isoparm")
+    var geometry = data.geometry
+    var any = false
+    if step.group_type == 2:
+        for index in 0..<CadGeometry.model_count(geometry):
+            let references = CadEdits.model_edges(mesh, step.group, index)
+            if references == "":
+                continue
+            let model = CadGeometry.model(data.geometry, index)
+            for reference in references.split(";"):
+                geometry = CadCurves.with_curve(geometry, CadCurves.free_name(geometry, "Curve"), CadCurveTools.edge(model, reference), source = f"edge {reference}")
+                any = true
+    else:
+        let chosen = Selection.of(mesh, step.group, 2)
+        let first = chosen.next(-1)
+        if first >= 0:
+            let index = int(mesh.attribute_value(mesh.find_attribute("cad_model", 2), first))
+            let face = mesh.attribute_text(mesh.find_attribute("cad_face_name", 2), first)
+            let direction = int(step.numbers[0])
+            let model = CadGeometry.model(data.geometry, index)
+            geometry = CadCurves.with_curve(geometry, CadCurves.free_name(geometry, "Curve"), CadCurveTools.isoparm(model, face, direction, step.numbers[1]),
+                                            source = f"isoparm {face} {"u" if direction == 0 else "v"} {step.numbers[1]}")
+            any = true
+    if not any:
+        error(ui.invalid, "Duplicate Curve: pick edges, or a face for its isoparm")
+    return GeometryData(geometry = geometry)
+
+## The picked edges' curves (Blend Curve between edges).
+func edge_ends(step: EditStep, data: GeometryData, mesh: Mesh) -> list[CadSpline]!:
+    let found: list[CadSpline] = []
+    for index in 0..<CadGeometry.model_count(data.geometry):
+        let references = CadEdits.model_edges(mesh, step.group, index)
+        if references == "":
+            continue
+        let model = CadGeometry.model(data.geometry, index)
+        for reference in references.split(";"):
+            found.append(CadCurveTools.edge(model, reference))
+    return found
+
+## `a` and `b` turned so `a` ends where `b` starts, by their nearest ends.
+func facing(a: CadSpline, b: CadSpline) -> (CadSpline, CadSpline)!:
+    let (end_a, end_b) = nearest_ends(a, b)
+    let first = a if end_a == 1 else CadCurveTools.reversed(a)
+    let second = b if end_b == -1 else CadCurveTools.reversed(b)
+    return (first, second)
+
+## Which ends of `a` and `b` are nearest each other: 1 a curve's high end,
+## -1 its low one (as Blend Curve's signs: the blend leaves `a` past its
+## high end with 1; it meets `b` at its low end with -1).
+pub func nearest_ends(a: CadSpline, b: CadSpline) -> (int, int):
+    var best = -1.0
+    var chosen = (1, -1)
+    for sa in [1, -1]:
+        for sb in [1, -1]:
+            let pa = a.at(a.high() if sa == 1 else a.low())
+            let pb = b.at(b.high() if sb == 1 else b.low())
+            let d = pa.subtract(pb).length()
+            if best < 0.0 or d < best:
+                best = d
+                chosen = (sa, sb)
+    return chosen
+
+## Blend Curve between `a` and `b` (blend_numbers' values `v`): from the end
+## of `a` nearest `b` to the end of `b` nearest `a` (or their other ends).
+pub func blended(a: CadSpline, b: CadSpline, v: list[float]) -> CadSpline!:
+    var (sa, sb) = nearest_ends(a, b)
+    if v[flip_start_slot] != 0.0:
+        sa = -sa
+    if v[flip_end_slot] != 0.0:
+        sb = -sb
+    let ta = a.high() if sa == 1 else a.low()
+    let tb = b.high() if sb == 1 else b.low()
+    let shape = [v[start_tangent_slot], v[end_tangent_slot], v[start_curvature_slot], v[end_curvature_slot], v[start_rate_slot], v[end_rate_slot], v[start_fourth_slot], v[end_fourth_slot]]
+    return CadCurveTools.blend(a, ta, sa, int(v[start_g_slot]), b, tb, sb, int(v[end_g_slot]), int(v[degree_slot]), shape, int(v[extra_slot]))

@@ -1,0 +1,159 @@
+## CAD curves as nodes of a CAD network (surfacing Stage 2, §7.1): Alias's
+## construction history. Each passes its input on with one curve added
+## (luce-cad's CadCurves), made again whenever the input changes:
+##   Curve: through typed points or with them as control points, from a
+##     body's edge (Duplicate Curve, kept by the edge's reference), a
+##     face's isoparm, or on a face (points in its chart coordinates).
+##   Blend Curve: between two curves of the input (by name) or two edges
+##     (by reference), G0 to G4 at each end (edit_cad_curves.luc's blend):
+##     a blend on edges follows them as the body upstream changes.
+## Their edges and faces are picked in the viewport as the Modify features'
+## are (modify_picks.luc).
+from luce_cad.cad_curves import CadCurves
+from luce_cad.curves import CadCurveTools
+from luce_cad.nurbs import CadSpline
+from luce_cad.model import CadModel
+from luce_3d.graphics import Vector3
+from geometry_data import GeometryData
+from parameter_rows import Parameter, number, whole, menu, entry
+import edit_cad_curves
+from luce_ui import ui
+
+pub let curve_kind = "Curve"
+pub let blend_kind = "Blend Curve"
+
+pub func kinds() -> list[str]:
+    return [curve_kind, blend_kind]
+
+# -- Curve's values and texts.
+
+pub let type_slot = 0
+pub let degree_slot = 1
+pub let direction_slot = 2
+pub let parameter_slot = 3
+## Texts: the points, the edge or face picked, the curve's name.
+pub let points_text = 0
+pub let source_text = 1
+pub let name_text = 2
+
+pub let through_type = 0
+pub let cv_type = 1
+pub let edge_type = 2
+pub let isoparm_type = 3
+pub let on_face_type = 4
+
+## The nodes' parameters.
+pub func fields(kind: str) -> list[Parameter]:
+    if kind == blend_kind:
+        return edit_cad_curves.blend_rows() + [entry("Name", name_text, "The curve's name in the model (empty: Curve and a number).")]
+    let points = entry("Points", points_text, "The points, x y z apart by `;` (On face: the face's chart coordinates, u v). Through: the curve passes through them; CVs: they are its control points.")
+    points.hide_when = "{ type == 2 } { type == 3 }"
+    let degree = whole("Degree", degree_slot, 5.0, 1.0, 11.0, "The curve's degree (lowered to what its points allow).")
+    degree.hide_when = "{ type == 2 } { type == 3 }"
+    let direction = menu("Direction", direction_slot, "U|V", 0.0, "Isoparm: along v at a u (U), or along u at a v (V).")
+    direction.hide_when = "{ type != 3 }"
+    let parameter = number("Parameter", parameter_slot, 0.5, 0.0, 1.0, 0.01, "Isoparm: where along the face's surface, 0 to 1.", slider = true)
+    parameter.hide_when = "{ type != 3 }"
+    return [menu("Type", type_slot, "Through points|Control points|From edge|Isoparm|On face", 0.0, "How the curve is made: through points (Alias's EP curve), with points as its control points (CV curve), from a body's edge or a face's isoparm (Duplicate Curve), or on a face."),
+            points, degree, direction, parameter, entry("Name", name_text, "The curve's name in the model (empty: Curve and a number).")]
+
+## What `kind` waits for ("" when it has what it needs).
+pub func waits_for(kind: str, v: list[float], t: list[str]) -> str:
+    if kind == blend_kind:
+        if t[0].trim() == "":
+            return "Pick the curve or edge the blend starts from"
+        if t[1].trim() == "":
+            return "Pick the curve or edge it ends on"
+        return ""
+    let made_as = int(v[type_slot])
+    if (made_as == edge_type or made_as == isoparm_type or made_as == on_face_type) and t[source_text].trim() == "":
+        return "Pick the edge" if made_as == edge_type else "Pick the face"
+    return ""
+
+## Node `kind`'s curve added to its input `data`, by values `v` and texts
+## `t`; its default name `Curve<id>` (`tag` the node's, `#<id>`).
+pub func evaluate(kind: str, v: list[float], t: list[str], data: GeometryData, tag: str) -> GeometryData!:
+    let waiting = waits_for(kind, v, t)
+    if waiting != "":
+        return data.passed(waiting)
+    let name = t[name_text].trim() if t[name_text].trim() != "" else f"Curve{tag[1..]}"
+    if kind == blend_kind:
+        let start = end_curve(data, t[0])
+        let finish = end_curve(data, t[1])
+        return with_curve(data, name, edit_cad_curves.blended(start, finish, v), "blend", "", none)
+    let made_as = int(v[type_slot])
+    if made_as == edge_type:
+        let (model, reference) = edge_of(data, t[source_text].trim())
+        return with_curve(data, name, CadCurveTools.edge(model, reference), f"edge {reference}", "", none)
+    if made_as == isoparm_type:
+        let face = t[source_text].trim()
+        let model = face_model(data, face)
+        return with_curve(data, name, CadCurveTools.isoparm(model, face, int(v[direction_slot]), v[parameter_slot]), f"isoparm {face}", "", none)
+    let points = parse_points(t[points_text], made_as == on_face_type)
+    if points.length < 2:
+        error(ui.invalid, "Type two points or more, x y z apart by ;")
+    let degree = int(v[degree_slot])
+    if made_as == on_face_type:
+        let face = t[source_text].trim()
+        let model = face_model(data, face)
+        let chart = CadCurveTools.through(points, degree)
+        return with_curve(data, name, CadCurveTools.on_face(model, face, chart, 0.00001), "on face", face, chart)
+    let curve = CadCurveTools.by_points(points, degree) if made_as == cv_type else CadCurveTools.through(points, degree)
+    return with_curve(data, name, curve, "points", "", none)
+
+## `data` with curve `name` (a name taken already is an error: two nodes
+## would make one curve).
+func with_curve(data: GeometryData, name: str, curve: CadSpline, source: str, face: str, chart: CadSpline?) -> GeometryData!:
+    if CadCurves.find(data.geometry, name) >= 0:
+        error(ui.invalid, f"The model has a curve named {name} already: give this one another name")
+    if let held = chart:
+        return GeometryData(geometry = CadCurves.with_curve(data.geometry, name, curve, source = source, face = face, chart = held))
+    return GeometryData(geometry = CadCurves.with_curve(data.geometry, name, curve, source = source))
+
+## The points `text` types (x y z, or u v with `chart`, apart by `;`).
+pub func parse_points(text: str, chart: bool) -> list[Vector3]!:
+    let points: list[Vector3] = []
+    for part in text.split(";"):
+        let words: list[float] = []
+        for word in part.trim().split(" "):
+            if word != "":
+                words.append(float(word))
+        if words.length == 0:
+            continue
+        if chart and words.length == 2:
+            points.append(Vector3(words[0], words[1], 0.0))
+        elif words.length == 3:
+            points.append(Vector3(words[0], words[1], words[2]))
+        else:
+            error(ui.invalid, f"A point is {"u v" if chart else "x y z"}: \"{part.trim()}\" is not")
+    return points
+
+## The curve an end names: `curve <name>` (a curve of the input) or `edge
+## <reference>` (a body's edge).
+func end_curve(data: GeometryData, text: str) -> CadSpline!:
+    let end = text.trim()
+    if end.starts_with("curve "):
+        let index = CadCurves.find(data.geometry, end[6..].trim())
+        if index < 0:
+            error(ui.invalid, f"The input has no curve named {end[6..].trim()}: pick it again")
+        return CadCurves.curve(data.geometry, index)
+    if end.starts_with("edge "):
+        let (model, reference) = edge_of(data, end[5..].trim())
+        return CadCurveTools.edge(model, reference)
+    error(ui.invalid, "A blend's end is a curve or an edge: pick it")
+
+## The body holding edge `reference`, and the reference.
+func edge_of(data: GeometryData, reference: str) -> (CadModel, str)!:
+    for model in data.models():
+        _ = CadCurveTools.edge(model, reference) catch failure:
+            continue
+        return (model, reference)
+    error(ui.invalid, "The edge is no longer in the input body: pick it again")
+
+## The body holding the face named `face`.
+func face_model(data: GeometryData, face: str) -> CadModel!:
+    for model in data.models():
+        _ = CadCurveTools.face_uv(model, face, Vector3()) catch failure:
+            continue
+        return model
+    error(ui.invalid, "The face is no longer in the input body: pick it again")

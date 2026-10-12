@@ -19,9 +19,11 @@ from luce_geocore.geocore import Mesh, Selection
 from luce_3d.graphics import Vector3
 from geometry_data import GeometryData
 from edit_operations import EditStep
-from edit_types import EditTool
+from edit_types import EditTool, soft_radius_slot, symmetry_slot
+from edit_types import falloff_slot as curve_slot
 from parameter_rows import Parameter, number, whole, toggle, menu
 from luce_ui import ui
+from luce_std import math
 
 pub let move_verb = "Move CVs"
 pub let insert_verb = "Insert Knot"
@@ -35,7 +37,8 @@ pub func structure_verbs() -> list[str]:
     return [insert_verb, remove_verb, raise_verb, rebuild_verb, convert_verb]
 
 # -- The Edit CAD node's CV settings (its value slots after the Edit
-# kinds' four).
+# kinds' four; the soft radius and its curve are the Edit kinds' slots 0
+# and 1, shown here as the Radius falloff's rows).
 
 pub let move_mode_slot = 4
 pub let falloff_kind_slot = 5
@@ -44,22 +47,44 @@ pub let rows_v_slot = 7
 pub let hull_distance_slot = 8
 pub let exponent_slot = 9
 pub let hull_pick_slot = 10
+pub let step_slot = 11
+pub let strength_slot = 12
+pub let lock_x_slot = 13
+pub let lock_y_slot = 14
+pub let lock_z_slot = 15
 
-## The CV rows of the Edit CAD node's parameters.
+## The Edit CAD node's rows: Alias's Transform CV in one place. The move
+## mode, then one falloff (Alias's Proportional Modification): Radius (the
+## soft radius and its curve), Rows (Preceding/Succeeding counts and the
+## exponent) or Hull (Plasticity's distance along the hull), each showing
+## only its own rows; Symmetry (which mirrors CV moves too); hull picking;
+## Step size, Drag strength and the axis locks.
 pub func cv_fields() -> list[Parameter]:
+    let radius = number("Soft radius", soft_radius_slot, 0.0, 0.0, 100000.0, 0.1, "Radius falloff: CVs within this distance of the picked ones follow their moves, less the farther they are. 0 is off.", soft = 5.0)
+    radius.hide_when = "{ falloff != 0 }"
+    let curve = menu("Radius curve", curve_slot, "Linear|Quadratic|Cubic|Smooth", 3.0, "Radius falloff: how the followers' weight falls off with distance.")
+    curve.hide_when = "{ falloff != 0 }"
     let rows_u = whole("Rows U", rows_u_slot, 2.0, 0.0, 64.0, "Rows falloff: how many rows of CVs along U before and after each picked CV follow it (Alias's Preceding and Succeeding).")
-    rows_u.hide_when = "{ cv_falloff != 1 }"
+    rows_u.hide_when = "{ falloff != 1 }"
     let rows_v = whole("Rows V", rows_v_slot, 2.0, 0.0, 64.0, "Rows falloff: how many rows along V follow.")
-    rows_v.hide_when = "{ cv_falloff != 1 }"
+    rows_v.hide_when = "{ falloff != 1 }"
     let distance = number("Hull distance", hull_distance_slot, 10.0, 0.0, 100000.0, 0.1, "Hull falloff: how far along the hull lines CVs follow (Plasticity's).", soft = 50.0)
-    distance.hide_when = "{ cv_falloff != 2 }"
+    distance.hide_when = "{ falloff != 2 }"
     distance.length = true
     let exponent = number("Falloff exponent", exponent_slot, 1.0, -5.0, 5.0, 0.1, "Rows and Hull falloff: 0 moves the followers fully, positive values damp the far ones, negative ones push them the other way (Alias's).", slider = true)
-    exponent.hide_when = "{ cv_falloff == 0 }"
-    return [menu("CV move", move_mode_slot, "World|NUV|Slide|Project|Parallel|View", 0.0, "How the gizmo moves CVs (Alias's Transform CV): World axes; NUV along each CV's normal, U and V; Slide along its hull; Project along its hull lines; Parallel along the first picked CV's hull lines; View in the screen plane."),
-            menu("CV falloff", falloff_kind_slot, "Radius|Rows|Hull", 0.0, "Which CVs follow a move: within the soft radius; within rows of the picked ones on their net; or within a distance along the hull."),
-            rows_u, rows_v, distance, exponent,
-            toggle("Pick hull rows", hull_pick_slot, 0.0, "A click on a CV takes its whole row (again: the other row, then the net). Off, a second click on a CV does.")]
+    exponent.hide_when = "{ falloff == 0 }"
+    let step = number("Step size", step_slot, 0.0, 0.0, 100000.0, 0.01, "Moves go in steps of this (0: freely); the arrow keys nudge the picked CVs by it while the Move tool is on (Alias's Lock step size).", soft = 10.0)
+    step.length = true
+    return [menu("CV move", move_mode_slot, "World|NUV|Slide|Project|Parallel|View", 0.0, "How the gizmo moves CVs (Alias's Transform CV): World axes; NUV along each CV's surface normal, U and V; Slide along its hull; Project along its hull lines; Parallel along the first picked CV's hull lines; View in the screen plane."),
+            menu("Falloff", falloff_kind_slot, "Radius|Rows|Hull", 0.0, "Which CVs follow a move (Alias's Proportional Modification): within the soft radius; within rows of the picked ones on their net; or within a distance along the hull."),
+            radius, curve, rows_u, rows_v, distance, exponent,
+            menu("Symmetry", symmetry_slot, "None|X|Y|Z", 0.0, "Mirror every CV move across the plane through the origin square to this axis: each moved CV's mirror image moves as its reflection."),
+            toggle("Pick hull rows", hull_pick_slot, 0.0, "A click on a CV takes its whole row (again: the other row, then the net). Off, a second click on a CV does."),
+            step,
+            number("Drag strength", strength_slot, 1.0, 0.01, 10.0, 0.05, "How far CVs move for the gizmo's drag: 1 as far, 0.1 a tenth (Rhino's drag strength, Alias's sensitivity).", slider = true, soft = 2.0),
+            toggle("Lock X", lock_x_slot, 0.0, "Moves leave the first axis alone: X in World, the normal in NUV, U in Slide and Project."),
+            toggle("Lock Y", lock_y_slot, 0.0, "Moves leave the second axis alone: Y, or U in NUV, V in Slide."),
+            toggle("Lock Z", lock_z_slot, 0.0, "Moves leave the third axis alone: Z, or V in NUV.")]
 
 ## Whether node values `values` make the gizmo's moves Move CVs steps.
 pub func moves_by_mode(values: list[float]) -> bool:
@@ -67,10 +92,23 @@ pub func moves_by_mode(values: list[float]) -> bool:
         return false
     return int(values[move_mode_slot]) != cv_world or int(values[falloff_kind_slot]) != 0
 
+## A move `amount` (in the mode's frame, World's axes for World) as the
+## node's Drag strength, Step size and locks make it.
+pub func adjusted(values: list[float], amount: Vector3) -> Vector3:
+    if values.length <= lock_z_slot:
+        return amount
+    let strength = values[strength_slot] if values[strength_slot] > 0.0 else 1.0
+    var made = amount.multiply_scalar(strength)
+    let step = values[step_slot]
+    if step > 0.0:
+        made = Vector3(math.round(made.x / step) * step, math.round(made.y / step) * step, math.round(made.z / step) * step)
+    return Vector3(0.0 if values[lock_x_slot] != 0.0 else made.x, 0.0 if values[lock_y_slot] != 0.0 else made.y, 0.0 if values[lock_z_slot] != 0.0 else made.z)
+
 ## A Move CVs step's numbers: the mode, the amount (World and View: a
 ## displacement; NUV: along normal, U, V; Slide, Project, Parallel: along
 ## U and V), the falloff kind, its reach (rows U, rows V, hull distance or
-## the soft radius), its exponent and the soft radius's curve.
+## the soft radius), its exponent, the soft radius's curve and the
+## symmetry.
 pub func move_numbers(values: list[float], amount: Vector3) -> list[float]:
     let kind = int(values[falloff_kind_slot])
     var falloff = falloff_radius if values[0] > 0.0 else falloff_none
@@ -81,16 +119,18 @@ pub func move_numbers(values: list[float], amount: Vector3) -> list[float]:
     elif kind == 2:
         falloff = falloff_hull
         reach = Vector3(0.0, 0.0, values[hull_distance_slot])
-    return [values[move_mode_slot], amount.x, amount.y, amount.z, float(falloff), reach.x, reach.y, reach.z, values[exponent_slot], values[1]]
+    return [values[move_mode_slot], amount.x, amount.y, amount.z, float(falloff), reach.x, reach.y, reach.z, values[exponent_slot], values[curve_slot], values[symmetry_slot]]
 
-## The gizmo's axes for CV mode `mode` at cloud point `id`: NUV's normal,
-## U and V; Slide's, Project's and Parallel's U and V hull directions and
-## the normal; View's screen right, up and back (`camera`); none for World.
+## The gizmo's axes for CV mode `mode` at cloud point `id`: NUV's surface
+## normal, U and V at the CV (Alias's, the surface's at its Greville
+## point); Slide's, Project's and Parallel's U and V hull directions and
+## the hull's normal; View's screen right, up and back (`camera`); none
+## for World.
 pub func gizmo_axes(mode: int, cloud: Mesh, id: int, camera: list[Vector3]) -> list[Vector3]?!:
     if mode == 1:
         return [CadNurbs.cloud_frame(cloud, id, 0), CadNurbs.cloud_frame(cloud, id, 1), CadNurbs.cloud_frame(cloud, id, 2)]
     if mode >= 2 and mode <= 4:
-        return [CadNurbs.cloud_frame(cloud, id, 1), CadNurbs.cloud_frame(cloud, id, 2), CadNurbs.cloud_frame(cloud, id, 0)]
+        return [CadNurbs.cloud_hull_frame(cloud, id, 1), CadNurbs.cloud_hull_frame(cloud, id, 2), CadNurbs.cloud_hull_frame(cloud, id, 0)]
     if mode == 5:
         return camera
     return none
@@ -232,7 +272,24 @@ pub func run_structure(step: EditStep, data: GeometryData, faces: Mesh?) -> Geom
     let made = edit else error(ui.invalid, f"{step.verb} is not a structure step")
     let result = GeometryData(geometry = CadEdits.replaced(data.geometry, index, made.model()))
     result.report = report
+    # Insert and Remove Knot pick their isoparm by a click on the surface as
+    # it was (knot_place.luc): its net goes to the editor.
+    if step.verb == insert_verb or step.verb == remove_verb:
+        result.sketch_state = f"{probe_head}{index} {surface} {CadNurbs.surface_text(model, surface)}"
     return result
+
+## The head of the line telling the editor a knot step's surface (Edit
+## CAD's state): `surface <model> <surface> <CadNetProbe words>`.
+pub let probe_head = "surface "
+
+## The surface net (CadNetProbe's words) in Edit CAD state `state`, or "".
+pub func probe_words(state: str) -> str:
+    for line in state.split("\n"):
+        if line.starts_with(probe_head):
+            let words = line.split(" ")
+            if words.length > 3:
+                return words[3..].join(" ")
+    return ""
 
 ## A Move CVs step on `data`'s control vertex cloud.
 pub func run_move(step: EditStep, data: GeometryData) -> GeometryData!:
@@ -248,5 +305,6 @@ pub func run_move(step: EditStep, data: GeometryData) -> GeometryData!:
     let n = step.numbers
     if n.length < 10:
         error(ui.invalid, "A Move CVs step needs its ten numbers")
-    let after = CadNurbs.cloud_moved(before, ids, int(n[0]), Vector3(n[1], n[2], n[3]), int(n[4]), Vector3(n[5], n[6], n[7]), n[8], int(n[9]))
+    let mirror = int(n[10]) if n.length > 10 else 0
+    let after = CadNurbs.cloud_moved(before, ids, int(n[0]), Vector3(n[1], n[2], n[3]), int(n[4]), Vector3(n[5], n[6], n[7]), n[8], int(n[9]), mirror)
     return GeometryData(geometry = CadGeometry.with_cv_cloud(data.geometry, before, after))

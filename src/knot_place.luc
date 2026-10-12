@@ -1,0 +1,205 @@
+## Alias's Insert by a click (Object Edit › Insert): while an Edit CAD
+## node's last step is Insert Knot, the isoparm under the pointer shows on
+## its surface in green, in the tool bar's direction, and a click puts the
+## knot there; while it is Remove Knot, the surface's knot line nearest
+## the pointer (either way) is lit, and a click removes that one. The
+## surface comes from the step's cook (edit_cad_nets.probe_words: its net,
+## read by luce-cad's CadNetProbe), so the viewport needs no model.
+from luce_ui.ui import Painter
+from luce_3d.graphics import Vector3, WireRenderer
+from luce_cad.nurbs import CadNetProbe
+from workspace import Workspace
+from node import Node
+import edit_cad
+import edit_cad_nets
+import view_projection as gm
+import theme
+from luce_std import math
+
+## Samples along a drawn isoparm, and the lattice the pointer is found on.
+let samples = 48
+let lattice = 24
+## Screen pixels within which the pointer is on the surface or a knot line.
+let reach = 40.0
+
+pub class KnotPlacer:
+    let w: Workspace
+    var probe: CadNetProbe? = none
+    var probe_text: str = ""
+    ## The lattice's points on screen, and the view and probe they were for.
+    var screen: list[list[float]]
+    var screen_key: str = ""
+    ## What the pointer is on: the direction (0 u, 1 v) and the fraction; -1
+    ## the direction when it is off the surface.
+    pub var direction: int = -1
+    pub var fraction: float = 0.0
+    ## The step Esc let go of (node id and recipe length): clicks select
+    ## again until another knot step.
+    var dismissed: str = ""
+
+    pub func init(self, w: Workspace):
+        self.w = w
+        self.screen = []
+
+    ## The Edit CAD node whose last step is Insert or Remove Knot, edited
+    ## and displayed, and its verb; none otherwise.
+    func target(self) -> (Node, str)?:
+        let node = self.w.selected() else return none
+        if node.kind != edit_cad.kind_name or node.id != self.w.network.display or node.edits.length == 0 or not self.w.editing() or self.w.sketching():
+            return none
+        let verb = node.edits[-1].verb
+        if verb != edit_cad_nets.insert_verb and verb != edit_cad_nets.remove_verb or self.dismissed == f"{node.id}/{node.edits.length}":
+            return none
+        return (node, verb)
+
+    ## Esc: clicks go back to selecting until the next knot step.
+    pub func dismiss(self) -> bool:
+        let found = self.target() else return false
+        let (node, _) = found
+        self.dismissed = f"{node.id}/{node.edits.length}"
+        self.direction = -1
+        return true
+
+    ## The surface of the node's state, read once per change.
+    func surface(self, node: Node) -> CadNetProbe?!:
+        let words = edit_cad_nets.probe_words(node.sketch_state)
+        if words == "":
+            return none
+        if words != self.probe_text:
+            self.probe_text = words
+            self.probe = CadNetProbe.parse(words)
+            self.screen_key = ""
+        return self.probe
+
+    ## Whether the placer is working (the viewport routes the pointer here).
+    pub func active(self) -> bool!:
+        let found = self.target() else return false
+        let (node, _) = found
+        return self.surface(node) != none
+
+    ## The pointer at (`x`, `y`): what it is on; whether that changed.
+    pub func hover(self, x: float, y: float, width: float, height: float) -> bool!:
+        let was = (self.direction, self.fraction)
+        self.direction = -1
+        let found = self.target() else return was.0 != -1
+        let (node, verb) = found
+        let probe = self.surface(node) else return was.0 != -1
+        if verb == edit_cad_nets.insert_verb:
+            let uv = self.under(probe, x, y, width, height) else return was.0 != -1
+            let step = node.edits[-1]
+            let direction = int(step.numbers[edit_cad_nets.direction_slot])
+            self.direction = direction
+            self.fraction = math.clamp(uv.x if direction == 0 else uv.y, 0.001, 0.999)
+        else:
+            self.nearest_knot(probe, x, y, width, height)
+        return (self.direction, self.fraction) != was
+
+    ## A click: the knot step takes the place under the pointer (one undo).
+    pub func click(self, x: float, y: float, width: float, height: float) -> bool!:
+        _ = self.hover(x, y, width, height)
+        if self.direction < 0:
+            return false
+        let found = self.target() else return false
+        let (node, verb) = found
+        let direction = float(self.direction)
+        let fraction = self.fraction
+        self.w.perform(f"{verb} here", func () -> unit!:
+            let numbers = node.edits[-1].numbers.copy()
+            numbers[edit_cad_nets.direction_slot] = direction
+            numbers[edit_cad_nets.fraction_slot] = fraction
+            node.edits[-1] = node.edits[-1].with_numbers(numbers)
+            self.w.network.invalidate(node.id)
+            self.w.rebuild())
+        return true
+
+    ## The isoparm under the pointer, green (Alias's preview of Insert), or
+    ## the knot line lit for Remove.
+    pub func draw(self, painter: Painter) -> unit!:
+        if self.direction < 0:
+            return
+        let probe = self.probe else return
+        let found = self.target() else return
+        let (_, verb) = found
+        let points = isoparm(probe, self.direction, self.fraction)
+        let lines: list[Vector3] = []
+        for at in 1..<points.length:
+            lines.append(points[at - 1])
+            lines.append(points[at])
+        let color = theme.check_group(0) if verb == edit_cad_nets.insert_verb else theme.accent()
+        WireRenderer.lines(lines, self.w.view.camera, painter.target(), color, 2.5)
+
+    ## The surface's fractions (u, v) under the pointer: the nearest lattice
+    ## point on screen, then Newton on the screen distance; none off it.
+    func under(self, probe: CadNetProbe, x: float, y: float, width: float, height: float) -> Vector3?!:
+        self.project_lattice(probe, width, height)
+        var best = -1
+        var least = reach
+        for at in 0..<self.screen.length:
+            let p = self.screen[at]
+            if p[2] <= 0.0:
+                continue
+            let d = math.hypot(p[0] - x, p[1] - y)
+            if d < least:
+                least = d
+                best = at
+        if best < 0:
+            return none
+        var u = float(best // (lattice + 1)) / float(lattice)
+        var v = float(best % (lattice + 1)) / float(lattice)
+        let h = 0.0001
+        for _ in 0..<8:
+            let p = gm.project(self.w, probe.point(u, v), width, height)
+            let pu = gm.project(self.w, probe.point(math.min(1.0, u + h), v), width, height)
+            let pv = gm.project(self.w, probe.point(u, math.min(1.0, v + h)), width, height)
+            let a = (pu[0] - p[0]) / h
+            let b = (pv[0] - p[0]) / h
+            let c = (pu[1] - p[1]) / h
+            let d = (pv[1] - p[1]) / h
+            let det = a * d - b * c
+            if math.abs(det) < 1e-12:
+                break
+            let ex = x - p[0]
+            let ey = y - p[1]
+            u = math.clamp(u + (d * ex - b * ey) / det, 0.0, 1.0)
+            v = math.clamp(v + (a * ey - c * ex) / det, 0.0, 1.0)
+        return Vector3(u, v, 0.0)
+
+    ## For Remove: the inner knot line, either way, nearest the pointer on
+    ## screen within reach.
+    func nearest_knot(self, probe: CadNetProbe, x: float, y: float, width: float, height: float) -> unit!:
+        var least = reach
+        for direction in [0, 1]:
+            for k in 0..<probe.knot_count(direction):
+                let fraction = probe.knot(direction, k)
+                let points = isoparm(probe, direction, fraction)
+                for at in 1..<points.length:
+                    let a = gm.project(self.w, points[at - 1], width, height)
+                    let b = gm.project(self.w, points[at], width, height)
+                    if a[2] <= 0.0 or b[2] <= 0.0:
+                        continue
+                    let d = gm.segment_distance(x, y, a, b)
+                    if d < least:
+                        least = d
+                        self.direction = direction
+                        self.fraction = fraction
+
+    ## The lattice's points on screen, again when the view or surface moved.
+    func project_lattice(self, probe: CadNetProbe, width: float, height: float) -> unit!:
+        let view = self.w.view
+        let key = f"{view.yaw} {view.pitch} {view.distance} {view.target} {width} {height} {self.probe_text.length}"
+        if key == self.screen_key:
+            return
+        self.screen_key = key
+        self.screen = []
+        for i in 0..<lattice + 1:
+            for j in 0..<lattice + 1:
+                self.screen.append(gm.project(self.w, probe.point(float(i) / float(lattice), float(j) / float(lattice)), width, height))
+
+## The isoparm of `probe` along v at u = `fraction` (`direction` 0) or along
+## u at v = `fraction`, as points.
+func isoparm(probe: CadNetProbe, direction: int, fraction: float) -> list[Vector3]:
+    let points: list[Vector3] = []
+    for at in 0..<samples + 1:
+        let t = float(at) / float(samples)
+        points.append(probe.point(fraction, t) if direction == 0 else probe.point(t, fraction))
+    return points

@@ -28,6 +28,19 @@
 ##   surf_insert: Insert Knot's tool bar, the new row of CVs.
 ##   surf_convert: a cylinder's side converted (rational quadratic), its
 ##     net at the CVs level.
+##   surf_insert_click: Insert Knot on the quintic top, the pointer over
+##     the surface: the green isoparm where a click puts the knot.
+## Stage 2, curves (edit_cad_curves.luc, cad_curve_nodes.luc), beside an
+## Edit CAD box: a CV curve, an EP curve and a curve on its top face.
+##   surf_curves: the three at the Curves level, two picked.
+##   surf_curve_menu: the right-click menu on the two: the curve tools.
+##   surf_blend: Blend Curve between them, G2 both ends, its tool bar.
+##   surf_blend_g4: the same at G4 both ends, at the CVs level: the
+##     blend's ten control points (five quintic spans).
+##   surf_curve_cvs: the curves' control points at the CVs level, the CV
+##     curve's last one picked with the gizmo.
+##   surf_blend_node: a CAD network's Blend Curve node between two of a
+##     box's top edges, its parameters.
 import preview_support
 from luce_3d.graphics import Vector3
 from luce_cad.cad_geometry import CadGeometry
@@ -39,6 +52,9 @@ import modeling_commands
 import selection_commands
 import edit_cad_commands
 import edit_cad_nets
+import edit_cad_curves
+import cad_curve_nodes
+import placing_commands
 import component_moves
 from view_projection import project
 from luce_ui.ui import Event
@@ -48,7 +64,8 @@ import cad_check
 from luce_std import math
 
 pub func scenes() -> list[str]:
-    return ["surf_check", "surf_check_g1", "surf_check_g3", "surf_combs", "surf_deviation", "surf_band", "surf_draft", "surf_cv_nuv", "surf_cv_row", "surf_rebuild", "surf_insert", "surf_convert"]
+    return ["surf_check", "surf_check_g1", "surf_check_g3", "surf_combs", "surf_deviation", "surf_band", "surf_draft", "surf_cv_nuv", "surf_cv_row", "surf_rebuild", "surf_insert", "surf_convert",
+            "surf_insert_click", "surf_curves", "surf_curve_menu", "surf_blend", "surf_blend_g4", "surf_curve_cvs", "surf_blend_node"]
 
 func look(editor: Luce3D, yaw: float, pitch: float, distance: float, target: Vector3) -> unit!:
     let w = editor.workspace
@@ -146,12 +163,67 @@ func quintic_top(editor: Luce3D) -> unit!:
     preview_support.settle(w)
     look(editor, 0.7, 0.85, 5.2, Vector3(0.0, 0.9, 0.0))
 
+## An Edit CAD box with three curves drawn beside and on it (surf_curves
+## and the scenes after it), at the Curves level.
+func three_curves(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    cad(editor)
+    node_commands.add_node(w, "Edit CAD", 40.0, 40.0)
+    preview_support.settle(w)
+    modeling_commands.create(w, "Box")
+    preview_support.settle(w)
+    draw(w, edit_cad_curves.cv_verb, [Vector3(1.6, -1.0, -0.6), Vector3(2.2, 0.2, -0.9), Vector3(2.6, 0.6, 0.2), Vector3(3.0, 1.4, 0.6), Vector3(3.6, 1.6, 1.4)])
+    draw(w, edit_cad_curves.ep_verb, [Vector3(-0.6, 1.8, 2.4), Vector3(0.6, 2.2, 2.6), Vector3(1.6, 1.6, 3.4), Vector3(2.4, 2.4, 4.0)])
+    draw(w, edit_cad_curves.surface_verb, [Vector3(-0.7, 1.0, -0.6), Vector3(-0.2, 1.0, 0.4), Vector3(0.3, 1.0, -0.3), Vector3(0.7, 1.0, 0.6)])
+    preview_support.settle(w)
+    selection_commands.set_mode(w, 6)
+    preview_support.settle(w)
+
+## The curve scenes' camera (after their last command: a first result
+## frames the view).
+func curves_look(editor: Luce3D) -> unit!:
+    look(editor, 0.55, 0.42, 8.0, Vector3(1.4, 1.0, 1.6))
+
+## Drawing tool `tool` through `points`, finished.
+func draw(w: Workspace, tool: str, points: list[Vector3]) -> unit!:
+    modeling_commands.model(w, tool)
+    for p in points:
+        placing_commands.add_corner(w, p)
+    placing_commands.finish_placing(w)
+    preview_support.settle(w)
+
+## The Curves level's pick edge of curve `index` (the shown pick mesh's).
+func curve_edge(w: Workspace, index: int) -> int!:
+    let mesh = preview_support.shown(w) else trap("no curve pick mesh")
+    let owners = mesh.find_attribute("cad_curve", 4)
+    for edge in 0..<mesh.edge_count():
+        if int(mesh.attribute_value(owners, edge)) == index:
+            return edge
+    trap(f"no edge of curve {index}")
+
+## Curves 0 and 1 picked.
+func pick_two(w: Workspace) -> unit!:
+    selection_commands.choose_component(w, curve_edge(w, 0), false)
+    selection_commands.choose_component(w, curve_edge(w, 1), true)
+    preview_support.settle(w)
+
 ## Frame `frame` of scene `scene` (`last` is the frame captured).
 pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
     let w = editor.workspace
     if frame != last - 1:
         return
-    if scene == "surf_cv_nuv":
+    if scene == "surf_insert_click":
+        # The pointer over the top, a third of the way along.
+        let area = editor.panels.view.layout().bounds()
+        let s = project(w, Vector3(-0.35, 1.0, 0.1), area.width, area.height)
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + s[0], y = area.y + s[1]))
+    elif scene == "surf_curve_menu":
+        let area = editor.panels.view.layout().bounds()
+        let s = project(w, Vector3(2.6, 0.6, 0.2), area.width, area.height)
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + s[0], y = area.y + s[1]))
+        editor.app.dispatch(Event(kind = EventKind.pointer_down, x = area.x + s[0], y = area.y + s[1], button = 1))
+        editor.app.dispatch(Event(kind = EventKind.pointer_up, x = area.x + s[0], y = area.y + s[1], button = 1))
+    elif scene == "surf_cv_nuv":
         # Held mid-drag: the frame fixed at the press, the ghost kept.
         let frame_axes = component_moves.cv_axes(w) else trap("no NUV frame")
         w.ghost_hulls = w.batches.hull_batches.copy()
@@ -219,6 +291,64 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
     elif scene == "surf_rebuild":
         quintic_top(editor)
         selection_commands.set_mode(w, 1)
+        # The worker publishes the CV nets once it is asked with the CVs
+        # level on: ask again and wait for it before the capture.
+        w.rebuild()
+        preview_support.settle(w)
+        editor.panels.refresh()
+    elif scene == "surf_insert_click":
+        quintic_top(editor)
+        edit_cad_commands.tool(w, edit_cad_nets.insert_verb)
+        preview_support.settle(w)
+        look(editor, 0.7, 0.85, 5.2, Vector3(0.0, 0.9, 0.0))
+        editor.panels.refresh()
+    elif scene in ["surf_curves", "surf_curve_menu"]:
+        three_curves(editor)
+        pick_two(w)
+        curves_look(editor)
+        editor.panels.refresh()
+    elif scene in ["surf_blend", "surf_blend_g4"]:
+        three_curves(editor)
+        pick_two(w)
+        edit_cad_commands.tool(w, edit_cad_curves.blend_verb)
+        if scene == "surf_blend_g4":
+            modeling_commands.set_last_step(w, edit_cad_curves.start_g_slot, 4.0, 0.0, 4.0)
+            modeling_commands.set_last_step(w, edit_cad_curves.end_g_slot, 4.0, 0.0, 4.0)
+            w.view.hulls_visible = true
+            preview_support.settle(w)
+            selection_commands.set_mode(w, 1)
+        preview_support.settle(w)
+        curves_look(editor)
+        editor.panels.refresh()
+    elif scene == "surf_curve_cvs":
+        three_curves(editor)
+        w.view.hulls_visible = true
+        selection_commands.set_mode(w, 1)
+        let cloud = preview_support.shown(w) else trap("no cloud")
+        var last = -1
+        let owners = cloud.find_attribute("cad_cv_surface", 0)
+        let models = cloud.find_attribute("cad_cv_model", 0)
+        for i in 0..<cloud.point_count():
+            if int(cloud.attribute_value(models, i)) < 0 and int(cloud.attribute_value(owners, i)) == 0: last = i
+        selection_commands.choose_component(w, last, false)
+        modeling_commands.choose_tool(w, "Move")
+        preview_support.settle(w)
+        curves_look(editor)
+        editor.panels.refresh()
+    elif scene == "surf_blend_node":
+        cad(editor)
+        node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+        let box = w.network.selected
+        node_commands.add_node(w, cad_curve_nodes.blend_kind, 40.0, 140.0)
+        let blend = w.network.selected
+        w.network.connect(box, blend, 0)
+        let along_x = func (a: Vector3, b: Vector3) -> bool: return math.abs(a.y - 10.0) < 1e-9 and math.abs(b.y - 10.0) < 1e-9 and math.abs(a.x - b.x) > 1.0
+        let references = references_where(w, box, along_x).split(";")
+        node_commands.set_text(w, 0, "edge " + references[0])
+        node_commands.set_text(w, 1, "edge " + references[1])
+        node_commands.display_selected(w)
+        preview_support.settle(w)
+        look(editor, 0.75, 0.55, 75.0, Vector3(0.0, 8.0, 0.0))
         editor.panels.refresh()
     elif scene == "surf_insert":
         quintic_top(editor)

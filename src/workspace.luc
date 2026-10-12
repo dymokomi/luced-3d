@@ -30,7 +30,7 @@ from view_state import ViewState
 from viewport_batches import ViewportBatches
 from edit_kinds import is_edit, edit_kind, context_kind
 from geometry_data import GeometryData
-from edit_types import EditKind, EditLevel, smart_level, face_level, object_level, point_level, soft_radius_slot, falloff_slot, symmetry_slot
+from edit_types import EditKind, EditLevel, smart_level, face_level, object_level, point_level, curve_level, soft_radius_slot, falloff_slot, symmetry_slot
 import edit_mesh
 import node_catalog
 from luce_cad.cad_edits import CadEdits
@@ -90,6 +90,9 @@ pub class Workspace:
     pub var edit_sketch_node: int = -1
     ## The Edit CAD model's shown sketch under the pointer ("" none).
     pub var hovered_sketch: str = ""
+    ## Whether the viewport has the keyboard (its arrow keys then nudge
+    ## picked CVs rather than step the timeline: component_moves.nudges).
+    pub var viewport_focus: bool = false
     ## The Project tool's cast of the edited sketch's input body
     ## (sketch_node.shadows_text), made by the cook (off the UI thread with
     ## the worker), and the Sketch stamp it is for.
@@ -449,7 +452,7 @@ pub class Workspace:
     pub func shown_levels(self) -> list[int]:
         if self.sketching(): return [1, 2, 3, 4]
         let result: list[int] = []
-        for index in [0, 1, 2, 3, 5, 4]:
+        for index in [0, 1, 2, 3, 5, 6, 4]:
             if self.level_available(index): result.append(index)
         return result
 
@@ -473,7 +476,7 @@ pub class Workspace:
         let kind = self.active_kind() else return self.network.context() == "geometry" and tool_run(name) != none
         if name in kind.primitives or name in kind.draw_tools:
             return true
-        let tool = kind.tool(name) else return false
+        let tool = kind.tool_at(name, self.level_index()) else return false
         return tool.offered(self.level_index())
 
     ## The level that selects single elements of `domain` (Polygons rather
@@ -588,6 +591,17 @@ pub class Workspace:
     pub func selected_entities(self) -> int!:
         let mesh = self.geometry else return 0
         let chosen = self.current_selection() else return 0
+        # Curves: each picked curve once (its segments are the elements).
+        if self.level_index() == curve_level:
+            let owners = mesh.find_attribute("cad_curve", 4)
+            let seen: list[int] = []
+            var at = chosen.next(-1)
+            while at >= 0:
+                let owner = int(mesh.attribute_value(owners, at)) if owners >= 0 else -1
+                if not (owner in seen):
+                    seen.append(owner)
+                at = chosen.next(at)
+            return seen.length
         if self.network.context() == "cad":
             return CadEdits.selected_entities(mesh, chosen, self.level_index())
         return chosen.count()

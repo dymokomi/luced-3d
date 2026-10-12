@@ -12,9 +12,11 @@ from luce_geocore.geocore import Mesh, Selection, Domain
 from workspace import Workspace
 from node import Node
 from tool_prompt import ToolPrompt
-from edit_types import object_level, edge_level, face_level
+from edit_types import object_level, edge_level, face_level, curve_level
 from edit_steps import show
 import cad_modify
+import cad_curve_nodes
+from luce_cad.cad_curves import CadCurves
 import cad_moves
 import cad_names
 import edit_cad_faces
@@ -26,6 +28,9 @@ pub let face = 2
 pub let body = 3
 pub let edge = 4
 pub let point = 5
+## A curve of the input (the Curves level) or, without curves, an edge: a
+## blend's end ("curve <name>" or "edge <reference>").
+pub let curve_or_edge = 6
 
 ## A selection input: its label in the panel, the node's text (or for a
 ## point, the value slots) it writes, what it takes, when it shows (a
@@ -79,6 +84,12 @@ pub func inputs(kind: str) -> list[PickInput]:
         return [PickInput("Faces", first, faces, "", "The faces deleted; the body heals over them.")]
     if kind == "Remove":
         return [PickInput("Bodies", first, bodies, "", "The bodies removed.")]
+    if kind == cad_curve_nodes.blend_kind:
+        return [PickInput("From curve", 0, curve_or_edge, "", "The curve or edge the blend leaves, at its end nearest the other (an edge when the input has no curves)."),
+                PickInput("To curve", 1, curve_or_edge, "", "The curve or edge the blend meets.")]
+    if kind == cad_curve_nodes.curve_kind:
+        return [PickInput("Edge", cad_curve_nodes.source_text, edge, "{ type != 2 }", "From edge: the body's edge the curve is, kept by its reference."),
+                PickInput("Face", cad_curve_nodes.source_text, face, "{ type < 3 }", "Isoparm and On face: the face, kept by its name.")]
     return []
 
 ## The input of `kind` whose prompt is `label`, or none.
@@ -98,6 +109,8 @@ pub func summary(node: Node, input: PickInput) -> str:
         return "None picked"
     if input.takes == edge:
         return "An edge"
+    if input.takes == curve_or_edge:
+        return text if text.starts_with("curve ") else "An edge"
     let count = text.split(";").length
     var noun = "face" if input.takes in [faces, face] else "body"
     if node.kind == "Move" and input.slot == cad_modify.first_text:
@@ -120,7 +133,11 @@ func begin_waiting(w: Workspace, node: Node, input: PickInput) -> unit!:
     w.network.selected = node.inputs[0]
     show(w, node.inputs[0])
     let takes_bodies = input.takes in [bodies, body] or (node.kind == "Move" and input.slot == cad_modify.first_text and int(node.values[cad_modify.object_slot]) == 0)
-    w.adopt_level(object_level if takes_bodies else (edge_level if input.takes in [edge, point] else face_level))
+    var level = object_level if takes_bodies else (edge_level if input.takes in [edge, point] else face_level)
+    # A blend's end: the input's curves when it has any, else its edges.
+    if input.takes == curve_or_edge:
+        level = curve_level if input_has_curves(w, node) else edge_level
+    w.adopt_level(level)
     w.selection = none
     w.pending_changed = true
     let many = input.takes in [faces, bodies]
@@ -128,10 +145,18 @@ func begin_waiting(w: Workspace, node: Node, input: PickInput) -> unit!:
     w.revision += 1
     w.rebuild()
 
-## The first input node `node` still waits for (cad_modify.waits_for),
-## or none: an empty one it needs as its values stand.
+## Whether node `node`'s input holds CAD curves.
+func input_has_curves(w: Workspace, node: Node) -> bool!:
+    let input = w.network.find(node.inputs[0]) else return false
+    let data = input.cache else return CadCurves.count(w.network.evaluate_data(input.id).geometry) > 0
+    return data.has_curves()
+
+## The first input node `node` still waits for (cad_modify.waits_for,
+## cad_curve_nodes.waits_for), or none: an empty one it needs as its values
+## stand.
 pub func next_input(node: Node) -> PickInput?:
-    if cad_modify.waits_for(node.kind, node.values, node.texts, node.inputs.length > 1 and node.inputs[1] >= 0) == "":
+    let waiting = cad_curve_nodes.waits_for(node.kind, node.values, node.texts) if node.kind in cad_curve_nodes.kinds() else cad_modify.waits_for(node.kind, node.values, node.texts, node.inputs.length > 1 and node.inputs[1] >= 0)
+    if waiting == "":
         return none
     for input in inputs(node.kind):
         if input.takes != point and node.texts[input.slot].trim() == "" and needed(node, input):
@@ -146,18 +171,29 @@ func needed(node: Node, input: PickInput) -> bool:
         return int(node.values[cad_moves.type_slot]) == 2 and int(node.values[cad_moves.axis_slot]) == 3
     if input.label == "Tool bodies":
         return node.inputs.length < 2 or node.inputs[1] < 0
+    if node.kind == cad_curve_nodes.curve_kind:
+        let made_as = int(node.values[cad_curve_nodes.type_slot])
+        return made_as == cad_curve_nodes.edge_type if input.takes == edge else made_as >= cad_curve_nodes.isoparm_type
     return true
 
 ## Whether prompt `label` is one of node `node`'s inputs.
 pub func waits(node: Node, label: str) -> bool:
-    return node.kind in cad_modify.kinds() and input_named(node.kind, label) != none
+    return (node.kind in cad_modify.kinds() or node.kind in cad_curve_nodes.kinds()) and input_named(node.kind, label) != none
 
 ## The selection changed while input `label` of `node` waits: what is
 ## picked goes into the node; a single pick finishes at once.
 pub func follow(w: Workspace, node: Node, label: str, mesh: Mesh, chosen: Selection) -> unit!:
     let input = input_named(node.kind, label) else return
     let first = chosen.next(-1)
-    if input.takes == point or input.takes == edge:
+    if input.takes == curve_or_edge and first >= 0 and w.level_index() == curve_level:
+        let names = mesh.find_attribute("cad_curve_name", 4)
+        let name = mesh.attribute_text(names, first) if names >= 0 else ""
+        if name == "":
+            return
+        node.texts[input.slot] = f"curve {name}"
+        finish(w, node, label)
+        return
+    if input.takes == point or input.takes == edge or input.takes == curve_or_edge:
         if first < 0 or not w.on_domain(Domain.edge):
             return
         if input.takes == point:
@@ -171,7 +207,7 @@ pub func follow(w: Workspace, node: Node, label: str, mesh: Mesh, chosen: Select
             if reference == "":
                 say(w, "This edge has no name to keep: pick one of a body made inside a CAD node")
                 return
-            node.texts[input.slot] = reference
+            node.texts[input.slot] = f"edge {reference}" if input.takes == curve_or_edge else reference
         finish(w, node, label)
         return
     let expression = chosen.expression(mesh) if chosen.count() > 0 else "!*"
