@@ -73,7 +73,7 @@ The same luce-cad operations serve both workflows. A node runs them on its input
 | 0 | Small fixes found here (done) |
 | 1 | Profiles you can see, pick and extrude (done) |
 | 2 | Dimensions while drawing, and on the canvas (done) |
-| 3 | Sketch on a face from the viewport, with projection and offset |
+| 3 | Sketch on a face from the viewport, with projection and offset (done) |
 | 4 | Extrude, Revolve and Press Pull in full |
 | 5 | Fillet and Chamfer in the viewport |
 | 6 | Edit CAD direct modeling |
@@ -692,7 +692,15 @@ texts, values and the result's volume checked.
   - A third dimension on a fully constrained line is added driven, in parentheses, with the notice.
   - A dragged label keeps its place through save and load.
 
-**Stage 3: sketch on a face** (G8, G9; luce-cad 4, 5).
+**Stage 3: sketch on a face** (G8, G9; luce-cad 4, 5). Done 2026-10-11 (`sketch_face_tests`, `selection_rules_tests`; luce-cad `link_tests`, `profile_tests`). As built:
+- Sketch on face (right-click menu, A, Create; no K, answer 3) makes the Sketch; its first cook projects the face's loops, linked (`sketch_node.evaluate_sketch`, luce-cad `project_face`), so they come from the body however the sketch was made. Projected curves draw purple and hide their Fix glyphs; the editor's lines are lifted a hair toward the camera so the loop shows over the face.
+- G16: the editor never cooks the body. Each Sketch cook reports a state (`SketchState`: its plane, its text when casting changed it, its lost curves) through the result store and the worker's report to the node (`Node.sketch_state`); the editor's frame and text come from it (`sketch_frames.FrameCache`), the last face frame standing while the next cooks. Project's cast is made by the cook too: while Project is the tool the request names the sketch (`Network.projecting`), and the worker's report carries every edge's samples and reference as text (luce-cad `CadShadows`), which the editor draws, picks and projects from. Without the worker (tests, scripts) the UI-thread cook makes the same.
+- Offset makes one Offset relation over the chain (luce-cad `relation = true`): one dimension, drawn across the copy's middle and its source; a projected loop's offset follows the face as the body changes.
+- Lost links: the cook names them; they draw yellow (over the edge projected again in their place when the face's loop gained it), the node's badge is yellow (a warning), red when the sketch fails (its face gone). Right-click on selected projected curves: Re-link (Project's next edge click points them at that edge) and Break link (plain curves); Delete removes them. Badges show on every node with a warning or a failure.
+- Slice (right-click in a sketch, checked while on): the sketch node's shown body is clipped by its plane, keeping what is behind it (`slice_view.luc`, luce-geocore's Clip on the CAD preview, keyed apart so the whole body's products are not reused). Display only; the clipped body shows no B-rep edges.
+- Not built: Project accepting a face (a click brings one edge), auto-projection of edges a dimension refers to, a project setting to turn the face's projection off.
+- Follow-ups: the Operation row reads "Auto (Cut)" (the cook reports Auto's choice, `Node.automatic`); CAD component boxes (Edit CAD, CAD networks) take a B-rep face or edge only when all of it lies inside, either way dragged (luce-3d `wholly`); an Extrude made from a rolled-back sketch goes in right after the sketch and keeps the display (Fusion's marker at the new feature; the later features stay rolled back until selected); profile hover reads a layout made once per sketch (luce-cad `CadProfileMap`).
+- Plan as written:
 - Faces level, select a flat face, A → Sketch (or K): the node after the displayed one, the face's loops projected and linked, Look At.
 - Project accepts faces.
 - Offset of a projected loop is one relation.

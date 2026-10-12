@@ -1,58 +1,45 @@
-## A Sketch node's input body and frame for the editor on the UI thread
-## (sketch_node.luc): an origin plane's frame at once; a Face plane's, and
-## the body that projected curves follow, need its input, cooked here on a
-## copy of the graph and kept until the input changes. And the view looking
-## straight at a sketch.
+## A Sketch node's plane and text for the editor on the UI thread
+## (sketch_node.luc), from what its last cook reported (SketchState): the
+## body is cooked by the compute worker, never here. An origin plane's frame
+## is known at once; a face's comes with the cook, and the last one known
+## stands while the next cooks. And the view looking straight at a sketch.
 from workspace import Workspace
 from node import Node
-from geometry_data import GeometryData
-from sketch_node import SketchFrame, node_frame, face_frame, face_plane
+from sketch_node import SketchFrame, SketchState, node_frame, face_plane, parse_state
 from luce_cad.sketch import CadSketch
 import sketch_kinds
 from luce_std import math
 
 pub class FrameCache:
-    var key: str = ""
-    var kept: SketchFrame? = none
-    ## The input body as last cooked, and its node and stamp.
-    var body_key: str = ""
-    var body_data: GeometryData? = none
+    ## The state last read, by the node and the text it was read from.
+    var read_from: str = ""
+    var last_state: SketchState? = none
+    ## The last face frame known of each node.
+    let faces: map[int, SketchFrame]
 
-    ## Sketch node `node`'s input as cooked now (none without one), and a
-    ## key that changes when it does.
-    pub func body(self, w: Workspace, node: Node) -> GeometryData?!:
-        let found = w.network.find(node.inputs[0])
-        if found == none:
-            self.body_key = ""
-            self.body_data = none
+    pub func init(self):
+        self.faces = {}
+
+    ## Sketch node `node`'s state as its last cook reported it, when that
+    ## cook is current (none while it cooks, or without one).
+    pub func state(self, node: Node) -> SketchState?!:
+        if node.dirty or node.sketch_state == "":
             return none
-        let input = found else return none
-        # Stamps are current: every change rebuilds, which stamps the
-        # graph, so this runs no graph walk per event.
-        let key = f"{input.id}|{input.stamp}"
-        if key != self.body_key:
-            self.body_key = key
-            self.body_data = w.network.copy().evaluate_data(input.id) catch failure:
-                recover none
-        return self.body_data
+        let key = f"{node.id}|{node.sketch_state}"
+        if key != self.read_from:
+            self.read_from = key
+            self.last_state = parse_state(node.sketch_state)
+        return self.last_state
 
-    pub func body_stamp(self) -> str:
-        return self.body_key
-
-    ## Sketch node `node`'s frame in `w` (an origin plane at once).
-    pub func frame(self, w: Workspace, node: Node) -> SketchFrame!:
+    ## Sketch node `node`'s frame in `w`: an origin plane's at once, a
+    ## face's as last cooked (the ground until a cook said).
+    pub func frame(self, node: Node) -> SketchFrame!:
         if int(node.values[0]) != face_plane:
             return node_frame(node.values)
-        let data = self.body(w, node) else return node_frame([1.0, node.values[1]])
-        let key = f"{self.body_key}|{node.texts[1]}|{node.values[1]}"
-        if key == self.key:
-            if let f = self.kept:
-                return f
-        let f = face_frame(node.values, node.texts, data) catch failure:
-            recover node_frame([1.0, node.values[1]])
-        self.key = key
-        self.kept = f
-        return f
+        if let found = self.state(node):
+            self.faces[node.id] = found.plane
+            return found.plane
+        return self.faces[node.id] else node_frame([1.0, node.values[1]])
 
 ## Look straight at `sketch` on plane `f` (x right, y up, as the frame
 ## says), at the middle of what is drawn, as Fusion's Look At does.

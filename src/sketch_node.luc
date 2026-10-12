@@ -11,9 +11,13 @@
 ## viewport (sketch_editor.luc). The input's bodies pass through beside the
 ## curves, so a chain Box → Sketch → Extrude is one wire and displaying the
 ## sketch shows the body as it was there. Curves projected from the input body's
-## edges are cast again on every evaluation, so they follow it. Lengths are
-## millimeters.
-from luce_cad.sketch import CadSketch
+## edges are cast again on every evaluation, so they follow it. A sketch on
+## a face has that face's loops projected (linked) the first time it is
+## evaluated on it, as Fusion projects a sketch's face, so an Offset of a
+## loop follows the face. Each evaluation reports the sketch's state for
+## the editor (SketchState): its plane and its text as evaluated, so the
+## editor never cooks the body on the UI thread. Lengths are millimeters.
+from luce_cad.sketch import CadSketch, CadProjection, CadShadows
 from luce_cad.cad_geometry import CadGeometry
 from luce_cad.modeling import CadModeling
 from luce_3d.graphics import Vector3
@@ -79,17 +83,69 @@ pub func frame(plane: int, offset: float) -> SketchFrame:
 pub func node_frame(v: list[float]) -> SketchFrame:
     return frame(int(v[0]), v[1])
 
+## What a Sketch's evaluation tells its editor: the plane, the text as
+## evaluated when casting changed it (projections cast again, a face's
+## loops projected; "": the node's text stands), and the curves whose links
+## were lost. As text (it crosses from the compute
+## worker): a frame line, a lost line, then the sketch's text.
+pub class SketchState:
+    pub let plane: SketchFrame
+    pub let text: str
+    pub let lost: list[int]
+
+    pub func init(self, plane: SketchFrame, text: str, lost: list[int]):
+        self.plane = plane
+        self.text = text
+        self.lost = lost
+
+    pub func encode(self) -> str:
+        let f = self.plane
+        let lost: list[str] = []
+        for at in self.lost:
+            lost.append(f"{at}")
+        return f"frame {f.origin.x} {f.origin.y} {f.origin.z} {f.u.x} {f.u.y} {f.u.z} {f.v.x} {f.v.y} {f.v.z}\nlost {lost.join(" ")}\n{self.text}"
+
+## The state `text` encodes, or none (no state, or not one).
+pub func parse_state(text: str) -> SketchState?!:
+    if not text.starts_with("frame "):
+        return none
+    let first = text.index_of("\n") else return none
+    let rest = text[first + 1..<text.length]
+    let second = rest.index_of("\n") else return none
+    let numbers: list[float] = []
+    for word in text[6..<first].split(" "):
+        numbers.append(float(word))
+    if numbers.length != 9:
+        return none
+    let lost: list[int] = []
+    for word in rest[5..<second].split(" "):
+        if word != "":
+            lost.append(int(word))
+    let f = SketchFrame(Vector3(numbers[0], numbers[1], numbers[2]), Vector3(numbers[3], numbers[4], numbers[5]), Vector3(numbers[6], numbers[7], numbers[8]))
+    return SketchState(f, rest[second + 1..<rest.length], lost)
+
 ## A Sketch node's result: its text solved, as curves on its plane (on a
-## face of `data`'s body for the Face plane).
+## face of `data`'s body for the Face plane), with its state for the editor.
 pub func evaluate_sketch(v: list[float], texts: list[str], data: GeometryData) -> GeometryData!:
     let sketch = CadSketch.parse(texts[0])
-    let f = face_frame(v, texts, data) if int(v[0]) == face_plane else node_frame(v)
+    let read = sketch.text()
+    let on_face = int(v[0]) == face_plane
+    let f = face_frame(v, texts, data) if on_face else node_frame(v)
+    # A face's loops projected and linked, once (what is drawn on them
+    # names them by index).
+    if on_face and not sketch.projects_face(texts[1].trim()):
+        _ = sketch.project_face(CadGeometry.model(data.geometry, 0), texts[1].trim(), f.origin, f.u, f.v)
     # Projected curves cast again from the body as it is now.
     var lost = 0
+    let lost_curves: list[int] = []
     if sketch.link_count() > 0:
         if CadGeometry.model_count(data.geometry) == 0:
             error(ui.invalid, "The sketch's projected curves follow its input body: connect the body")
         lost = sketch.relink(CadGeometry.model(data.geometry, 0), f.origin, f.u, f.v)
+        for at in 0..<sketch.entity_count():
+            if sketch.lost_link(at):
+                lost_curves.append(at)
+    let cast = sketch.text() != read
     if sketch.entity_count() > 0 and not sketch.solve():
         error(ui.invalid, "The sketch's constraints cannot all hold: remove one that conflicts")
     # The input's bodies pass on beside the curves: one body flows down the
@@ -99,8 +155,17 @@ pub func evaluate_sketch(v: list[float], texts: list[str], data: GeometryData) -
     if CadGeometry.model_count(data.geometry) > 0:
         result = result.merged(GeometryData(geometry = data.geometry.without("curves")))
     if lost > 0:
-        result.warning = f"{lost} projected curve(s) lost their edge upstream: they stay where they were"
+        result.warning = f"{lost} projected curve(s) lost their edge upstream: they stay where they were (right-click them in the sketch: Re-link, Break link)"
+    result.sketch_state = SketchState(f, sketch.text() if cast else "", lost_curves).encode()
     return result
+
+## The edges of body `data` (its first model) cast onto plane `f`, as
+## shadows' text (luce-cad's CadShadows) for the editor's Project tool;
+## empty without a body.
+pub func shadows_text(data: GeometryData, f: SketchFrame) -> str!:
+    if CadGeometry.model_count(data.geometry) == 0:
+        return ""
+    return CadShadows.text_of(CadProjection.of(CadGeometry.model(data.geometry, 0), f.origin, f.u, f.v))
 
 ## The sketch plane a set of a sketch's curves carries (luce-geocore's
 ## detail attributes), its axes as Extrude and Revolve read them.

@@ -1,0 +1,35 @@
+## Fusion's Slice while sketching: the body in front of the edited
+## sketch's plane is cut away from view, so what the sketch is drawn
+## against shows. Display only: what the viewport is given for the sketch
+## node is its CAD preview clipped by the plane (luce-geocore's Clip,
+## keeping the side behind the plane), the node's result unchanged. The
+## worker and the UI-thread cook both ask here.
+from luce_geocore.geocore import Verbs
+from geometry_data import GeometryData
+from network import Network
+from node import Node
+import sketch_node
+
+## What the viewport shows of `node`'s result `data` in `graph`: clipped by
+## its sketch plane while it is the sketch sliced, else `data` itself.
+pub func shown(graph: Network, node: Node, data: GeometryData) -> GeometryData!:
+    if graph.slicing != node.id or not data.has_cad():
+        return data
+    let state = sketch_node.parse_state(data.sketch_state) else return data
+    let o = state.plane.origin
+    let n = state.plane.normal()
+    # Clip: a custom plane through the sketch's origin facing its normal,
+    # keeping what is below it (behind the plane, seen from the sketch).
+    let numbers = [3.0, 0.0, 0.0, 1.0, o.x, o.y, o.z, n.x, n.y, n.z]
+    var result = GeometryData()
+    for mesh in data.preview().meshes:
+        # Every face (group type 3: primitives).
+        let clipped = Verbs.run("Clip", mesh, "*", 3, numbers).mesh()
+        result = result.merged(GeometryData(clipped))
+    result.sketch_state = data.sketch_state
+    return result
+
+## A key part apart for what a sliced node shows (0 when not sliced), so
+## its products are not taken for the whole body's.
+pub func salt(graph: Network, node: Node) -> int:
+    return 0 if graph.slicing != node.id else (node.id, "slice").hash()

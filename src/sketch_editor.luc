@@ -30,54 +30,48 @@
 ## action writes it back as one undo step (commit), and an undo or a change
 ## from elsewhere reads the node again (sync).
 ##
-## What the editor leans on: where the cursor lands (sketch_inference.luc),
+## This class holds the sketch, the tool, what is drawn and selected, and
+## the edits on them; the viewport's pointer and keys come through
+## sketch_input.luc. What the editor leans on: where the cursor lands
+## (sketch_inference.luc),
 ## selections and boxes (sketch_selecting.luc), Project
 ## (sketch_projecting.luc), the frame and Look At (sketch_frames.luc), the
 ## glyphs (sketch_glyphs.luc), the dimensions (sketch_dimensions.luc), the
 ## value boxes (sketch_typing.luc) and the profiles (sketch_profiles.luc).
-from sketch_chains import chain_of
-from snapping import SnapMark
-from edit_types import point_level, edge_level, face_level, smart_level
+from edit_types import point_level, edge_level, face_level
 from sketch_profiles import SketchProfiles
-from luce_cad.sketch import CadSketch, CadProjection
-from luce_cad.cad_geometry import CadGeometry
-from luce_ui.ui import Event
-from luce_window.input import EventKind, Key
+from luce_cad.sketch import CadSketch, CadShadows
 from workspace import Workspace
 from sketch_node import SketchFrame, node_frame
 from sketch_frames import FrameCache, look_at
 from sketch_projecting import SketchProjecting
 import sketch_tools
-import view_projection
-from luce_std import math
 import sketch_kinds
-from sketch_kinds import coincident, on_curve, midpoint, point_kind, line_kind
-import sketch_inference
+from sketch_kinds import on_curve, midpoint, point_kind, line_kind
 import sketch_selecting
 import marquee
-import sketch_glyphs
 from sketch_dimensions import SketchDimensions, LabelDrag
 from sketch_typing import SketchTyping
-import units
 
 ## How near the cursor snaps, in points on screen.
-let snap_reach = 9.0
+pub let snap_reach = 9.0
 
 pub class SketchEditor:
-    let w: Workspace
+    pub let w: Workspace
     ## The node edited and the text the live sketch was read from.
-    var node: int = -1
+    pub var node: int = -1
     var text: str = ""
     var values: list[float]
     pub var sketch: CadSketch? = none
     pub var frame: SketchFrame
     pub let frames: FrameCache
-    ## The input body's stamp the sketch was read with.
-    var body_was: str = ""
+    ## The curves whose links the last cook lost (drawn apart).
+    pub var lost: list[int]
     ## Project's casts of the input body's edges.
     pub let projecting: SketchProjecting
     ## The tool in use (set_tool keeps the workspace's sketch_tool the same).
     pub var tool: str = "Select"
+    var tool_was: str = "Select"
     ## A drawing tool's placed points: plane coordinates, and the point
     ## entity each is (-1: not made yet).
     pub var clicks: list[list[float]]
@@ -85,15 +79,15 @@ pub class SketchEditor:
     ## What each click snapped to: its kind (snapping.luc's, CadSketch.snap:
     ## 1 point, 2 middle, 4 crossing, 8 curve; 0 none or the grid) and a
     ## crossing's second curve.
-    var click_kinds: list[int]
-    var click_others: list[int]
+    pub var click_kinds: list[int]
+    pub var click_others: list[int]
     ## Each click's point once made (made_point), else -1.
-    var made: list[int]
+    pub var made: list[int]
     ## The cursor on the plane, snapped, and what it snapped to (-1: none).
     pub var cursor: list[float]
     pub var snap: int = -1
-    var snap_kind: int = 0
-    var snap_other: int = -1
+    pub var snap_kind: int = 0
+    pub var snap_other: int = -1
     pub var free_placing: bool = false
     pub var hover: int = -1
     pub var selection: list[int]
@@ -105,18 +99,18 @@ pub class SketchEditor:
     ## (the picked keys are the workspace's sketch_profiles).
     pub let profiles: SketchProfiles
     ## The profile under a press that may turn into a box ("": none).
-    var box_profile: str = ""
+    pub var box_profile: str = ""
     ## A constraint or dimension tool's picks so far.
     pub var picks: list[int]
     ## A point being dragged by Select.
-    var dragging: int = -1
-    var drag_moved: bool = false
+    pub var dragging: int = -1
+    pub var drag_moved: bool = false
     ## Select pressed on nothing: a box from (box[0], box[1]) to the pointer
     ## at (box[2], box[3]) while `boxing`, and what it does (0 replaces, 1
     ## adds, 2 takes away).
     pub var boxing: bool = false
     pub var box: list[float]
-    var box_operation: int = 0
+    pub var box_operation: int = 0
     ## Counts changes to the live sketch, so drawings are made again.
     pub var revision: int = 0
     ## A dimension's value is typed here: called with its constraint, where
@@ -147,24 +141,25 @@ pub class SketchEditor:
     ## The dimensions as placed on the screen.
     pub let dimensions: SketchDimensions
     ## A dimension pressed, its label to drag.
-    let label_drag: LabelDrag
+    pub let label_drag: LabelDrag
     ## The value boxes while drawing, the clicks placed so far by the tool
     ## (they follow it), and the cursor as it landed before they steered it.
     pub let typing: SketchTyping
-    var placed_clicks: int = 0
-    var landed: list[float]
+    pub var placed_clicks: int = 0
+    pub var landed: list[float]
     ## A click in the viewport (an open value box closes).
     pub var on_click: func() -> unit!? = none
     var node_was: int = -1
     pub var pointer_x: float = 0.0
     pub var pointer_y: float = 0.0
     ## Screen size of the last event, and the reach of a snap in sketch units.
-    var width: float = 1.0
-    var height: float = 1.0
+    pub var width: float = 1.0
+    pub var height: float = 1.0
     pub var reach: float = 1.0
 
     pub func init(self, w: Workspace) -> unit!:
         self.text_at = []
+        self.lost = []
         self.w = w
         self.values = []
         self.frame = node_frame([1.0, 0.0])
@@ -196,7 +191,7 @@ pub class SketchEditor:
     pub func sync(self) -> unit!:
         let node = self.w.selected() else return
         # The plane follows its face as the body upstream changes.
-        let frame = self.frames.frame(self.w, node)
+        let frame = self.frames.frame(node)
         if not frame.equals(self.frame):
             let moved = self.sketch != none and node.id == self.node
             self.frame = frame
@@ -204,12 +199,19 @@ pub class SketchEditor:
             # A new plane (a face picked): look straight at it.
             if moved:
                 self.look_at()
-        # Projected curves follow the input body: a new body reads again.
-        _ = self.frames.body(self.w, node)
-        let same = node.id == self.node and node.texts[0] == self.text and node.values[0] == (self.values + [0.0])[0] and node.values[1] == (self.values + [0.0, 0.0])[1] and self.frames.body_stamp() == self.body_was
+        # The text edited: the node's, or as its cook cast it again
+        # (projections following the body, a face's loops projected); the
+        # curves whose links were lost.
+        var source = node.texts[0]
+        if node.id != self.node:
+            self.lost = []
+        if let state = self.frames.state(node):
+            self.lost = state.lost
+            if state.text != "":
+                source = state.text
+        let same = node.id == self.node and source == self.text and node.values[0] == (self.values + [0.0])[0] and node.values[1] == (self.values + [0.0, 0.0])[1]
         if same and self.sketch != none:
             return
-        self.body_was = self.frames.body_stamp()
         # Another sketch than the one edited: its tool and selection go.
         if node.id != self.node and self.node >= 0:
             self.reset_tool()
@@ -224,13 +226,9 @@ pub class SketchEditor:
         self.snap = -1
         self.reset_tool()
         self.node = node.id
-        self.text = node.texts[0]
+        self.text = source
         self.values = [node.values[0], node.values[1]]
         let sketch = CadSketch.parse(self.text)
-        if sketch.link_count() > 0:
-            if let data = self.frames.body(self.w, node):
-                if CadGeometry.model_count(data.geometry) > 0:
-                    _ = sketch.relink(CadGeometry.model(data.geometry, 0), self.frame.origin, self.frame.u, self.frame.v)
         _ = sketch.solve()
         sketch.analyze()
         let entering = self.sketch == none or self.node_was != node.id
@@ -301,11 +299,18 @@ pub class SketchEditor:
 
     ## The tool in use, here and on the workspace (the viewport's tool
     ## column shows it).
-    func set_tool(self, name: str):
+    pub func set_tool(self, name: str) -> unit!:
+        let casting = name == "Project" or self.tool == "Project"
         self.tool = name
         self.w.sketch_tool = name
+        # The cook casts the body's edges while Project is the tool.
+        if casting and name != self.tool_was:
+            self.w.rebuild()
+        self.tool_was = name
+        if name != "Project":
+            self.projecting.relinking = []
 
-    func reset_tool(self):
+    pub func reset_tool(self):
         self.clicks = []
         self.click_snaps = []
         self.click_kinds = []
@@ -321,268 +326,23 @@ pub class SketchEditor:
     pub func hint(self) -> str:
         return sketch_tools.hint(self.tool)
 
-    ## The viewport's events while editing; whether one was used.
-    pub func event(self, event: Event, width: float, height: float) -> bool!:
-        if not self.active() or event.alt:
-            return false
-        self.sync()
-        self.width = width
-        self.height = height
-        let sketch = self.sketch else return false
-        if self.boxing and (event.cancelled or event.kind in [EventKind.pointer_left, EventKind.focus_lost]):
-            self.boxing = false
-            self.revision += 1
-        if event.kind == EventKind.key_down:
-            return self.key(event)
-        if event.kind == EventKind.pointer_moved:
-            if self.boxing:
-                self.box = [self.box[0], self.box[1], event.x, event.y]
-                self.revision += 1
-                return true
-            if self.label_drag.active():
-                if self.label_drag.follow(sketch, event.x, event.y, self.plane_point(event.x, event.y)):
-                    self.revision += 1
-                return true
-            self.track(event.x, event.y, event.meta or event.control)
-            if self.dragging >= 0:
-                if sketch.drag(self.dragging, self.cursor[0], self.cursor[1]):
-                    sketch.analyze()
-                self.drag_moved = true
-                self.revision += 1
-            return true
-        if event.kind == EventKind.pointer_up and event.button == 0 and self.dragging >= 0:
-            let dragged = self.dragging
-            self.dragging = -1
-            if self.drag_moved:
-                # Let go on a point or a curve it snapped to: held there.
-                if self.snap >= 0 and self.snap != dragged:
-                    # Exactly where it snapped, then held there.
-                    sketch.place(dragged, self.cursor[0], self.cursor[1])
-                    if self.snap_kind == 1:
-                        _ = sketch.constrain(coincident, dragged, self.snap)
-                    elif self.snap_kind == 8 and sketch_kinds.holds_points(sketch.kind(self.snap)):
-                        _ = sketch.constrain(on_curve, dragged, self.snap)
-                    if not sketch.solve():
-                        sketch.unconstrain(sketch.constraint_count() - 1)
-                        _ = sketch.solve()
-                self.commit("Drag sketch point")
-            return true
-        if event.kind == EventKind.pointer_up and event.button == 0 and self.label_drag.active():
-            # A dragged label stays (one undo step); a click on the selected
-            # dimension opens its value box on its label.
-            let moved = self.label_drag.moved
-            let constraint = self.label_drag.finish()
-            if moved:
-                self.commit("Move dimension label")
-            elif self.label_drag.was_selected:
-                self.edit_dimension(constraint)
-            return true
-        if event.kind == EventKind.pointer_up and event.button == 0 and self.boxing:
-            self.boxing = false
-            self.box = [self.box[0], self.box[1], event.x, event.y]
-            self.finish_box()
-            return true
-        if event.kind != EventKind.pointer_down or not event.inside:
-            return false
-        if let clicked = self.on_click:
-            clicked()
-        if event.button == 1:
-            # A right click ends what is being drawn; otherwise the
-            # viewport's menu opens for what is under the pointer (a glyph
-            # there is selected first).
-            if self.clicks.length > 0 or self.picks.length > 0:
-                self.reset_tool()
-                return true
-            self.track(event.x, event.y, false)
-            if self.hover_glyph >= 0 and not (self.hover_glyph in self.constraint_selection):
-                self.selection = []
-                self.constraint_selection = [self.hover_glyph]
-                self.revision += 1
-            return false
-        if event.button != 0:
-            return false
-        self.track(event.x, event.y, event.meta or event.control)
-        self.pointer_x = event.x
-        self.pointer_y = event.y
-        if self.tool == "Select":
-            self.select_at(marquee.operation_of(event))
-        elif self.tool == "Project":
-            self.project_at()
-        elif sketch_tools.draws(self.tool):
-            self.place()
-        elif sketch_tools.modifies(self.tool) or sketch_tools.copies(self.tool):
-            if let act = self.on_modify:
-                act(event.shift)
-        elif let picked = self.on_pick:
-            picked()
-        return true
-
-    ## Keys: a tool's letter, Esc, Delete, X.
-    func key(self, event: Event) -> bool!:
-        if event.key == Key.escape:
-            if self.boxing:
-                self.boxing = false
-            elif self.clicks.length > 0 or self.picks.length > 0:
-                self.reset_tool()
-            elif self.tool != "Select":
-                self.choose("Select")
-            else:
-                self.selection = []
-                self.constraint_selection = []
-                self.w.sketch_profiles = []
-            self.revision += 1
-            return true
-        if event.key == Key.enter:
-            if self.typing.active():
-                self.enter_typed()
-                return true
-            self.finish_open()
-            self.reset_tool()
-            return true
-        if event.key in [Key.delete, Key.backspace]:
-            self.remove_selection()
-            return true
-        # A held key's repeats pick nothing.
-        if event.repeated:
-            return false
-        let letter = sketch_tools.key_letter(event.key)
-        # Q is Select here as everywhere.
-        if letter == "Q":
-            self.choose("Select")
-            return true
-        if letter == "X" and self.selection.length > 0:
-            let sketch = self.sketch else return true
-            let construction = not sketch.construction(self.selection[0])
-            for at in self.selection:
-                if sketch.kind(at) != point_kind:
-                    sketch.set_construction(at, construction)
-            self.commit("Toggle construction")
-            return true
-        let name = sketch_tools.tool_for_key(letter)
-        if name != "":
-            self.choose(name)
-            return true
-        return false
-
-    ## Where the pointer at (`x`, `y`) is on the plane, snapped to a point or
-    ## curve within reach unless `free`.
-    func track(self, x: float, y: float, free: bool) -> unit!:
-        let sketch = self.sketch else return
-        let normal = self.frame.normal()
-        let here = view_projection.plane(self.w, x, y, self.width, self.height, self.frame.origin, normal)
-        let beside = view_projection.plane(self.w, x + snap_reach, y, self.width, self.height, self.frame.origin, normal)
-        self.reach = math.max(1e-6, here.subtract(beside).length())
-        self.cursor = self.frame.coordinates(here)
-        self.free_placing = free
-        self.snap = -1
-        self.snap_kind = 0
-        self.snap_other = -1
-        self.hover = sketch.pick(self.cursor[0], self.cursor[1], self.reach, self.pick_filter())
-        # Select: a glyph or label under the pointer wins over geometry.
-        self.hover_glyph = -1
-        if self.tool == "Select" and self.dragging < 0:
-            _ = self.dimensions.placed(self.w, sketch, self.frame, self.revision, self.width, self.height)
-            self.hover_glyph = self.dimensions.at(x, y)
-            if self.hover_glyph < 0:
-                self.hover_glyph = sketch_glyphs.glyph_at(sketch_glyphs.glyphs(self.w, sketch, self.frame, self.width, self.height), x, y)
-            if self.hover_glyph >= 0:
-                self.hover = -1
-        # Shapes and Smart: the profile under the pointer, off the curves.
-        self.profiles.hover = ""
-        if self.tool == "Select" and self.dragging < 0 and self.hover < 0 and self.hover_glyph < 0 and self.w.sketch_level in [face_level, smart_level]:
-            self.profiles.hover = self.profiles.key_at(sketch, self.frame, self.cursor[0], self.cursor[1])
-        # Tools that place, and a dragged point, snap; tools that pick (Trim,
-        # the constraints) read the pointer as it is.
-        let places = sketch_tools.places(self.tool) or self.dragging >= 0
-        if free or not places:
-            return
-        # The snapping layer (not the point just placed or dragged, nor what
-        # is drawn on it), a line's level and upright inference, the grid.
-        let skip = self.dragging if self.dragging >= 0 else (self.made[-1] if self.made.length > 0 else -1)
-        let start = self.clicks[-1] if self.tool == "Line" and self.clicks.length > 0 else []
-        let landing = sketch_inference.land(self.w, sketch, self.cursor, self.reach, skip, start)
-        self.cursor = landing.cursor
-        self.snap = landing.snap
-        self.snap_kind = landing.kind
-        self.snap_other = landing.other
-        self.steer()
-        # Steered by typed values, it is no longer where it snapped.
-        if landing.mark != "" and not self.typing.any_locked():
-            self.w.snap_mark = SnapMark(self.frame.at(self.cursor[0], self.cursor[1]), landing.mark)
-
     ## A point at the cursor: the snapped point itself, else a new point (on
     ## the snapped curve, constrained there).
-    func cursor_point(self) -> int!:
+    pub func cursor_point(self) -> int!:
         let sketch = self.sketch else return -1
         if self.snap >= 0 and sketch.kind(self.snap) == point_kind:
             return self.snap
         return self.snapped_point(self.cursor, self.snap, self.snap_kind, self.snap_other)
 
-    ## A drawing tool's click.
-    func place(self) -> unit!:
-        let sketch = self.sketch else return
-        if self.tool == "Point":
-            _ = self.cursor_point()
-            self.commit("Sketch point")
-            return
-        # Clicking the last point again ends a chain (a spline: makes it;
-        # its points are made only then, so there, where it was).
-        let again = self.clicks.length > 0 and ((self.snap >= 0 and self.snap == self.click_snaps[-1]) or
-                    (sketch_tools.open_ended(self.tool) and math.hypot(self.cursor[0] - self.clicks[-1][0], self.cursor[1] - self.clicks[-1][1]) <= self.reach))
-        if again:
-            self.finish_open()
-            self.reset_tool()
-            return
-        self.clicks.append(self.cursor.copy())
-        self.click_snaps.append(self.snap)
-        self.click_kinds.append(self.snap_kind)
-        self.click_others.append(self.snap_other)
-        self.made.append(-1)
-        self.placed_clicks += 1
-        self.revision += 1
-        if self.tool == "Line" and self.clicks.length == 2:
-            # sketch_create makes the line (with its typed dimensions).
-            if let finish = self.on_finish:
-                finish()
-            # Chain from the end, that point itself.
-            let b = self.made_point(1)
-            self.clicks = [self.clicks[1]]
-            self.click_snaps = [b]
-            self.click_kinds = [1]
-            self.click_others = [-1]
-            self.made = [b]
-        elif not sketch_tools.open_ended(self.tool) and self.clicks.length == sketch_tools.clicks_for(self.tool):
-            if let finish = self.on_finish:
-                finish()
-            self.reset_tool()
-            return
-        self.steer()
-
-    ## An open-ended tool (a spline) with two clicks or more: make it.
-    func finish_open(self) -> unit!:
-        if sketch_tools.open_ended(self.tool) and self.clicks.length >= 2:
-            if let finish = self.on_finish:
-                finish()
-
     ## The input body's edges cast onto the plane while Project is the
     ## tool; none without a body.
-    pub func projection(self) -> CadProjection?!:
-        return self.projecting.projection(self.w, self.node, self.frames, self.frame)
+    pub func projection(self) -> CadShadows?!:
+        return self.projecting.projection(self.w, self.node)
 
     ## The edge whose shadow is under the cursor, or -1.
     pub func projected_edge(self) -> int!:
         let cast = self.projection() else return -1
         return cast.nearest(self.cursor[0], self.cursor[1], self.reach)
-
-    ## Project's click: the edge under the cursor brought in, fixed and
-    ## linked.
-    func project_at(self) -> unit!:
-        let sketch = self.sketch else return
-        let (made, problem) = self.projecting.project_at(self.w, self.node, self.frames, self.frame, sketch, self.cursor[0], self.cursor[1], self.reach)
-        if problem != "":
-            self.say(problem)
-        if made:
-            self.commit("Project")
 
     ## The Text tool's words: the text where its clicks put it, as one undo.
     pub func place_text(self, content: str) -> unit!:
@@ -608,7 +368,7 @@ pub class SketchEditor:
     ## A point at `place` as what it snapped to holds it: that point itself;
     ## a new one at a line's middle, on two crossing curves or on a curve
     ## (held there by its constraints); else a free new one.
-    func snapped_point(self, place: list[float], snapped: int, kind: int, other: int) -> int!:
+    pub func snapped_point(self, place: list[float], snapped: int, kind: int, other: int) -> int!:
         let sketch = self.sketch else return -1
         if snapped >= 0 and sketch.kind(snapped) == point_kind:
             return snapped
@@ -625,7 +385,7 @@ pub class SketchEditor:
 
     ## What Select hovers at the selection level (Points: points, Lines and
     ## Shapes: curves); other tools pick either (CadSketch.pick's `only`).
-    func pick_filter(self) -> int:
+    pub func pick_filter(self) -> int:
         # Tools that work on curves pick only curves (not a crossing's or
         # an end's point under the cursor).
         if sketch_tools.picks_curves(self.tool):
@@ -636,37 +396,10 @@ pub class SketchEditor:
             return 1
         return 2 if self.w.sketch_level in [edge_level, face_level] else 0
 
-    ## Select's press: the entity under the cursor, at the Shapes level its
-    ## whole chain, alone (`operation` 0), added or taken away again (1,
-    ## Shift) or taken away (2, Ctrl or Cmd); a point pressed starts a drag.
-    ## On nothing it starts a box (a click when it is not dragged).
-    func select_at(self, operation: int) -> unit!:
-        let sketch = self.sketch else return
-        if self.hover_glyph >= 0:
-            let pressed = self.hover_glyph
-            if self.dimensions.find(pressed) != none:
-                self.press_label(pressed, operation)
-                return
-            self.select_constraint(pressed, operation)
-            return
-        let at = self.hover
-        if at < 0:
-            # A press in a profile picks it when it is not dragged into a box.
-            self.box_profile = self.profiles.hover
-            self.boxing = true
-            self.box = [self.pointer_x, self.pointer_y, self.pointer_x, self.pointer_y]
-            self.box_operation = operation
-            return
-        if sketch.kind(at) == point_kind:
-            self.dragging = at
-            self.drag_moved = false
-        let picked = chain_of(sketch, at) if self.w.sketch_level == face_level and sketch.kind(at) != point_kind else [at]
-        self.change_selection(picked, 2 if operation == 1 and at in self.selection else operation)
-
     ## Profile `key` (a click in its region) alone (`operation` 0, the
     ## entities and constraints let go), added or taken away again (1,
     ## Shift) or taken away (2, Ctrl or Cmd).
-    func select_profile(self, key: str, operation: int):
+    pub func select_profile(self, key: str, operation: int):
         if operation == 0:
             self.selection = []
             self.constraint_selection = []
@@ -677,7 +410,7 @@ pub class SketchEditor:
     ## Constraint `constraint` (its glyph clicked) alone (`operation` 0,
     ## the entities let go), added or taken away again (1, Shift) or taken
     ## away (2, Ctrl or Cmd).
-    func select_constraint(self, constraint: int, operation: int):
+    pub func select_constraint(self, constraint: int, operation: int):
         if operation == 0:
             self.selection = []
             self.w.sketch_profiles = []
@@ -686,7 +419,7 @@ pub class SketchEditor:
 
     ## The selection with `picked` alone (`operation` 0; selected
     ## constraints and profiles let go), added (1) or taken away (2).
-    func change_selection(self, picked: list[int], operation: int):
+    pub func change_selection(self, picked: list[int], operation: int):
         if operation == 0:
             self.constraint_selection = []
             self.w.sketch_profiles = []
@@ -697,7 +430,7 @@ pub class SketchEditor:
     ## (Shapes and Smart), else selects nothing (Shift or Ctrl: changes
     ## nothing); a drag, either way, selects what lies wholly inside the
     ## box at the level (sketch_selecting.boxed).
-    func finish_box(self) -> unit!:
+    pub func finish_box(self) -> unit!:
         let sketch = self.sketch else return
         let operation = self.box_operation
         if not marquee.dragged(self.box):
@@ -707,62 +440,6 @@ pub class SketchEditor:
                 self.change_selection([], 0)
             return
         self.change_selection(sketch_selecting.boxed(self.w, sketch, self.frame, self.box, self.pick_filter(), self.w.sketch_level == face_level, self.width, self.height), operation)
-
-    ## The value boxes follow the tool's clicks; while they show, the
-    ## cursor goes where their locked values say, and their live values
-    ## and places follow it.
-    func steer(self):
-        if not sketch_tools.draws(self.tool) or self.clicks.length == 0:
-            self.typing.clear()
-            return
-        self.typing.follow(self.tool, self.clicks.length, self.placed_clicks)
-        if not self.typing.active():
-            return
-        self.landed = self.cursor.copy()
-        self.cursor = self.typing.steer(self.tool, self.clicks, self.landed)
-        self.typing.live(self.tool, self.clicks, self.cursor, self.reach / snap_reach)
-        self.revision += 1
-
-    ## A key or typed character for the value boxes, before anything else
-    ## sees it (the viewport asks first); whether they took it.
-    pub func typing_event(self, event: Event) -> bool!:
-        if not self.active() or not self.typing.active():
-            return false
-        if not self.typing.key(event, units.document_unit(self.w)):
-            return false
-        # A locked value moves the shape at once.
-        self.cursor = self.typing.steer(self.tool, self.clicks, self.landed)
-        self.typing.live(self.tool, self.clicks, self.cursor, self.reach / snap_reach)
-        self.revision += 1
-        self.w.revision += 1
-        return true
-
-    ## Enter with value boxes: the point placed where they say (a box that
-    ## does not read as a number is said instead).
-    func enter_typed(self) -> unit!:
-        let wrong = self.typing.unreadable()
-        if wrong != "":
-            self.say(f"{wrong}: type a number (a length may carry its unit: 25 mm, 1 in)")
-            return
-        self.cursor = self.typing.steer(self.tool, self.clicks, self.landed)
-        # Placed where the boxes say, not on what the pointer snapped to.
-        self.snap = -1
-        self.snap_kind = 0
-        self.snap_other = -1
-        self.place()
-
-    ## A press on dimension `constraint`: selected (`operation` as a
-    ## click's), its label ready to drag (LabelDrag).
-    func press_label(self, constraint: int, operation: int) -> unit!:
-        let sketch = self.sketch else return
-        let was_selected = operation == 0 and self.constraint_selection == [constraint]
-        if not was_selected:
-            self.select_constraint(constraint, operation)
-        self.label_drag.begin(sketch, constraint, was_selected, self.pointer_x, self.pointer_y, self.cursor, self.reach / snap_reach)
-
-    ## Viewport point (`x`, `y`) on the plane.
-    func plane_point(self, x: float, y: float) -> list[float]!:
-        return self.frame.coordinates(view_projection.plane(self.w, x, y, self.width, self.height, self.frame.origin, self.frame.normal()))
 
     ## Open dimension `constraint`'s value box on its label (a driven one
     ## is measured, not set: said instead).
@@ -776,6 +453,34 @@ pub class SketchEditor:
         let shown = self.dimensions.find(constraint) else return
         if let open = self.on_value:
             open(constraint, shown.box.x, shown.box.y, true)
+
+    ## The selected projected curves (those linked to the body's edges).
+    pub func linked_selection(self) -> list[int]:
+        let sketch = self.sketch else return []
+        let found: list[int] = []
+        for at in self.selection:
+            if at < sketch.entity_count() and sketch.linked(at):
+                found.append(at)
+        return found
+
+    ## Break Link: the selected projected curves become plain curves, where
+    ## they are, as one undo step.
+    pub func break_links(self) -> unit!:
+        let sketch = self.sketch else return
+        for at in self.linked_selection():
+            sketch.break_link(at)
+        self.lost = []
+        self.commit("Break link")
+
+    ## Re-link: the selected projected curves follow the edge clicked next
+    ## (Project is the tool until then).
+    pub func relink_selection(self) -> unit!:
+        let chosen = self.linked_selection()
+        if chosen.length == 0:
+            return
+        self.choose("Project")
+        self.projecting.relinking = chosen
+        self.say("Re-link: click the body's edge the curves should follow")
 
     ## Delete: the selected constraints, then the selected entities (and
     ## what is drawn on them), as one undo step.

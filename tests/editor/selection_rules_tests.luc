@@ -22,7 +22,8 @@ pub func selection_rules_tests() -> unit!:
     transform_tools_need_selection()
     boxes_through_depth()
     sketch_marquee()
-    print("PASS selection rules: transform tools only with something to move (the chosen one returns), boxes through the depth on V, sketch marquees (wholly inside, either way) with Shift, Ctrl and empty boxes")
+    cad_window_boxes()
+    print("PASS selection rules: transform tools only with something to move (the chosen one returns), boxes through the depth on V, sketch marquees (wholly inside, either way) with Shift, Ctrl and empty boxes; CAD face and edge boxes take only what lies wholly inside, either way")
 
 func key(editor: Luce3D, pressed: Key) -> unit!:
     editor.app.dispatch(Event(kind = EventKind.key_down, key = pressed))
@@ -221,3 +222,59 @@ func sorted(values: list[int]) -> list[int]:
     let copy = values.copy()
     copy.sort()
     return copy
+
+## A CAD box seen straight on, at the Faces level: a box over the whole
+## face facing the view takes it, either way dragged; one over half of it
+## takes nothing (the owner's window rule).
+func cad_window_boxes() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1400.0, 900.0)
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    w.view.yaw = 0.0
+    w.view.pitch = 0.0
+    w.view.distance = 80.0
+    w.view.target = Vector3()
+    w.view.update_camera()
+    # The Faces level (faces are domain 2).
+    selection_commands.set_mode(w, w.level_of(2))
+    render(editor)
+    editor.app.focus(editor.panels.view.layout())
+    let area = editor.panels.view.layout().bounds()
+    # The box's corners on screen, near face and far.
+    var left = 1.0e9
+    var right = -1.0e9
+    var top = 1.0e9
+    var bottom = -1.0e9
+    for x in [-10.0, 10.0]:
+        for y in [-10.0, 10.0]:
+            for z in [-10.0, 10.0]:
+                let s = project(w, Vector3(x, y, z), area.width, area.height)
+                left = math.min(left, area.x + s[0])
+                right = math.max(right, area.x + s[0])
+                top = math.min(top, area.y + s[1])
+                bottom = math.max(bottom, area.y + s[1])
+    # Right to left over the whole front face (a margin round it).
+    drag(editor, right + 12.0, bottom + 12.0, left - 12.0, top - 12.0)
+    let whole = w.selected_count()
+    assert(whole > 0, "the front face")
+    let chosen = w.current_selection() else trap("no selection")
+    let mesh = w.geometry else trap("no mesh")
+    let faces = mesh.find_attribute("cad_face", 2)
+    let picked = int(mesh.attribute_value(faces, chosen.next(-1)))
+    var element = chosen.next(-1)
+    while element >= 0:
+        assert(int(mesh.attribute_value(faces, element)) == picked, "one B-rep face")
+        element = chosen.next(element)
+    # Left to right, the same.
+    drag(editor, left - 12.0, top - 12.0, right + 12.0, bottom + 12.0)
+    assert(w.selected_count() == whole)
+    # Over half of it: nothing, either way.
+    drag(editor, left - 12.0, top - 12.0, (left + right) * 0.5, bottom + 12.0)
+    assert(w.selected_count() == 0, f"{w.selected_count()}")
+    drag(editor, (left + right) * 0.5, bottom + 12.0, left - 12.0, top - 12.0)
+    assert(w.selected_count() == 0)
+    editor.close()

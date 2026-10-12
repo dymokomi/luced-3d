@@ -13,6 +13,7 @@ from overlay_lines import OverlayLines
 from view_grid import draw_grid
 from workspace import Workspace
 from sketch_editor import SketchEditor
+from sketch_node import SketchFrame
 import sketch_modify
 import sketch_create
 import sketch_picking
@@ -30,8 +31,8 @@ from luce_std import math
 pub class SketchView:
     let w: Workspace
     pub let editor: SketchEditor
-    ## The curve batches as of editor revision `drawn`.
-    var drawn: int = -1
+    ## The curve batches as of editor revision and lifted plane `drawn`.
+    var drawn: str = ""
     var batches: list[OverlayLines]
 
     pub func init(self, w: Workspace) -> unit!:
@@ -60,21 +61,39 @@ pub class SketchView:
         sketch_modify.modify_click(self.editor, shift)
 
     ## The curves, in the 3D pass: free, fully constrained and construction
-    ## ones, then the highlighted and what is being drawn.
+    ## ones, projected ones and lost ones, then the highlighted and what is
+    ## being drawn. They are lifted a hair toward the camera off the plane,
+    ## so a sketch on a face (its projected loop on the face's edges) is not
+    ## hidden by the face it lies on.
     pub func draw_lines(self, target: RenderTarget) -> unit!:
         let e = self.editor
         if not e.active():
             return
         e.sync()
         let sketch = e.sketch else return
-        let f = e.frame
-        if self.drawn != e.revision:
+        let n = e.frame.normal()
+        let eye = self.w.view.camera.projection(1.0).position
+        let toward = 1.0 if eye.subtract(e.frame.origin).dot(n) >= 0.0 else -1.0
+        let f = SketchFrame(e.frame.origin.add(n.multiply_scalar(toward * self.w.view.distance * 0.0006)), e.frame.u, e.frame.v)
+        let drawn = f"{e.revision}|{f.key()}"
+        if self.drawn != drawn:
             self.batches = []
             for which in 0..<3:
                 let lines = OverlayLines.make()
                 lines.add_sketch(sketch, f.origin, f.u, f.v, which)
                 self.batches.append(lines)
-            self.drawn = e.revision
+            # Projected curves over them (Fusion's purple), those whose
+            # edge was lost upstream apart.
+            let linked = OverlayLines.make()
+            let lost = OverlayLines.make()
+            for at in 0..<sketch.entity_count():
+                if at in e.lost:
+                    lost.add_sketch(sketch, f.origin, f.u, f.v, 3, at)
+                elif sketch.kind(at) != names.point_kind and sketch.linked(at):
+                    linked.add_sketch(sketch, f.origin, f.u, f.v, 3, at)
+            self.batches.append(linked)
+            self.batches.append(lost)
+            self.drawn = drawn
         let camera = self.w.view.camera
         self.grid(target)
         # Project: the input body's edges cast on the plane, the one under
@@ -82,19 +101,22 @@ pub class SketchView:
         if e.tool == "Project":
             if let cast = e.projection():
                 let all = OverlayLines.make()
-                all.add_projection(cast, f.origin, f.u, f.v)
+                all.add_shadows(cast, f.origin, f.u, f.v)
                 if all.count() > 0:
                     all.batch().draw(camera, target, theme.grey(110.0), 1.0)
                 let under = e.projected_edge()
                 if under >= 0:
                     let one = OverlayLines.make()
-                    one.add_projection(cast, f.origin, f.u, f.v, under)
+                    one.add_shadows(cast, f.origin, f.u, f.v, under)
                     one.batch().draw(camera, target, theme.accent(), 2.0)
         # Its profiles shaded under the curves, picked and hovered ones lit.
         let size = target.size()
         e.profiles.draw(target, camera, sketch, f, self.w.sketch_profiles, size.width, size.height)
-        let colors = [theme.sketch_free(), theme.sketch_fixed(), theme.sketch_construction()]
-        for which in 0..<3:
+        let colors = [theme.sketch_free(), theme.sketch_fixed(), theme.sketch_construction(), theme.sketch_projected(), theme.warning()]
+        # Lost curves, then projected ones, first: at the same depth the
+        # first drawn stays (a lost curve over the edge projected again in
+        # its place, both over their fully constrained drawing).
+        for which in [4, 3, 0, 1, 2]:
             if self.batches[which].count() > 0:
                 self.batches[which].batch().draw(camera, target, colors[which], 1.5)
         let chosen = OverlayLines.make()

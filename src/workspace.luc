@@ -69,6 +69,14 @@ pub class Workspace:
     ## While a Sketch is edited, the node displayed before it was (-1:
     ## none): Finish Sketch shows it again, as Fusion rolls forward.
     pub var sketch_return: int = -1
+    ## The Project tool's cast of the edited sketch's input body
+    ## (sketch_node.shadows_text), made by the cook (off the UI thread with
+    ## the worker), and the Sketch stamp it is for.
+    pub var shadows: str = ""
+    pub var shadows_stamp: int = 0
+    ## Slice: while a sketch is edited, the body in front of its plane is
+    ## cut away in the viewport (display only).
+    pub var slice: bool = false
     ## A feature just made from the viewport wants its value typed: the
     ## panels open the distance box by its arrow (extrude_arrow.luc).
     pub var ask_distance: bool = false
@@ -482,6 +490,27 @@ pub class Workspace:
         let node = self.selected() else return false
         return node.kind == sketch_node.kind_name and node.enabled and node.id == self.network.display and self.prompt == none
 
+    ## The Sketch the Project tool works in (-1: none): its body's edges are
+    ## cast by the cook.
+    pub func projecting(self) -> int:
+        if not self.sketching() or self.sketch_tool != "Project":
+            return -1
+        return self.network.display
+
+    ## Without the worker, the Project cast made here, as the worker would.
+    func local_cast(self) -> unit!:
+        self.shadows = ""
+        self.shadows_stamp = 0
+        let node = self.network.find(self.network.projecting) else return
+        let input = self.network.find(node.inputs[0]) else return
+        let body = self.network.evaluate_data(input.id) catch failure:
+            recover GeometryData()
+        let made = self.network.evaluate_data(node.id) catch failure:
+            recover GeometryData()
+        let state = sketch_node.parse_state(made.sketch_state) else return
+        self.shadows = sketch_node.shadows_text(body, state.plane)
+        self.shadows_stamp = node.stamp
+
     ## Whether the viewport picks on a CAD body (its B-rep edges show, not
     ## a tessellation's polygons).
     pub func picking_brep(self) -> bool:
@@ -626,6 +655,8 @@ pub class Workspace:
         if not self.level_available(self.component_mode):
             self.component_mode = 0
             self.selection = none
+        self.network.projecting = self.projecting()
+        self.network.slicing = self.network.display if self.slice and self.sketching() else -1
         if let session = self.compute:
             self.network.level = self.component_mode
             self.network.gesture = self.dragging
@@ -640,6 +671,7 @@ pub class Workspace:
         stamp_graph(self.network)
         let cooked = cook_outputs(self.network, self.objects, self.batches, self.view.mesh_mode(), self.view.context_mode)
         self.notice = cooked.notice
+        self.local_cast()
         self.local_nodes = cooked.nodes
         self.local_meshes = cooked.meshes
         self.local_around = cooked.around
@@ -689,6 +721,8 @@ pub class Workspace:
             self.notice = failure.message
             self.revision += 1
             return true
+        self.shadows = session.shadows
+        self.shadows_stamp = session.shadows_stamp
         if session.service.failed() or session.resync:
             session.service.release_result(self.publisher.kept)
             # The worker lost its mirror: send the whole graph once.

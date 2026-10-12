@@ -1,0 +1,239 @@
+## Stage 3 of the Fusion CAD plan (docs/research/FUSION-CAD-UX.md): a
+## sketch on a box's top face, its loop projected and linked by the cook
+## (the editor reads the cook's state, never cooking the body itself);
+## Offset of the loop one relation, one dimension, following the face as
+## the box widens upstream; a link lost (yellow, the node warned), broken
+## or re-linked by Project's cast; the face gone, the node failing (red);
+## Slice cutting the body in front of a sketch's plane from view.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3
+from luce_cad.sketch import CadSketch
+from sketch_support import render, click, near
+from geometry_data import GeometryData
+import node_commands
+import selection_commands
+import sketch_commands
+import sketch_node
+import sketch_kinds as names
+import slice_view
+import cad_commands
+from luce_std import math
+
+pub func sketch_face_tests() -> unit!:
+    face_loop_and_offset()
+    lost_links()
+    slice()
+    rolled_back_extrude()
+    print("PASS sketch on a face: an Extrude made from a rolled-back sketch goes in after it, the marker (display) staying on the new feature; the top face's loop projected and linked (four lines at its corners) from the cook's state; Offset of the loop one relation and one dimension, the box widened upstream and the projection and offset following; a lost link warned and drawn apart, broken, and re-linked through Project's cast; the face gone, the node failing; Slice showing only what is behind the sketch's plane")
+
+## A CAD node holding a 20 mm Solid Box, its top face selected and a
+## Sketch on it made from the right-click menu's command: the sketch's id
+## and the box's.
+func sketch_on_top(editor: Luce3D) -> (int, int)!:
+    let w = editor.workspace
+    w.snaps.flags[1] = false
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let box = w.network.selected
+    w.view.yaw = 0.4
+    w.view.pitch = 0.6
+    w.view.distance = 90.0
+    w.view.target = Vector3()
+    w.view.update_camera()
+    render(editor)
+    selection_commands.set_mode(w, w.level_of(2))
+    let mesh = w.geometry else trap("no pick mesh")
+    for face in 0..<mesh.face_count():
+        if mesh.face_center(face).y > 9.99:
+            selection_commands.choose_component(w, face, false)
+            break
+    editor.panels.refresh()
+    editor.panels.actions.sketch_on_face.trigger()
+    render(editor)
+    return (w.network.selected, box)
+
+## The sketch Sketch node `id` holds as its cook evaluated it.
+func evaluated(editor: Luce3D, id: int) -> CadSketch!:
+    let state = sketch_node.parse_state(editor.workspace.network.evaluate_data(id).sketch_state) else trap("no state")
+    return CadSketch.parse(state.text if state.text != "" else editor.workspace.network.require(id).texts[0])
+
+## Whether every line of `curves` in `s` starts and ends at |x| = `a`,
+## |y| = `b`.
+func at_corners(s: CadSketch, curves: list[int], a: float, b: float) -> bool:
+    for c in curves:
+        for end in 0..<2:
+            let p = s.part(c, end)
+            if not (near(math.abs(s.x(p)), a) and near(math.abs(s.y(p)), b)):
+                print(f"corner {s.x(p)}, {s.y(p)}; expected ±{a}, ±{b}")
+                return false
+    return true
+
+## The linked lines of `s`.
+func linked_lines(s: CadSketch) -> list[int]:
+    let found: list[int] = []
+    for at in 0..<s.entity_count():
+        if s.kind(at) == names.line_kind and s.linked(at):
+            found.append(at)
+    return found
+
+## The top face's loop arrives projected; Offset of it inward by 2 is one
+## relation; the box widened to 30 upstream: the loop and its offset
+## follow, the corners at 15 and 13.
+func face_loop_and_offset() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    let (id, box) = sketch_on_top(editor)
+    let e = editor.panels.view.sketch.editor
+    assert(w.sketching() and w.network.require(id).texts[1] != "")
+    # The editor reads the projection the cook made, on the face's plane.
+    let s = e.sketch else trap("no sketch")
+    let loop = linked_lines(s)
+    assert(loop.length == 4 and at_corners(s, loop, 10.0, 10.0), f"{s.text()}")
+    assert(near(e.frame.origin.y, 10.0) and e.frame.normal().y > 0.99)
+    # Offset: a click on the loop's first line just inside, then 2 typed.
+    let p = s.part(loop[0], 0)
+    let q = s.part(loop[0], 1)
+    let mx = (s.x(p) + s.x(q)) * 0.5
+    let my = (s.y(p) + s.y(q)) * 0.5
+    e.choose("Offset")
+    click(editor, mx * 0.97, my * 0.97)
+    assert(editor.panels.sketch_value.is_open())
+    for c in [50]:
+        editor.app.dispatch(Event(kind = EventKind.text_input, codepoint = c))
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    let text = w.network.require(id).texts[0]
+    let dims = sketch_commands.dimensions(text)
+    assert(dims.length == 1 and near(dims[0].value, 2.0), f"{dims.length} dimensions")
+    let offset = CadSketch.parse(text)
+    let relation = dims[0].constraint
+    assert(offset.constraint_kind(relation) == names.offset and offset.offset_count(relation) == 4)
+    let copies: list[int] = []
+    for at in 0..<4:
+        copies.append(offset.offset_copy(relation, at))
+    assert(at_corners(offset, copies, 8.0, 8.0))
+    # The box 30 wide upstream: the cook casts the loop again, the copies
+    # follow it.
+    node_commands.select_node(w, box)
+    node_commands.set_parameter(w, 0, 30.0)
+    let wider = evaluated(editor, id)
+    assert(at_corners(wider, loop, 15.0, 10.0) or at_corners(wider, loop, 10.0, 15.0))
+    assert(at_corners(wider, copies, 13.0, 8.0) or at_corners(wider, copies, 8.0, 13.0))
+    editor.close()
+
+## A projected line pointed at an edge that is not there: the cook keeps
+## it where it was, warns on the node and names it, the editor draws it
+## apart; Break link makes it plain (no warning). Re-link through Project
+## points another at the edge clicked. The face gone: the sketch fails.
+func lost_links() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    let (id, _) = sketch_on_top(editor)
+    let e = editor.panels.view.sketch.editor
+    let s = e.sketch else trap("no sketch")
+    let loop = linked_lines(s)
+    s.link_to(loop[0], "nowhere")
+    node_commands.set_text(w, 0, s.text())
+    render(editor)
+    let node = w.network.require(id)
+    assert(node.warning.contains("lost"), node.warning)
+    assert(e.lost == [loop[0]], f"{e.lost}")
+    # Break link: a plain line, the warning gone.
+    e.selection = [loop[0]]
+    assert(editor.panels.viewport_menu.entries().length > 0)
+    e.break_links()
+    render(editor)
+    let plain = CadSketch.parse(w.network.require(id).texts[0])
+    assert(not plain.linked(loop[0]) and w.network.require(id).warning == "")
+    # Re-link: another line chosen, Project's cast (made by the cook) and
+    # the edge under a click: it follows that edge.
+    e.selection = [loop[1]]
+    e.relink_selection()
+    assert(e.tool == "Project" and w.network.projecting == id)
+    render(editor)
+    let cast = e.projection() else trap("no cast")
+    assert(cast.edge_count() == 12, f"{cast.edge_count()}")
+    let t = CadSketch.parse(w.network.require(id).texts[0])
+    let a = t.part(loop[2], 0)
+    let b = t.part(loop[2], 1)
+    click(editor, (t.x(a) + t.x(b)) * 0.5, (t.y(a) + t.y(b)) * 0.5)
+    let relinked = evaluated(editor, id)
+    # The line moved onto the clicked edge: both on the same side now.
+    let r0 = relinked.part(loop[1], 0)
+    let r1 = relinked.part(loop[1], 1)
+    let c0 = relinked.part(loop[2], 0)
+    let c1 = relinked.part(loop[2], 1)
+    let same = (near(relinked.x(r0), relinked.x(c0)) and near(relinked.y(r0), relinked.y(c0))) or (near(relinked.x(r0), relinked.x(c1)) and near(relinked.y(r0), relinked.y(c1)))
+    assert(same and near(math.hypot(relinked.x(r1) - relinked.x(r0), relinked.y(r1) - relinked.y(r0)), 20.0), relinked.text())
+    # The face gone (named for a face the body does not have): the sketch
+    # fails, its badge red.
+    node_commands.set_text(w, 1, "#1:gone")
+    render(editor)
+    var failed = ""
+    _ = w.network.evaluate_data(id) catch failure:
+        failed = failure.message
+        recover GeometryData()
+    assert(failed.contains("face"), failed)
+    assert(w.network.require(id).failure != "")
+    editor.close()
+
+## A Sketch on the ground plane (XZ, facing up) through a 20 mm box:
+## sliced, the box is shown only below the plane (y from -10 up to 0); not
+## sliced, whole.
+func slice() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    node_commands.add_node(w, "Sketch", 0.0, 100.0)
+    let id = w.network.selected
+    node_commands.display_selected(w)
+    render(editor)
+    assert(w.sketching())
+    let node = w.network.require(id)
+    let data = w.network.evaluate_data(id)
+    let whole = slice_view.shown(w.network, node, data)
+    assert(whole is data)
+    cad_commands.toggle_slice(w)
+    editor.panels.actions.refresh()
+    assert(w.slice and w.network.slicing == id and editor.panels.actions.slice.is_checked())
+    let cut = slice_view.shown(w.network, node, data)
+    let mesh = cut.mesh else trap("no sliced mesh")
+    let bounds = mesh.bounds()
+    assert(near(bounds.maximum.y, 0.0) and near(bounds.minimum.y, -10.0) and near(bounds.maximum.z, 10.0), f"{bounds.minimum.y} {bounds.maximum.y}")
+    render(editor)
+    cad_commands.toggle_slice(w)
+    assert(not w.slice and w.network.slicing == -1)
+    editor.close()
+
+## Fusion's marker: an Extrude made from a sketch that was rolled back to
+## (selected again while a feature after it is shown) goes in right after
+## the sketch, before that feature, and the display stays on the new
+## Extrude, the later feature rolled back (not shown) until it is selected.
+func rolled_back_extrude() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    let (id, _) = sketch_on_top(editor)
+    editor.panels.actions.extrude_profiles.trigger()
+    render(editor)
+    let first = w.network.selected
+    assert(w.network.require(first).kind == "Extrude" and w.network.display == first)
+    node_commands.select_node(w, id)
+    assert(w.network.display == id and w.sketch_return == first)
+    render(editor)
+    editor.panels.actions.extrude_profiles.trigger()
+    render(editor)
+    let second = w.network.selected
+    assert(second != first and w.network.require(second).kind == "Extrude")
+    assert(w.network.require(second).inputs[0] == id and w.network.require(first).inputs[0] == second)
+    assert(w.network.display == second and w.sketch_return == -1 and not w.sketching())
+    editor.close()

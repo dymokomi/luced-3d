@@ -469,6 +469,22 @@ Chamfer for selected edges (the blend after the displayed node with those
 edges), else the CAD Create nodes. The A and S marking menus and the menu
 bar's Create and Modify hold the same entries (`cad_commands.luc`).
 
+**Sketches on faces.** Sketch on face makes a Sketch whose first cook
+projects the face's loops, linked (purple): an Offset of a loop (one relation,
+one dimension) follows the face as the body changes upstream. The editor
+reads what the cook made (its plane, its text when projections moved, the
+curves whose edge was lost) and never cooks the body itself; Project's cast
+of the body's edges is made by the cook too (`sketch_node.shadows_text`).
+A projection whose edge is gone stays where it was, drawn yellow, and the
+node shows a yellow badge (red when it fails); select the curves and
+right-click: **Re-link** (then click the edge to follow) or **Break link**.
+**Slice** (right-click in a sketch) hides the body in front of the sketch's
+plane (display only, `slice_view.luc`). Extrude's Operation row shows what
+Auto chose ("Auto (Cut)"). An Extrude made from a sketch rolled back to goes
+in right after the sketch, before the features after it, and keeps the
+display, as Fusion's marker stays at the new feature; those later features
+show again when selected.
+
 **Units.** Lengths are kept in millimeters; the document shows and reads
 them in its unit, millimeters or inches (Window → Project settings), kept with the
 project. Every length parameter shows its unit and takes typed units

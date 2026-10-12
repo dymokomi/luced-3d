@@ -27,6 +27,8 @@ from edit_types import run_step
 from shader_nodes import is_shader
 from luce_cad.cad_edits import CadEdits
 from render_geometry import render_geometry
+import sketch_node
+import slice_view
 
 class Computation:
     let channel: ComputeChannel
@@ -98,7 +100,7 @@ class Computation:
                         notice = f"{failure.message} (the viewport shows its input)"
                 continue
             self.channel.progress(item.node.id, 0.95, "Preparing viewport")
-            self.publish(item.node, data, item.matrix)
+            self.publish(item.node, slice_view.shown(graph, item.node, data), item.matrix, slice_view.salt(graph, item.node))
         if let node = graph.find(graph.selected):
             let data = self.evaluate(node) catch failure:
                 if failure.message == "Computation superseded":
@@ -118,8 +120,26 @@ class Computation:
                 self.inspect(node, CadEdits.pick_mesh(data.geometry))
         if notice == "":
             notice = self.preview_warning
+        let (shadows, shadows_stamp) = self.shadows()
         self.store.trim(self.pinned())
-        self.channel.report(write_report(notice, false, self.outcomes(), self.recipes))
+        self.channel.report(write_report(notice, false, self.outcomes(), self.recipes, shadows, shadows_stamp))
+
+    ## The Project tool's cast: the projecting Sketch's input body's edges
+    ## on its plane, and that Sketch's stamp; none when nothing projects or
+    ## either fails (the tool then says there is no body).
+    func shadows(self) -> (str, int)!:
+        let node = self.graph.find(self.graph.projecting) else return ("", 0)
+        let input = self.graph.find(node.inputs[0]) else return ("", 0)
+        let body = self.evaluate(input) catch failure:
+            if failure.message == "Computation superseded":
+                error(failure.code, failure.message)
+            return ("", 0)
+        let made = self.evaluate(node) catch failure:
+            if failure.message == "Computation superseded":
+                error(failure.code, failure.message)
+            return ("", 0)
+        let state = sketch_node.parse_state(made.sketch_state) else return ("", 0)
+        return (sketch_node.shadows_text(body, state.plane), node.stamp)
 
     ## Stored result for the node's stamp, or cook it. Failures from inputs
     ## propagate without being stored under this node's stamp.
@@ -297,12 +317,16 @@ class Computation:
             var failure = self.failures[node.id] else ""
             var warning = ""
             var console = ""
+            var sketch_state = ""
+            var automatic = ""
             if let entry = self.store.peek(node.stamp):
                 cooked = node.stamp
                 summary = entry.summary
                 paths = entry.paths
                 warning = entry.warning
                 console = entry.console
+                sketch_state = entry.sketch_state
+                automatic = entry.automatic
                 if entry.failure != "":
                     failure = f"{node.name}: {entry.failure}"
             elif failure != "":
@@ -310,6 +334,8 @@ class Computation:
             let outcome = Outcome(node.id, cooked, failure, summary, self.cooks[node.id] else 0, paths)
             outcome.warning = warning
             outcome.console = console
+            outcome.sketch_state = sketch_state
+            outcome.automatic = automatic
             result.append(outcome)
         return result
 
@@ -324,7 +350,9 @@ class Computation:
     ## content key; keys the UI still holds cost nothing. CAD previews build
     ## under the node's stamp, so a newer request that still wants it lets
     ## the preview finish.
-    func publish(self, node: Node, data: GeometryData, matrix: Matrix4) -> unit!:
+    ## `salt` keys apart what a node shows that is not its result as stored
+    ## (a sliced sketch's clipped body).
+    func publish(self, node: Node, data: GeometryData, matrix: Matrix4, salt: int = 0) -> unit!:
         self.channel.begin(node.stamp)
         self.prepare(data, node) catch failure:
             self.channel.end()
@@ -333,7 +361,7 @@ class Computation:
         self.store.refresh(node.stamp)
         # A placed copy (the rest of the scene around a context) keys by its
         # placement too.
-        let placement = 0 if matrix.is_identity() else matrix_key(matrix)
+        let placement = salt if salt != 0 else (0 if matrix.is_identity() else matrix_key(matrix))
         _ = self.display(data, matrix, node, 0, placement)
         # CAD edges are keyed by what they are drawn from, so a CV drag keeps
         # them held; normal guides follow the result.
@@ -448,7 +476,7 @@ class Computation:
 
     func show(self, mesh: Mesh, matrix: Matrix4, node: Node, ordinal: int, overlays: bool, placement: int) -> unit!:
         let identity = matrix.is_identity()
-        let key = self.key_of(mesh, (node.stamp, ordinal).hash()) if identity else (node.stamp, ordinal, placement).hash()
+        let key = self.key_of(mesh, (node.stamp, ordinal).hash()) if identity and placement == 0 else (node.stamp, ordinal, placement).hash()
         # Picking runs on the GPU; a query index is built by its first query.
         var shown: Mesh? = none
         if self.channel.holds(key):
@@ -460,7 +488,7 @@ class Computation:
             # renderer then finds it cached (by connectivity and positions).
             _ = Subdivision.display(placed)
             self.channel.mesh(placed, key, node.id, true, false)
-            if identity:
+            if identity and placement == 0:
                 self.meshes.append(mesh)
                 self.keys.append(key)
         if overlays and self.graph.show_normals:
