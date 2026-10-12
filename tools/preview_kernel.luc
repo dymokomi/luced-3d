@@ -1,0 +1,103 @@
+## The captures of the kernel work guided by the SMLib study
+## (luce-cad/docs/research/SMLIB-STUDY.md, its comparison cases; preview_cad.luc
+## hands these scenes here). Each in a CAD network, best at --cad-quality 64:
+##   kernel_holed_ball: a ball of 10 with eight blind holes of 2 all round
+##     it (six round Z at 45°, two along Z), the study's T2: every face
+##     meshed at 64 divisions.
+##   kernel_tee: a T of pipes of 5 and 3, its saddle filleted 1 (the
+##     study's F7): the long pipe's face meshed at 64 divisions.
+import preview_support
+from luce_3d.graphics import Vector3
+from app import Luce3D
+from workspace import Workspace
+import node_commands
+import edit_cad_faces
+import cad_blends
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.modeling import CadModeling
+from luce_std import math
+
+pub func scenes() -> list[str]:
+    return ["kernel_holed_ball", "kernel_tee"]
+
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 40.0, 40.0)
+    node_commands.enter_group(w, w.network.selected)
+    if scene == "kernel_holed_ball":
+        node_commands.add_node(w, "Solid Sphere", 40.0, 40.0)
+        node_commands.set_parameter(w, 0, 10.0)
+        var body = w.network.selected
+        var k = 0
+        for degrees in [90.0, 45.0, 135.0, -90.0, -45.0, -135.0]:
+            let theta = degrees * math.pi / 180.0
+            let axis = Vector3(-math.sin(theta), math.cos(theta), 0.0)
+            body = cut(w, body, k, axis.multiply_scalar(8.0), Vector3(0.0, 0.0, degrees))
+            k += 1
+        for degrees in [90.0, -90.0]:
+            let phi = degrees * math.pi / 180.0
+            body = cut(w, body, k, Vector3(0.0, math.cos(phi), math.sin(phi)).multiply_scalar(8.0), Vector3(degrees, 0.0, 0.0))
+            k += 1
+        look(w, 0.6, 0.45, 42.0, Vector3())
+    elif scene == "kernel_tee":
+        node_commands.add_node(w, "Solid Cylinder", 40.0, 40.0)
+        node_commands.set_parameter(w, 0, 5.0)
+        node_commands.set_parameter(w, 1, 40.0)
+        node_commands.add_node(w, "Transform", 40.0, 140.0)
+        node_commands.set_parameter(w, 6, 90.0)
+        let pipe = w.network.selected
+        node_commands.add_node(w, "Solid Cylinder", 240.0, 40.0)
+        node_commands.set_parameter(w, 0, 3.0)
+        node_commands.set_parameter(w, 1, 15.0)
+        node_commands.add_node(w, "Transform", 240.0, 140.0)
+        node_commands.set_parameter(w, 2, 7.5)
+        let branch = w.network.selected
+        node_commands.select_node(w, pipe)
+        node_commands.add_node(w, "Combine", 40.0, 240.0)
+        node_commands.connect(w, branch, w.network.selected, 1)
+        let tee = w.network.selected
+        let model = CadGeometry.model(preview_support.cooked(w, tee).geometry, 0)
+        let saddle: list[int] = []
+        for face in 0..<model.face_count():
+            for use in 0..<model.face_edge_count(face):
+                let a = model.face_edge_point(face, use, 0.0)
+                let m = model.face_edge_point(face, use, 0.5)
+                let edge = model.face_edge_id(face, use)
+                if math.abs(math.hypot(a.x, a.z) - 3.0) < 1e-6 and math.abs(math.hypot(m.x, m.z) - 3.0) < 1e-6 and a.y > 1.0 and a.y < 5.5 and m.y < 5.5 and not (edge in saddle):
+                    saddle.append(edge)
+        node_commands.add_node(w, "Fillet", 40.0, 340.0)
+        node_commands.set_text(w, 0, CadModeling.edge_references(model, saddle))
+        node_commands.set_parameter(w, cad_blends.size_slot, 1.0)
+        look(w, 0.7, 0.55, 30.0, Vector3(0.0, 4.0, 0.0))
+    node_commands.display_selected(w)
+
+pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
+    _ = editor
+    _ = scene
+    _ = frame
+    _ = last
+
+## `body` less cylinder `k` (radius 2, 8 long) turned by `turn` degrees and
+## moved to `at`: the Combine node, selected.
+func cut(w: Workspace, body: int, k: int, at: Vector3, turn: Vector3) -> int!:
+    let x = 240.0 + float(k) * 120.0
+    node_commands.add_node(w, "Solid Cylinder", x, 40.0)
+    node_commands.set_parameter(w, 0, 2.0)
+    node_commands.set_parameter(w, 1, 8.0)
+    node_commands.add_node(w, "Transform", x, 140.0)
+    for (slot, value) in [(1, at.x), (2, at.y), (3, at.z), (4, turn.x), (5, turn.y), (6, turn.z)]:
+        node_commands.set_parameter(w, slot, value)
+    let tool = w.network.selected
+    node_commands.select_node(w, body)
+    node_commands.add_node(w, "Combine", 40.0, 140.0 + float(k) * 100.0)
+    node_commands.set_parameter(w, edit_cad_faces.combine_slot, 1.0)
+    node_commands.connect(w, tool, w.network.selected, 1)
+    return w.network.selected
+
+func look(w: Workspace, yaw: float, pitch: float, distance: float, target: Vector3) -> unit!:
+    w.view.yaw = yaw
+    w.view.pitch = pitch
+    w.view.distance = distance
+    w.view.target = target
+    w.view.update_camera()

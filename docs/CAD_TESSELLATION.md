@@ -77,7 +77,13 @@ redraw) takes about 44 ms; the release's full tessellation about 0.87 s.
 A full tessellation (`CadModel.tessellate(segments, edge_size)`) runs:
 
 1. **Shared edge sampling.** Every B-rep edge is sampled once, by physical arc
-   length and curvature, and all incident faces reuse its point IDs.
+   length and curvature, and all incident faces reuse its point IDs. Before
+   the samples are frozen, each curved analytic face (`face_targets`) asks its
+   edges to be sampled at least as finely as its own interior target (the
+   deviation its trimmed-chart refinement aims for), and the finest demand
+   wins: a boundary is never coarser than the interior a face may refine to.
+   Sphere faces meshed in rows from a loop round their axis (caps, disks) set
+   no target; a sphere triangle asks for its barycentric grid's stretch too.
 2. **Planning.** Per face: choose a chart, build
    curvature/size rows (`layout_rows`, `layout_density`, `layout_pitch`), classify
    seams (`seam_flow`), transport rows only through eligible seams
@@ -253,9 +259,16 @@ the wireframe looks cleaner.
   wedges and matching area; holes cannot take this path. `luce-3d` retries a
   stalled polygon with a bounded dynamic-programming partition over visible
   diagonals (at most 256 corners).
-- Interior diagonal flips use a relative squared-length guard (1e-30 floor), up
-  to 128 sweeps of a floating-point incircle test. This is not an exact
-  predicate or guaranteed Delaunay.
+- Interior diagonal flips use a relative squared-length guard (1e-30 floor) and
+  a floating-point incircle test, run from a queue of sides (each flip queues
+  its quad's four sides), so a fan of slivers from one boundary point across a
+  row of grid points unwinds completely. This is not an exact predicate or
+  guaranteed Delaunay.
+- Interior refinement (`adaptive_uv`) splits to the face's target, or beside a
+  frozen side (a boundary or trim side no pass splits) to that side's own sag,
+  which a triangle keeping that side can never get below. It stops when a pass
+  no longer lowers its worst excess, and at the face budget (131,072
+  triangles) it keeps the mesh it has: a coarser face, never a missing one.
 - Quad recombination is greedy quality-ranked matching: convex, corner angles
   20–160 degrees, edge ratio at most 10. It is not Blossom or field-aligned.
 
@@ -431,7 +444,8 @@ the wireframe looks cleaner.
   1,025 per shared edge; clipped charts up to 1,024 coedges with a 16,384-sample
   boundary budget.
 - Passes: eight trim reconciliation, 32 mapped-side balancing, 64 opposite-side
-  propagation (256 intervals per edge), eight interior refinement passes.
+  propagation (256 intervals per edge), eight interior refinement passes. A
+  face's demand on an edge is at most 1,024 intervals.
 - Mesh (`luce-3d` `MeshBuilder`/geocore `Mesh`): storage grows on demand up to
   8,388,608 points and faces and 33,554,432 corners; 256 corners per polygon.
   `CadModel.tessellate` keeps per-face colors for up to 2,097,152 faces when merging parts.
