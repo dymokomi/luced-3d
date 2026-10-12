@@ -9,12 +9,16 @@ import memory
 from luce_std import math
 from luce_geocore.geocore import Vector3, Matrix4, Bounds, Mesh, invalid, mesh_overlay_points
 from luce_geocore.core.growing import Growing
-from luce_3d.graphics import WireBatch, wire_batch_type, PerspectiveCamera, WireRenderer
+from luce_3d.graphics import WireBatch, wire_batch_type, PerspectiveCamera, WireRenderer, append_curve_segments
 from luce_gpu import gpu
 from luce_cad.model import CadOverlay, CadPreviewSet
 from luce_cad.sketch import CadSketch, CadShadows, sketch_samples, shadow_samples, projection_per_edge, sketch_trim_piece, sketch_offset_preview
 from luce_geocore.geocore import GeometrySet, SceneKind, LightShape, Projection, Camera, Light
 from luce_geocore.kernel import SceneObjects, scene_flattened
+
+## The depth bias of lit strokes (draw_lit): four times the lines' own
+## (WireRenderer's 1e-6), still far below a body's thickness.
+let lit_bias: f64 = 0.000004
 
 pub struct OverlayLines:
     var points: Growing[Vector3]
@@ -33,6 +37,14 @@ pub struct OverlayLines:
     ## Highlight helper strokes without rebuilding Luce endpoint lists.
     pub func draw(camera: interop.Reference[PerspectiveCamera], target: interop.View[gpu.RenderTarget], color: gpu.Color, width: f64 = 3.0) -> !:
         try WireRenderer.lines(self.points.view(), camera, target, color, width, writes_depth = false)
+
+    ## Strokes lighting lines already drawn (a hovered or picked curve over
+    ## its own line): nearer by `lit_bias`, so they cover that line whole.
+    ## At one depth, the two lines' strips of different widths each won
+    ## where rounding favored them: a lit line showed the plain one through
+    ## it in blobs.
+    pub func draw_lit(camera: interop.Reference[PerspectiveCamera], target: interop.View[gpu.RenderTarget], color: gpu.Color, width: f64) -> !:
+        try WireRenderer.lines(self.points.view(), camera, target, color, width, bias = lit_bias, writes_depth = false)
 
     ## The box around every endpoint (a zero box when there are none).
     pub func bounds() -> Bounds:
@@ -261,6 +273,10 @@ pub struct OverlayLines:
             let next = planar(origin, u, v, cx + radius * math.cos(angle), cy + radius * math.sin(angle))
             try self.add_segment(previous, next)
             previous = next
+
+    ## The evaluated curves of `set` (as CurveLines draws them).
+    pub func add_curves(set: interop.Reference[GeometrySet]) -> !:
+        try append_curve_segments(try set.get(), Matrix4(), &self.points, none)
 
     ## Every camera and light of `set` (and its instances) as viewport
     ## helpers, placed by `matrix`: a camera's frustum to one unit ahead with
