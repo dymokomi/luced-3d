@@ -1,7 +1,9 @@
 ## Surfacing's commands (the right-click menu, the S marking menu and
 ## Modify › Surfaces): Project, Intersect, Trim, Untrim, Trim Convert,
 ## Shrink, Stitch, Unstitch (Stage 3), Align and Symmetry Align (Stage 4,
-## on a picked edge or curve end). In a CAD network each makes its node
+## on a picked edge or curve end), and the surfaces from curves (Stage 5:
+## Square, Skin, Rail, Profile, Set Planar, Sheet Extrude, Sheet Revolve on
+## picked curves or edges, Extend on an edge or a curve's end). In a CAD network each makes its node
 ## (cad_surface_nodes.luc) after the displayed one, taking what is selected
 ## (faces by name, Project's curves, the bodies the faces are on), then
 ## waits for what it still needs (modify_picks.luc); a Trim then shows its
@@ -14,7 +16,7 @@ from luce_geocore.geocore import Domain
 from workspace import Workspace
 from tools import ToolRun
 from edit_steps import insert_after_display
-from edit_types import curve_level
+from edit_types import curve_level, edge_level
 from tool_icons import asset_name
 import cad_commands
 import cad_names
@@ -23,7 +25,9 @@ import edit_cad_commands
 import edit_cad_surfaces
 import modify_picks
 import edit_cad_align
+import edit_cad_build
 import align_ops
+import build_ops
 
 ## The commands, in Alias's Surface Edit order.
 pub func command_names() -> list[str]:
@@ -75,11 +79,12 @@ pub class SurfaceActions:
             any = any or enabled
         self.menu.set_enabled(any)
 
-    ## The commands acting on a picked edge or curve end (Align's input).
+    ## The commands acting on a picked edge or curve end (Align's input,
+    ## Extend's) and on picked edges as curves (the builders).
     pub func on_edges(self) -> list[Command]:
         let result: list[Command] = []
         for command in self.commands:
-            if command.text() in [cad_surface_nodes.align_kind, cad_surface_nodes.symmetry_kind]:
+            if command.text() in [cad_surface_nodes.align_kind, cad_surface_nodes.symmetry_kind, build_ops.extend_verb] or command.text() in build_ops.curve_verbs():
                 result.append(command)
         return result
 
@@ -111,6 +116,7 @@ pub func surface(w: Workspace, kind: str) -> unit!:
     let curves = selected_curves(w)
     let bodies = selected_bodies(w)
     let align_input = selected_align_input(w)
+    let curve_words = selected_curve_words(w)
     w.perform(kind, func () -> unit!:
         let node = insert_after_display(w, ToolRun(kind, cad_surface_nodes.starting(kind)))
         let first = cad_surface_nodes.first_text
@@ -120,8 +126,10 @@ pub func surface(w: Workspace, kind: str) -> unit!:
             node.texts[first] = bodies.join(";")
         elif kind == cad_surface_nodes.unstitch_kind:
             node.texts[first] = bodies[0] if bodies.length > 0 else ""
-        elif kind in [cad_surface_nodes.align_kind, cad_surface_nodes.symmetry_kind]:
+        elif kind in [cad_surface_nodes.align_kind, cad_surface_nodes.symmetry_kind, build_ops.extend_verb]:
             node.texts[align_ops.input_text] = align_input
+        elif kind in build_ops.curve_verbs():
+            node.texts[build_ops.curves_text] = curve_words.join(";")
         elif faces.length > 0:
             node.texts[first] = faces[0]
             if kind == cad_surface_nodes.intersect_kind and faces.length > 1:
@@ -144,6 +152,20 @@ func selected_align_input(w: Workspace) -> str!:
     let chosen = w.current_selection() else return ""
     let words = edit_cad_align.pick_words(mesh, chosen.next(-1), w.level_index(), false) catch failure:
         recover ""
+    return words
+
+## The curves (the Curves level) or edges selected as a builder's words,
+## in order.
+func selected_curve_words(w: Workspace) -> list[str]!:
+    if w.sketching() or not w.selecting():
+        return []
+    let mesh = w.geometry else return []
+    let chosen = w.current_selection() else return []
+    let level = w.level_index()
+    if level != curve_level and level != edge_level:
+        return []
+    let words = edit_cad_build.picked_words(mesh, chosen, level, false) catch failure:
+        recover []
     return words
 
 ## The names of the curves selected (the Curves level), each once.

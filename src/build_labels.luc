@@ -1,0 +1,119 @@
+## Alias's Boundary Labels for the surface builders (§7.3 of the surfacing
+## research doc; Plasticity's black circles): while an Edit CAD node's last
+## step is Square, Skin or Rail, or such a node is selected and displayed,
+## each boundary with a continuity of its own carries a label at its middle
+## ("G1", "Implied tangent"...); a click cycles it to the next choice, one
+## undo step, the same value as its row in the parameters. The labels come
+## from the cook's state lines (build_ops.labels_of), so the worker's
+## results serve and the viewport never cooks.
+from luce_ui.ui import Painter, Rect, Point
+from workspace import Workspace
+from node import Node
+import edit_cad
+import build_ops
+import view_projection as gm
+import theme
+from luce_std import math
+
+pub class BuildLabels:
+    let w: Workspace
+    ## The label under the pointer (-1: none).
+    pub var hovered: int = -1
+
+    pub func init(self, w: Workspace):
+        self.w = w
+
+    ## The node whose builder the labels belong to, and whether it is an
+    ## Edit CAD step (else a builder node); none when no builder shows.
+    func target(self) -> (Node, bool)?:
+        let node = self.w.selected() else return none
+        if node.id != self.w.network.display or self.w.sketching():
+            return none
+        if node.kind == edit_cad.kind_name:
+            if node.edits.length == 0 or not self.w.editing() or not (node.edits[-1].verb in build_ops.verbs()):
+                return none
+            return (node, true)
+        if node.kind in build_ops.verbs():
+            return (node, false)
+        return none
+
+    ## The labels of the target's cook.
+    func labels(self) -> list[build_ops.BuildLabel]:
+        let found = self.target() else return []
+        let (node, _) = found
+        return build_ops.labels_of(node.sketch_state)
+
+    ## Whether labels show (the viewport routes the pointer here).
+    pub func active(self) -> bool:
+        return self.labels().length > 0
+
+    ## A label's plate on screen.
+    func plate(self, label: build_ops.BuildLabel, width: float, height: float) -> Rect?!:
+        let s = gm.project(self.w, label.point, width, height)
+        if s[2] <= 0.0:
+            return none
+        # Beside the boundary's middle, up and to the left, clear of the
+        # Continuity Check's label there.
+        let w = float(label.text.length) * 7.5 + 14.0
+        return Rect(s[0] - w - 18.0, s[1] - 44.0, w, 22.0)
+
+    ## A label's boundary point on screen.
+    func anchor(self, label: build_ops.BuildLabel, width: float, height: float) -> list[float]?!:
+        let s = gm.project(self.w, label.point, width, height)
+        if s[2] <= 0.0:
+            return none
+        return s
+
+    ## The pointer at (`x`, `y`): the label under it; whether that changed.
+    pub func hover(self, x: float, y: float, width: float, height: float) -> bool!:
+        let was = self.hovered
+        self.hovered = -1
+        let shown = self.labels()
+        for k in 0..<shown.length:
+            if let box = self.plate(shown[k], width, height):
+                if x >= box.x and x <= box.x + box.width and y >= box.y and y <= box.y + box.height:
+                    self.hovered = k
+            # Its dot on the boundary takes the click too.
+            if let at = self.anchor(shown[k], width, height):
+                if math.hypot(x - at[0], y - at[1]) <= 8.0:
+                    self.hovered = k
+        return self.hovered != was
+
+    ## A click on a label: its value to the next choice (one undo).
+    pub func click(self, x: float, y: float, width: float, height: float) -> bool!:
+        _ = self.hover(x, y, width, height)
+        if self.hovered < 0:
+            return false
+        let found = self.target() else return false
+        let (node, step) = found
+        let label = self.labels()[self.hovered]
+        let values = node.edits[-1].numbers.copy() if step else node.values.copy()
+        let start = build_ops.starting(node.edits[-1].verb if step else node.kind)
+        while values.length < start.length:
+            values.append(start[values.length])
+        if label.slot < 0 or label.slot >= values.length:
+            return false
+        values[label.slot] = float((int(values[label.slot]) + 1) % (label.choices if label.choices > 1 else 1))
+        self.w.perform("Cycle continuity", func () -> unit!:
+            if step:
+                node.edits[-1] = node.edits[-1].with_numbers(values)
+            else:
+                for k in 0..<values.length:
+                    if k < node.values.length:
+                        node.values[k] = values[k]
+            self.w.network.invalidate(node.id)
+            self.w.rebuild())
+        return true
+
+    ## The labels: a dark plate with the continuity, the hovered one lit.
+    pub func draw(self, painter: Painter, width: float, height: float) -> unit!:
+        let shown = self.labels()
+        for k in 0..<shown.length:
+            let box = self.plate(shown[k], width, height) else continue
+            let lit = k == self.hovered
+            if let at = self.anchor(shown[k], width, height):
+                painter.line(Point(at[0], at[1]), Point(box.x + box.width, box.y + box.height), 1.0, theme.accent() if lit else theme.grey(110.0))
+                painter.rounded_rectangle(Rect(at[0] - 3.0, at[1] - 3.0, 6.0, 6.0), theme.accent() if lit else theme.grey(200.0), 3.0)
+            painter.rounded_rectangle(Rect(box.x - 1.0, box.y - 1.0, box.width + 2.0, box.height + 2.0), theme.accent() if lit else theme.grey(70.0), 4.0)
+            painter.rounded_rectangle(box, theme.grey(24.0), 3.0)
+            painter.text(shown[k].text, box.x + 7.0, box.y + 3.0, theme.accent() if lit else theme.text())

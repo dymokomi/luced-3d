@@ -178,6 +178,13 @@ pub class FeatureHandles:
         let node = self.feature() else return false
         return self.handles(node).length > 0
 
+    ## The value handle `h` shows: its slot's; a pair's the mean of its two
+    ## (Align's middle Tangent Scale arrow over the start and end scales).
+    func value_of(self, node: HandleTarget, h: HandleLine) -> float:
+        if h.kind == "pair":
+            return (node.values[h.slot] + node.values[h.reference]) * 0.5
+        return node.values[h.slot]
+
     ## Handle `h`'s grip (the arrow's tip, the ring) in the world.
     func grip(self, node: HandleTarget, h: HandleLine, width: float, height: float) -> Vector3!:
         let value = node.values[h.slot]
@@ -189,7 +196,7 @@ pub class FeatureHandles:
         if h.kind == "taper":
             let (base, sideways, length, shift) = self.taper_frame(node, h, width, height)
             return base.add(sideways.multiply_scalar(shift + length * math.tan(radians(math.max(-80.0, math.min(80.0, value))))))
-        return h.foot.add(h.way.multiply_scalar(self.arrow_length(node.values[h.slot] * h.scale, h.foot, width, height)))
+        return h.foot.add(h.way.multiply_scalar(self.arrow_length(self.value_of(node, h) * h.scale, h.foot, width, height)))
 
     ## An arrow's length in the world for `length` (its value times its
     ## scale), at least least_arrow points on screen at `foot`, its sign kept.
@@ -298,7 +305,7 @@ pub class FeatureHandles:
             self.dragging = true
             self.moved = false
             let pressed = shown[at]
-            self.pressed_value = node.values[pressed.slot]
+            self.pressed_value = self.value_of(node, pressed)
             self.pressed_along = self.along(pressed, event.x, event.y, width, height)
             self.pressed_x = event.x
             self.pressed_y = event.y
@@ -318,7 +325,7 @@ pub class FeatureHandles:
         let node = self.feature() else return false
         for h in self.handles(node):
             if h.slot == slot:
-                return h.kind != "arrow"
+                return h.kind != "arrow" and h.kind != "pair"
         return false
 
     ## The slot of the first handle (-1 none).
@@ -329,8 +336,8 @@ pub class FeatureHandles:
 
     ## Handle `h` dragged to the pointer at (`x`, `y`).
     func drag_to(self, node: HandleTarget, h: HandleLine, x: float, y: float, width: float, height: float, snap: bool) -> unit!:
-        var value = node.values[h.slot]
-        if h.kind == "arrow":
+        var value = self.value_of(node, h)
+        if h.kind == "arrow" or h.kind == "pair":
             # Moved by how far along its line the pointer went since the
             # press.
             let t = self.along(h, x, y, width, height)
@@ -351,7 +358,14 @@ pub class FeatureHandles:
                 turn += 360.0
             value = stepped(turn, 1.0, snap)
         let values = node.values.copy()
-        values[h.slot] = self.clamped(node, h.slot, value)
+        if h.kind == "pair":
+            # The middle arrow slides the whole row: both ends' scales move
+            # by what the mean moved.
+            let shift = value - self.value_of(node, h)
+            values[h.slot] = self.clamped(node, h.slot, node.values[h.slot] + shift)
+            values[h.reference] = self.clamped(node, h.reference, node.values[h.reference] + shift)
+        else:
+            values[h.slot] = self.clamped(node, h.slot, value)
         if node.step:
             self.w.preview_step(values)
         else:
@@ -396,7 +410,7 @@ pub class FeatureHandles:
         for at in 0..<shown.length:
             let h = shown[at]
             let color = theme.grey(245.0) if at == self.hovered else theme.accent()
-            if h.kind == "arrow":
+            if h.kind == "arrow" or h.kind == "pair":
                 self.draw_arrow(p, node, h, color, width, height)
             elif h.kind == "taper":
                 self.draw_taper(p, node, h, color, width, height)

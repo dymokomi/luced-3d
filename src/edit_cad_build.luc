@@ -1,0 +1,103 @@
+## Edit CAD's surface builders (surfacing Stage 5; build_ops.luc does the
+## work): Square, Skin, Rail, Profile, Set Planar, Sheet Extrude, Sheet
+## Revolve on curves (the Curves level) or edges (the Edges level), Extend
+## on an edge or a curve's end. A builder starts on what is picked, in the
+## order picked; when it needs more (Square's four boundaries, Skin's
+## sections, Rail's and Profile's rail) it waits, and each click adds a
+## curve or an edge (a click on one already in takes it out; a
+## double-click on a surface adds a temporary isoparm, Alias's), Enter
+## finishing. Each builder is one step and one undo with its picks.
+from luce_geocore.geocore import Mesh, Selection
+from luce_3d.graphics import Vector3
+from geometry_data import GeometryData
+from edit_operations import EditStep
+from edit_types import EditTool, edge_level, curve_level
+import build_ops
+import edit_cad_align
+
+## The prompts a builder waits in.
+pub let curves_label = "Pick builder curves"
+pub let rails_label = "Pick builder rails"
+
+pub func verbs() -> list[str]:
+    return build_ops.verbs()
+
+## The tools: the curve builders at the Curves and Edges levels, Extend at
+## the Edges and Curves levels.
+pub func tools(edges: int, curves: int) -> list[EditTool]:
+    let result: list[EditTool] = []
+    for verb in build_ops.curve_verbs():
+        result.append(EditTool(verb, verb, [curves, edges], build_ops.starting(verb), build_ops.rows(verb)))
+    result.append(EditTool(build_ops.extend_verb, build_ops.extend_verb, [edges, curves], build_ops.starting(build_ops.extend_verb), build_ops.rows(build_ops.extend_verb)))
+    return result
+
+## Step `step` on `data`; `name` names the sheet it makes.
+pub func run(step: EditStep, name: str, data: GeometryData) -> GeometryData!:
+    let start = build_ops.starting(step.verb)
+    let numbers = step.numbers.copy()
+    while numbers.length < start.length:
+        numbers.append(start[numbers.length])
+    return build_ops.build(step.verb, data, numbers, [step.text(0), step.text(1)], name)
+
+## The words for the picks of `chosen` on `mesh` at `level`, in order: a
+## curve ("curve <name>") or an edge ("edge <face> x y z"); for Extend
+## (`input`) a curve's end or an edge's face side ("curve <name> x y z",
+## "face <face> x y z").
+pub func picked_words(mesh: Mesh, chosen: Selection, level: int, input: bool) -> list[str]!:
+    let found: list[str] = []
+    var at = chosen.next(-1)
+    while at >= 0:
+        let words = edit_cad_align.pick_words(mesh, at, level, not input)
+        if words != "" and not (words in found):
+            found.append(words)
+        at = chosen.next(at)
+    return found
+
+## The list `text` with `words` added, or taken out when in it (a second
+## click on a curve lets it go).
+pub func toggled(text: str, words: str) -> str:
+    let list_now = build_ops.items(text)
+    if words in list_now:
+        let kept: list[str] = []
+        for w in list_now:
+            if w != words:
+                kept.append(w)
+        return kept.join(";")
+    list_now.append(words)
+    return list_now.join(";")
+
+## The prompt a builder step waits in next ("" none) and its hint.
+pub func next_prompt(step: EditStep) -> (str, str):
+    let texts = [step.text(0), step.text(1)]
+    let waiting = build_ops.waits_for(step.verb, texts)
+    if waiting == "":
+        return ("", "")
+    if (step.verb == build_ops.rail_verb or step.verb == build_ops.profile_verb) and build_ops.items(texts[build_ops.curves_text]).length > 0:
+        return (rails_label, waiting + "; Enter finishes, Esc cancels")
+    return (curves_label, waiting + "; a click adds a curve or an edge (again: takes it out), double-click a surface for an isoparm; Esc cancels")
+
+## Whether the prompt `label` is a builder's.
+pub func waits(label: str) -> bool:
+    return label == curves_label or label == rails_label
+
+## A level for the prompt: the curves when the step's first pick was one.
+pub func level_for(step: EditStep, current: int) -> int:
+    let first = build_ops.items(step.text(0))
+    if first.length > 0:
+        return curve_level if first[0].starts_with("curve") else edge_level
+    return current
+
+## The last step's list for prompt `label` with the click's `words` toggled.
+pub func with_pick(step: EditStep, label: str, words: str) -> EditStep:
+    let texts = [step.text(0), step.text(1)]
+    let at = build_ops.rails_text if label == rails_label else build_ops.curves_text
+    texts[at] = toggled(texts[at], words)
+    return step.with_texts(texts)
+
+## Whether `words` name a point for a temporary isoparm ("isoparm_at").
+pub func isoparm_words(p: Vector3) -> str:
+    return f"isoparm_at {p.x} {p.y} {p.z}"
+
+## How many curves the step's first list holds.
+pub func picked_count(step: EditStep) -> int:
+    return build_ops.items(step.text(0)).length

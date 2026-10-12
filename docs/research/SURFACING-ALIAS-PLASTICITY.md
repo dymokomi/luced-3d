@@ -95,7 +95,7 @@ remaining blend options on solids come last.
 | 2 | 3D CAD curves and curves on surfaces; Blend Curve in 3D, G0–G4. **Done** (§8) |
 | 3 | Project, Intersect, Trim, Untrim, Divide, Trim Convert, Stitch; open surface bodies throughout. **Done** (§8) |
 | 4 | Align (match) G0–G3, with every Alias option. **Done** (§8) |
-| 5 | Surfaces from curves: Square, Skin, Rail, Profile, Set Planar, Extend |
+| 5 | Surfaces from curves: Square, Skin, Rail, Profile, Set Planar, Extend. **Done** (§8) |
 | 6 | Blends between surfaces: Freeform Blend, Profile Blend, Surface Fillet between face sets |
 | 7 | Fill: N-sided and four-sided variational patches (xNURBS parity) |
 | 8 | Parasolid's blend options on solids: conic, overflow, limits, caps, Y-blends, corners |
@@ -1743,8 +1743,8 @@ Left for later, and what became of it (2026-10-12, with Stage 4):
   map; Keep originals on Untrim.
 - ~~**Curve ends short of the boundary**~~ Done: Extend curves carries a loose end on along the
   face, straight on in its chart, to the boundary or the next curve. ~~Stitch's detach~~ Done:
-  Detach periodic (split through the axis and the seam; a periodic B-spline face refused) and
-  Detach single-curve boundaries (a closed edge in two).
+  Detach periodic (split through the axis and the seam; a closed B-spline face at the middle of the
+  direction it closes in, with Stage 5) and Detach single-curve boundaries (a closed edge in two).
 - ~~**Per-edge precision in the booleans**~~ Done: the booleans merge and match by each edge's and
   vertex's own precision and the pieces of a tolerant edge keep it (the tessellator's side is
   another agent's). ~~A cone's band through its apex~~ Done: it untrims to the pointed side.
@@ -1827,12 +1827,26 @@ Answers from the reference tools (the doc's questions that Stage 4 met):
 - **Explicit Control off** gives the multi-span quintic: quintic across, spans added.
 - **Accept / Restore** are the recipe itself: each Align is one step, the next starts from it.
 
-Left for later:
+Left for later, and what became of it (2026-10-12, with Stage 5):
 
-- The middle Tangent Scale arrow that slides a whole row (the end arrows and sliders do it).
-- Temporary isoparms for tools other than Align's masters.
-- Modify Both of a curve with a surface's edge (curves with free curves only).
-- Vector type at G3 (Alias offers it at G1 and G2).
+- ~~The middle Tangent Scale arrow~~ Done: a third arrow in the row's middle slides the whole row,
+  both scales together (a "pair" handle, `feature_handles.luc`).
+- ~~Temporary isoparms for tools other than Align's masters~~ Done: a double-click on a surface while
+  a builder (Square, Skin, Rail, Profile, Set Planar, the sheets) waits for curves, or a Project or
+  Blend Curve node asks for one, adds the isoparm through the point (`build_ops.resolve_isoparms`:
+  the one that fits the other curves); luce-cad's Project takes "isoparm" words. The Edit CAD
+  Project and Blend Curve steps take curves picked before them (a double-click at the Curves level
+  makes an isoparm curve there).
+- ~~Modify Both of a curve with a surface's edge~~ Done with any master: against a surface (an edge,
+  an isoparm, a curve on a face, the face) the surface bends locally (a chart bump scaled so the met
+  point moves exactly halfway), its curves on face are lifted again, and the curve aligns to it
+  (`align_both.lucb`).
+- The stray red line of `surf_align` was the G2 row of control points, correct but drawn alone above
+  the model: the aligned rows are now joined across by the hull's lines, and the proxy is the
+  input's whole old hull (its own control points, rows and columns), as Alias draws them.
+- Stage 3's: Detach periodic splits closed B-spline faces too (`detach.lucb`), and 3D Trimming draws
+  its cast curves while Trim waits for clicks.
+- Still left: Vector type at G3 (Alias offers it at G1 and G2).
 
 **Stage 5: surfaces from curves** (S9, S10).
 
@@ -1847,6 +1861,77 @@ Left for later:
   - Rail with two rails keeps each section's ends on both;
   - Extend Natural of a B-spline is the same polynomial (a point past the old edge evaluates as
     before).
+
+**Stage 5: done** (2026-10-12). What was built:
+
+- **luce-cad** (`surfacing/builders.lucb`, `square.lucb`, `skin.lucb`, `sweep.lucb`, `sheets.lucb`,
+  `extend.lucb`, `build_api.lucb`; public `CadSurfaceBuild`; luce-cad MODELING.md, Surfaces from
+  curves): the builders' curves are Align's master words (curves, edges, isoparms), so a boundary
+  on a surface answers its cross derivatives.
+  - **Square**: a Gordon-Coons patch with Hermite blending built as nets, exact: P1 + P2 − P12 of the
+    sides' fields (the boundary and ∂S/∂u, ∂²S/∂u² as B-spline curves on the pair's knots); per
+    boundary Free, G0 (Blend Linear: the bilinear Coons patch; Cubic: its slope), G1 (the field in
+    the neighbor's tangent plane), G2 (its normal part from the neighbor's second fundamental form),
+    Implied Tangent and Curvature (a planar boundary's plane as the mirror), Tangent Angle; the
+    corners' mixed derivatives one set every field holds; spans added until each field is within a
+    millionth; Explicit Control.
+  - **Skin**: sections turned alike, compatible (rational kept), interpolated across at the mean chord
+    (degree 5 or one less than the sections; exact surfaces of revolution from coaxial circles);
+    closed with three loops either side cut back; Start and End G0–G3 by Align's rows.
+  - **Rail** (one or two rails; Natural rotation-minimizing, Parallel and Vector frames; Scale,
+    Non-proportional scale, Rotate; generation curves blended by a bias; each side's continuity)
+    and **Profile** (Parallel, Radial, Surface normal; Linear, Local, Global, Limited): sections
+    placed by the fraction of the rail's length, fitted along it at degree 5 with knots at each
+    section's kink, within a ten-millionth.
+  - **Set Planar** (a plane face trimmed by the curves, odd regions kept), **Extrude** and
+    **Revolve** of free curves (exact sheets).
+  - **Extend**: Linear, Natural (de Casteljau past the end, homogeneous: the same surface), Soft (C2
+    easing to straight), Reflective (C2, the curvature's change mirrored); a distance or a
+    percentage; Merge on or off.
+- **luced-3d**: the builders as Edit CAD steps (`edit_cad_build.luc`: started on the picks, waiting for
+  more, a click adding one, a double-click a temporary isoparm, Enter finishing) and CAD nodes
+  (`cad_surface_nodes.luc`, category Surfaces), the shared rows and cook (`build_ops.luc`), Boundary
+  Labels clicked to cycle (`build_labels.luc`), Square's Continuity Check drawn as the Check node's;
+  in the right-click on curves and edges, the S and Modify › Surfaces menus.
+
+Captures: `tools/preview.py --scene` with `surf_square_waiting`, `surf_square`, `surf_square_node`,
+`surf_skin`, `surf_rail`, `surf_profile`, `surf_planar`, `surf_sheets`, `surf_extend`, and for Stage 4's
+follow-ups `surf_align`, `surf_align_proxy`, `surf_trim_3d` again (each also with `--background`).
+
+Tests, against closed forms (luce-cad `surface_build_tests.luc`; luced-3d `edit_cad_build_tests.luc`):
+
+- Square of four lines is the bilinear patch; of a hole in a smooth surface it meets the four
+  neighbors G0, G1 and G2 as asked on every edge, measured by the Check tools; Blend Cubic of a plane
+  is the plane; Implied Tangent leaves its plane square; Tangent Angle 30° leans 30°;
+- Skin of two circles is a cylinder or a cone, of three a surface of revolution, exactly; closed it
+  turns less than 0.05° at its seam; Start G1 to an edge measures G1;
+- Rail of a circle round a circle is the torus within a ten-millionth of its size; with two rails
+  each section reaches both;
+- Profile passes each profile, Linear is two cones, Limited never overshoots;
+- Set Planar of a circle with a hole has the ring's area; Extrude and Revolve are exact;
+- Extend Natural is the same surface (an arc stays on its circle), Linear meets G1 and not G2,
+  Natural G3, Soft and Reflective G2;
+- in the editor: Square from four edges clicked one by one (waiting until the fourth) fills the box's
+  top, its labels cycle on a click; Skin between two edges is the side again; Extend Linear carries
+  the top on; a double-click adds a temporary isoparm; the Square node follows the box upstream.
+
+Answers from the reference tools (the doc's questions that Stage 5 met):
+
+- **Square's corners.** Alias's Square needs the boundaries to meet; ours walks them end to end within
+  a ten-thousandth of their size and refuses a gap with its size. Where two neighbors cannot both be
+  met at a corner (a boundary leaving one neighbor's tangent plane), the patch takes the mean of what
+  each asks there, as a Gordon patch's twist; Alias's result has the same compromise.
+- **Square's G3.** Alias's Square offers continuity to G2 (Curvature) and Implied; so does ours. G3 is
+  Skin's and Rail's (Align's rows), as Plasticity's Loft and Sweep stop at G2 and Alias's Rail at G2.
+- **Free.** Alias's Free keeps the boundary but no slope; ours with Blend Cubic gives it the G0 patch's
+  own slope.
+- **Extend's types.** Alias offers Linear and Extrapolate (our Natural); Soft and Reflective are
+  Parasolid's (C2 easing to straight, C2 mirrored), as the plan's S10 asked.
+
+Left for later: Square's Rebuild per edge, Boundary Blend and Influence, Colinear Options; Rail's
+Spine mode, Sweep Pivot, Curve Segments and Fixed Curve; Skin's Multiple surfaces, Proportional
+Crown and Flow Control; Extend of several edges at once (Chain Select); the builders' Explicit
+Control on Skin, Rail and Profile.
 
 **Stage 6: blends between surfaces** (S11).
 

@@ -1,0 +1,482 @@
+## Surfacing Stage 5's builders on a CAD result (docs/research/
+## SURFACING-ALIAS-PLASTICITY.md §4.6, §6.6, §7.1): surfaces from curves,
+## shared by Edit CAD's steps (edit_cad_build.luc) and the CAD network's
+## nodes (cad_surface_nodes.luc), each luce-cad's CadSurfaceBuild:
+##   Square: four boundaries, each Free, G0, G1, G2, Implied Tangent,
+##     Implied Curvature or at a Tangent Angle, Blend Linear or Cubic;
+##   Skin: a loft through sections, open or closed, its first and last
+##     section matched G0 to G3 to the surface they lie on;
+##   Rail: generation curves swept along one or two rails, the sweep's
+##     frame (Natural, Parallel, Vector), two rails' transform, the rails'
+##     and the end sections' continuity;
+##   Profile: profiles placed on a rail, oriented Parallel, Radial or by
+##     the Surface normal, Linear, Local, Global or Limited between them;
+##   Set Planar: closed curves in a plane filled;
+##   Sheet Extrude and Sheet Revolve: free curves swept to sheets;
+##   Extend: a surface's edge or a curve's end carried on, Linear, Natural,
+##     Soft or Reflective, by a distance or a percentage.
+## Their curves are words, as Align's masters ("curve <name>", "edge <face>
+## x y z", "isoparm <face> <0 or 1> <fraction>", and "isoparm_at x y z":
+## Alias's temporary isoparm, a double-click on a surface, resolved here to
+## the isoparm through the point that fits the others best), apart by ";".
+## Square, Skin and Rail publish their per-edge continuity labels (Alias's
+## Boundary Labels; build_labels.luc draws them and a click cycles one) as
+## state lines, and with Continuity Check the new sheet's edges against
+## their neighbors are measured and drawn as the Check node's.
+from luce_cad.surfacing import CadSurfacing, CadSurfaceBuild, CadSurfaceEdit
+from luce_cad.curves import CadCurveTools
+from luce_cad.cad_curves import CadCurves
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.measure import CadMeasure
+from luce_cad.model import CadModel
+from luce_geocore.geocore import GeometrySet
+from luce_3d.graphics import Vector3
+from geometry_data import GeometryData
+from parameter_rows import Parameter, number, whole, toggle, menu, vector
+from luce_std import math
+from luce_ui import ui
+
+pub let square_verb = "Square"
+pub let skin_verb = "Skin"
+pub let rail_verb = "Rail"
+pub let profile_verb = "Profile"
+pub let planar_verb = "Set Planar"
+pub let extrude_verb = "Sheet Extrude"
+pub let revolve_verb = "Sheet Revolve"
+pub let extend_verb = "Extend"
+
+## The builders on curves (or edges), and Extend on an edge or a curve's end.
+pub func curve_verbs() -> list[str]:
+    return [square_verb, skin_verb, rail_verb, profile_verb, planar_verb, extrude_verb, revolve_verb]
+
+pub func verbs() -> list[str]:
+    return curve_verbs() + [extend_verb]
+
+## The texts: the curves (boundaries, sections, generation curves,
+## profiles; Extend's edge or curve end), and the rails (Rail, Profile).
+pub let curves_text = 0
+pub let rails_text = 1
+
+## The state lines: each label's place, its value slot and its text.
+pub let label_head = "build_label "
+## A label's value cycles through these (Square's, the G orders').
+pub let square_cycle = "Free|G0|G1|G2|Implied tangent|Implied curvature|Tangent angle"
+pub let order_cycle = "G0|G1|G2|G3"
+
+# -- Slots.
+
+## Square: each picked boundary's continuity and Tangent Angle, the blend,
+## Explicit Control, the labels and the check.
+pub let continuity_slot = 0
+pub let angle_slot = 4
+pub let cubic_slot = 8
+pub let explicit_slot = 9
+pub let degree_u_slot = 10
+pub let spans_u_slot = 11
+pub let degree_v_slot = 12
+pub let spans_v_slot = 13
+pub let labels_slot = 14
+pub let check_slot = 15
+
+## Skin: degree across, closed, start and end continuity.
+pub let degree_slot = 0
+pub let closed_slot = 1
+pub let start_slot = 2
+pub let end_slot = 3
+
+## Rail: the sweep mode, its vector, two rails' transform, the generation
+## curves' blend, each side's continuity (rail 1, rail 2, first, last).
+pub let mode_slot = 0
+pub let vector_slot = 1
+pub let transform_slot = 4
+pub let bias_slot = 5
+pub let rail_continuity_slot = 6
+
+## Profile: orientation and transition.
+pub let orientation_slot = 0
+pub let transition_slot = 1
+
+## Sheet Extrude: direction, distance, both ways. Sheet Revolve: the axis
+## through a point along a direction, from and to angles.
+pub let direction_slot = 0
+pub let distance_slot = 3
+pub let both_slot = 4
+pub let origin_slot = 0
+pub let axis_slot = 3
+pub let from_slot = 6
+pub let to_slot = 7
+
+## Extend: its type, distance, by percentage, merge.
+pub let type_slot = 0
+pub let extend_distance_slot = 1
+pub let percent_slot = 2
+pub let merge_slot = 3
+
+# -- Rows.
+
+## The rows of builder `verb` (the node's and the step's alike).
+pub func rows(verb: str) -> list[Parameter]:
+    if verb == square_verb:
+        let result: list[Parameter] = []
+        for k in 0..<4:
+            result.append(menu(f"Boundary {k + 1}", continuity_slot + k, square_cycle, 1.0, f"Alias's Square continuity at the boundary picked {["first", "second", "third", "fourth"][k]}: Free, G0 (position), G1 (tangent to the surface it lies on), G2 (curvature too), Implied tangent or curvature (the mirror across the plane the boundary lies in), or a Tangent angle to its surface. Its label on the model cycles it too."))
+        for k in 0..<4:
+            let angle = number(f"Angle {k + 1}", angle_slot + k, 0.0, -89.0, 89.0, 1.0, "Tangent angle: the boundary's surface's tangent plane turned this far about the edge (positive lifts toward its normal side).", suffix = "°")
+            angle.hide_when = f"{{ boundary_{k + 1} != 6 }}"
+            result.append(angle)
+        result.append(menu("Blend", cubic_slot, "Linear|Cubic", 0.0, "Alias's Blend type: Linear (a G0 boundary's influence falls straight off; four lines make the bilinear patch) or Cubic (it keeps the G0 patch's slope)."))
+        result.extend(explicit_rows())
+        result.extend([toggle("Boundary labels", labels_slot, 1.0, "Alias's Boundary Labels: each boundary's continuity at its middle; a click cycles it."),
+                       toggle("Continuity check", check_slot, 1.0, "Alias's Continuity Check: the new surface's edges against the surfaces they meet, drawn as the Check node's.")])
+        return result
+    if verb == skin_verb:
+        let start = menu("Start continuity", start_slot, order_cycle, 0.0, "The first section's side matched to the surface it lies on (an edge, a curve on a face): G0 to G3.")
+        let end = menu("End continuity", end_slot, order_cycle, 0.0, "The last section's side, likewise.")
+        start.hide_when = "{ closed != 0 }"
+        end.hide_when = "{ closed != 0 }"
+        return [whole("Degree", degree_slot, 5.0, 1.0, 7.0, "Alias's V degree: across the sections (lowered to one less than their count)."),
+                toggle("Closed", closed_slot, 0.0, "Skin round: the last section back to the first, smoothly."),
+                start, end,
+                toggle("Boundary labels", 4, 1.0, "The start and end continuity at their sections; a click cycles them.")]
+    if verb == rail_verb:
+        let along = vector("Vector", vector_slot, [0.0, 1.0, 0.0], "Sweep mode Vector (Alias's View): the direction the sections keep up.")
+        along.hide_when = "{ sweep_mode != 2 }"
+        let result = [menu("Sweep mode", mode_slot, "Natural|Parallel|Vector", 0.0, "How the sections turn along the rail: Natural (rotation minimizing, Alias's Proportional with one generation curve), Parallel (not at all), Vector (keeping a direction up)."),
+                      along,
+                      menu("Two rails", transform_slot, "Scale|Non-proportional scale|Rotate", 0.0, "Alias's Transform Control with two rails: each section scaled to reach both rails, stretched along the chord only, or only turned."),
+                      number("Blend bias", bias_slot, 1.0, 0.1, 10.0, 0.1, "Alias's Gen. Blend Value: how the generation curves blend along the rail (1 evenly; above 1 the first lasts longer).")]
+        let names = ["Rail 1 continuity", "Rail 2 continuity", "First continuity", "Last continuity"]
+        let docs = ["The first rail's side matched to the surface it lies on (an edge, a curve on a face).", "The second rail's side, likewise.",
+                    "The first generation curve's side (at the rail's start).", "The last generation curve's side (at the rail's end)."]
+        for k in 0..<4:
+            result.append(menu(names[k], rail_continuity_slot + k, order_cycle, 0.0, docs[k]))
+        result.append(toggle("Boundary labels", 10, 1.0, "Each side's continuity at its middle; a click cycles it."))
+        return result
+    if verb == profile_verb:
+        return [menu("Orientation", orientation_slot, "Parallel|Radial|Surface normal", 1.0, "Alias's Profile orientation: the profiles carried without turning, turning with the rail, or kept up the normal of the face the rail lies on."),
+                menu("Transition", transition_slot, "Linear|Local|Global|Limited", 0.0, "Between profiles: Linear (straight), Local (eased between neighbors), Global (a smooth spline through all), Limited (smooth, never past a profile).")]
+    if verb == extrude_verb:
+        let distance = number("Distance", distance_slot, 1.0, 0.000001, 100000.0, 0.1, "How far the curves are carried.", soft = 50.0)
+        distance.length = true
+        return [vector("Direction", direction_slot, [0.0, 1.0, 0.0], "The direction the curves are carried along."), distance,
+                toggle("Both sides", both_slot, 0.0, "Carry them the distance both ways.")]
+    if verb == revolve_verb:
+        return [vector("Axis point", origin_slot, [0.0, 0.0, 0.0], "A point of the axis."), vector("Axis", axis_slot, [0.0, 1.0, 0.0], "The axis's direction."),
+                number("From", from_slot, 0.0, -360.0, 360.0, 5.0, "The angle the sheet starts at.", suffix = "°"),
+                number("To", to_slot, 360.0, -360.0, 720.0, 5.0, "The angle it ends at (a whole turn: 360 more than From).", suffix = "°")]
+    if verb == extend_verb:
+        let distance = number("Distance", extend_distance_slot, 1.0, 0.000001, 100000.0, 0.1, "How far the edge is carried on (a length, or a percentage of the surface's length across).", soft = 50.0)
+        return [menu("Type", type_slot, "Linear|Natural|Soft|Reflective", 0.0, "Alias's and Parasolid's Extend: Linear (straight on, tangent), Natural (the same surface carried on, Alias's Extrapolate), Soft (curvature continuous, easing to straight), Reflective (curvature continuous, its change mirrored)."),
+                distance,
+                menu("Distance is", percent_slot, "Length|Percentage", 0.0, "The distance as a length, or a percentage of the surface's length across the edge (of the curve's length)."),
+                toggle("Merge", merge_slot, 1.0, "Alias's Merge: the extension part of the surface; off, a sheet of its own beside it.")]
+    let none_shown: list[Parameter] = []
+    return none_shown
+
+## Explicit Control's rows (Square).
+func explicit_rows() -> list[Parameter]:
+    let result = [toggle("Explicit control", explicit_slot, 0.0, "Off: the multi-span quintic the continuity needs. On: the degrees and spans given (refitted, its sides held).")]
+    for (label, slot, initial, top) in [("Degree U", degree_u_slot, 5.0, 11.0), ("Spans U", spans_u_slot, 4.0, 64.0), ("Degree V", degree_v_slot, 5.0, 11.0), ("Spans V", spans_v_slot, 4.0, 64.0)]:
+        let row = whole(label, slot, initial, 1.0, top, "Explicit Control's structure.")
+        row.hide_when = "{ explicit_control == 0 }"
+        result.append(row)
+    return result
+
+## A new builder's values: its rows' starting values.
+pub func starting(verb: str) -> list[float]:
+    let shown = rows(verb)
+    var count = 1
+    for row in shown:
+        if row.slot + row.components > count:
+            count = row.slot + row.components
+    let v: list[float] = []
+    for _ in 0..<count:
+        v.append(0.0)
+    for row in shown:
+        v[row.slot] = row.initial
+        for k in 1..<row.components:
+            v[row.slot + k] = row.rest[k - 1]
+    return v
+
+## The words of the curves `text` holds (apart by ";").
+pub func items(text: str) -> list[str]:
+    let found: list[str] = []
+    for part in text.split(";"):
+        if part.trim() != "":
+            found.append(part.trim())
+    return found
+
+## What `verb` waits for ("" when it has what it needs).
+pub func waits_for(verb: str, t: list[str]) -> str:
+    let picked = items(t[curves_text]).length
+    if verb == square_verb and picked < 4:
+        return f"Pick the four boundaries (curves, edges, or double-click a surface for an isoparm), then Enter: {picked} of 4"
+    if verb == skin_verb and picked < 2:
+        return "Pick the sections in order (curves or edges), then Enter"
+    if verb == rail_verb or verb == profile_verb:
+        if picked == 0:
+            return "Pick the generation curves" if verb == rail_verb else "Pick the profiles"
+        if items(t[rails_text]).length == 0:
+            return "Pick the rail (two for Rail with two rails)" if verb == rail_verb else "Pick the rail"
+        return ""
+    if verb == extend_verb and t[curves_text].trim() == "":
+        return "Pick the edge to extend (a surface's edge, or a curve's end at the Curves level)"
+    if picked == 0:
+        return "Pick the curves"
+    return ""
+
+# -- Temporary isoparms.
+
+## Each "isoparm_at x y z" of `words` (Alias's temporary isoparm) as the
+## isoparm through the point of the face under it, whichever of its two
+## fits the others best: for Square the one whose ends come nearest the
+## other boundaries' ends, else the one most along the first other curve.
+func resolved(data: GeometryData, words: list[str], verb: str) -> list[str]!:
+    return resolve_isoparms(data, words, verb == square_verb)
+
+## The "isoparm_at" words of `words` resolved (see resolved): by the ends
+## (`by_ends`: those nearest the others' ends) or by direction.
+pub func resolve_isoparms(data: GeometryData, words: list[str], by_ends: bool) -> list[str]!:
+    let others: list[Vector3] = []
+    var along = Vector3()
+    for w in words:
+        if w.starts_with("isoparm_at"):
+            continue
+        let (a, b) = ends_of(data, w)
+        others.extend([a, b])
+        if along.length() == 0.0:
+            along = b.subtract(a)
+    let result: list[str] = []
+    for w in words:
+        let parts = w.split(" ")
+        if parts.length != 4 or parts[0] != "isoparm_at":
+            result.append(w)
+            continue
+        let p = Vector3(float(parts[1]), float(parts[2]), float(parts[3]))
+        result.append(isoparm_words(data, p, others, along, by_ends))
+    return result
+
+## The isoparm words for the point `p` (see resolved).
+func isoparm_words(data: GeometryData, p: Vector3, others: list[Vector3], along: Vector3, square: bool) -> str!:
+    var nearest = 1.0e300
+    var face = ""
+    var owner: CadModel? = none
+    for model in data.models():
+        for f in 0..<model.face_count():
+            let name = model.face_name(f)
+            let q = CadCurveTools.face_point(model, name, CadCurveTools.face_uv(model, name, p))
+            if q.subtract(p).length() < nearest:
+                nearest = q.subtract(p).length()
+                face = name
+                owner = model
+    let model = owner else error(ui.invalid, "The isoparm's point is on no face: double-click on a surface again")
+    var best = ""
+    var best_score = -1.0e300
+    for direction in 0..<2:
+        let fraction = CadCurveTools.isoparm_fraction(model, face, direction, p)
+        let curve = CadCurveTools.isoparm(model, face, direction, fraction)
+        let a = curve.at(curve.low())
+        let b = curve.at(curve.high())
+        var score = 0.0
+        if square and others.length > 0:
+            for end in [a, b]:
+                var least = 1.0e300
+                for q in others:
+                    least = math.min(least, q.subtract(end).length())
+                score -= least
+        elif along.length() > 0.0:
+            score = math.abs(b.subtract(a).normalized().dot(along.normalized())) catch failure:
+                recover 0.0
+        else:
+            score = 1.0 - float(direction)
+        if score > best_score:
+            best_score = score
+            best = f"isoparm {face} {direction} {fraction}"
+    return best
+
+## The ends of the curve `words` names (an edge: the clicked point twice).
+func ends_of(data: GeometryData, words: str) -> (Vector3, Vector3)!:
+    let parts = words.split(" ")
+    if parts[0] == "curve" and parts.length >= 2:
+        let index = CadCurves.find(data.geometry, parts[1])
+        if index >= 0:
+            let c = CadCurves.curve(data.geometry, index)
+            return (c.at(c.low()), c.at(c.high()))
+    if parts[0] == "isoparm" and parts.length == 4:
+        for model in data.models():
+            for f in 0..<model.face_count():
+                if model.face_name(f) == parts[1]:
+                    let c = CadCurveTools.isoparm(model, parts[1], int(float(parts[2])), float(parts[3]))
+                    return (c.at(c.low()), c.at(c.high()))
+    if parts.length == 5:
+        let p = Vector3(float(parts[2]), float(parts[3]), float(parts[4]))
+        return (p, p)
+    return (Vector3(), Vector3())
+
+## The middle of the curve `words` names (a label's place).
+func middle_of(data: GeometryData, words: str) -> Vector3!:
+    let parts = words.split(" ")
+    if parts[0] == "curve" and parts.length >= 2:
+        let index = CadCurves.find(data.geometry, parts[1])
+        if index >= 0:
+            let c = CadCurves.curve(data.geometry, index)
+            return c.at((c.low() + c.high()) * 0.5)
+    let (a, b) = ends_of(data, words)
+    return a.add(b).multiply_scalar(0.5)
+
+# -- The cook.
+
+## Builder `verb` on `data` by values `v` and texts `t`; `name` names the
+## sheet it makes.
+pub func build(verb: str, data: GeometryData, v: list[float], t: list[str], name: str) -> GeometryData!:
+    let waiting = waits_for(verb, t)
+    if waiting != "":
+        return labelled(data.passed(waiting), data, verb, v, items(t[curves_text]), items(t[rails_text]))
+    let curves = resolved(data, items(t[curves_text]), verb)
+    let rails = resolved(data, items(t[rails_text]), verb)
+    let joined = curves.join(";")
+    var made: CadSurfaceEdit? = none
+    var report = ""
+    if verb == square_verb:
+        let codes = [int(v[continuity_slot]), int(v[continuity_slot + 1]), int(v[continuity_slot + 2]), int(v[continuity_slot + 3])]
+        let edit = CadSurfaceBuild.square(data.geometry, joined, codes, [v[angle_slot], v[angle_slot + 1], v[angle_slot + 2], v[angle_slot + 3]],
+                                          cubic = v[cubic_slot] != 0.0, explicit = v[explicit_slot] != 0.0, degree_u = int(v[degree_u_slot]), spans_u = int(v[spans_u_slot]),
+                                          degree_v = int(v[degree_v_slot]), spans_v = int(v[spans_v_slot]), name = name)
+        made = edit
+        report = f"fields fitted within {edit.deviation:.2e}"
+    elif verb == skin_verb:
+        made = CadSurfaceBuild.skin(data.geometry, joined, degree = int(v[degree_slot]), closed = v[closed_slot] != 0.0, start = int(v[start_slot]), end = int(v[end_slot]), name = name)
+        report = f"through {curves.length} sections"
+    elif verb == rail_verb:
+        let orders = [int(v[rail_continuity_slot]), int(v[rail_continuity_slot + 1]), int(v[rail_continuity_slot + 2]), int(v[rail_continuity_slot + 3])]
+        made = CadSurfaceBuild.rail(data.geometry, joined, rails.join(";"), mode = int(v[mode_slot]), vector = Vector3(v[vector_slot], v[vector_slot + 1], v[vector_slot + 2]),
+                                    transform = int(v[transform_slot]), bias = v[bias_slot], continuity = orders, name = name)
+        report = f"{curves.length} generation curve{"" if curves.length == 1 else "s"} along {rails.length} rail{"" if rails.length == 1 else "s"}"
+    elif verb == profile_verb:
+        made = CadSurfaceBuild.profile(data.geometry, joined, rails.join(";"), orientation = int(v[orientation_slot]), transition = int(v[transition_slot]), name = name)
+        report = f"{curves.length} profile{"" if curves.length == 1 else "s"}"
+    elif verb == planar_verb:
+        made = CadSurfaceBuild.set_planar(data.geometry, joined, name = name)
+    elif verb == extrude_verb:
+        made = CadSurfaceBuild.extruded(data.geometry, joined, Vector3(v[direction_slot], v[direction_slot + 1], v[direction_slot + 2]), v[distance_slot], both = v[both_slot] != 0.0, name = name)
+    elif verb == revolve_verb:
+        made = CadSurfaceBuild.revolved(data.geometry, joined, Vector3(v[origin_slot], v[origin_slot + 1], v[origin_slot + 2]), Vector3(v[axis_slot], v[axis_slot + 1], v[axis_slot + 2]),
+                                        start = v[from_slot], end = v[to_slot], name = name)
+    elif verb == extend_verb:
+        made = CadSurfaceBuild.extended(data.geometry, t[curves_text].trim(), kind = int(v[type_slot]), distance = v[extend_distance_slot], percent = v[percent_slot] != 0.0,
+                                        merge = v[merge_slot] != 0.0)
+        report = ["Linear", "Natural", "Soft", "Reflective"][int(v[type_slot])] + " extension"
+    let edit = made else error(ui.invalid, f"{verb} is not a surface builder")
+    let result = GeometryData(geometry = edit.geometry())
+    result.report = report
+    if verb == square_verb and v[check_slot] != 0.0:
+        # The order each continuity asks (Tangent angle none: it is a turn).
+        let orders = [0, 0, 1, 2, 1, 2, 0]
+        var level = 1
+        for k in 0..<4:
+            if orders[int(v[continuity_slot + k])] > level:
+                level = orders[int(v[continuity_slot + k])]
+        checked(result, name, curves, level)
+    return labelled(result, data, verb, v, items(t[curves_text]), items(t[rails_text]))
+
+## `result` with the new sheet `name`'s edges checked against the faces
+## its boundaries lie on (Alias's Continuity Check, up to G`level`): the
+## sheet and those faces stitched apart from the model, measured, drawn.
+func checked(result: GeometryData, name: str, curves: list[str], level: int) -> unit!:
+    var pieces = GeometrySet()
+    var have_sheet = false
+    let faces: list[str] = []
+    for w in curves:
+        let parts = w.split(" ")
+        if parts[0] == "edge" and parts.length == 5 and not (parts[1] in faces):
+            faces.append(parts[1])
+        if parts[0] == "curve" and parts.length >= 2:
+            let index = CadCurves.find(result.geometry, parts[1])
+            if index >= 0:
+                let on = CadCurves.face(result.geometry, index)
+                if on != "" and not (on in faces):
+                    faces.append(on)
+    if faces.length == 0:
+        return
+    for model in result.models():
+        for f in 0..<model.face_count():
+            let face = model.face_name(f)
+            if face == name or face in faces:
+                pieces = pieces.merged(CadGeometry.of_model(model.subset([f])))
+                have_sheet = have_sheet or face == name
+    if not have_sheet:
+        return
+    let sewn = CadSurfacing.stitched(pieces, [], 0.0001) catch failure:
+        result.warning = f"Continuity check: the new surface meets none of its boundaries' faces ({failure.message})"
+        return
+    let model = CadGeometry.model(sewn.geometry(), 0)
+    let check = CadMeasure.check(model, "", level, 12, 0.0001, 0.1, 0.5, 1.0, true, 32, true, 1.0, true)
+    result.check = check
+    result.report = result.report + "; " + check.summary()
+
+## `result` with the labels of `verb`'s sides (its values' cycles) as state
+## lines, when its Boundary labels row is on.
+func labelled(result: GeometryData, data: GeometryData, verb: str, v: list[float], curves: list[str], rails: list[str]) -> GeometryData!:
+    let lines: list[str] = []
+    if verb == square_verb and v[labels_slot] != 0.0:
+        for k in 0..<(4 if curves.length > 4 else curves.length):
+            if curves[k].starts_with("isoparm_at"):
+                continue
+            let code = int(v[continuity_slot + k])
+            let text = square_cycle.split("|")[code]
+            lines.append(label_line(middle_of(data, curves[k]), continuity_slot + k, 7, text))
+    if verb == skin_verb and v[4] != 0.0 and v[closed_slot] == 0.0 and curves.length >= 2:
+        for (k, slot) in [(0, start_slot), (curves.length - 1, end_slot)]:
+            if not curves[k].starts_with("isoparm_at"):
+                lines.append(label_line(middle_of(data, curves[k]), slot, 4, order_cycle.split("|")[int(v[slot])]))
+    if verb == rail_verb and v[10] != 0.0:
+        for k in 0..<(2 if rails.length > 2 else rails.length):
+            if not rails[k].starts_with("isoparm_at"):
+                lines.append(label_line(middle_of(data, rails[k]), rail_continuity_slot + k, 4, order_cycle.split("|")[int(v[rail_continuity_slot + k])]))
+        if curves.length > 0:
+            for (k, slot) in [(0, rail_continuity_slot + 2), (curves.length - 1, rail_continuity_slot + 3)]:
+                if not curves[k].starts_with("isoparm_at"):
+                    lines.append(label_line(middle_of(data, curves[k]), slot, 4, order_cycle.split("|")[int(v[slot])]))
+    if lines.length > 0:
+        result.sketch_state = (result.sketch_state + "\n" if result.sketch_state != "" else "") + lines.join("\n")
+    return result
+
+## A label's state line: its place, the value slot it cycles, how many
+## choices, its text.
+func label_line(p: Vector3, slot: int, choices: int, text: str) -> str:
+    return f"{label_head}{p.x} {p.y} {p.z} {slot} {choices} {text}"
+
+## A label read back: its place, slot, choices and text.
+pub class BuildLabel:
+    pub let point: Vector3
+    pub let slot: int
+    pub let choices: int
+    pub let text: str
+
+    pub func init(self, point: Vector3, slot: int, choices: int, text: str):
+        self.point = point
+        self.slot = slot
+        self.choices = choices
+        self.text = text
+
+## The labels a cook's state holds.
+pub func labels_of(state: str) -> list[BuildLabel]:
+    let found: list[BuildLabel] = []
+    for line in state.split("\n"):
+        if not line.starts_with(label_head):
+            continue
+        let words = line[label_head.length..].split(" ")
+        if words.length < 6:
+            continue
+        let x = float(words[0]) catch failure:
+            recover 0.0
+        let y = float(words[1]) catch failure:
+            recover 0.0
+        let z = float(words[2]) catch failure:
+            recover 0.0
+        let slot = int(words[3]) catch failure:
+            recover -1
+        let choices = int(words[4]) catch failure:
+            recover 1
+        found.append(BuildLabel(Vector3(x, y, z), slot, choices, words[5..].join(" ")))
+    return found

@@ -13,9 +13,10 @@ import edit_cad_faces
 import cad_features
 import cad_moves
 import cad_names
-from edit_types import edge_level
+from edit_types import edge_level, curve_level
 from luce_3d.graphics import Vector3
 import edit_cad_align
+import edit_cad_build
 import align_ops
 
 ## The prompts Edit CAD's steps wait in.
@@ -49,7 +50,12 @@ pub func wait_for(w: Workspace, node: Node, label: str, level: int, hint: str) -
 
 ## Whether prompt `label` is one of Edit CAD's.
 pub func waits(label: str) -> bool:
-    return label in [target_label, tools_label, splitting_label, axis_label, object_label, plane_label, from_label, to_label, pivot_label, rotate_label, projection_label, master_label, second_label]
+    return label in [target_label, tools_label, splitting_label, axis_label, object_label, plane_label, from_label, to_label, pivot_label, rotate_label, projection_label, master_label, second_label] or edit_cad_build.waits(label)
+
+## The prompts of the builder nodes' curve inputs (modify_picks.luc's
+## "Pick ..." of their rows), where a double-click adds an isoparm too.
+pub func builder_node_labels() -> list[str]:
+    return ["Pick boundaries", "Pick sections", "Pick generation curves", "Pick rails", "Pick profiles", "Pick rail", "Pick curves", "Pick from curve", "Pick to curve"]
 
 ## The selection changed while the last step waits: what was picked goes
 ## into it (a face's name, the tool bodies' group, an edge as the axis);
@@ -60,6 +66,16 @@ pub func follow_pick(w: Workspace, node: Node, mesh: Mesh, chosen: Selection) ->
         return
     let step = node.edits[-1]
     let first = chosen.next(-1)
+    if edit_cad_build.waits(prompt.label):
+        # A builder's curves: each click adds one (again: takes it out).
+        if first < 0 or not (w.level_index() == curve_level or w.level_index() == edge_level):
+            return
+        let words = edit_cad_align.pick_words(mesh, first, w.level_index(), true)
+        if words == "":
+            return
+        node.edits[-1] = edit_cad_build.with_pick(step, prompt.label, words)
+        after_builder_pick(w, node)
+        return
     if prompt.label == tools_label:
         if not w.on_domain(Domain.face):
             return
@@ -207,9 +223,32 @@ pub func set_axis(w: Workspace, node: Node, axis: str) -> unit!:
     finish_pick(w, node)
 
 ## Enter while a step waits: kept as it stands (Combine's tools, Replace
-## Face's targets, a Split by an origin plane chosen in the tool bar).
+## Face's targets, a Split by an origin plane chosen in the tool bar); a
+## builder's generation curves or profiles go on to its rail.
 pub func accept_pick(w: Workspace, node: Node) -> unit!:
+    let prompt = w.prompt else return
+    if prompt.label == edit_cad_build.curves_label and node.edits.length > 0:
+        let (label, hint) = edit_cad_build.next_prompt(node.edits[-1])
+        if label == edit_cad_build.rails_label:
+            wait_for(w, node, label, w.level_index(), hint)
+            return
     finish_pick(w, node)
+
+## A builder's pick made: the step cooks with it; when it has what it
+## needs and takes no more (Square's fourth boundary) the pick finishes,
+## else it waits on, the selection cleared for the next click.
+pub func after_builder_pick(w: Workspace, node: Node) -> unit!:
+    let step = node.edits[-1]
+    let (label, hint) = edit_cad_build.next_prompt(step)
+    let full = step.verb == "Square" and edit_cad_build.picked_count(step) >= 4
+    if full:
+        finish_pick(w, node)
+        return
+    w.network.invalidate(node.id)
+    w.selection = none
+    w.pending_changed = true
+    say(w, hint if label != "" else "Enter finishes; a click adds another (again: takes it out); Esc cancels")
+    w.rebuild()
 
 ## The pick is made: one undo step with the step it completes.
 func finish_pick(w: Workspace, node: Node) -> unit!:

@@ -513,10 +513,13 @@ model back exactly.
     Attach point (curves); Proxy display; Diagnostic feedback. A tall tool
     bar stands at the viewport's left, the model in sight.
   - The viewport draws the aligned rows tinted by their order (edge green,
-    G1 yellow, G2 red, G3 purple, extra rows grey), the original hull as a
-    ghost with Proxy display, and the edge dashed red when the limits are
-    missed (then the node warns how far); the Tangent scale arrows at the
-    edge's ends and Partial's range arrows are handles. The report line is
+    G1 yellow, G2 red, G3 purple, extra rows grey) joined across by the
+    hull's lines (a row off the surface reads as the control net it is),
+    the input's whole hull as it was as a ghost with Proxy display (Alias's),
+    and the edge dashed red when the limits are missed (then the node warns
+    how far); the Tangent scale arrows at the edge's ends, the middle one
+    that slides the whole row (both scales together, Alias's) and Partial's
+    range arrows are handles. The report line is
     Alias's Diagnostic Feedback (gap, angle, curvature and G3 differences,
     start and end angles).
   - **Aligned rows stay aligned**: a Move CVs or CV transform step later in
@@ -530,6 +533,46 @@ model back exactly.
     Master and Second master picked as the Modify features' inputs, a
     double-click a temporary isoparm master; the node follows its input
     upstream.
+  - Modify both works with any master for a curve: against a surface (an
+    edge, an isoparm, a curve on a face, the face) the surface bends locally
+    to meet the curve halfway.
+- **Surfacing Stage 5, surfaces from curves** (`edit_cad_build.luc`,
+  `build_ops.luc`, `build_labels.luc`; luce-cad's `CadSurfaceBuild`), at the
+  Curves and Edges levels, from the right-click on curves or edges, the S
+  and Modify menus:
+  - **Square** (four boundaries, curves or edges, each Free, G0, G1, G2,
+    Implied tangent, Implied curvature or Tangent angle; Blend Linear or
+    Cubic; Explicit control), **Skin** (sections in order; degree, Closed,
+    Start and End continuity G0–G3), **Rail** (generation curves, then one
+    rail or two: Sweep mode Natural, Parallel or Vector, the two-rail
+    transform Scale, Non-proportional scale or Rotate, Blend bias, each
+    side's continuity), **Profile** (profiles, then a rail: Orientation
+    Parallel, Radial or Surface normal; Transition Linear, Local, Global or
+    Limited), **Set Planar** (closed curves in a plane, a curve inside
+    another a hole), **Sheet Extrude** and **Sheet Revolve** (free curves to
+    sheets), and **Extend** (a surface's edge, or a curve near its end:
+    Linear, Natural, Soft or Reflective, by a length or a percentage,
+    Merge).
+  - A builder starts on what is picked, in the order picked; when it needs
+    more it waits ("waiting", with the prompt) and each click adds a curve
+    or an edge (a second click takes it out), Enter finishing (Square at its
+    fourth); a double-click on a surface adds a temporary isoparm (Alias's:
+    resolved to the isoparm through the point that fits the others: for
+    Square the one whose ends meet the other boundaries', else the one
+    along them). Project's and Blend Curve's node prompts take temporary
+    isoparms the same way.
+  - **Boundary labels** (Alias's; Plasticity's black circles): each
+    boundary with a continuity of its own carries its label beside its
+    middle (Square's four, Skin's start and end, Rail's sides); a click
+    cycles it, one undo step, the same value as its row. Square's
+    **Continuity check** measures the new sheet's edges against the faces
+    its boundaries lie on and draws them as the Check node's.
+  - All are CAD network nodes too (category Surfaces), their curves picked
+    as the Modify features' inputs (Boundaries, Sections, Generation curves
+    and Rails, Profiles and Rail, Curves, Extend's Edge); edges are kept as
+    their faces and a point, so a node follows its input upstream.
+- **Stage 3 follow-up**: Trim's 3D Trimming draws the curves as they are cast
+  onto the face (white) while it waits for its region clicks.
 - Primitives are luce-cad's analytic solids: Box, Cylinder, Cone, Sphere and
   Torus. Faces a step makes are named for the node and the step's place in
   the recipe (`#<node>s<n>`), so later steps find them and two Edit CAD nodes

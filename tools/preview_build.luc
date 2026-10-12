@@ -1,0 +1,319 @@
+## The captures of the surfacing plan's Stage 5, surfaces from curves
+## (edit_cad_build.luc, build_ops.luc, build_labels.luc;
+## preview_align.luc hands these scenes here):
+##   surf_square_waiting: on an Edit CAD box unstitched, its top taken
+##     away, two arcs drawn over its front and back (CV curves rising
+##     square from the side walls), Square started on the +X wall's top
+##     edge with an arc picked: waiting ("2 of 4"), the two labels.
+##   surf_square: the -X wall's edge and the other arc picked, the walls'
+##     G1: a vault leaving both walls tangent, its Boundary Labels and the
+##     Continuity Check on its edges, Square's tool bar.
+##   surf_square_node: a CAD network's Square node (Solid Box, Unstitch,
+##     Remove the top, two arc Curve nodes, Square G2 to the walls), its
+##     parameters.
+##   surf_skin: Skin through three loops drawn above one another (CV
+##     curves), its tool bar.
+##   surf_rail: Rail: a small loop swept round a big one (a torus).
+##   surf_profile: Profile: three loops on a straight rail, Global.
+##   surf_planar: Set Planar of a loop with a smaller loop inside (a hole).
+##   surf_sheets: a curve's Sheet Extrude and Sheet Revolve.
+##   surf_extend: Extend Soft carrying the box's top on past its edge.
+import preview_support
+from luce_3d.graphics import Vector3
+from app import Luce3D
+import node_commands
+import modeling_commands
+import selection_commands
+import edit_cad_commands
+import edit_cad_surfaces
+import edit_cad_curves
+import edit_cad_align
+import build_ops
+import placing_commands
+import tool_prompts
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+from workspace import Workspace
+from luce_std import math
+
+pub func scenes() -> list[str]:
+    return ["surf_square_waiting", "surf_square", "surf_square_node", "surf_skin", "surf_rail", "surf_profile", "surf_planar", "surf_sheets", "surf_extend"]
+
+func look(editor: Luce3D, yaw: float, pitch: float, distance: float, target: Vector3) -> unit!:
+    let w = editor.workspace
+    w.view.yaw = yaw
+    w.view.pitch = pitch
+    w.view.distance = distance
+    w.view.target = target
+    w.view.update_camera()
+
+## A new CAD node, entered and empty, and an Edit CAD node in it.
+func edit_cad(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 40.0, 40.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 40.0, 40.0)
+    preview_support.settle(w)
+
+## An Edit CAD box unstitched into six squares, its top taken away.
+func open_box(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    edit_cad(editor)
+    modeling_commands.create(w, "Box")
+    preview_support.settle(w)
+    selection_commands.set_mode(w, 0)
+    preview_support.settle(w)
+    selection_commands.choose_component(w, 0, false)
+    edit_cad_commands.tool(w, edit_cad_surfaces.unstitch_verb)
+    preview_support.settle(w)
+    # The top's body picked at the Object level, and removed.
+    selection_commands.set_mode(w, 0)
+    preview_support.settle(w)
+    let mesh = preview_support.shown(w) else trap("no pick mesh")
+    for face in 0..<mesh.face_count():
+        if mesh.face_center(face).y > 0.99:
+            selection_commands.choose_component(w, face, false)
+            break
+    preview_support.settle(w)
+    edit_cad_commands.tool(w, "Remove")
+    preview_support.settle(w)
+
+## The +X, +Z, -X and -Z sides' top edges (k 0 to 3): edge `which`'s
+## middle and its side's normal.
+func top_side(c: Vector3, n: Vector3, which: int) -> bool:
+    if math.abs(c.y - 1.0) > 1e-6:
+        return false
+    if which == 0:
+        return math.abs(c.x - 1.0) < 1e-6 and n.x > 0.99
+    if which == 1:
+        return math.abs(c.z - 1.0) < 1e-6 and n.z > 0.99
+    if which == 2:
+        return math.abs(c.x + 1.0) < 1e-6 and n.x < -0.99
+    return math.abs(c.z + 1.0) < 1e-6 and n.z < -0.99
+
+## At the Edges level, the pick mesh's edge `keep` takes clicked.
+func click_edge(w: Workspace, keep: func(Vector3, Vector3) -> bool) -> unit!:
+    selection_commands.set_mode(w, 2)
+    preview_support.settle(w)
+    let mesh = preview_support.shown(w) else trap("no pick mesh")
+    let polygon_models = mesh.find_attribute("cad_model", 2)
+    let edge_models = mesh.find_attribute("cad_edge_model", 4)
+    for edge in 0..<mesh.edge_count():
+        let a = mesh.point(mesh.edge_point(edge, 0))
+        let b = mesh.point(mesh.edge_point(edge, 1))
+        for polygon in 0..<mesh.face_count():
+            if int(mesh.attribute_value(polygon_models, polygon)) != int(mesh.attribute_value(edge_models, edge)):
+                continue
+            var on = 0
+            for k in 0..<mesh.face_size(polygon):
+                if edit_cad_align.on_segment(mesh.point(mesh.face_point(polygon, k)), a, b, 1e-6):
+                    on += 1
+            if on >= 2 and keep(a.add(b).multiply_scalar(0.5), mesh.face_normal(polygon)):
+                selection_commands.choose_component(w, edge, false)
+                preview_support.settle(w)
+                return
+    trap("no such edge")
+
+## At the Curves level, the `index`-th curve made clicked.
+func pick_curve(w: Workspace, index: int) -> unit!:
+    selection_commands.set_mode(w, 6)
+    preview_support.settle(w)
+    let mesh = preview_support.shown(w) else trap("no pick mesh")
+    let names = mesh.find_attribute("cad_curve_name", 4)
+    let seen: list[str] = []
+    for edge in 0..<mesh.edge_count():
+        let name = mesh.attribute_text(names, edge)
+        if name != "" and not (name in seen):
+            seen.append(name)
+            if seen.length == index + 1:
+                selection_commands.choose_component(w, edge, false)
+                preview_support.settle(w)
+                return
+    trap("no such curve")
+
+## A CV curve through `points` (Edit CAD's CV Curve placed by clicks).
+func cv_curve(w: Workspace, points: list[Vector3]) -> unit!:
+    modeling_commands.model(w, edit_cad_curves.cv_verb)
+    for p in points:
+        placing_commands.add_corner(w, p)
+    placing_commands.finish_placing(w)
+    preview_support.settle(w)
+
+## A closed loop of radius `r` round `center` in the plane of `a` and `b`
+## (its first point again at the end).
+func loop(w: Workspace, center: Vector3, a: Vector3, b: Vector3, r: float) -> unit!:
+    let points: list[Vector3] = []
+    for k in 0..<13:
+        let angle = math.pi * 2.0 * float(k % 12) / 12.0
+        points.append(center.add(a.multiply_scalar(r * math.cos(angle))).add(b.multiply_scalar(r * math.sin(angle))))
+    cv_curve(w, points)
+
+## At the Curves level, every curve picked in the order made, then
+## builder `verb` on them (Rail and Profile: the last is the rail).
+func build_on_curves(w: Workspace, verb: str, rails: int) -> unit!:
+    selection_commands.set_mode(w, 6)
+    preview_support.settle(w)
+    let mesh = preview_support.shown(w) else trap("no pick mesh")
+    let names = mesh.find_attribute("cad_curve_name", 4)
+    let order: list[str] = []
+    let first: list[int] = []
+    for edge in 0..<mesh.edge_count():
+        let name = mesh.attribute_text(names, edge)
+        if name != "" and not (name in order):
+            order.append(name)
+            first.append(edge)
+    let count = order.length - rails
+    for k in 0..<count:
+        selection_commands.choose_component(w, first[k], k > 0)
+    preview_support.settle(w)
+    edit_cad_commands.tool(w, verb)
+    preview_support.settle(w)
+    for k in count..<order.length:
+        selection_commands.choose_component(w, first[k], false)
+        preview_support.settle(w)
+    if w.prompt != none:
+        tool_prompts.accept_prompt(w)
+    preview_support.settle(w)
+
+## Scene `scene` before its first frame.
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    let w = editor.workspace
+    if scene == "surf_square_waiting" or scene == "surf_square":
+        # A vault over the open box: G1 to the +X and -X walls, two arcs
+        # (CV curves rising square from the walls) over the front and back.
+        open_box(editor)
+        for z in [1.0, -1.0]:
+            # Three control points up each wall: square to it, and flat
+            # across it (no curvature off the wall's plane), so G2 can hold
+            # at the corners.
+            cv_curve(w, [Vector3(1.0, 1.0, z), Vector3(1.0, 1.6, z), Vector3(1.0, 2.2, z), Vector3(-1.0, 2.2, z), Vector3(-1.0, 1.6, z), Vector3(-1.0, 1.0, z)])
+        click_edge(w, func (c: Vector3, n: Vector3) -> bool: return top_side(c, n, 0))
+        edit_cad_commands.tool(w, build_ops.square_verb)
+        preview_support.settle(w)
+        pick_curve(w, 0)
+        if scene == "surf_square":
+            click_edge(w, func (c: Vector3, n: Vector3) -> bool: return top_side(c, n, 2))
+            pick_curve(w, 1)
+            for k in [0, 2]:
+                modeling_commands.set_last_step(w, build_ops.continuity_slot + k, 2.0, 0.0, 6.0)
+            preview_support.settle(w)
+        look(editor, 0.7, 0.5, 8.0, Vector3(0.0, 0.2, 0.0))
+    elif scene == "surf_square_node":
+        node_commands.delete_selected(w)
+        node_commands.add_node(w, "CAD", 40.0, 40.0)
+        node_commands.enter_group(w, w.network.selected)
+        node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+        let box = w.network.selected
+        let model = CadGeometry.model(preview_support.cooked(w, box).geometry, 0)
+        let top = facing(model, Vector3(0.0, 1.0, 0.0))
+        let plus = facing(model, Vector3(1.0, 0.0, 0.0))
+        let minus = facing(model, Vector3(-1.0, 0.0, 0.0))
+        let height = CadModeling.face_point(model, top).point.y
+        let reach = CadModeling.face_point(model, plus).point.x
+        let depth = CadModeling.face_point(model, facing(model, Vector3(0.0, 0.0, 1.0))).point.z
+        node_commands.add_node(w, edit_cad_surfaces.unstitch_verb, 40.0, 100.0)
+        node_commands.set_text(w, 0, top)
+        node_commands.add_node(w, "Remove", 40.0, 160.0)
+        node_commands.set_text(w, 0, top)
+        # Two arcs over the front and back, rising square from the walls
+        # and flat across them at their ends (G2 can hold at the corners).
+        for (k, z) in [(1, depth), (2, -depth)]:
+            node_commands.add_node(w, "Curve", 40.0, 160.0 + 60.0 * float(k))
+            node_commands.set_parameter(w, 0, 1.0)
+            node_commands.set_text(w, 0, f"{reach} {height} {z};{reach} {height * 1.3} {z};{reach} {height * 1.6} {z};{-reach} {height * 1.6} {z};{-reach} {height * 1.3} {z};{-reach} {height} {z}")
+            node_commands.set_text(w, 2, f"arc{k}")
+        node_commands.add_node(w, build_ops.square_verb, 40.0, 340.0)
+        node_commands.set_text(w, build_ops.curves_text, f"edge {plus} {reach} {height} 0;curve arc1;edge {minus} {-reach} {height} 0;curve arc2")
+        for k in [0, 2]:
+            node_commands.set_parameter(w, build_ops.continuity_slot + k, 3.0)
+        node_commands.display_selected(w)
+        preview_support.settle(w)
+        look(editor, 0.7, 0.45, 80.0, Vector3(0.0, 18.0, 0.0))
+    elif scene == "surf_skin":
+        edit_cad(editor)
+        let x = Vector3(1.0, 0.0, 0.0)
+        let z = Vector3(0.0, 0.0, 1.0)
+        loop(w, Vector3(0.0, 0.0, 0.0), x, z, 1.0)
+        loop(w, Vector3(0.2, 1.0, 0.0), x, z, 1.6)
+        loop(w, Vector3(0.0, 2.0, 0.0), x, z, 0.8)
+        build_on_curves(w, build_ops.skin_verb, 0)
+        look(editor, 0.7, 0.45, 9.0, Vector3(0.0, 1.0, 0.0))
+    elif scene == "surf_rail":
+        edit_cad(editor)
+        loop(w, Vector3(3.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0), Vector3(0.0, 1.0, 0.0), 0.7)
+        loop(w, Vector3(), Vector3(1.0, 0.0, 0.0), Vector3(0.0, 0.0, 1.0), 3.0)
+        build_on_curves(w, build_ops.rail_verb, 1)
+        look(editor, 0.7, 0.55, 14.0, Vector3())
+    elif scene == "surf_profile":
+        edit_cad(editor)
+        let x = Vector3(1.0, 0.0, 0.0)
+        let z = Vector3(0.0, 0.0, 1.0)
+        loop(w, Vector3(0.0, 0.0, 0.0), x, z, 1.0)
+        loop(w, Vector3(0.0, 1.5, 0.0), x, z, 1.8)
+        loop(w, Vector3(0.0, 3.0, 0.0), x, z, 0.6)
+        cv_curve(w, [Vector3(0.0, 0.0, 0.0), Vector3(0.0, 3.0, 0.0)])
+        build_on_curves(w, build_ops.profile_verb, 1)
+        modeling_commands.set_last_step(w, build_ops.transition_slot, 2.0, 0.0, 3.0)
+        preview_support.settle(w)
+        look(editor, 0.7, 0.4, 11.0, Vector3(0.0, 1.5, 0.0))
+    elif scene == "surf_planar":
+        edit_cad(editor)
+        loop(w, Vector3(), Vector3(1.0, 0.0, 0.0), Vector3(0.0, 0.0, 1.0), 2.0)
+        loop(w, Vector3(0.6, 0.0, 0.2), Vector3(1.0, 0.0, 0.0), Vector3(0.0, 0.0, 1.0), 0.6)
+        build_on_curves(w, build_ops.planar_verb, 0)
+        look(editor, 0.7, 0.75, 8.0, Vector3())
+    elif scene == "surf_sheets":
+        edit_cad(editor)
+        cv_curve(w, [Vector3(1.0, 0.0, 0.0), Vector3(1.6, 0.6, 0.0), Vector3(1.2, 1.4, 0.0), Vector3(1.8, 2.2, 0.0)])
+        build_on_curves(w, build_ops.revolve_verb, 0)
+        cv_curve(w, [Vector3(-3.0, 0.0, -1.0), Vector3(-2.2, 0.0, 0.0), Vector3(-3.4, 0.0, 0.8), Vector3(-2.6, 0.0, 1.6)])
+        selection_commands.set_mode(w, 6)
+        preview_support.settle(w)
+        let mesh = preview_support.shown(w) else trap("no pick mesh")
+        let names = mesh.find_attribute("cad_curve_name", 4)
+        var last_name = ""
+        var last_edge = -1
+        for edge in 0..<mesh.edge_count():
+            let name = mesh.attribute_text(names, edge)
+            if name != "" and name != last_name:
+                last_name = name
+                last_edge = edge
+        selection_commands.choose_component(w, last_edge, false)
+        edit_cad_commands.tool(w, build_ops.extrude_verb)
+        modeling_commands.set_last_step(w, build_ops.distance_slot, 1.5, 0.0, 100.0)
+        preview_support.settle(w)
+        look(editor, 0.6, 0.45, 12.0, Vector3(-0.5, 1.0, 0.0))
+    elif scene == "surf_extend":
+        edit_cad(editor)
+        modeling_commands.create(w, "Box")
+        preview_support.settle(w)
+        selection_commands.set_mode(w, 0)
+        preview_support.settle(w)
+        selection_commands.choose_component(w, 0, false)
+        edit_cad_commands.tool(w, edit_cad_surfaces.unstitch_verb)
+        preview_support.settle(w)
+        click_edge(w, func (c: Vector3, n: Vector3) -> bool: return math.abs(c.x - 1.0) < 1e-6 and math.abs(c.y - 1.0) < 1e-6 and n.y > 0.99)
+        edit_cad_commands.tool(w, build_ops.extend_verb)
+        modeling_commands.set_last_step(w, build_ops.type_slot, 2.0, 0.0, 3.0)
+        modeling_commands.set_last_step(w, build_ops.extend_distance_slot, 0.8, 0.0, 100.0)
+        preview_support.settle(w)
+        look(editor, 0.75, 0.5, 8.0, Vector3(0.5, 0.3, 0.0))
+    editor.panels.refresh()
+
+## Frame `frame` of scene `scene` (`last` is the frame captured).
+pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
+    _ = editor
+    _ = scene
+    _ = frame
+    _ = last
+
+## The name of `model`'s flat face facing `normal`.
+func facing(model: CadModel, normal: Vector3) -> str!:
+    for f in 0..<model.face_count():
+        let name = CadModeling.face_name_of(model, f)
+        let frame = CadModeling.face_frame(model, name)
+        if frame.found and frame.u.cross(frame.v).dot(normal) > 0.999:
+            return name
+    trap("no such face")

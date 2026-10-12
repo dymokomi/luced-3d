@@ -17,6 +17,7 @@ from luce_3d.graphics import Vector3
 from geometry_data import GeometryData
 from parameter_rows import Parameter, number, whole, menu, entry
 import edit_cad_curves
+import build_ops
 from luce_ui import ui
 
 pub let curve_kind = "Curve"
@@ -78,8 +79,11 @@ pub func evaluate(kind: str, v: list[float], t: list[str], data: GeometryData, t
         return data.passed(waiting)
     let name = t[name_text].trim() if t[name_text].trim() != "" else f"Curve{tag[1..]}"
     if kind == blend_kind:
-        let start = end_curve(data, t[0])
-        let finish = end_curve(data, t[1])
+        # Temporary isoparms (a double-click while an end was asked for):
+        # the one whose ends come nearest the other end.
+        let ends = build_ops.resolve_isoparms(data, [t[0], t[1]], true)
+        let start = end_curve(data, ends[0])
+        let finish = end_curve(data, ends[1])
         let made = with_curve(data, name, edit_cad_curves.blended(start, finish, v), "blend", "", none)
         made.handles = edit_cad_curves.blend_handles(CadCurves.curve(made.geometry, CadCurves.find(made.geometry, name)), v)
         return made
@@ -130,8 +134,9 @@ pub func parse_points(text: str, chart: bool) -> list[Vector3]!:
             error(ui.invalid, f"A point is {"u v" if chart else "x y z"}: \"{part.trim()}\" is not")
     return points
 
-## The curve an end names: `curve <name>` (a curve of the input) or `edge
-## <reference>` (a body's edge).
+## The curve an end names: `curve <name>` (a curve of the input), `edge
+## <reference>` (a body's edge) or `isoparm <face> <0 or 1> <fraction>`
+## (Alias's temporary isoparm).
 func end_curve(data: GeometryData, text: str) -> CadSpline!:
     let end = text.trim()
     if end.starts_with("curve "):
@@ -142,7 +147,11 @@ func end_curve(data: GeometryData, text: str) -> CadSpline!:
     if end.starts_with("edge "):
         let (model, reference) = edge_of(data, end[5..].trim())
         return CadCurveTools.edge(model, reference)
-    error(ui.invalid, "A blend's end is a curve or an edge: pick it")
+    if end.starts_with("isoparm "):
+        let words = end.split(" ")
+        if words.length == 4:
+            return CadCurveTools.isoparm(face_model(data, words[1]), words[1], int(float(words[2])), float(words[3]))
+    error(ui.invalid, "A blend's end is a curve, an edge or an isoparm: pick it")
 
 ## The body holding edge `reference`, and the reference.
 func edge_of(data: GeometryData, reference: str) -> (CadModel, str)!:

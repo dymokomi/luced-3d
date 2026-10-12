@@ -23,6 +23,7 @@ import cad_names
 import edit_cad_faces
 import edit_cad_align
 import align_ops
+import build_ops
 from luce_3d.graphics import Vector3
 
 ## What one input takes.
@@ -42,6 +43,10 @@ pub let curves = 7
 ## (Project, U/V) or a double-click for a temporary isoparm.
 pub let align_input = 8
 pub let align_master = 9
+## A builder's curves (build_ops.luc): curves (the Curves level) or edges,
+## several, as words in the order clicked; a click again takes one out, a
+## double-click on a surface adds a temporary isoparm; Enter finishes.
+pub let curve_words = 10
 
 ## A selection input: its label in the panel, the node's text (or for a
 ## point, the value slots) it writes, what it takes, when it shows (a
@@ -125,6 +130,23 @@ pub func inputs(kind: str) -> list[PickInput]:
                 PickInput("Second master", align_ops.second_text, align_master, "", "A second master for another side of the input (optional).")]
     if kind == cad_surface_nodes.symmetry_kind:
         return [PickInput("Input edge", align_ops.input_text, align_input, "", "The edge that meets the symmetry plane (a surface's edge, or a curve's end).")]
+    # Surfaces from curves (build_ops.luc).
+    let b_curves = build_ops.curves_text
+    let b_rails = build_ops.rails_text
+    if kind == build_ops.square_verb:
+        return [PickInput("Boundaries", b_curves, curve_words, "", "The four boundaries, curves or edges (or isoparms), in the order the Boundary rows follow.")]
+    if kind == build_ops.skin_verb:
+        return [PickInput("Sections", b_curves, curve_words, "", "The sections in order, curves or edges.")]
+    if kind == build_ops.rail_verb:
+        return [PickInput("Generation curves", b_curves, curve_words, "", "The curves swept along the rails."),
+                PickInput("Rails", b_rails, curve_words, "", "One rail, or two.")]
+    if kind == build_ops.profile_verb:
+        return [PickInput("Profiles", b_curves, curve_words, "", "The profiles placed along the rail."),
+                PickInput("Rail", b_rails, curve_words, "", "The rail the profiles are placed on.")]
+    if kind in [build_ops.planar_verb, build_ops.extrude_verb, build_ops.revolve_verb]:
+        return [PickInput("Curves", b_curves, curve_words, "", "The curves (or edges) used.")]
+    if kind == build_ops.extend_verb:
+        return [PickInput("Edge", b_curves, align_input, "", "The surface's edge to carry on (at the Curves level, a curve's end), kept as its face and where it was clicked.")]
     return []
 
 ## The input of `kind` whose prompt is `label`, or none.
@@ -148,6 +170,9 @@ pub func summary(node: Node, input: PickInput) -> str:
         return text if text.starts_with("curve ") else "An edge"
     if input.takes == curves:
         let named = text.split(";").length
+        return "1 curve" if named == 1 else f"{named} curves"
+    if input.takes == curve_words:
+        let named = build_ops.items(text).length
         return "1 curve" if named == 1 else f"{named} curves"
     if input.takes in [align_input, align_master]:
         let words = text.split(" ")
@@ -186,13 +211,17 @@ func begin_waiting(w: Workspace, node: Node, input: PickInput) -> unit!:
         level = edge_level
     if input.takes == align_master:
         level = face_level if int(node.values[align_ops.type_slot]) in [1, 2] else edge_level
+    if input.takes == curve_words:
+        level = curve_level if input_has_curves(w, node) else edge_level
     w.adopt_level(level)
     w.selection = none
     w.pending_changed = true
-    let many = input.takes in [faces, bodies, curves]
+    let many = input.takes in [faces, bodies, curves, curve_words]
     w.notice = f"{input.prompt()}: click {"them (Shift adds), then Enter" if many else "one"}; Esc cancels"
     if input.takes == align_master:
         w.notice = f"{input.prompt()}: click an edge, a curve (Curves level) or a face (Project, U/V); double-click a surface for an isoparm; Esc cancels"
+    if input.takes == curve_words:
+        w.notice = f"{input.prompt()}: click curves or edges in order (again: takes one out), double-click a surface for an isoparm, then Enter; Esc cancels"
     w.revision += 1
     w.rebuild()
 
@@ -258,6 +287,15 @@ pub func follow(w: Workspace, node: Node, label: str, mesh: Mesh, chosen: Select
             node.values[align_ops.second_near_slot + 2] = near.z
         finish(w, node, label)
         return
+    # A builder's curves or edges, each click one in order.
+    if input.takes == curve_words:
+        if first < 0 or not (w.level_index() == curve_level or w.level_index() == edge_level):
+            return
+        let words = edit_cad_align.pick_words(mesh, first, w.level_index(), true)
+        if words == "":
+            return
+        add_curve_words(w, node, label, words)
+        return
     # Curves by name, each once; Enter finishes.
     if input.takes == curves:
         let names = mesh.find_attribute("cad_curve_name", 4)
@@ -309,6 +347,33 @@ pub func follow(w: Workspace, node: Node, label: str, mesh: Mesh, chosen: Select
     w.network.invalidate(node.id)
     w.pending_changed = true
     if input.takes in [face, body] and names != "":
+        finish(w, node, label)
+        return
+    w.rebuild()
+
+## Input `label` of builder node `node` with `words` added (or taken out):
+## Square finishes at its fourth boundary, the others at Enter.
+pub func add_curve_words(w: Workspace, node: Node, label: str, words: str) -> unit!:
+    let input = input_named(node.kind, label) else return
+    # One curve (a blend's end): taken, done.
+    if input.takes == curve_or_edge:
+        node.texts[input.slot] = words
+        finish(w, node, label)
+        return
+    let picked = build_ops.items(node.texts[input.slot])
+    if words in picked:
+        let kept: list[str] = []
+        for item in picked:
+            if item != words:
+                kept.append(item)
+        node.texts[input.slot] = kept.join(";")
+    else:
+        picked.append(words)
+        node.texts[input.slot] = picked.join(";")
+    w.network.invalidate(node.id)
+    w.selection = none
+    w.pending_changed = true
+    if node.kind == build_ops.square_verb and build_ops.items(node.texts[input.slot]).length >= 4:
         finish(w, node, label)
         return
     w.rebuild()

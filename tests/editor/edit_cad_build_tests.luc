@@ -1,0 +1,293 @@
+## Surfacing Stage 5 in Edit CAD and CAD networks (edit_cad_build.luc,
+## build_ops.luc, build_labels.luc, cad_surface_nodes.luc), and Stage 4's
+## follow-ups in the viewport. On an Edit CAD box unstitched into six
+## squares: the right-click on edges offers the builders; Square from the
+## top's four edges picked one by one waits (neutral) until the fourth,
+## then fills the top's square (area 4); its Boundary Labels cycle G0 to G1
+## on a click; Skin between the bottom's and the top's edges at x = 1 is
+## the side again; Extend Linear carries the top on by half; a temporary
+## isoparm (double-click) is a builder's pick. In a network the Square node
+## follows the box upstream, Rail sweeps a circle round a circle. Align
+## shows the middle Tangent Scale arrow and its whole old hull; 3D
+## Trimming's cast curve shows while Trim waits.
+from workspace import Workspace
+from node import Node
+import node as nodes
+from app import Luce3D
+from geometry_data import GeometryData
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.cad_curves import CadCurves
+from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+from luce_cad.nurbs import CadSpline
+from luce_3d.graphics import Vector3
+import build_ops
+import edit_cad_align
+import edit_cad_build
+import edit_cad_commands
+import edit_cad_picks
+import edit_cad_surfaces
+import align_ops
+import surface_ops
+import modeling_commands
+import node_commands
+import selection_commands
+import view_projection
+from luce_std import math
+
+pub func edit_cad_build_tests() -> unit!:
+    squares_in_edit_cad()
+    builders_in_a_network()
+    align_followups()
+    print("PASS Edit CAD builders: Square from four edges picked one by one fills the top (waiting until the fourth), its labels cycle G0 to G1; Skin between two edges is the side; Extend Linear carries the top on; a double-click adds a temporary isoparm; the Square node follows the box, Rail sweeps a torus; Align's middle arrow and whole old hull; 3D Trimming's cast curve shows while Trim waits")
+
+func data_of(w: Workspace, node: Node) -> GeometryData!:
+    return w.network.evaluate_data(node.id)
+
+## The area of the faces named `name` among `data`'s models, from their
+## meshes.
+func area_of(data: GeometryData, name: str) -> float!:
+    var total = 0.0
+    for model in data.models():
+        let mesh = model.tessellate(32)
+        let owners = mesh.find_attribute("cad_face", 2)
+        for face in 0..<mesh.face_count():
+            if model.face_name(int(mesh.attribute_value(owners, face))) != name:
+                continue
+            let a = mesh.point(mesh.face_point(face, 0))
+            for k in 1..<mesh.face_size(face) - 1:
+                let b = mesh.point(mesh.face_point(face, k))
+                let c = mesh.point(mesh.face_point(face, k + 1))
+                total += b.subtract(a).cross(c.subtract(a)).length() * 0.5
+    return total
+
+## The pick mesh's edge whose middle `keep` takes with the normal of a
+## polygon of its body with corners at its ends (-1 none).
+func edge_where(w: Workspace, keep: func(Vector3, Vector3) -> bool) -> int!:
+    let mesh = w.geometry else trap("pick geometry")
+    let polygon_models = mesh.find_attribute("cad_model", 2)
+    let edge_models = mesh.find_attribute("cad_edge_model", 4)
+    for edge in 0..<mesh.edge_count():
+        let a = mesh.point(mesh.edge_point(edge, 0))
+        let b = mesh.point(mesh.edge_point(edge, 1))
+        let middle = a.add(b).multiply_scalar(0.5)
+        for polygon in 0..<mesh.face_count():
+            if int(mesh.attribute_value(polygon_models, polygon)) != int(mesh.attribute_value(edge_models, edge)):
+                continue
+            var ends = 0
+            for k in 0..<mesh.face_size(polygon):
+                if edit_cad_align.on_segment(mesh.point(mesh.face_point(polygon, k)), a, b, 1e-6):
+                    ends += 1
+            if ends >= 2 and keep(middle, mesh.face_normal(polygon)):
+                return edge
+    return -1
+
+## Click the edge `keep` takes at the Edges level.
+func click_edge(w: Workspace, keep: func(Vector3, Vector3) -> bool) -> unit!:
+    selection_commands.set_mode(w, 2)
+    let edge = edge_where(w, keep)
+    assert(edge >= 0, "no such edge")
+    selection_commands.choose_component(w, edge, false)
+
+## The entries of the viewport's right-click menu now.
+func menu_entries(editor: Luce3D) -> list[str]!:
+    editor.panels.refresh()
+    let offered: list[str] = []
+    for command in editor.panels.viewport_menu.entries():
+        offered.append(command.text())
+    return offered
+
+## The six squares of a 2-box as bodies of an Edit CAD node.
+func unstitched_box(w: Workspace) -> Node!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    let node = w.selected() else trap("Edit CAD")
+    modeling_commands.create(w, "Box")
+    selection_commands.set_mode(w, 0)
+    selection_commands.choose_component(w, 0, false)
+    edit_cad_commands.tool(w, edit_cad_surfaces.unstitch_verb)
+    assert(data_of(w, node).models().length == 6, node.warning)
+    return node
+
+## The top's four edges, by the side's polygon beside each (so each pick is
+## a side's edge, the top's square's boundary).
+func top_side(c: Vector3, n: Vector3, which: int) -> bool:
+    if math.abs(c.y - 1.0) > 1e-6:
+        return false
+    if which == 0:
+        return math.abs(c.x - 1.0) < 1e-6 and n.x > 0.99
+    if which == 1:
+        return math.abs(c.z - 1.0) < 1e-6 and n.z > 0.99
+    if which == 2:
+        return math.abs(c.x + 1.0) < 1e-6 and n.x < -0.99
+    return math.abs(c.z + 1.0) < 1e-6 and n.z < -0.99
+
+func squares_in_edit_cad() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let node = unstitched_box(w)
+    click_edge(w, func (c: Vector3, n: Vector3) -> bool: return top_side(c, n, 0))
+    assert(build_ops.square_verb in menu_entries(editor) and build_ops.extend_verb in menu_entries(editor), "the right-click on an edge offers the builders")
+    edit_cad_commands.tool(w, build_ops.square_verb)
+    let prompt = w.prompt else trap("Square waits for its boundaries")
+    assert(prompt.label == edit_cad_build.curves_label, prompt.label)
+    _ = data_of(w, node)
+    assert(nodes.waiting(node.warning), f"waiting, not a warning: {node.warning}")
+    for which in 1..<4:
+        let edge = edge_where(w, func (c: Vector3, n: Vector3) -> bool: return top_side(c, n, which))
+        selection_commands.choose_component(w, edge, false)
+    assert(w.prompt == none, "the fourth boundary finishes the picks")
+    let made = data_of(w, node)
+    assert(node.warning == "", node.warning)
+    assert(made.models().length == 7, f"{made.models().length} bodies")
+    let name = made.models()[6].face_name(0)
+    assert(math.abs(area_of(made, name) - 4.0) < 1e-3, f"Square's area {area_of(made, name)}")
+    # Its four labels say G0; a click on the first cycles it to G1.
+    let labels = build_ops.labels_of(node.sketch_state)
+    assert(labels.length == 4 and labels[0].text == "G0", node.sketch_state)
+    let s = view_projection.project(w, labels[0].point, 800.0, 600.0)
+    assert(editor.panels.view.build_labels.click(s[0], s[1], 800.0, 600.0), "the label took no click")
+    assert(int(node.edits[-1].numbers[build_ops.continuity_slot]) == 2, f"{node.edits[-1].numbers}")
+    _ = data_of(w, node)
+    assert(build_ops.labels_of(node.sketch_state)[0].text == "G1", node.sketch_state)
+    # Skin from the bottom's edge at x = 1 to the top's: the side again.
+    click_edge(w, func (c: Vector3, n: Vector3) -> bool: return math.abs(c.x - 1.0) < 1e-6 and math.abs(c.y + 1.0) < 1e-6 and n.y < -0.99)
+    edit_cad_commands.tool(w, build_ops.skin_verb)
+    let edge = edge_where(w, func (c: Vector3, n: Vector3) -> bool: return math.abs(c.x - 1.0) < 1e-6 and math.abs(c.y - 1.0) < 1e-6 and n.y > 0.99)
+    selection_commands.choose_component(w, edge, false)
+    edit_cad_picks.accept_pick(w, node)
+    let skinned = data_of(w, node)
+    assert(node.warning == "", node.warning)
+    let skin = skinned.models()[skinned.models().length - 1].face_name(0)
+    assert(math.abs(area_of(skinned, skin) - 4.0) < 1e-3, f"Skin's area {area_of(skinned, skin)}")
+    # Extend Linear the top by half at x = 1: its area 2 by 2.5.
+    click_edge(w, func (c: Vector3, n: Vector3) -> bool: return math.abs(c.x - 1.0) < 1e-6 and math.abs(c.y - 1.0) < 1e-6 and n.y > 0.99)
+    let input = edit_cad_build.picked_words(w.geometry else trap("mesh"), w.current_selection() else trap("selection"), 2, true)[0]
+    let top = input.split(" ")[1]
+    edit_cad_commands.tool(w, build_ops.extend_verb)
+    assert(w.prompt == none, "Extend needs no more picks")
+    w.perform("distance", func () -> unit!:
+        let numbers = node.edits[-1].numbers.copy()
+        numbers[build_ops.extend_distance_slot] = 0.5
+        node.edits[-1] = node.edits[-1].with_numbers(numbers)
+        w.network.invalidate(node.id)
+        w.rebuild())
+    let longer = data_of(w, node)
+    assert(node.warning == "", node.warning)
+    assert(math.abs(area_of(longer, top) - 5.0) < 1e-3, f"the extended top's area {area_of(longer, top)}")
+    # A double-click on a surface while a builder waits: a temporary
+    # isoparm joins its curves.
+    click_edge(w, func (c: Vector3, n: Vector3) -> bool: return math.abs(c.x + 1.0) < 1e-6 and math.abs(c.y + 1.0) < 1e-6 and n.y < -0.99)
+    edit_cad_commands.tool(w, build_ops.skin_verb)
+    let at = view_projection.project(w, Vector3(-1.0, 0.0, 0.2), 800.0, 600.0)
+    assert(edit_cad_commands.pick_isoparm(w, at[0], at[1], 800.0, 600.0), "the double-click took no isoparm")
+    assert(node.edits[-1].text(0).contains("isoparm_at"), node.edits[-1].text(0))
+    edit_cad_picks.accept_pick(w, node)
+    _ = data_of(w, node)
+    assert(node.warning == "", f"Skin to a temporary isoparm: {node.warning}")
+
+## A circle of radius `r` about `center` in the plane of `a` and `b`.
+func ring(center: Vector3, a: Vector3, b: Vector3, r: float) -> CadSpline!:
+    let w = math.sqrt(0.5)
+    let xs = [1.0, 1.0, 0.0, -1.0, -1.0, -1.0, 0.0, 1.0, 1.0]
+    let ys = [0.0, 1.0, 1.0, 1.0, 0.0, -1.0, -1.0, -1.0, 0.0]
+    let points: list[Vector3] = []
+    let weights: list[float] = []
+    for k in 0..<9:
+        points.append(center.add(a.multiply_scalar(r * xs[k])).add(b.multiply_scalar(r * ys[k])))
+        weights.append(1.0 if k % 2 == 0 else w)
+    return CadSpline.make(points, weights, 2, [0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0])
+
+## The name of `model`'s flat face facing `normal`.
+func facing(model: CadModel, normal: Vector3) -> str!:
+    for f in 0..<model.face_count():
+        let name = model.face_name(f)
+        let frame = CadModeling.face_frame(model, name)
+        if frame.found and frame.u.cross(frame.v).dot(normal) > 0.999:
+            return name
+    trap("no such face")
+
+func builders_in_a_network() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let box = w.network.selected
+    for k in 0..<3:
+        w.network.require(box).values[k] = 2.0
+    w.network.invalidate(box)
+    node_commands.add_node(w, edit_cad_surfaces.unstitch_verb, 0.0, 80.0)
+    let apart = w.network.require(w.network.selected)
+    w.network.connect(box, apart.id, 0)
+    let first = CadGeometry.model(w.network.evaluate_data(box).geometry, 0)
+    let top = facing(first, Vector3(0.0, 1.0, 0.0))
+    apart.texts[0] = top
+    w.network.invalidate(apart.id)
+    # Square of the four sides' top edges, kept as their faces and points.
+    let sides = [facing(first, Vector3(1.0, 0.0, 0.0)), facing(first, Vector3(0.0, 0.0, 1.0)), facing(first, Vector3(-1.0, 0.0, 0.0)), facing(first, Vector3(0.0, 0.0, -1.0))]
+    node_commands.add_node(w, build_ops.square_verb, 0.0, 160.0)
+    let square = w.network.require(w.network.selected)
+    w.network.connect(apart.id, square.id, 0)
+    _ = w.network.evaluate_data(square.id)
+    assert(nodes.waiting(square.warning), square.warning)
+    square.texts[build_ops.curves_text] = f"edge {sides[0]} 1 1 0;edge {sides[1]} 0 1 1;edge {sides[2]} -1 1 0;edge {sides[3]} 0 1 -1"
+    w.network.invalidate(square.id)
+    let made = w.network.evaluate_data(square.id)
+    assert(square.warning == "", square.warning)
+    assert(made.models().length == 7, f"{made.models().length} bodies")
+    let sheet = made.models()[6].face_name(0)
+    assert(math.abs(area_of(made, sheet) - 4.0) < 1e-3, f"the Square node's area {area_of(made, sheet)}")
+    # The box made 2.5 wide upstream: the square follows (2.5 by 2); its
+    # boundaries are kept as their faces and the points clicked (each the
+    # face's edge nearest it, wherever the face went).
+    w.network.require(box).values[0] = 2.5
+    w.network.invalidate(box)
+    let wider = w.network.evaluate_data(square.id)
+    assert(square.warning == "", square.warning)
+    assert(math.abs(area_of(wider, sheet) - 5.0) < 1e-3, f"the Square node's area after the box grew: {area_of(wider, sheet)}")
+    # Rail: a circle swept round a circle.
+    var curves = CadCurves.with_curve(w.network.evaluate_data(apart.id).geometry, "rail", ring(Vector3(0.0, 3.0, 0.0), Vector3(1.0, 0.0, 0.0), Vector3(0.0, 0.0, 1.0), 3.0))
+    curves = CadCurves.with_curve(curves, "gen", ring(Vector3(3.0, 3.0, 0.0), Vector3(1.0, 0.0, 0.0), Vector3(0.0, 1.0, 0.0), 0.5))
+    let made_rail = build_ops.build(build_ops.rail_verb, GeometryData(geometry = curves), build_ops.starting(build_ops.rail_verb), ["curve gen", "curve rail"], "Rail")
+    let torus = made_rail.models()[made_rail.models().length - 1]
+    let probe = CadModeling.face_point(torus, "Rail")
+    assert(probe.found and math.abs(math.hypot(math.hypot(probe.point.x, probe.point.z) - 3.0, probe.point.y - 3.0) - 0.5) < 1e-5, f"Rail's point {probe.point}")
+
+func align_followups() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let node = unstitched_box(w)
+    click_edge(w, func (c: Vector3, n: Vector3) -> bool: return math.abs(c.x - 1.0) < 1e-6 and math.abs(c.y - 1.0) < 1e-6 and n.y > 0.99)
+    edit_cad_commands.tool(w, edit_cad_align.align_verb)
+    click_edge(w, func (c: Vector3, n: Vector3) -> bool: return math.abs(c.x - 1.0) < 1e-6 and math.abs(c.y - 1.0) < 1e-6 and n.x > 0.99)
+    w.perform("proxy", func () -> unit!:
+        let numbers = node.edits[-1].numbers.copy()
+        numbers[align_ops.proxy_slot] = 1.0
+        node.edits[-1] = node.edits[-1].with_numbers(numbers)
+        w.network.invalidate(node.id)
+        w.rebuild())
+    _ = data_of(w, node)
+    assert(node.warning == "", node.warning)
+    # The middle Tangent Scale arrow slides the whole row.
+    assert(node.handles.contains("pair "), node.handles)
+    # The proxy is the whole old hull: the flat top's two rows of two.
+    var proxies = 0
+    for line in node.sketch_state.split("\n"):
+        if line.starts_with(align_ops.proxy_head):
+            proxies += 1
+    assert(proxies == 2, f"{proxies} proxy rows")
+    # 3D Trimming: a free circle above the box cast onto its bottom while
+    # Trim waits for its region clicks: the cast curve is in the state.
+    let data = data_of(w, node)
+    var bottom = ""
+    for model in data.models():
+        let frame = CadModeling.face_frame(model, model.face_name(0))
+        if frame.found and frame.u.cross(frame.v).y < -0.999:
+            bottom = model.face_name(0)
+    let circle = CadCurves.with_curve(data.geometry, "ring", ring(Vector3(0.0, 3.0, 0.0), Vector3(1.0, 0.0, 0.0), Vector3(0.0, 0.0, 1.0), 0.5))
+    let trimmed = surface_ops.trim(GeometryData(geometry = circle), bottom, [], 0, true, [], "t", surface_ops.TrimOptions(1, Vector3(0.0, -1.0, 0.0), false), [])
+    assert(trimmed.sketch_state.contains(surface_ops.cut_head), trimmed.sketch_state)

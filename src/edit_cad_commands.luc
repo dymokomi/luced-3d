@@ -28,6 +28,8 @@ from edit_types import object_level, edge_level, face_level, curve_level
 from edit_cad_sketches import SketchObject, sketch_step, feature_step, visibility_step, plane_step, next_name
 from edit_cad_picks import wait_for, target_label, tools_label, splitting_label, axis_label, object_label, plane_label, projection_label, master_label, second_label
 import edit_cad_align
+import edit_cad_build
+import build_ops
 import align_ops
 import edit_cad_surfaces
 from edit_operations import EditStep
@@ -190,6 +192,8 @@ pub func tool(w: Workspace, name: str) -> unit!:
         project_step(w)
     elif name in edit_cad_align.verbs():
         align_step(w, name)
+    elif name in edit_cad_build.verbs():
+        build_step(w, name)
     else:
         modeling_commands.model(w, name)
 
@@ -220,6 +224,8 @@ pub func pick_isoparm(w: Workspace, x: float, y: float, width: float, height: fl
 ## waiting in Edit CAD, or an Align node waiting for its master.
 func align_isoparm(w: Workspace, x: float, y: float, width: float, height: float) -> bool!:
     let prompt = w.prompt else return false
+    if edit_cad_build.waits(prompt.label) or prompt.label in edit_cad_picks.builder_node_labels():
+        return builder_isoparm(w, prompt.node, prompt.label, x, y, width, height)
     if not (prompt.label in [master_label, second_label, "Pick master", "Pick second master"]):
         return false
     let way = view_projection.ray(w, x, y, width, height).normalized() catch failure:
@@ -239,6 +245,23 @@ func align_isoparm(w: Workspace, x: float, y: float, width: float, height: float
         return true
     node.texts[align_ops.second_text if prompt.label == "Pick second master" else align_ops.master_text] = words
     modify_picks.accept(w, node, prompt.label)
+    return true
+
+## A double-click on a surface while a builder (a step's, a node's) waits
+## for curves: Alias's temporary isoparm through the point added to them.
+func builder_isoparm(w: Workspace, id: int, label: str, x: float, y: float, width: float, height: float) -> bool!:
+    let way = view_projection.ray(w, x, y, width, height).normalized() catch failure:
+        return false
+    let hit = w.surface_at(w.view.camera.position(), way)
+    if not hit.found:
+        return false
+    let words = edit_cad_build.isoparm_words(hit.point)
+    let node = w.network.find(id) else return false
+    if node.kind == edit_cad.kind_name and node.edits.length > 0:
+        node.edits[-1] = edit_cad_build.with_pick(node.edits[-1], label, words)
+        edit_cad_picks.after_builder_pick(w, node)
+        return true
+    modify_picks.add_curve_words(w, node, label, words)
     return true
 
 ## Align or Symmetry Align (`verb`) on the picked edge or curve: the step
@@ -266,6 +289,35 @@ pub func align_step(w: Workspace, verb: str) -> unit!:
     node.edits.append(EditStep(verb, "", 0, numbers, 0).with_texts([input, "", ""]))
     w.network.invalidate(node.id)
     wait_for(w, node, master_label, w.level_index(), "Click the master: an edge (Edges level), a curve (Curves level) or a face for Project and U/V (Faces level); double-click a surface for an isoparm; Esc cancels")
+
+## A surface builder `verb` (edit_cad_build.luc) on the curves or edges
+## picked, in order (Extend: the edge or curve end picked); when it needs
+## more it waits for them (a click adds one, Enter finishes); Esc takes it
+## away.
+pub func build_step(w: Workspace, verb: str) -> unit!:
+    let node = model_node(w) else return
+    if w.in_transaction():
+        return
+    var words: list[str] = []
+    if let mesh = w.geometry:
+        if let chosen = w.current_selection():
+            if w.selecting() and (w.level_index() == curve_level or w.level_index() == edge_level):
+                words = edit_cad_build.picked_words(mesh, chosen, w.level_index(), verb == build_ops.extend_verb)
+    if verb == build_ops.extend_verb and words.length == 0:
+        say(w, "Extend: select a surface's edge (Edges level) or a curve near its end (Curves level) first")
+        return
+    let texts = [words[0] if verb == build_ops.extend_verb else words.join(";"), ""]
+    w.begin(verb)
+    node.edits.append(EditStep(verb, "", 0, build_ops.starting(verb), 0).with_texts(texts))
+    w.network.invalidate(node.id)
+    let (label, hint) = edit_cad_build.next_prompt(node.edits[-1])
+    if label == "":
+        w.selection = none
+        w.pending_changed = true
+        w.commit()
+        w.rebuild()
+        return
+    wait_for(w, node, label, edit_cad_build.level_for(node.edits[-1], w.level_index()), hint)
 
 ## The last Align step waits for its second master (from its tool bar).
 pub func pick_second_master(w: Workspace) -> unit!:

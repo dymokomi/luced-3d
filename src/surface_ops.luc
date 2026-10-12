@@ -7,8 +7,8 @@
 ##     the face (and on the other with Both);
 ##   Trim: the face cut by its curves, the regions picked kept or discarded,
 ##     or every region a face of its own (Divide); its region markers, the
-##     crossings and the loose ends go to the viewport (trim_regions.luc)
-##     as lines of the result's state;
+##     crossings, the loose ends and 3D Trimming's cast curves go to the
+##     viewport (trim_regions.luc) as lines of the result's state;
 ##   Untrim (Last or All of the trim stages), Trim Convert, Shrink;
 ##   Stitch (bodies joined within a gap, tolerant edges) and Unstitch.
 ## Each is luce-cad's CadSurfacing on the result's geometry set; a body is
@@ -16,6 +16,7 @@
 from luce_cad.surfacing import CadSurfacing
 from luce_3d.graphics import Vector3
 from geometry_data import GeometryData
+import build_ops
 from luce_ui import ui
 
 ## The state lines Trim publishes (trim_regions.luc reads them).
@@ -24,6 +25,9 @@ pub let picked_head = "trim_picked "
 pub let loose_head = "trim_loose "
 pub let crossings_head = "trim_crossings "
 pub let mode_head = "trim_mode "
+## 3D Trimming's curves as the trim takes them (cast onto the face, or
+## where cutting faces meet it), one line each.
+pub let cut_head = "trim_cut "
 
 ## Trim's modes, Alias's.
 pub let keep_mode = 0
@@ -56,7 +60,12 @@ pub func project(data: GeometryData, curves: list[str], face: str, along: int, v
     let normal = along == along_normal
     if not normal and vector.length() == 0.0:
         error(ui.invalid, "Project along a vector needs a direction")
-    let made = CadSurfacing.projected(data.geometry, body, face, curves.join(";"), vector, normal = normal, both = both, original = original)
+    # Temporary isoparms among the curves (a double-click while they were
+    # asked for), named as the kernel reads them.
+    let named: list[str] = []
+    for word in build_ops.resolve_isoparms(data, curves, false):
+        named.append(word)
+    let made = CadSurfacing.projected(data.geometry, body, face, named.join(";"), vector, normal = normal, both = both, original = original)
     let result = GeometryData(geometry = made.geometry())
     result.report = f"{made.count} curve{"" if made.count == 1 else "s"} on {face}, fitted within {made.deviation:.2e}"
     return result
@@ -113,6 +122,12 @@ pub func trim(data: GeometryData, face: str, picks: list[Vector3], mode: int, sh
     lines.append(markers_head + words(markers))
     lines.append(picked_head + words(picks))
     lines.append(mode_head + str(mode))
+    if options.cast != 0 or cutters.length > 0:
+        for k in 0..<regions.cut_count():
+            let points: list[Vector3] = []
+            for i in 0..<65:
+                points.append(regions.cut_point(k, i))
+            lines.append(cut_head + words(points))
     if show:
         let loose: list[Vector3] = []
         for k in 0..<regions.loose_count():
