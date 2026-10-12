@@ -22,6 +22,8 @@ import sketch_node
 from parameter_rows import Parameter, number, whole, vector, toggle, menu, entry, heading, node_path
 from cad_nodes import solid_kinds, cad_only_kinds, is_cad_only, cad_categories, cad_category
 import cad_nodes
+import cad_features
+import cad_blends
 import code_cook
 import script_cook
 
@@ -126,7 +128,7 @@ pub func refusal(kind: str, context: str, inputs: bool) -> str:
     if not allowed(kind, context):
         if context == "cad": return "Inside a CAD node, only CAD nodes and network utilities"
         if context == "shading": return "Inside a Material, only shader nodes"
-        if kind in ["Sketch", "Extrude", "Revolve", "Boolean", "Fillet", "Chamfer"]: return f"{kind} goes inside a CAD node"
+        if kind in ["Sketch", "Extrude", "Revolve", "Offset Face", "Boolean", "Fillet", "Chamfer"]: return f"{kind} goes inside a CAD node"
         return f"{kind} is not available in the {context} context"
     if kind == "Input" and not inputs:
         return "Nothing is wired into an object; bring another one in with an Import node"
@@ -212,7 +214,7 @@ pub func category(kind: str) -> str:
     return "Modeling"
 
 pub func kinds() -> list[str]:
-    let all = sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Output", "Import", "Switch", code_cook.kind_name, script_cook.kind_name] + scene_kinds() + material_kinds() + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Name", "Normal", "Measure", "UVProject", "Color"] + [sketch_node.kind_name, "Extrude", "Revolve", "Boolean", "Fillet", "Chamfer", "Mirror Body", "Pattern"] + shader_kinds()
+    let all = sources() + ["Transform", "Tessellate", "Cache", "Export", "Blast"] + edit_kind_names() + ["Merge", "Null", "Output", "Import", "Switch", code_cook.kind_name, script_cook.kind_name] + scene_kinds() + material_kinds() + verbs() + ["Mirror", "CopyTransform", "CopyToPoints", "MatchSize", "AttributeCreate", "AttributeRandomize", "AttributeDelete", "AttributeRename", "AttributePromote", "Selection Group", "Name", "Normal", "Measure", "UVProject", "Color"] + [sketch_node.kind_name, "Extrude", "Revolve", "Offset Face", "Boolean", "Fillet", "Chamfer", "Mirror Body", "Pattern"] + shader_kinds()
     let result: list[str] = []
     for kind in all:
         if not (kind in result): result.append(kind)
@@ -294,7 +296,7 @@ pub func parameters(kind: str, path: str = "") -> list[Parameter]!:
 pub func tool_rows(kind: str) -> list[Parameter]!:
     let result: list[Parameter] = []
     for row in fields(kind):
-        if row.valued() and row.slot != group_type_slot:
+        if row.valued() and row.slot != group_type_slot and row.in_steps:
             result.append(row)
     return result
 
@@ -826,13 +828,11 @@ func cad_fields(kind: str) -> list[Parameter]:
     if kind == "Solid Torus":
         return [number("Radius", 0, 10.0, 0.001, 100000.0, 0.5, "The ring's radius, about +Y.", soft = 50.0), number("Tube", 1, 2.5, 0.001, 100000.0, 0.5, "The tube's radius; less than the ring's.", soft = 20.0)]
     if kind == "Extrude":
-        return [number("Distance", 0, 10.0, -100000.0, 100000.0, 0.5, "How far the sketch's profiles sweep along its plane's normal; negative goes the other way.", soft = 100.0),
-                menu("Operation", 1, cad_nodes.operation_names(), 0.0, "Auto: cuts where it goes into the body, else joins it (a new body without one), as Fusion does. Join, Cut, Intersect: combined with the body flowing down the chain, or the second input's when one is wired."),
-                toggle("Symmetric", 2, 0.0, "Sweep half the distance each way from the sketch's plane.")]
+        return extrude_fields()
     if kind == "Revolve":
-        return [menu("Axis", 0, "Plane U|Plane V", 0.0, "The sketch plane's axis through its origin the profiles turn about (they must lie on one side of it)."),
-                menu("Operation", 1, cad_nodes.operation_names(), 0.0, "Auto: cuts where it turns into the body, else joins it (a new body without one). Join, Cut, Intersect: combined with the body flowing down the chain, or the second input's when one is wired."),
-                number("Angle", 2, 360.0, 0.1, 360.0, 5.0, "How far the profiles turn, from the sketch plane toward its normal: 360 all the way round; less, closed by the profile at each end.", suffix = "°")]
+        return revolve_fields()
+    if kind == "Offset Face":
+        return [number("Distance", 0, 1.0, -100000.0, 100000.0, 0.5, "How far the faces move along their outward normals (negative: in); the faces around stretch or shrink to meet them, tangent ones following.", soft = 50.0)]
     if kind == "Mirror Body":
         return [menu("Plane", 0, "YZ (across X)|ZX (across Y)|XY (across Z)", 0.0, "The plane through the origin the body is mirrored across."),
                 toggle("Separate bodies", 1, 0.0, "Keep the mirror image a body of its own instead of joining it.")]
@@ -845,11 +845,78 @@ func cad_fields(kind: str) -> list[Parameter]:
                 number("Angle", 4, 360.0, -360.0, 360.0, 5.0, "Circular: the angle the copies spread over (360: evenly around).", suffix = "°"),
                 toggle("Separate bodies", 5, 0.0, "Keep the copies bodies of their own instead of joining them.")]
     if kind in ["Fillet", "Chamfer"]:
-        let size = number("Radius" if kind == "Fillet" else "Distance", 0, 1.0, 0.0001, 100000.0, 0.1, "The rolling ball's radius." if kind == "Fillet" else "How far the chamfer reaches along each face.", soft = 10.0)
-        let chain = toggle("Tangent chain", 2, 1.0, "Each picked edge brings the edges continuing it smoothly: a rounded slot's rim, the edges around an earlier fillet.")
-        if kind == "Fillet":
-            return [size, menu("Continuity", 1, "G1|G2|G3", 0.0, "G1: a circular fillet. G2: curvature flows into the faces (no jump in reflections). G3: its change too, smoother still. Where three meet at a corner they stop short of it, and a patch as smooth as they are rounds it."), chain]
-        return [size, chain]
+        return blend_fields(kind)
     if kind == "Boolean":
         return [menu("Operation", 0, "Union|Subtract|Intersect", 0.0, "Union: both bodies as one. Subtract: the first without the second. Intersect: what both hold.")]
     return []
+
+## Extrude's rows, Fusion 360's dialog (cad_features.luc reads the slots).
+func extrude_fields() -> list[Parameter]:
+    let operation = menu("Operation", cad_features.operation_slot, cad_nodes.operation_names(), 0.0, "Auto: cuts where it goes into the body, else joins it (a new body without one), as Fusion does. Join, Cut, Intersect: combined with the body flowing down the chain, or the second input's when one is wired.")
+    let start = menu("Start", cad_features.start_slot, "Profile plane|Offset", 0.0, "Where the extrusion starts: on the sketch's plane, or that plane moved Start offset along its normal.")
+    let start_offset = number("Start offset", cad_features.start_offset_slot, 0.0, -100000.0, 100000.0, 0.5, "How far along the normal the extrusion starts (negative: the other way).", soft = 100.0)
+    start_offset.hide_when = "{ start == 0 }"
+    let direction = menu("Direction", cad_features.direction_slot, cad_features.direction_names(), 0.0, "One side: along the normal (a negative distance goes the other way). Two sides: an extent and taper each way. Symmetric: the same each way.")
+    let measurement = menu("Measurement", cad_features.measurement_slot, "Half length|Whole length", 0.0, "Symmetric: Half length extrudes the distance to each side, Whole length half of it to each side.")
+    measurement.hide_when = "{ direction != 2 }"
+    let extent = menu("Extent", cad_features.extent_slot, cad_features.extent_names(), 0.0, "Distance: as far as Distance says. To object: until the face picked (Pick object), Offset further. All: through the whole body.")
+    let distance = number("Distance", cad_features.distance_slot, 10.0, -100000.0, 100000.0, 0.5, "How far the profiles sweep along the sketch plane's normal; negative goes the other way.", soft = 100.0)
+    distance.hide_when = "{ extent != 0 }"
+    let offset = number("Offset", cad_features.offset_slot, 0.0, -100000.0, 100000.0, 0.5, "To object: how far past the face the extrusion stops (negative: short of it).", soft = 100.0)
+    offset.hide_when = "{ extent != 1 }"
+    let flip = toggle("Flip", cad_features.flip_slot, 0.0, "All, one side: through the body against the normal instead.")
+    flip.hide_when = "{ extent != 2 } { direction != 0 }"
+    let taper = number("Taper angle", cad_features.taper_slot, 0.0, -89.0, 89.0, 1.0, "Leans the sides: positive out, the profile growing along the extrusion; negative in. Fusion's sign.", suffix = "°")
+    let extent_two = menu("Side 2 extent", cad_features.extent_two_slot, cad_features.extent_names(), 0.0, "Two sides: the second side's extent, against the normal.")
+    extent_two.hide_when = "{ direction != 1 }"
+    let distance_two = number("Side 2 distance", cad_features.distance_two_slot, 10.0, 0.0, 100000.0, 0.5, "Two sides: how far the second side goes against the normal.", soft = 100.0)
+    distance_two.hide_when = "{ direction != 1 } { side_2_extent != 0 }"
+    distance_two.length = true
+    let offset_two = number("Side 2 offset", cad_features.offset_two_slot, 0.0, -100000.0, 100000.0, 0.5, "To object, second side: how far past its face it stops.", soft = 100.0)
+    offset_two.hide_when = "{ direction != 1 } { side_2_extent != 1 }"
+    offset_two.length = true
+    let taper_two = number("Side 2 taper", cad_features.taper_two_slot, 0.0, -89.0, 89.0, 1.0, "Two sides: the second side's taper, positive out.", suffix = "°")
+    taper_two.hide_when = "{ direction != 1 }"
+    start_offset.length = true
+    return [start, start_offset, direction, measurement, extent, distance, offset, flip, taper, extent_two, distance_two, offset_two, taper_two, operation]
+
+## Revolve's rows, Fusion 360's dialog.
+func revolve_fields() -> list[Parameter]:
+    let axis = menu("Axis", cad_features.axis_slot, cad_features.axis_names(), 0.0, "Picked: the sketch line or body edge picked (Pick axis), projected onto the sketch's plane. X, Y, Z: an origin axis.")
+    let kind_row = menu("Type", cad_features.revolve_type_slot, "Partial|Full", 0.0, "Partial: as far as Angle says. Full: all the way round.")
+    let direction = menu("Direction", cad_features.revolve_direction_slot, cad_features.direction_names(), 0.0, "One side: from the sketch's plane toward its normal (a negative angle the other way). Two sides: an angle each way. Symmetric: Angle each way.")
+    direction.hide_when = "{ type == 1 }"
+    let angle = number("Angle", cad_features.angle_slot, 360.0, -360.0, 360.0, 5.0, "How far the profiles turn about the axis.", suffix = "°")
+    angle.hide_when = "{ type == 1 }"
+    let angle_two = number("Side 2 angle", cad_features.angle_two_slot, 90.0, 0.0, 360.0, 5.0, "Two sides: how far the second side turns, the other way.", suffix = "°")
+    angle_two.hide_when = "{ type == 1 } { direction != 1 }"
+    let operation = menu("Operation", cad_features.operation_slot, cad_nodes.operation_names(), 0.0, "Auto: cuts where it turns into the body, else joins it (a new body without one). Join, Cut, Intersect: combined with the body flowing down the chain, or the second input's when one is wired.")
+    return [axis, kind_row, direction, angle, angle_two, operation]
+
+## Fillet's and Chamfer's rows, Fusion 360's dialogs (cad_blends.luc reads
+## the slots).
+func blend_fields(kind: str) -> list[Parameter]:
+    let size = number("Radius" if kind == "Fillet" else "Distance", cad_blends.size_slot, 1.0, 0.0001, 100000.0, 0.1, "The rolling ball's radius." if kind == "Fillet" else "How far the chamfer reaches along each face.", soft = 10.0)
+    let chain = toggle("Tangent chain", cad_blends.chain_slot, 1.0, "Each picked edge brings the edges continuing it smoothly: a rounded slot's rim, the edges around an earlier fillet.")
+    if kind == "Chamfer":
+        let shape = menu("Type", cad_blends.chamfer_type_slot, "Equal distance|Two distances|Distance and angle", 0.0, "Equal distance: as far along each face. Two distances: Distance along the first face (the one more of the picked edges lie on), Distance 2 along the other. Distance and angle: Distance along the first face, leaving it at Angle.")
+        let second = number("Distance 2", cad_blends.second_slot, 1.0, 0.0001, 100000.0, 0.1, "Two distances: how far the chamfer reaches along the other face.", soft = 10.0)
+        second.hide_when = "{ type != 1 }"
+        second.length = true
+        let angle = number("Angle", cad_blends.angle_slot, 45.0, 0.1, 179.9, 1.0, "Distance and angle: the angle the chamfer leaves the first face at.", suffix = "°")
+        angle.hide_when = "{ type != 2 }"
+        let flip = toggle("Flip", cad_blends.flip_slot, 0.0, "Measure the first distance on the other face.")
+        flip.hide_when = "{ type == 0 }"
+        return [shape, size, second, angle, flip, chain]
+    let kind_row = menu("Type", cad_blends.type_slot, "Fillet|Rule fillet", 0.0, "Fillet: the edges picked. Rule fillet: the edges a rule takes (All edges, or Between faces), found again as the body changes.")
+    let rule = menu("Rule", cad_blends.rule_slot, "All edges|Between faces", 0.0, "All edges: every edge of the kinds below. Between faces: those between the faces picked (Pick faces) and, when picked, the other faces (Pick other faces).")
+    rule.hide_when = "{ type == 0 }"
+    let rounds = toggle("Rounds", cad_blends.rounds_slot, 1.0, "Rule fillet: outside edges (convex), material taken away.")
+    rounds.hide_when = "{ type == 0 }"
+    let fillets = toggle("Fillets", cad_blends.fillets_slot, 1.0, "Rule fillet: inside edges (concave), material added.")
+    fillets.hide_when = "{ type == 0 }"
+    let continuity = menu("Continuity", cad_blends.continuity_slot, "G1|G2|G3", 0.0, "G1: a circular fillet (Fusion's Tangent). G2: curvature flows into the faces (Fusion's Curvature; no jump in reflections). G3: its change too, smoother still. Where three meet at a corner they stop short of it, and a patch as smooth as they are rounds it.")
+    # An Edit CAD step fillets the edges picked: the rule is the node's.
+    for row in [kind_row, rule, rounds, fillets]:
+        row.in_steps = false
+    return [kind_row, rule, rounds, fillets, size, continuity, chain]

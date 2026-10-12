@@ -46,8 +46,9 @@ func nearest_cooked(graph: Network, id: int) -> GeometryData?!:
 ## root) into `objects` and `batches`, meshes prepared for display `mode`.
 ## The render mode's sets are the root's objects, whatever the context. The
 ## rest of the scene around the context draws as `context_mode` says
-## (context_display.luc), its lines apart.
-pub func cook_outputs(graph: Network, objects: Group, batches: ViewportBatches, mode: int, slicer: Slicer, context_mode: int = 1) -> LocalCook!:
+## (context_display.luc), its lines apart. While `dragging`, a node that
+## fails shows its last good result.
+pub func cook_outputs(graph: Network, objects: Group, batches: ViewportBatches, mode: int, slicer: Slicer, context_mode: int = 1, dragging: bool = false) -> LocalCook!:
     let result = LocalCook()
     objects.clear()
     batches.clear_curves()
@@ -84,21 +85,25 @@ pub func cook_outputs(graph: Network, objects: Group, batches: ViewportBatches, 
     for item in view_items(graph):
         let node = item.node
         let matrix = item.matrix
-        # A failed node shows the nearest node upstream that cooked (what it
-        # started from), not picked on: the view never goes blank.
+        # A failed node shows, while a drag makes it fail, its last good
+        # result (Fusion's last good preview); else the nearest node upstream
+        # that cooked (what it started from); not picked on: the view never
+        # goes blank.
         var fallback = false
+        var kept = false
         var shown: GeometryData? = none
         shown = graph.evaluate_data(node.id) catch failure:
             if item.outside:
                 recover none
             result.notice = failure.message
             fallback = true
-            recover nearest_cooked(graph, node.id)
+            kept = dragging and node.last_good != none
+            recover node.last_good if kept else nearest_cooked(graph, node.id)
         let cooked = shown else continue
         # A sliced sketch shows its body cut by its plane.
         let data = slicer.shown(graph, node, cooked)
         if fallback:
-            result.notice = f"{result.notice} (the viewport shows its input)"
+            result.notice = f"{result.notice} (the viewport {"keeps its last good result" if kept else "shows its input"})"
         if node.id == graph.pick_node() and not item.outside and not fallback:
             result.node = node
             result.data = cooked

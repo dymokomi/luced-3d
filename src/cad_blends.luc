@@ -1,0 +1,91 @@
+## Fillet and Chamfer as Fusion 360's dialogs have them, on luce-cad's
+## blends (CadModeling.filleted, chamfered, fillet_plan, rule_edges), and
+## where a blend's radius arrow stands (handle_lines).
+##   Fillet: Type Fillet (the edges picked, kept by reference) or Rule
+##     fillet (All edges, or the edges Between faces of two picked sets;
+##     Rounds, Fillets or both), Radius, Continuity G1 (Fusion's Tangent),
+##     G2 (Curvature) or G3, Tangent chain.
+##   Chamfer: Type Equal distance, Two distances (Distance along the first
+##     face, the one more of the picked edges lie on, Distance 2 along the
+##     other; Flip swaps them) or Distance and angle (the chamfer leaving
+##     the first face at Angle), Tangent chain.
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.modeling import CadModeling, FilletPlan
+from luce_cad.model import CadModel
+from luce_3d.graphics import Vector3
+from angles import radians
+from geometry_data import GeometryData
+from handle_lines import HandleLine
+import handle_lines
+
+# -- Fillet's and Chamfer's value slots (node_catalog.cad_fields).
+pub let size_slot = 0
+pub let continuity_slot = 1
+pub let chain_slot = 2
+pub let type_slot = 3
+pub let rule_slot = 4
+pub let rounds_slot = 5
+pub let fillets_slot = 6
+## Chamfer's: its type, second distance, angle and flip.
+pub let chamfer_type_slot = 3
+pub let second_slot = 4
+pub let angle_slot = 5
+pub let flip_slot = 6
+## Rule fillet's face sets (Between faces): texts 1 and 2.
+pub let faces_text = 1
+pub let others_text = 2
+
+## What a feature node keeps between its evaluations on the compute
+## worker: a Fillet's plan (luce-cad's FilletPlan: the body's edges
+## resolved and its corners fitted once), so dragging its radius rebuilds
+## only. Made again when the body, edges, continuity or chaining change.
+pub class BlendMemo:
+    pub var plan: FilletPlan? = none
+    ## Plans made so far (one per change of body, edges or continuity).
+    pub var made: int = 0
+
+## The edges a Fillet with values `v` and texts `texts` blends on `body`:
+## its picked references, or its rule's (made again on every cook, so
+## they follow the body).
+pub func edges_of(v: list[float], texts: list[str], body: CadModel) -> str!:
+    if int(v[type_slot]) != 1:
+        return texts[0]
+    let between = int(v[rule_slot]) == 1
+    return CadModeling.rule_edges(body, v[rounds_slot] != 0.0, v[fillets_slot] != 0.0, texts[faces_text] if between else "", texts[others_text] if between else "")
+
+## Fillet or Chamfer (`kind`) of `body` with values `v` and texts `texts`,
+## its faces named for `tag`; `memo` keeps a Fillet's plan when given.
+pub func blended(kind: str, v: list[float], texts: list[str], body: CadModel, tag: str, memo: BlendMemo?) -> GeometryData!:
+    let chain = v[chain_slot] != 0.0
+    if kind == "Chamfer":
+        let edges = texts[0]
+        let shape = int(v[chamfer_type_slot])
+        if shape == 0:
+            return with_arrow(CadModeling.chamfered(body, edges, v[size_slot], tag, chain), body, edges)
+        let second = v[second_slot] if shape == 1 else 0.0
+        return with_arrow(CadModeling.chamfered_sides(body, edges, v[size_slot], second, radians(v[angle_slot]), tag, chain, v[flip_slot] != 0.0), body, edges)
+    let edges = edges_of(v, texts, body)
+    let continuity = int(v[continuity_slot]) + 1
+    let kept = memo else return with_arrow(CadModeling.filleted(body, edges, v[size_slot], tag, continuity, chain), body, edges)
+    var plan = kept.plan
+    if let held = plan:
+        if not held.made_for(body, edges, continuity, tag, chain):
+            plan = none
+    if plan == none:
+        kept.made += 1
+    let current = plan else CadModeling.fillet_plan(body, edges, continuity, tag, chain)
+    kept.plan = current
+    return with_arrow(current.filleted(v[size_slot]), body, edges)
+
+## `made` as a result, with the radius arrow on the first of `edges` of
+## `body` (none for every edge), out of the edge's corner.
+func with_arrow(made: CadModel, body: CadModel, edges: str) -> GeometryData!:
+    let result = GeometryData(geometry = CadGeometry.of_model(made))
+    let first = edges.split(";")[0].trim()
+    if first == "":
+        return result
+    let frame = CadModeling.edge_frame(body, first) catch failure:
+        return result
+    if frame.found:
+        result.handles = handle_lines.encode([HandleLine("arrow", size_slot, 1.0, frame.point, frame.outward, -1, Vector3())])
+    return result

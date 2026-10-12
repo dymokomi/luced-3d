@@ -1,0 +1,265 @@
+## Stage 5 of the Fusion CAD plan (docs/research/FUSION-CAD-UX.md): Fillet
+## and Chamfer in the viewport. The owner's case as a regression: a cube's
+## four uprights filleted G3, then the rounded top chain filleted (G1, G2,
+## G3) and, apart, chamfered, from one picked edge with Tangent chain: a
+## valid, non-empty, watertight body each time. The radius arrow dragged,
+## its value box, and a drag past what fits: the node says why and the
+## viewport keeps the last good fillet while the drag lasts.
+from app import Luce3D
+from workspace import Workspace
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+from view_projection import project
+from sketch_support import render
+import node_commands
+import handle_lines
+from luce_std import math
+import time
+
+pub func cad_blend_view_tests() -> unit!:
+    rounded_chain()
+    radius_arrow()
+    rule_fillet()
+    chamfer_types()
+    print("PASS CAD blends in the viewport: Chamfer by two distances and by distance and angle (a box edge's prism taken); a Rule fillet's rounds on a box (every edge, followed as the box changes) and no fillets to take said on the node; a cube's uprights filleted G3, the rounded top chain filleted G1, G2, G3 and chamfered from one edge (closed, watertight, of the faces expected, smaller than the cube); the radius arrow out of the edge's corner dragged and its value box; dragged too large, the node says why and the viewport keeps the last good fillet until the drag ends")
+
+func model_of(w: Workspace, id: int) -> CadModel!:
+    return CadGeometry.model(w.network.evaluate_data(id).geometry, 0)
+
+## Every edge of the tessellation used by two faces, opposite ways, and
+## the volume it encloses (positive: facing out).
+func watertight(model: CadModel) -> float!:
+    let mesh = model.tessellate(32)
+    assert(mesh.face_count() > 0)
+    let counts: list[int] = []
+    let ways: list[int] = []
+    for _ in 0..<mesh.edge_count():
+        counts.append(0)
+        ways.append(0)
+    for face in 0..<mesh.face_count():
+        for at in 0..<mesh.face_size(face):
+            let edge = mesh.face_edge(face, at)
+            let p = mesh.face_point(face, at)
+            counts[edge] += 1
+            ways[edge] += 1 if p == mesh.edge_point(edge, 0) else -1
+    for edge in 0..<mesh.edge_count():
+        assert(counts[edge] == 2 and ways[edge] == 0, f"edge {edge} used {counts[edge]} times")
+    var total = 0.0
+    for triangle in 0..<mesh.index_count() // 3:
+        let a = mesh.vertex(mesh.index(triangle * 3)).position
+        let b = mesh.vertex(mesh.index(triangle * 3 + 1)).position
+        let c = mesh.vertex(mesh.index(triangle * 3 + 2)).position
+        total += a.dot(b.cross(c)) / 6.0
+    return total
+
+## The ids of `model`'s edges whose start and end `keep` takes.
+func edges_where(model: CadModel, keep: func(Vector3, Vector3) -> bool) -> list[int]!:
+    let found: list[int] = []
+    for face in 0..<model.face_count():
+        for use in 0..<model.face_edge_count(face):
+            let id = model.face_edge_id(face, use)
+            if keep(model.face_edge_point(face, use, 0.0), model.face_edge_point(face, use, 1.0)) and not (id in found):
+                found.append(id)
+    return found
+
+func upright(a: Vector3, b: Vector3) -> bool:
+    return math.abs(a.x - b.x) < 1e-9 and math.abs(a.z - b.z) < 1e-9
+
+## A straight edge of the top loop (along Z).
+func top_line(a: Vector3, b: Vector3) -> bool:
+    return a.y > 9.99 and b.y > 9.99 and math.abs(a.x - b.x) < 1e-9
+
+## A CAD node: a 20 mm cube, its uprights filleted G3 (radius 4); the
+## Fillet's id and its body.
+func rounded_cube(w: Workspace) -> (int, CadModel)!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let cube = model_of(w, w.network.selected)
+    node_commands.add_node(w, "Fillet", 0.0, 120.0)
+    let corners = w.network.selected
+    node_commands.set_parameter(w, 0, 4.0)
+    node_commands.set_parameter(w, 1, 2.0)
+    node_commands.set_text(w, 0, CadModeling.edge_references(cube, edges_where(cube, upright)))
+    return (corners, model_of(w, corners))
+
+## The owner's case, through nodes.
+func rounded_chain() -> unit!:
+    let w = Workspace()
+    let (corners, rounded) = rounded_cube(w)
+    assert(rounded.face_count() == 10 and w.network.require(corners).failure == "")
+    let uprights = watertight(rounded)
+    assert(uprights > 7000.0 and uprights < 8000.0)
+    # One straight edge of the top loop; its tangent chain is the loop.
+    let line = edges_where(rounded, top_line)[0]
+    let reference = CadModeling.edge_references(rounded, [line])
+    node_commands.add_node(w, "Fillet", 0.0, 240.0)
+    let fillet = w.network.selected
+    node_commands.set_parameter(w, 0, 2.0)
+    node_commands.set_text(w, 0, reference)
+    for continuity in 0..<3:
+        node_commands.set_parameter(w, 1, float(continuity))
+        let made = model_of(w, fillet)
+        assert(w.network.require(fillet).failure == "" and made.face_count() == 18, f"G{continuity + 1}: {made.face_count()} faces")
+        let v = watertight(made)
+        assert(v > 0.0 and v < uprights, f"G{continuity + 1}: volume {v}")
+    # Chamfered instead, from the same edge.
+    node_commands.select_node(w, corners)
+    node_commands.add_node(w, "Chamfer", 200.0, 240.0)
+    let chamfer = w.network.selected
+    node_commands.set_parameter(w, 0, 2.0)
+    node_commands.set_text(w, 0, reference)
+    let cut = model_of(w, chamfer)
+    assert(w.network.require(chamfer).failure == "" and cut.face_count() == 18)
+    let v = watertight(cut)
+    assert(v > 0.0 and v < uprights)
+
+## Rule fillet: a box's rounds, every edge (sphere corners: 26 faces),
+## found again when the box grows; fillets only: none, said on the node.
+func rule_fillet() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let box = w.network.selected
+    node_commands.add_node(w, "Fillet", 0.0, 120.0)
+    let fillet = w.network.selected
+    node_commands.set_parameter(w, 3, 1.0)
+    node_commands.set_parameter(w, 6, 0.0)
+    node_commands.set_parameter(w, 0, 2.0)
+    assert(model_of(w, fillet).face_count() == 26 and w.network.require(fillet).failure == "")
+    node_commands.select_node(w, box)
+    node_commands.set_parameter(w, 0, 30.0)
+    let grown = model_of(w, fillet)
+    assert(grown.face_count() == 26 and grown.tessellate(8).bounds().maximum.x > 14.99)
+    node_commands.select_node(w, fillet)
+    node_commands.set_parameter(w, 5, 0.0)
+    node_commands.set_parameter(w, 6, 1.0)
+    var none_taken = false
+    _ = w.network.evaluate_data(fillet) catch failure:
+        none_taken = failure.message.contains("no edges")
+    assert(none_taken and w.network.require(fillet).failure.contains("no edges"))
+
+## Chamfer types on a 20 mm box's front top edge: two distances (3 and 1:
+## 1.5 × 20 taken), distance and angle (3 at 45°: equal, 4.5 × 20 taken).
+func chamfer_types() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let cube = model_of(w, w.network.selected)
+    node_commands.add_node(w, "Chamfer", 0.0, 120.0)
+    let chamfer = w.network.selected
+    node_commands.set_text(w, 0, CadModeling.edge_references(cube, edges_where(cube, front_top)))
+    node_commands.set_parameter(w, 3, 1.0)
+    node_commands.set_parameter(w, 0, 3.0)
+    node_commands.set_parameter(w, 4, 1.0)
+    assert(math.abs(watertight(model_of(w, chamfer)) - (8000.0 - 30.0)) < 1e-3)
+    node_commands.set_parameter(w, 3, 2.0)
+    node_commands.set_parameter(w, 5, 45.0)
+    assert(math.abs(watertight(model_of(w, chamfer)) - (8000.0 - 90.0)) < 1e-3)
+
+func front_top(a: Vector3, b: Vector3) -> bool:
+    return a.y > 9.99 and b.y > 9.99 and a.z > 9.99 and b.z > 9.99
+
+## The radius arrow of a fillet on the cube's rounded top chain: out of
+## the corner from the edge's middle; dragged out, the radius grows; a
+## click opens the box (3 typed); dragged far past what fits, the node fails
+## with why, and while the drag lasts the viewport shows the last good
+## fillet (its node's own result); released, its input.
+func radius_arrow() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    let (_, rounded) = rounded_cube(w)
+    let line = edges_where(rounded, top_line)[0]
+    node_commands.add_node(w, "Fillet", 0.0, 240.0)
+    let fillet = w.network.selected
+    node_commands.set_parameter(w, 0, 1.0)
+    node_commands.set_text(w, 0, CadModeling.edge_references(rounded, [line]))
+    node_commands.display_selected(w)
+    w.view.yaw = 0.5
+    w.view.pitch = 0.5
+    w.view.distance = 60.0
+    w.view.target = Vector3(0.0, 5.0, 0.0)
+    w.view.update_camera()
+    render(editor)
+    let handles = handle_lines.parse(w.network.require(fillet).handles)
+    assert(handles.length == 1 and handles[0].kind == "arrow" and math.abs(handles[0].foot.y - 10.0) < 1e-6 and handles[0].way.y > 0.7)
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    w.snaps.flags[1] = false
+    let tip = view.arrow.tip(bounds.width, bounds.height) else trap("no radius arrow")
+    let to = project(w, handles[0].foot.add(handles[0].way.multiply_scalar(2.0)), bounds.width, bounds.height)
+    drag(editor, tip, to, true)
+    let dragged = w.network.require(fillet).values[0]
+    assert(math.abs(dragged - 2.0) < 1e-6, f"{dragged}")
+    # A click: the box, 3 typed.
+    render(editor)
+    let at = view.arrow.tip(bounds.width, bounds.height) else trap("no radius arrow")
+    for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+        editor.app.dispatch(Event(kind = kind, x = bounds.x + at[0], y = bounds.y + at[1], button = 0))
+    render(editor)
+    assert(editor.panels.sketch_value.is_open())
+    editor.app.dispatch(Event(kind = EventKind.text_input, codepoint = 51))
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    assert(math.abs(w.network.require(fillet).values[0] - 3.0) < 1e-6)
+    # Far too large mid-drag: the node says why, the viewport keeps the last
+    # good fillet (the gesture's), and the handle stays.
+    render(editor)
+    let start = view.arrow.tip(bounds.width, bounds.height) else trap("no radius arrow")
+    let far = project(w, handles[0].foot.add(handles[0].way.multiply_scalar(30.0)), bounds.width, bounds.height)
+    drag(editor, start, far, false)
+    let failed = w.network.require(fillet).failure
+    assert(failed.contains("too large"), failed)
+    editor.panels.view.layout().invalidate()
+    render(editor)
+    assert(w.notice.contains("too large") and w.notice.contains("keeps its last good result"), w.notice)
+    assert(view.arrow.active())
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = bounds.x + far[0], y = bounds.y + far[1], button = 0))
+    render(editor)
+    assert(w.notice.contains("shows its input"), w.notice)
+    w.undo()
+    assert(math.abs(w.network.require(fillet).values[0] - 3.0) < 1e-6 and w.network.require(fillet).failure == "")
+    # On the compute worker: a drag's step too large keeps the last good
+    # fillet too, and its arrow.
+    w.enable_compute()
+    settle(w)
+    let values = w.network.require(fillet).values.copy()
+    values[0] = 30.0
+    w.begin("Fillet radius")
+    w.preview_parameters(values)
+    settle(w)
+    assert(w.notice.contains("too large") and w.notice.contains("keeps its last good result"), w.notice)
+    assert(w.network.require(fillet).handles != "")
+    w.cancel()
+    settle(w)
+    assert(w.notice == "", w.notice)
+    editor.close()
+
+## Until the compute worker has cooked what was asked.
+func settle(w: Workspace) -> unit!:
+    let session = w.compute else trap("compute")
+    let deadline = time.now() + 60000000000
+    while session.busy and time.now() < deadline:
+        _ = w.poll_compute()
+    assert(not session.busy)
+
+## A drag in the viewport from screen point `first` to `last`, Cmd held
+## (released when `release`).
+func drag(editor: Luce3D, first: list[float], last: list[float], release: bool) -> unit!:
+    let bounds = editor.panels.view.layout().bounds()
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + first[0], y = bounds.y + first[1]))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = bounds.x + first[0], y = bounds.y + first[1], button = 0))
+    # Cmd held: free of the grid's steps.
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + (first[0] + last[0]) * 0.5, y = bounds.y + (first[1] + last[1]) * 0.5, meta = true))
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + last[0], y = bounds.y + last[1], meta = true))
+    if release:
+        editor.app.dispatch(Event(kind = EventKind.pointer_up, x = bounds.x + last[0], y = bounds.y + last[1], button = 0))

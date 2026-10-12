@@ -18,6 +18,7 @@ from edit_kinds import edit_kind
 from edit_types import run_step
 from scene_nodes import add_camera, add_light, add_material, assign_material
 import cad_nodes
+import cad_blends
 import code_cook
 import script_cook
 from script_hosts import ScriptHosts
@@ -46,9 +47,9 @@ pub class Node:
     ## input the Group was selected on (0: typed, unguarded).
     pub var guard: int = 0
     pub var cache: GeometryData? = none
-    ## A feature's worker-side memo (cad_nodes.BlendMemo), kept while the
+    ## A feature's worker-side memo (cad_blends.BlendMemo), kept while the
     ## node keeps its kind.
-    pub var memo: cad_nodes.BlendMemo
+    pub var memo: cad_blends.BlendMemo
     pub var dirty: bool = true
     pub var failure: str = ""
     ## A warning of the last cook (see GeometryData.warning).
@@ -59,6 +60,11 @@ pub class Node:
     pub var sketch_state: str = ""
     ## What its Auto setting chose at its last cook ("Cut"; "" none).
     pub var automatic: str = ""
+    ## Where its viewport handles stood at its last cook (GeometryData.handles).
+    pub var handles: str = ""
+    ## Its last good result (a local cook's), which the viewport keeps while
+    ## a drag makes the node fail.
+    pub var last_good: GeometryData? = none
     pub var evaluations: int = 0
     pub var source_revision: int = 0
     pub var computing: bool = false
@@ -94,7 +100,7 @@ pub class Node:
         self.y = y
         self.inputs = []
         self.sources = []
-        self.memo = cad_nodes.BlendMemo()
+        self.memo = cad_blends.BlendMemo()
         for port in 0..<node_catalog.input_count(kind):
             self.inputs.append(-1)
             self.sources.append(0)
@@ -148,6 +154,7 @@ pub class Node:
         result.console = self.console
         result.sketch_state = self.sketch_state
         result.automatic = self.automatic
+        result.handles = self.handles
         result.evaluations = self.evaluations
         result.source_revision = self.source_revision
         result.summary = self.summary
@@ -202,13 +209,15 @@ pub class Node:
         kept.warning = result.warning
         kept.sketch_state = result.sketch_state
         kept.automatic = result.automatic
+        kept.handles = result.handles
         return kept
 
     ## Pure node computation over resolved immutable inputs. Runtime invokes this
     ## only on the compute worker; synchronous callers use the same contract.
     ## `keys` are the inputs' content keys (their nodes' stamps) when the caller
-    ## knows them: a Script node keeps an unchanged input's file.
-    pub func compute(self, data: GeometryData, second: GeometryData? = none, progress: func(float) -> unit!? = none, sources: SourceCache? = none, clock: list[float] = [], keys: list[int] = [], direct_children: bool = false) -> GeometryData!:
+    ## knows them: a Script node keeps an unchanged input's file. `sketch` is
+    ## the nearest Sketch's text upstream (Network.sketch_text).
+    pub func compute(self, data: GeometryData, second: GeometryData? = none, progress: func(float) -> unit!? = none, sources: SourceCache? = none, clock: list[float] = [], keys: list[int] = [], direct_children: bool = false, sketch: str = "") -> GeometryData!:
         if self.frozen != "":
             return load_frozen(self.frozen)
         let v = self.values
@@ -228,7 +237,7 @@ pub class Node:
         if cad_nodes.is_cad_only(self.kind):
             if not self.enabled:
                 return data
-            return cad_nodes.evaluate_cad(self.kind, v, data, cad_nodes.tag_of(self.id), second, self.texts, self.memo)
+            return cad_nodes.evaluate_cad(self.kind, v, data, cad_nodes.tag_of(self.id), second, self.texts, self.memo, sketch)
         if self.kind in node_catalog.sources():
             if not self.enabled:
                 return GeometryData()

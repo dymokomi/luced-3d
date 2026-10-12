@@ -354,21 +354,36 @@ pub class Panels:
                 let inset = 6.0 if inline else 0.0
                 self.sketch_value.open(node.id, constraint, d.name, d.value, d.angle, bounds.x - root.x + x - inset, bounds.y - root.y + y - inset, named = not inline)
 
-    ## An Extrude just made from the viewport: its distance box opens by its
-    ## arrow's tip, its typed value the Extrude's Distance.
-    func ask_distance(self) -> unit!:
+    ## A feature's value box by its handle: wanted when the feature was just
+    ## made from the viewport (its first handle's, once its cook placed
+    ## the handles; never when it failed) or a handle was clicked. Its
+    ## typed value is the handle's row.
+    func ask_value(self) -> unit!:
         let w = self.workspace
-        w.ask_distance = false
-        let node = w.selected() else return
-        if node.kind != "Extrude":
+        let handles = self.view.arrow
+        var slot = handles.take_click()
+        if w.ask_value:
+            let node = w.selected() else return
+            if node.failure != "":
+                w.ask_value = false
+                return
+            if not handles.active():
+                return
+            w.ask_value = false
+            slot = handles.first_slot()
+        if slot < 0:
             return
+        let node = w.selected() else return
         let id = node.id
+        let wanted = slot
         let bounds = self.view.layout().bounds()
         let root = self.body.layout().bounds()
-        let tip = self.view.arrow.tip(bounds.width, bounds.height) else [bounds.width * 0.5, bounds.height * 0.5]
-        self.sketch_value.ask("Distance", node.values[0], bounds.x - root.x + tip[0] + 14.0, bounds.y - root.y + tip[1] - 12.0, func (value: float) -> unit!:
+        let tip = handles.tip(bounds.width, bounds.height, slot) else [bounds.width * 0.5, bounds.height * 0.5]
+        let label = handles.row_name(node, slot)
+        let answer = func (value: float) -> unit!:
             if w.network.selected == id:
-                node_commands.set_parameter(w, 0, value))
+                node_commands.set_parameter(w, wanted, value)
+        self.sketch_value.ask(label, node.values[slot], bounds.x - root.x + tip[0] + 22.0, bounds.y - root.y + tip[1] - 34.0, answer, angle = handles.is_angle(node, slot))
 
     ## The context display modes' menu under its viewport button; `held` when
     ## a long press opens it (letting go over a mode chooses it).
@@ -428,8 +443,8 @@ pub class Panels:
         self.view.layout().invalidate()
         self.graph.layout().invalidate()
         # Once the viewport is laid out, so the box lands by the arrow.
-        if self.workspace.ask_distance and self.view.layout().bounds().width > 0.0:
-            self.ask_distance()
+        if (self.workspace.ask_value or self.view.arrow.clicked >= 0) and self.view.layout().bounds().width > 0.0:
+            self.ask_value()
         self.status.set_text(self.status_text())
         self.shown_revision = self.workspace.revision
 
@@ -455,8 +470,8 @@ pub class Panels:
             if self.placed and not self.search.is_open():
                 self.placed = false
         self.inspector.poll()
-        if self.workspace.ask_distance and self.view.layout().bounds().width > 0.0:
-            self.ask_distance()
+        if (self.workspace.ask_value or self.view.arrow.clicked >= 0) and self.view.layout().bounds().width > 0.0:
+            self.ask_value()
         self.place_tool_bar()
         if self.workspace.poll_compute():
             self.graph.layout().invalidate()

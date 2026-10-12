@@ -49,20 +49,23 @@ pub class Actions:
     pub let duplicate: Command
     pub let clipboard: NodeClipboard
     pub let extrude: Command
-    ## The CAD hand-offs (cad_commands.luc): Finish Sketch and Extrude from
-    ## a sketch's profiles while one is edited, Sketch on face, Fillet and
-    ## Chamfer of the selected edges. A face's Extrude and Press Pull come
-    ## with the plan's stage 4 and show disabled.
+    ## The CAD hand-offs (cad_commands.luc): Finish Sketch, Extrude and
+    ## Revolve from a sketch's profiles while one is edited; Sketch on face,
+    ## Extrude face and Offset Face (Press Pull) of the selected faces;
+    ## Fillet and Chamfer of the selected edges; Press Pull dispatching on
+    ## what is selected, as Fusion's.
     pub let finish_sketch: Command
     ## Slice while sketching: the body in front of the plane cut away from
     ## view (checked while on).
     pub let slice: Command
     pub let extrude_profiles: Command
+    pub let revolve_profiles: Command
     pub let sketch_on_face: Command
     pub let fillet_edges: Command
     pub let chamfer_edges: Command
     pub let extrude_face: Command
     pub let press_pull: Command
+    pub let offset_face: Command
     pub let clear_edits: Command
     pub let select_all: Command
     ## The splat brush's radius ([ and ]).
@@ -136,8 +139,10 @@ pub class Actions:
         self.sketch_on_face = Command("Sketch on face", id = "sketch_on_face", icon = asset_name("Sketch"))
         self.fillet_edges = Command("Fillet", id = "fillet_edges", icon = asset_name("Fillet"))
         self.chamfer_edges = Command("Chamfer", id = "chamfer_edges", icon = asset_name("Chamfer"))
-        self.extrude_face = Command("Extrude face (stage 4)", id = "extrude_face", icon = asset_name("Extrude"))
-        self.press_pull = Command("Press Pull (stage 4)", id = "press_pull", icon = asset_name("Extrude"))
+        self.revolve_profiles = Command("Revolve", id = "revolve_profiles", icon = asset_name("Revolve"))
+        self.extrude_face = Command("Extrude face", id = "extrude_face", icon = asset_name("Extrude"))
+        self.press_pull = Command("Press Pull", id = "press_pull", icon = asset_name("Extrude"))
+        self.offset_face = Command("Offset Face", id = "offset_face", icon = asset_name("Offset Face"))
         self.clear_edits = Command("Clear edits", id = "clear_edits")
         self.select_all = Command("Select all", Shortcut(Key.a, primary = true), id = "select_all")
         self.connections = [self.undo.on_trigger(workspace.undo), self.redo.on_trigger(workspace.redo),
@@ -155,6 +160,10 @@ pub class Actions:
             self.finish_sketch.on_trigger(func () -> unit!: cad_commands.finish_sketch(workspace)),
             self.slice.on_trigger(func () -> unit!: cad_commands.toggle_slice(workspace)),
             self.extrude_profiles.on_trigger(func () -> unit!: cad_commands.extrude_profiles(workspace)),
+            self.revolve_profiles.on_trigger(func () -> unit!: cad_commands.revolve_profiles(workspace)),
+            self.extrude_face.on_trigger(func () -> unit!: cad_commands.extrude_face(workspace)),
+            self.press_pull.on_trigger(func () -> unit!: cad_commands.press_pull(workspace)),
+            self.offset_face.on_trigger(func () -> unit!: cad_commands.offset_faces(workspace)),
             self.sketch_on_face.on_trigger(func () -> unit!: cad_commands.sketch_on_face(workspace)),
             self.fillet_edges.on_trigger(func () -> unit!: cad_commands.blend_edges(workspace, "Fillet")),
             self.chamfer_edges.on_trigger(func () -> unit!: cad_commands.blend_edges(workspace, "Chamfer")), self.select_all.on_trigger(func () -> unit!: selection_commands.select_all(workspace))]
@@ -216,7 +225,7 @@ pub class Actions:
         self.connections.append(self.through_depth.on_trigger(func (): modeling_commands.toggle_through_depth(workspace)))
         for kind in kinds():
             self.add.append(Command(kind, id = "add_" + kind, icon = asset_name(kind)))
-        self.all = [self.undo, self.redo, self.frame, self.grid, self.hulls, self.display, self.parent, self.add_node, self.set_output, self.frame_nodes, self.group, self.enabled, self.freeze, self.play, self.play_backwards, self.previous_frame, self.next_frame, self.first_frame, self.last_frame, self.looping, self.delete, self.rename, self.cut, self.copy, self.paste, self.duplicate, self.extrude, self.finish_sketch, self.slice, self.extrude_profiles, self.sketch_on_face, self.fillet_edges, self.chamfer_edges, self.extrude_face, self.press_pull, self.clear_edits, self.select_all, self.smaller_brush, self.larger_brush, self.through_depth] + self.add + self.modes + self.context_modes + self.tools + self.modeling + self.create + self.selection_tools
+        self.all = [self.undo, self.redo, self.frame, self.grid, self.hulls, self.display, self.parent, self.add_node, self.set_output, self.frame_nodes, self.group, self.enabled, self.freeze, self.play, self.play_backwards, self.previous_frame, self.next_frame, self.first_frame, self.last_frame, self.looping, self.delete, self.rename, self.cut, self.copy, self.paste, self.duplicate, self.extrude, self.finish_sketch, self.slice, self.extrude_profiles, self.revolve_profiles, self.sketch_on_face, self.fillet_edges, self.chamfer_edges, self.extrude_face, self.press_pull, self.offset_face, self.clear_edits, self.select_all, self.smaller_brush, self.larger_brush, self.through_depth] + self.add + self.modes + self.context_modes + self.tools + self.modeling + self.create + self.selection_tools
         self.all += [self.new_project, self.open_project, self.save, self.save_as, self.project_settings, self.reset_layout]
         self.refresh()
 
@@ -316,14 +325,16 @@ pub class Actions:
         self.slice.set_enabled(sketching)
         self.slice.set_checked(w.slice)
         self.extrude_profiles.set_enabled(sketching)
+        self.revolve_profiles.set_enabled(sketching)
         self.extrude_profiles.set_text("Extrude profile" if w.sketch_profiles.length == 1 else ("Extrude profiles" if w.sketch_profiles.length > 1 else "Extrude"))
         let faces = cad_commands.selected_faces(w).length > 0
         self.sketch_on_face.set_enabled(faces)
         let edges = cad_commands.selected_edges(w).length > 0
         self.fillet_edges.set_enabled(edges)
         self.chamfer_edges.set_enabled(edges)
-        self.extrude_face.set_enabled(false)
-        self.press_pull.set_enabled(false)
+        self.extrude_face.set_enabled(faces)
+        self.offset_face.set_enabled(faces)
+        self.press_pull.set_enabled(sketching or faces or edges)
 
     pub func close(self):
         for connection in self.connections:

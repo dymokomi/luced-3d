@@ -1,16 +1,18 @@
 ## Tool prompts: a node waiting for its components while its input shows
 ## for picking (Tool → Select, Reselect, Pick edges, Pick face, Pick
-## profiles); the node follows the selection, Shift or Cmd peeks at the
-## input, Enter keeps it, Esc removes it.
+## profiles, Pick object, Pick axis); the node follows the selection, Shift
+## or Cmd peeks at the input, Enter keeps it, Esc removes it.
 from luce_geocore.geocore import Mesh, Domain
 from workspace import Workspace
 from edit_types import edge_level
 from tools import ToolRun
 from tool_prompt import ToolPrompt
+from node import Node
 from edit_steps import insert_after_display, show
 import node_catalog
 import profile_pick
 import sketch_node
+import cad_features
 
 ## Tool → Select: the new node waits, empty, while the viewport shows its
 ## input for picking; the node follows the selection (follow_prompt), Enter
@@ -108,6 +110,92 @@ pub func pick_face(w: Workspace, id: int) -> unit!:
     w.revision += 1
     w.rebuild()
 
+## The labels of Extrude's To object picks (each side's) and Revolve's
+## axis pick.
+pub let object_label = "Pick object"
+pub let object_two_label = "Pick side 2 object"
+pub let axis_label = "Pick axis"
+## The labels of face set picks: a Rule fillet's two sets, Offset Face's.
+pub let faces_label = "Pick faces"
+pub let other_faces_label = "Pick other faces"
+
+## Pick faces: show node `id`'s input body at the Faces level; the faces
+## selected (Shift adds) are written, by name, into its text `slot` (a
+## Rule fillet's sets: 1 and 2; Offset Face's: 0); Enter keeps them.
+pub func pick_faces(w: Workspace, id: int, slot: int) -> unit!:
+    let node = w.network.require(id)
+    if node.inputs[0] < 0 or w.in_transaction():
+        return
+    let label = other_faces_label if slot == 2 else faces_label
+    w.begin(label)
+    w.prompt = ToolPrompt(node.id, node.inputs[0], label, true)
+    w.network.selected = node.inputs[0]
+    show(w, node.inputs[0])
+    w.adopt_level(w.level_of(2))
+    w.selection = none
+    w.pending_changed = true
+    w.notice = "Pick the faces (Shift adds), then Enter; Esc cancels"
+    w.revision += 1
+    w.rebuild()
+
+## The text slot face set pick `label` of node `node` writes.
+func face_slot(label: str, node: Node) -> int:
+    if node.kind == "Offset Face":
+        return 0
+    return 2 if label == other_faces_label else 1
+
+## Pick object: show Extrude node `id`'s input (its sketch with the body
+## flowing with it) to pick the face side one (`second`: side two) runs
+## to; the first face picked is it, and that side's Extent becomes To
+## object.
+pub func pick_object(w: Workspace, id: int, second: bool = false) -> unit!:
+    let node = w.network.require(id)
+    if node.kind != "Extrude" or node.inputs[0] < 0 or w.in_transaction():
+        return
+    let label = object_two_label if second else object_label
+    w.begin(label)
+    w.prompt = ToolPrompt(node.id, node.inputs[0], label, true)
+    w.network.selected = node.inputs[0]
+    show(w, node.inputs[0])
+    w.adopt_level(w.level_of(2))
+    w.selection = none
+    w.pending_changed = true
+    w.notice = "Click the face to extrude to; Esc cancels"
+    w.revision += 1
+    w.rebuild()
+
+## Pick axis: show Revolve node `id`'s input (its sketch with the body) to
+## pick the axis: a sketch line clicked (axis_pick.luc) or a body edge (the
+## Edges level).
+pub func pick_axis(w: Workspace, id: int) -> unit!:
+    let node = w.network.require(id)
+    if node.kind != "Revolve" or node.inputs[0] < 0 or w.in_transaction():
+        return
+    w.begin(axis_label)
+    w.prompt = ToolPrompt(node.id, node.inputs[0], axis_label, true)
+    w.network.selected = node.inputs[0]
+    show(w, node.inputs[0])
+    w.adopt_level(edge_level)
+    w.selection = none
+    w.pending_changed = true
+    w.notice = "Click the axis: a line of the sketch, or a straight or round edge of the body; Esc cancels"
+    w.revision += 1
+    w.rebuild()
+
+## Prompt `label`'s pick is made: node `node` shows again, selected, and
+## the prompt is one undo step.
+pub func finish_pick(w: Workspace, node: int) -> unit!:
+    w.network.invalidate(node)
+    w.network.selected = node
+    show(w, node)
+    w.prompt = none
+    w.peeking = false
+    w.selection = none
+    w.notice = ""
+    w.pending_changed = true
+    w.commit()
+    w.rebuild()
+
 ## Pick profiles: click the regions of Extrude's or Revolve's input sketch
 ## to take (profile_pick.luc); the result shows as they change.
 pub func pick_profiles(w: Workspace, id: int) -> unit!:
@@ -156,6 +244,17 @@ pub func follow_prompt(w: Workspace) -> unit!:
         w.commit()
         w.rebuild()
         return
+    if prompt.label in [object_label, object_two_label, axis_label]:
+        follow_feature_pick(w, prompt.label, node, mesh, chosen.next(-1))
+        return
+    if prompt.label in [faces_label, other_faces_label]:
+        let names = face_names(w, mesh) else return
+        node.texts[face_slot(prompt.label, node)] = names
+        w.network.invalidate(node.id)
+        w.notice = ""
+        w.pending_changed = true
+        w.rebuild()
+        return
     if chosen.count() == 0:
         node.texts[0] = ""
         w.network.invalidate(node.id)
@@ -174,6 +273,56 @@ pub func follow_prompt(w: Workspace) -> unit!:
     w.notice = ""
     w.pending_changed = true
     w.rebuild()
+
+## Pick object or Pick axis took component `first` of the pick mesh: the
+## face's name into the Extrude's side, or the edge into the Revolve's
+## axis.
+func follow_feature_pick(w: Workspace, label: str, node: Node, mesh: Mesh, first: int) -> unit!:
+    if first < 0:
+        return
+    if label == axis_label:
+        let references = mesh.find_attribute("cad_edge_reference", 4)
+        if references < 0 or not w.on_domain(Domain.edge):
+            return
+        let reference = mesh.attribute_text(references, first)
+        if reference == "":
+            w.notice = "This edge has no name to keep: pick one of a body made inside a CAD node"
+            w.revision += 1
+            return
+        node.texts[cad_features.axis_text] = cad_features.edge_axis(reference)
+        node.values[cad_features.axis_slot] = 0.0
+        finish_pick(w, node.id)
+        return
+    let names = mesh.find_attribute("cad_face_name", 2)
+    if names < 0 or not w.on_domain(Domain.face):
+        return
+    let name = mesh.attribute_text(names, first)
+    if name == "":
+        w.notice = "This face has no name to keep: pick one of a body made inside a CAD node"
+        w.revision += 1
+        return
+    let second = label == object_two_label
+    node.texts[cad_features.face_two_text if second else cad_features.face_text] = name
+    node.values[cad_features.extent_two_slot if second else cad_features.extent_slot] = 1.0
+    finish_pick(w, node.id)
+
+## The names of the faces picked on `mesh` (the body's pick tessellation),
+## each once, apart by `;`; none, with a notice, when they have none.
+func face_names(w: Workspace, mesh: Mesh) -> str?!:
+    let chosen = w.current_selection() else return none
+    let column = mesh.find_attribute("cad_face_name", 2)
+    if column < 0 or not w.on_domain(Domain.face):
+        w.notice = "Pick faces of the body (the Faces level)"
+        w.revision += 1
+        return none
+    let names: list[str] = []
+    var at = chosen.next(-1)
+    while at >= 0:
+        let name = mesh.attribute_text(column, at)
+        if name != "" and not (name in names):
+            names.append(name)
+        at = chosen.next(at)
+    return names.join(";")
 
 ## The picked edges of `mesh` (the body's pick tessellation) as references
 ## (their faces by name), which survive changes upstream that renumber the
@@ -221,7 +370,7 @@ pub func accept_prompt(w: Workspace) -> unit!:
     w.prompt = none
     w.peeking = false
     w.notice = ""
-    if node.kind in ["Fillet", "Chamfer"]:
+    if node.kind in ["Fillet", "Chamfer", "Offset Face"]:
         w.selection = none
     else:
         w.adopt_output = true

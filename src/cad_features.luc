@@ -1,0 +1,315 @@
+## Extrude and Revolve as Fusion 360's dialogs have them, on luce-cad's
+## extents (CadModeling.extruded_sides, extruded_through, extruded_to,
+## revolved_about), and where their viewport handles stand (handle_lines).
+##   Extrude: Start (Profile plane or Offset), Direction (One side, Two
+##     sides, Symmetric with Half or Whole length), each side's Extent
+##     (Distance, To object: a face picked in the viewport, with an Offset;
+##     All, with Flip one side) and Taper angle. Fusion's taper sign: a
+##     positive angle leans the sides out (the profile grows along the
+##     extrusion), the kernel's leans them in, so it is turned over here.
+##   Revolve: an Axis (a sketch line, a body edge picked in the viewport,
+##     or an origin axis), Partial or Full, Direction One side, Two sides
+##     or Symmetric (the angle each way, as Fusion's).
+## Operation is the node's own (cad_nodes.operated): Auto by default.
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.modeling import CadModeling, ProfileAnchor
+from luce_cad.model import CadModel
+from luce_cad.sketch import CadSketch
+from luce_3d.graphics import Vector3
+from geometry_data import GeometryData
+from handle_lines import HandleLine
+from luce_ui import ui
+from angles import radians
+import sketch_node
+from luce_std import math
+
+# -- Extrude's value slots (node_catalog.cad_fields lays its rows on them).
+pub let distance_slot = 0
+pub let operation_slot = 1
+pub let direction_slot = 2
+pub let extent_slot = 3
+pub let taper_slot = 4
+pub let distance_two_slot = 5
+pub let extent_two_slot = 6
+pub let taper_two_slot = 7
+pub let start_slot = 8
+pub let start_offset_slot = 9
+pub let measurement_slot = 10
+pub let offset_slot = 11
+pub let offset_two_slot = 12
+pub let flip_slot = 13
+## Extrude's texts: the profiles, then each side's To object face.
+pub let face_text = 1
+pub let face_two_text = 2
+
+# -- Revolve's value slots; its axis picked is text 1.
+pub let revolve_type_slot = 0
+pub let angle_slot = 2
+pub let revolve_direction_slot = 3
+pub let angle_two_slot = 4
+pub let axis_slot = 5
+pub let axis_text = 1
+
+pub func direction_names() -> str:
+    return "One side|Two sides|Symmetric"
+
+pub func extent_names() -> str:
+    return "Distance|To object|All"
+
+pub func axis_names() -> str:
+    return "Picked|X axis|Y axis|Z axis"
+
+## One side of an extrusion: its extent (0 Distance, 1 To object, 2 All),
+## signed distance along the normal (negative: against it), taper in the
+## kernel's sense (radians, positive in), the face it runs to and how far
+## past it.
+class Side:
+    let extent: int
+    let distance: float
+    let taper: float
+    let face: str
+    let offset: float
+    let way: float
+
+    func init(self, extent: int, distance: float, taper: float, face: str, offset: float, way: float):
+        self.extent = extent
+        self.distance = distance
+        self.taper = taper
+        self.face = face
+        self.offset = offset
+        self.way = way
+
+## An Extrude's sides as its values say: side one along the normal (or
+## against it for a negative distance), side two against it (none one
+## sided). Symmetric: the same each way, the distance each side (Half
+## length) or the whole (Whole length).
+func sides_of(v: list[float], texts: list[str]) -> list[Side]:
+    let direction = int(v[direction_slot])
+    let taper = -radians(v[taper_slot])
+    if direction == 2:
+        let each = v[distance_slot] * (0.5 if int(v[measurement_slot]) == 1 else 1.0)
+        let extent = int(v[extent_slot])
+        return [Side(extent, each, taper, texts[face_text], v[offset_slot], 1.0), Side(extent, -each, taper, texts[face_text], v[offset_slot], -1.0)]
+    let flip = v[flip_slot] != 0.0
+    let first = Side(int(v[extent_slot]), v[distance_slot], taper, texts[face_text], v[offset_slot], -1.0 if flip else 1.0)
+    if direction == 0:
+        return [first]
+    let second = Side(int(v[extent_two_slot]), -v[distance_two_slot], -radians(v[taper_two_slot]), texts[face_two_text], v[offset_two_slot], -1.0)
+    return [Side(first.extent, first.distance, first.taper, first.face, first.offset, 1.0), second]
+
+## The bodies `target` holds as one (To object and All run against them).
+func target_body(target: GeometryData?) -> CadModel!:
+    let bodies = target else error(ui.invalid, "To object and All extrude against a body: the sketch's input body, or one wired to the second input")
+    let count = CadGeometry.model_count(bodies.geometry)
+    if count == 0:
+        error(ui.invalid, "To object and All extrude against a body: the sketch's input body, or one wired to the second input")
+    var body = CadGeometry.model(bodies.geometry, 0)
+    for at in 1..<count:
+        body = CadModeling.combined(body, CadGeometry.model(bodies.geometry, at), 0)
+    return body
+
+## One side's solid from the profiles in `data`, from `start` along the
+## normal.
+func side_solid(data: GeometryData, side: Side, start: float, tag: str, profiles: str, target: GeometryData?) -> CadModel!:
+    if side.extent == 0:
+        if math.abs(side.distance) < 1e-9:
+            error(ui.invalid, "The distance is zero: drag the arrow or type a distance")
+        return CadModeling.extruded_sides(data.geometry, side.distance, 0.0, tag, side.taper, 0.0, start, profiles)
+    if start != 0.0:
+        error(ui.invalid, "Start Offset works with the Distance extent for now: set Start to Profile plane for To object and All")
+    if side.extent == 1:
+        if side.face.trim() == "":
+            error(ui.invalid, "To object: pick the face to extrude to (the Object row's Pick face)")
+        return CadModeling.extruded_to(data.geometry, target_body(target), tag, side.face.trim(), side.offset, side.taper, profiles)
+    return CadModeling.extruded_through(data.geometry, target_body(target), tag, int(side.way), side.taper, profiles)
+
+## The solid an Extrude with values `v` makes from the profiles in `data`
+## (texts: profiles, then the faces it runs to), against `target`'s bodies.
+pub func extruded(v: list[float], texts: list[str], data: GeometryData, tag: str, target: GeometryData?) -> CadModel!:
+    let profiles = texts[0]
+    let start = v[start_offset_slot] if int(v[start_slot]) == 1 else 0.0
+    let sides = sides_of(v, texts)
+    if sides.length == 1:
+        return side_solid(data, sides[0], start, tag, profiles, target)
+    let one = sides[0]
+    let two = sides[1]
+    if one.extent == 0 and two.extent == 0:
+        if one.distance <= 0.0 or two.distance >= 0.0:
+            error(ui.invalid, "Two sides take positive distances, one each way")
+        return CadModeling.extruded_sides(data.geometry, one.distance, -two.distance, tag, one.taper, two.taper, start, profiles)
+    if one.extent == 2 and two.extent == 2 and int(v[direction_slot]) == 2:
+        if start != 0.0:
+            error(ui.invalid, "Start Offset works with the Distance extent for now: set Start to Profile plane for All")
+        return CadModeling.extruded_through(data.geometry, target_body(target), tag, 0, one.taper, profiles)
+    # Sides of different extents: each its own solid, side two's faces
+    # named apart, joined.
+    let first = side_solid(data, one, start, tag, profiles, target)
+    let second = CadModeling.prefixed(side_solid(data, two, start, tag, profiles, target), f"{tag}.2:")
+    return CadModeling.combined(first, second, 0)
+
+## Halfway along the Extrude's new solid, for Auto: on a Distance side the
+## middle of its sides' span; a To object or All side runs into what it
+## meets, so a point just past the start that way.
+pub func extrude_probe(v: list[float], texts: list[str], anchor: ProfileAnchor) -> Vector3:
+    let start = v[start_offset_slot] if int(v[start_slot]) == 1 else 0.0
+    let reach = 0.001 * math.max(1.0, math.sqrt(anchor.area))
+    let sides = sides_of(v, texts)
+    # Each side's far end along the normal (a To object or All side: just
+    # past the start its way); one side starts at the plane.
+    let ends: list[float] = [0.0]
+    for side in sides:
+        ends.append(side.distance if side.extent == 0 else side.way * reach)
+    let low = ends[0] if sides.length == 1 else ends[2]
+    let along = start + (low + ends[1]) * 0.5
+    return anchor.point.add(anchor.normal.multiply_scalar(along))
+
+## Where an Extrude's handles stand: per Distance side an arrow along it
+## from the start, and its taper ring.
+pub func extrude_handles(v: list[float], texts: list[str], anchor: ProfileAnchor) -> list[HandleLine]:
+    let handles: list[HandleLine] = []
+    let start = v[start_offset_slot] if int(v[start_slot]) == 1 else 0.0
+    let foot = anchor.point.add(anchor.normal.multiply_scalar(start))
+    let direction = int(v[direction_slot])
+    let half = 0.5 if direction == 2 and int(v[measurement_slot]) == 1 else 1.0
+    if int(v[extent_slot]) == 0:
+        handles.append(HandleLine("arrow", distance_slot, half, foot, anchor.normal, -1, Vector3()))
+        handles.append(HandleLine("taper", taper_slot, half, foot, anchor.normal, distance_slot, Vector3()))
+    if direction == 2 and int(v[extent_slot]) == 0:
+        let back = anchor.normal.multiply_scalar(-1.0)
+        handles.append(HandleLine("arrow", distance_slot, half, foot, back, -1, Vector3()))
+    if direction == 1 and int(v[extent_two_slot]) == 0:
+        let back = anchor.normal.multiply_scalar(-1.0)
+        handles.append(HandleLine("arrow", distance_two_slot, 1.0, foot, back, -1, Vector3()))
+        handles.append(HandleLine("taper", taper_two_slot, 1.0, foot, back, distance_two_slot, Vector3()))
+    return handles
+
+# -- Revolve.
+
+## A revolve axis: a point on it and its direction.
+pub class Axis:
+    pub let origin: Vector3
+    pub let direction: Vector3
+
+    pub func init(self, origin: Vector3, direction: Vector3):
+        self.origin = origin
+        self.direction = direction
+
+## A Revolve's axis text for sketch line `entity`, and for a body edge.
+pub func line_axis(entity: int) -> str:
+    return f"line {entity}"
+
+pub func edge_axis(reference: str) -> str:
+    return f"edge {reference}"
+
+## What a Revolve's picked axis text shows.
+pub func axis_summary(text: str) -> str:
+    let t = text.trim()
+    if t.starts_with("line "):
+        return f"Sketch line {t[5..<t.length]}"
+    if t.starts_with("edge "):
+        return "A body edge"
+    return "None picked"
+
+## The axis Revolve's values and texts name: an origin axis, or the picked
+## sketch line (of `sketch`, the nearest Sketch's text, on the plane of
+## the curves in `data`) or body edge (of the body flowing with the
+## sketch), projected onto the sketch's plane as Fusion's Project Axis does.
+func axis_of(v: list[float], texts: list[str], data: GeometryData, sketch: str) -> Axis!:
+    let plane = sketch_node.plane_of(data.geometry)
+    let n = plane.normal()
+    var axis = Axis(Vector3(), Vector3(1.0, 0.0, 0.0))
+    let chosen = int(v[axis_slot])
+    if chosen > 0:
+        axis = Axis(Vector3(), Vector3(1.0 if chosen == 1 else 0.0, 1.0 if chosen == 2 else 0.0, 1.0 if chosen == 3 else 0.0))
+    else:
+        let text = texts[axis_text].trim()
+        if text.starts_with("line "):
+            let entity = int(text[5..<text.length])
+            let s = CadSketch.parse(sketch)
+            if entity < 0 or entity >= s.entity_count() or s.kind(entity) != 1:
+                error(ui.invalid, "The axis line is no longer in the sketch: pick the axis again")
+            _ = s.solve()
+            let a = plane.at(s.x(s.part(entity, 0)), s.y(s.part(entity, 0)))
+            let b = plane.at(s.x(s.part(entity, 1)), s.y(s.part(entity, 1)))
+            axis = Axis(a, b.subtract(a))
+        elif text.starts_with("edge "):
+            let bodies = data.geometry
+            if CadGeometry.model_count(bodies) == 0:
+                error(ui.invalid, "The axis edge's body is not in the input: pick the axis again")
+            let line = CadModeling.edge_axis(CadGeometry.model(bodies, 0), text[5..<text.length])
+            if not line.found:
+                error(ui.invalid, "A revolve's axis is a straight edge or a circular one (its center line)")
+            axis = Axis(line.origin, line.direction)
+        else:
+            error(ui.invalid, "Pick the axis: a sketch line or a body edge (Pick axis), or choose an origin axis")
+    # Onto the sketch's plane.
+    let d = axis.direction.subtract(n.multiply_scalar(axis.direction.dot(n)))
+    let along = d.normalized() catch failure:
+        error(ui.invalid, "The axis is square to the sketch's plane: a revolve turns about an axis in it")
+    let o = axis.origin.subtract(n.multiply_scalar(axis.origin.subtract(plane.origin).dot(n)))
+    return Axis(o, along)
+
+## The angles a Revolve turns over, from the sketch's plane toward its
+## normal (degrees): its low and high ends.
+func span_of(v: list[float]) -> list[float]!:
+    if int(v[revolve_type_slot]) == 1:
+        return [0.0, 360.0]
+    let a = v[angle_slot]
+    let direction = int(v[revolve_direction_slot])
+    var low = math.min(0.0, a)
+    var high = math.max(0.0, a)
+    if direction == 1:
+        low = -v[angle_two_slot]
+        high = a
+    elif direction == 2:
+        low = -math.abs(a)
+        high = math.abs(a)
+    if high - low <= 1e-9:
+        error(ui.invalid, "The angle is zero: drag the handle or type an angle")
+    if high - low > 360.0 + 1e-9:
+        error(ui.invalid, "The sides turn more than a full turn together: 360° at most")
+    return [low, high]
+
+## The axis turned so that turning about it right-handed sweeps the
+## profiles' plane toward its normal (the kernel's way), and the radius
+## from it out to the anchor.
+func turning(axis: Axis, anchor: ProfileAnchor) -> (Vector3, Vector3, Vector3):
+    let offset = anchor.point.subtract(axis.origin)
+    let center = axis.origin.add(axis.direction.multiply_scalar(offset.dot(axis.direction)))
+    let radial = anchor.point.subtract(center)
+    let way = axis.direction if axis.direction.cross(radial).dot(anchor.normal) >= 0.0 else axis.direction.multiply_scalar(-1.0)
+    return (center, way, radial)
+
+## The solid a Revolve with values `v` makes from the profiles in `data`,
+## and the point halfway round it (for Auto) when there is a profile.
+pub func revolved(v: list[float], texts: list[str], data: GeometryData, tag: str, sketch: str) -> (CadModel, Vector3)!:
+    let profiles = texts[0]
+    let axis = axis_of(v, texts, data, sketch)
+    let span = span_of(v)
+    let anchor = CadModeling.profile_anchor(data.geometry, profiles)
+    if not anchor.found:
+        error(ui.invalid, "The sketch has no closed profile to revolve")
+    let (center, way, radial) = turning(axis, anchor)
+    let whole = span[1] - span[0] >= 360.0 - 1e-9
+    var made = CadModeling.revolved_about(data.geometry, axis.origin, way, tag, radians(360.0 if whole else span[1] - span[0]), profiles)
+    if not whole and span[0] != 0.0:
+        made = CadModeling.moved_body(made, Vector3(), axis.origin, way, radians(span[0]))
+    let middle = radians((span[0] + span[1]) * 0.5)
+    return (made, center.add(radial.rotated_about(way, middle)))
+
+## Where a Revolve's handles stand: an angle ring per side (none Full).
+pub func revolve_handles(v: list[float], texts: list[str], data: GeometryData, sketch: str) -> list[HandleLine]!:
+    let handles: list[HandleLine] = []
+    if int(v[revolve_type_slot]) == 1:
+        return handles
+    let anchor = CadModeling.profile_anchor(data.geometry, texts[0])
+    if not anchor.found:
+        return handles
+    let (center, way, radial) = turning(axis_of(v, texts, data, sketch), anchor)
+    let direction = int(v[revolve_direction_slot])
+    handles.append(HandleLine("angle", angle_slot, 1.0, center, way, -1, radial))
+    if direction == 1:
+        handles.append(HandleLine("angle", angle_two_slot, -1.0, center, way, -1, radial))
+    elif direction == 2:
+        handles.append(HandleLine("angle", angle_slot, -1.0, center, way, -1, radial))
+    return handles

@@ -14,6 +14,7 @@ from cad_nodes import solid_kinds, edges_summary
 from luce_cad.modeling import CadModeling
 from compute_request import RequestWriter, read_request
 import tool_prompts
+from cad_features import line_axis
 
 ## Whether `model`'s tessellated volume is `expected` (to 0.5%).
 func near_volume(model: CadModel, expected: float) -> bool!:
@@ -49,20 +50,36 @@ pub func cad_node_tests() -> unit!:
     assert(CadGeometry.model_count(body.geometry) == 1 and CadGeometry.model(body.geometry, 0).face_count() == 6)
     let bounds = CadGeometry.model(body.geometry, 0).tessellate(8).bounds()
     assert(bounds.maximum.z - bounds.minimum.z > 2.999 and bounds.maximum.z - bounds.minimum.z < 3.001)
-    # Symmetric: half the distance each way (z from -1.5 to 1.5).
+    # Symmetric (Direction 2), Fusion's Half length: the distance each way
+    # (z from -3 to 3); Whole length: half of it each way.
     node_commands.select_node(w, extrude)
-    node_commands.set_parameter(w, 2, 1.0)
+    node_commands.set_parameter(w, 2, 2.0)
     let even = CadGeometry.model(w.network.evaluate_data(extrude).geometry, 0).tessellate(8).bounds()
-    assert(even.minimum.z > -1.501 and even.minimum.z < -1.499 and even.maximum.z > 1.499)
+    assert(even.minimum.z > -3.001 and even.minimum.z < -2.999 and even.maximum.z > 2.999)
+    node_commands.set_parameter(w, 10, 1.0)
+    let whole = CadGeometry.model(w.network.evaluate_data(extrude).geometry, 0).tessellate(8).bounds()
+    assert(whole.minimum.z > -1.501 and whole.minimum.z < -1.499 and whole.maximum.z > 1.499)
+    node_commands.set_parameter(w, 10, 0.0)
     node_commands.set_parameter(w, 2, 0.0)
-    # Revolve: the rectangle about the plane's U axis straddles it: refused.
+    # Revolve: no axis picked: it says so; the rectangle (centered on the
+    # origin) about the X axis straddles it: refused; about its bottom
+    # line (entity 4, the sketch's first line), a cylinder of radius 1 and
+    # length 2.
     let sketch = w.network.require(extrude).inputs[0]
     node_commands.select_node(w, sketch)
     node_commands.add_node(w, "Revolve", 200.0, 120.0)
+    var unpicked = false
+    _ = w.network.evaluate_data(w.network.selected) catch failure:
+        unpicked = failure.message.contains("Pick the axis")
+    assert(unpicked)
+    node_commands.set_parameter(w, 5, 1.0)
     var straddles = false
     _ = w.network.evaluate_data(w.network.selected) catch failure:
         straddles = failure.message.contains("one side")
     assert(straddles)
+    node_commands.set_parameter(w, 5, 0.0)
+    node_commands.set_text(w, 1, line_axis(4))
+    assert(near_volume(CadGeometry.model(w.network.evaluate_data(w.network.selected).geometry, 0), 3.14159265 * 2.0))
     node_commands.delete_selected(w)
     # Every solid primitive cooks to its closed B-rep.
     let faces = [6, 3, 2, 2, 1]

@@ -8,8 +8,16 @@
 ##     selected, its arrow and distance box in the viewport.
 ##   Sketch on face: a Sketch after the displayed node on the selected flat
 ##     face, edited at once.
+##   Revolve (in a sketch): a Revolve after the sketch taking its picked
+##     profiles, waiting for its axis (Pick axis: a sketch line or a body
+##     edge clicked).
 ##   Fillet, Chamfer: the blend after the displayed node, on the selected
-##     edges.
+##     edges, its radius box open by its arrow.
+##   Press Pull, as Fusion's dispatches on the selection: profiles (in a
+##     sketch) make an Extrude, faces an Offset Face node, edges a Fillet;
+##     each with its value box open by its arrow.
+##   Extrude face: a Sketch on the selected flat face (its loops projected)
+##     and an Extrude of it after, as Fusion extrudes a face as a profile.
 ##   Slice: while a sketch is edited, the body in front of its plane is cut
 ##     away from view (display only; not an undo step).
 ## Each is one undo step, and says why when it does not apply.
@@ -19,6 +27,7 @@ from tools import ToolRun
 from edit_steps import insert_after_display
 import node_commands
 import sketch_node
+import tool_prompts
 
 ## Whether Finish Sketch and the sketch's Extrude apply: a sketch is edited.
 pub func in_sketch(w: Workspace) -> bool:
@@ -59,7 +68,75 @@ pub func extrude_profiles(w: Workspace) -> unit!:
         w.sketch_profiles = []
         w.selection = none
         # The distance box opens by the arrow (panels).
-        w.ask_distance = true
+        w.ask_value = true
+        w.rebuild())
+
+## Revolve from the edited sketch: after it, with its picked profiles,
+## then the axis picked (tool_prompts.pick_axis).
+pub func revolve_profiles(w: Workspace) -> unit!:
+    if not w.sketching():
+        w.notice = "Revolve takes a sketch's profiles: edit the sketch, and click inside its closed regions"
+        w.revision += 1
+        return
+    let keys = w.sketch_profiles.join(";")
+    w.perform("Revolve", func () -> unit!:
+        let node = insert_after_display(w, ToolRun("Revolve", []))
+        node.texts[0] = keys
+        w.network.picked = [node.id]
+        w.sketch_profiles = []
+        w.selection = none
+        w.rebuild())
+    let made = w.selected() else return
+    if made.kind == "Revolve":
+        tool_prompts.pick_axis(w, made.id)
+
+## Press Pull: what the selection is decides the feature, as Fusion's
+## does (profiles, then faces, then edges).
+pub func press_pull(w: Workspace) -> unit!:
+    if w.sketching():
+        extrude_profiles(w)
+        return
+    if selected_faces(w).length > 0:
+        offset_faces(w)
+        return
+    if selected_edges(w).length > 0:
+        blend_edges(w, "Fillet")
+        return
+    w.notice = "Press Pull: select a face or edges of the body, or edit a sketch and pick its profiles"
+    w.revision += 1
+
+## Offset Face of the selected faces, after the displayed node.
+pub func offset_faces(w: Workspace) -> unit!:
+    let faces = selected_faces(w)
+    if faces.length == 0:
+        w.notice = "Offset Face: select faces of the body (the Faces level) first"
+        w.revision += 1
+        return
+    w.perform("Press Pull", func () -> unit!:
+        let node = insert_after_display(w, ToolRun("Offset Face", []))
+        node.texts[0] = faces.join(";")
+        w.network.picked = [node.id]
+        w.selection = none
+        w.ask_value = true
+        w.rebuild())
+
+## Extrude face: a Sketch on the first selected face (whose cook projects
+## its loops), then an Extrude of the sketch's closed shapes; one undo step.
+pub func extrude_face(w: Workspace) -> unit!:
+    let faces = selected_faces(w)
+    if faces.length == 0:
+        w.notice = "Extrude face: select a flat face of the body (the Faces level) first"
+        w.revision += 1
+        return
+    let name = faces[0]
+    w.perform("Extrude face", func () -> unit!:
+        let sketch = insert_after_display(w, ToolRun(sketch_node.kind_name, []))
+        sketch.values[0] = float(sketch_node.face_plane)
+        sketch.texts[1] = name
+        let node = insert_after_display(w, ToolRun("Extrude", []))
+        w.network.picked = [node.id]
+        w.selection = none
+        w.ask_value = true
         w.rebuild())
 
 ## The selected faces' or edges' attribute `name` texts on the displayed
@@ -119,4 +196,5 @@ pub func blend_edges(w: Workspace, kind: str) -> unit!:
         node.texts[0] = edges.join(";")
         w.network.picked = [node.id]
         w.selection = none
+        w.ask_value = true
         w.rebuild())

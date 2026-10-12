@@ -74,8 +74,8 @@ The same luce-cad operations serve both workflows. A node runs them on its input
 | 1 | Profiles you can see, pick and extrude (done) |
 | 2 | Dimensions while drawing, and on the canvas (done) |
 | 3 | Sketch on a face from the viewport, with projection and offset (done) |
-| 4 | Extrude, Revolve and Press Pull in full |
-| 5 | Fillet and Chamfer in the viewport |
+| 4 | Extrude, Revolve and Press Pull in full (done; Thin, faces as profiles and To object revolves open) |
+| 5 | Fillet and Chamfer in the viewport (done; Full round, variable radius, chord length and G1 setback corners open) |
 | 6 | Edit CAD direct modeling |
 | 7 | Shell, Move/Copy, Combine as nodes |
 | 8 | A timeline strip and history polish |
@@ -721,7 +721,13 @@ texts, values and the result's volume checked.
 - **Projected curves purple.** They were also drawn among the fully constrained (white) lines, which covered them: now they draw only in Fusion's purple, their points too.
 - **Slice as Fusion's.** Fusion's Slice (AU class MFG121944, Jeff Strater's handout, page 10: a sliced cylinder) removes the body in front of the sketch plane and caps the cut: the cap lighter than the body, black diagonal hatch, a dark outline, the body's edges round the cut, the sketch's curves and profiles over the cap. Ours now matches: the body is sliced (luce-cad `CadModeling.sliced`, a boolean with the half-space in front, cached by the body's stamp and the plane in each cook's `Slicer`), so its B-rep edges show round the cut; the cap's loops travel to the editor as a sketch's text in the worker's report (`section`, as Project's cast does), and the editor fills the cap, hatches it (`OverlayLines.add_hatch`, spacing following the zoom) and outlines it under the sketch. The UI-thread cook does the same. A body the boolean cannot cut shows its tessellation clipped, uncapped, with the reason on the node.
 
-**Stage 4: Extrude, Revolve, Press Pull complete** (G10, G11; luce-cad 7, 8).
+**Stage 4: Extrude, Revolve, Press Pull complete** (G10, G11; luce-cad 7, 8). Done 2026-10-11 (`cad_extent_tests`; luce-cad `direct_tests`). As built, Fusion's options and defaults:
+- **Extrude** (`cad_features.luc`): Start Profile plane or Offset; Direction One side, Two sides or Symmetric (Measurement Half length, Fusion's, or Whole length); per side Extent Distance, To object (a face picked in the viewport with Pick object, kept by name, plus an Offset) or All (Flip for one side), and Taper angle in Fusion's sign (Autodesk's API reference: negative tapers in, positive out; luce-cad's is the opposite, turned over in the node). Sides of different extents are built apart and joined. Operation stays Auto by default (owner's answer 4).
+- **Revolve**: Axis Picked (Pick axis: a sketch line, construction lines too, kept by index so it follows the line; or a straight or round body edge, kept by reference) or an origin axis X, Y, Z, projected onto the sketch plane as Fusion's Project Axis; Type Partial or Full; Direction One side, Two sides or Symmetric (the angle each way, Fusion's). A Revolve made from the sketch (right-click, A, Create) asks for its axis at once. The worker gets the sketch's text for a line axis (`Network.sketch_text`).
+- **Press Pull** (right-click, S, Modify › CAD features; no key, owner's answer 3) dispatches as Fusion's: in a sketch Extrude, on faces an **Offset Face** node (`CadDirect.offset_faces`, tangent faces following), on edges a Fillet. **Extrude face** makes a Sketch on the face (its loops projected) and an Extrude of it.
+- **Handles** (`feature_handles.luc`, `handle_lines.luc`): the cook reports where they stand (through the worker, like Auto's choice), so the viewport never cooks to draw them. An arrow per Distance side from the start, a taper ring beside each (pulled out sideways: positive), an angle ring per Revolve side, Offset Face's arrow, a blend's radius arrow out of its first edge's corner (luce-cad `edge_frame`, `face_point`). Drags snap (grid steps, whole degrees; Cmd frees), one undo each; a click on a handle opens its value box; a feature made from the viewport opens it by itself.
+- Not built: Thin; Start From object; a planar face as a profile directly (Extrude face goes through a Sketch); Start offset with To object or All (said on the node); To object for Revolve; Objects To Cut; To object's Extend options; the per-tool selection filter (a Pick prompt takes what the level picks).
+- Plan as written:
 - Two sides, taper, start offset, To object, All, Thin, faces as input.
 - Revolve about a picked line.
 - Press Pull (Shift+Q) dispatching on faces and edges.
@@ -730,7 +736,14 @@ texts, values and the result's volume checked.
   - To object onto a slanted face matches a boolean of the long extrusion with that face's half-space.
   - Press Pull on a box's top face by 5 adds 5 × area; on an edge it makes a Fillet node with that edge's reference.
 
-**Stage 5: Fillet and Chamfer in the viewport** (G12; luce-cad 11, 12).
+**Stage 5: Fillet and Chamfer in the viewport** (G12; luce-cad 11, 12). Done 2026-10-11 (`cad_blend_view_tests`; luce-cad `rule_tests`, `chamfer_side_tests`). As built:
+- Edges picked at the Edges level (a second click takes the tangent chain), Fillet or Chamfer from the right-click menu, S or Modify (no Shift+F, owner's answer 3): the node after the displayed one, its radius arrow and box (`cad_blends.luc`).
+- Fillet: Type Fillet or **Rule fillet** (All edges or Between faces of two picked face sets; Rounds, Fillets or both; luce-cad `rule_edges`, found again each cook); Continuity G1 (Tangent), G2 (Curvature), G3; Tangent chain.
+- Chamfer: **Equal distance, Two distances, Distance and angle** (luce-cad `chamfered_sides`; the first distance on the face more of the picked edges lie on, Flip swaps; straight outside edges between flat faces for now, said on the node otherwise).
+- The owner's case is a regression through nodes: a cube's uprights filleted G3, then the rounded top chain filleted G1, G2, G3 and chamfered: closed, watertight tessellations of 18 faces, smaller than the cube.
+- Failures are said on the node; while a drag makes a blend fail the viewport keeps its last good result (worker and local cook), and its handles stay; released, it shows the input with the reason.
+- Not built: Full round fillet, variable radius, chord length, G1 setback corners (luce-cad limit 1), Fusion's chamfer corner types, and the Two distances / Distance and angle chamfers on curved or inside edges (luce-cad limit 2).
+- Plan as written:
 - Edges selected, Shift+F, a radius arrow and box, a double-click for the chain. Chamfer types.
 - Clear failures.
 - Builds on the separate fix for the G3 rounded-chain bug.

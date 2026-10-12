@@ -481,12 +481,71 @@ dimensions change; **Closed shapes** forgets them.
 **The viewport's right-click menu** (`viewport_menu.luc`) offers what
 applies to what is selected, or under the pointer when nothing is (it is
 selected first): in a sketch, Delete for its selection, Extrude, Finish
-Sketch and its CREATE tools; in a CAD node, Sketch on face for a selected
-flat face (a Sketch after the displayed node on that face, edited at once;
-the face's Extrude and Press Pull come with the plan's stage 4), Fillet and
-Chamfer for selected edges (the blend after the displayed node with those
-edges), else the CAD Create nodes. The A and S marking menus and the menu
-bar's Create and Modify hold the same entries (`cad_commands.luc`).
+Sketch, Revolve and its CREATE tools; in a CAD node, for a selected flat
+face Sketch on face (a Sketch after the displayed node on that face, edited
+at once), Extrude face (a Sketch on it and an Extrude of its loops) and
+Press Pull; for selected edges Press Pull, Fillet and Chamfer (the blend
+after the displayed node with those edges); else the CAD Create nodes. The
+A and S marking menus and the menu bar's Create and Modify (CAD features)
+hold the same entries (`cad_commands.luc`). No plain key is taken for them.
+
+**Extrude, as Fusion's dialog** (`cad_features.luc`). Start: Profile plane or
+an Offset along the normal. Direction: One side (a negative distance goes
+the other way), Two sides (each with its own extent and taper) or Symmetric
+(Measurement: Half length, the distance each way, Fusion's; or Whole
+length). Extent per side: Distance, **To object** (the face picked with
+Pick object, kept by name, plus an Offset past it) or **All** (through the
+body; Flip turns one side round). **Taper angle** per side follows Fusion's
+sign: positive leans the sides out, the profile growing along the
+extrusion (luce-cad's own sign is the opposite, turned over in the node).
+Start Offset works with the Distance extent; with To object or All the node
+says so. Sides of different extents are built apart and joined.
+
+**Revolve** turns its profiles about an **Axis**: Picked (Pick axis: click a
+sketch line, construction lines too, kept by its index so it follows the
+line; or a straight or round body edge, kept by reference), or the X, Y or
+Z origin axis; the axis is projected onto the sketch's plane, as Fusion's
+Project Axis does. Type Partial or Full; Direction One side (toward the
+sketch's normal; a negative angle the other way), Two sides (an angle each
+way) or Symmetric (the angle each way, Fusion's). A Revolve made from the
+sketch (right-click, A, Create) asks for its axis at once.
+
+**Press Pull** (right-click, the S menu, Modify › CAD features) dispatches
+on the selection as Fusion's does: in a sketch it is Extrude; on faces an
+**Offset Face** node (luce-cad's `CadDirect.offset_faces`: the faces moved
+along their normals, the faces round them following, tangent ones moving
+too); on edges a Fillet.
+
+**Fillet and Chamfer, as Fusion's dialogs** (`cad_blends.luc`). Select
+edges at the Edges level (a double-click takes a tangent chain), then
+Fillet or Chamfer from the right-click menu, S or Modify: the node goes in
+after the displayed one with those edges, its radius box open by its arrow.
+Fillet's **Type** is Fillet (the edges picked, kept by the faces they lie
+between) or **Rule fillet** (All edges, or Between faces of two sets picked
+with Pick faces and Pick other faces; Rounds, Fillets or both), its edges
+found again on every cook so they follow the body. Continuity is G1
+(Fusion's Tangent), G2 (Curvature) or G3; Tangent chain as Fusion's.
+Chamfer's **Type** is Equal distance, **Two distances** (Distance along the
+first face, the one more of the picked edges lie on, such as a top round its
+rim; Distance 2 along the other; Flip swaps) or **Distance and angle**
+(leaving the first face at Angle); the last two on straight outside edges
+between flat faces for now, said on the node otherwise. In Edit CAD a
+Fillet step blends the edges picked; the rule is the node's.
+
+**Handles** (`feature_handles.luc`). The selected Extrude, Revolve, Offset
+Face, Fillet or Chamfer shows Fusion's manipulators where its cook placed
+them (`handle_lines.luc`; the cook reports them through the worker like
+Auto's choice, so the viewport never cooks to draw them): an arrow per
+Distance side of an Extrude, from its start along the normal, with a taper
+ring beside its tip (pulled sideways it sets the angle, out positive); an
+angle ring round a Revolve's axis per side; Offset Face's arrow on the
+face; a blend's radius arrow on its first edge, out of the corner. A drag
+sets the value (lengths snapped to the grid's 1, 2, 5 × 10ⁿ, angles to whole
+degrees; Cmd frees them), one undo step; a click on a handle opens its value
+box there, which a feature just made from the viewport opens by itself.
+While a drag fails (a radius too large) the handles stay where the last
+good cook put them, the node says why, and the viewport keeps the last good
+result.
 
 **Sketches on faces.** Sketch on face makes a Sketch whose first cook
 projects the face's loops, linked (purple): an Offset of a loop (one relation,

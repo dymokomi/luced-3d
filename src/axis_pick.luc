@@ -1,0 +1,99 @@
+## Pick axis's sketch lines: while a Revolve waits for its axis
+## (tool_prompts.pick_axis), its sketch's lines, construction ones too,
+## are drawn over the body; the one under the pointer is lit, and a click on
+## it is the axis (kept by its index, so it follows the line as the sketch
+## changes). A click elsewhere falls through to the body's edges.
+from luce_cad.sketch import CadSketch
+from luce_gpu.gpu import Color
+from luce_ui.ui import Event, Painter, Point
+from luce_window.input import EventKind
+from workspace import Workspace
+from sketch_frames import FrameCache
+from sketch_node import SketchFrame
+import sketch_node
+import tool_prompts
+import cad_features
+import view_projection
+import theme
+
+## How near a line a click takes it, in points.
+let reach = 8.0
+
+pub class AxisPick:
+    let w: Workspace
+    let frames: FrameCache
+    ## The line under the pointer (an entity of the sketch), -1 none.
+    pub var hover: int = -1
+
+    pub func init(self, w: Workspace):
+        self.w = w
+        self.frames = FrameCache()
+
+    pub func active(self) -> bool:
+        let prompt = self.w.prompt else return false
+        return prompt.label == tool_prompts.axis_label
+
+    ## The Revolve's sketch, solved, and its plane; none without one.
+    func sketch(self) -> (CadSketch, SketchFrame)?!:
+        let prompt = self.w.prompt else return none
+        let input = self.w.network.find(prompt.input) else return none
+        if input.kind != sketch_node.kind_name:
+            return none
+        let s = CadSketch.parse(input.texts[0])
+        _ = s.solve()
+        return (s, self.frames.frame(input))
+
+    ## The ends of every line on screen: [entity, ax, ay, bx, by] each.
+    func lines(self, width: float, height: float) -> list[list[float]]!:
+        let found: list[list[float]] = []
+        let (s, f) = self.sketch() else return found
+        for at in 0..<s.entity_count():
+            if s.kind(at) != 1:
+                continue
+            let a = view_projection.project(self.w, f.at(s.x(s.part(at, 0)), s.y(s.part(at, 0))), width, height)
+            let b = view_projection.project(self.w, f.at(s.x(s.part(at, 1)), s.y(s.part(at, 1))), width, height)
+            if a[2] >= 0.0 and b[2] >= 0.0:
+                found.append([float(at), a[0], a[1], b[0], b[1]])
+        return found
+
+    ## The line near (`x`, `y`), or -1.
+    func line_at(self, x: float, y: float, width: float, height: float) -> int!:
+        var best = -1
+        var nearest = reach
+        for line in self.lines(width, height):
+            let gap = view_projection.segment_distance(x, y, [line[1], line[2]], [line[3], line[4]])
+            if gap <= nearest:
+                nearest = gap
+                best = int(line[0])
+        return best
+
+    ## Pointer events while picking; whether one was used (a click on no
+    ## line is the selection's: a body edge).
+    pub func event(self, event: Event, width: float, height: float) -> bool!:
+        if not self.active() or event.alt:
+            return false
+        if event.kind == EventKind.pointer_moved:
+            let before = self.hover
+            self.hover = self.line_at(event.x, event.y, width, height)
+            return before != self.hover
+        if event.kind != EventKind.pointer_down or event.button != 0 or not event.inside:
+            return false
+        let line = self.line_at(event.x, event.y, width, height)
+        if line < 0:
+            return false
+        let prompt = self.w.prompt else return false
+        let node = self.w.network.find(prompt.node) else return false
+        node.texts[cad_features.axis_text] = cad_features.line_axis(line)
+        node.values[cad_features.axis_slot] = 0.0
+        self.hover = -1
+        tool_prompts.finish_pick(self.w, node.id)
+        return true
+
+    ## The sketch's lines, the hovered one lit.
+    pub func draw(self, p: Painter, width: float, height: float) -> unit!:
+        if not self.active():
+            return
+        for line in self.lines(width, height):
+            let lit = int(line[0]) == self.hover
+            let color: Color = theme.accent() if lit else theme.grey(210.0)
+            p.line(Point(line[1], line[2]), Point(line[3], line[4]), 3.0 if lit else 1.5, color)

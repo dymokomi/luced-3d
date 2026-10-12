@@ -28,6 +28,7 @@ from sketch_commands import SketchDimension
 import units
 from angles import radians, degrees
 import tool_prompts
+import cad_features
 
 pub class Inspector:
     ## A path row's Browse: pick a file for text slot `slot`.
@@ -172,6 +173,12 @@ pub class Inspector:
             if let node = self.workspace.selected(): tool_prompts.pick_face(self.workspace, node.id)
         elif role == "pick_profiles":
             if let node = self.workspace.selected(): tool_prompts.pick_profiles(self.workspace, node.id)
+        elif role == "pick_object" or role == "pick_object_two":
+            if let node = self.workspace.selected(): tool_prompts.pick_object(self.workspace, node.id, role == "pick_object_two")
+        elif role == "pick_axis":
+            if let node = self.workspace.selected(): tool_prompts.pick_axis(self.workspace, node.id)
+        elif role == "pick_faces" or role == "pick_other_faces" or role == "pick_offset_faces":
+            if let node = self.workspace.selected(): tool_prompts.pick_faces(self.workspace, node.id, 2 if role == "pick_other_faces" else (0 if role == "pick_offset_faces" else 1))
         elif role == "reselect":
             if let node = self.workspace.selected(): tool_prompts.reselect(self.workspace, node.id)
         elif role == "keep_ids":
@@ -247,12 +254,45 @@ pub class Inspector:
                                                            doc = "Click the sketch's regions to take (again to leave one out); Enter finishes."))
             self.add(specs, "all_profiles", ParameterSpec(name = "all_profiles", label = "Closed shapes", kind = ParameterKind.button,
                                                           doc = "Forget the picked profiles: take the sketch's closed shapes."))
+        # Extrude's To object faces, Revolve's picked axis, Offset Face's
+        # faces: kept by name, shown, picked in the viewport.
+        if kind == "Extrude":
+            self.add(specs, "object", ParameterSpec(name = "object", label = "Object", kind = ParameterKind.info, hide_when = "{ extent != 1 }",
+                                                    doc = "The face the extrusion runs to (To object), kept by its name so it stays that face as the body changes."))
+            self.add(specs, "pick_object", ParameterSpec(name = "pick_object", label = "Pick object", kind = ParameterKind.button, hide_when = "{ extent != 1 }",
+                                                         doc = "Show the body and click the face to extrude to."))
+            self.add(specs, "object_two", ParameterSpec(name = "object_two", label = "Side 2 object", kind = ParameterKind.info, hide_when = "{ direction != 1 } { side_2_extent != 1 }",
+                                                        doc = "The face the second side runs to (To object)."))
+            self.add(specs, "pick_object_two", ParameterSpec(name = "pick_object_two", label = "Pick side 2 object", kind = ParameterKind.button, hide_when = "{ direction != 1 } { side_2_extent != 1 }",
+                                                             doc = "Show the body and click the face the second side extrudes to."))
+        if kind == "Revolve":
+            self.add(specs, "axis", ParameterSpec(name = "axis_picked", label = "Picked axis", kind = ParameterKind.info, hide_when = "{ axis != 0 }",
+                                                  doc = "The sketch line or body edge the profiles turn about (projected onto the sketch's plane)."))
+            self.add(specs, "pick_axis", ParameterSpec(name = "pick_axis", label = "Pick axis", kind = ParameterKind.button, hide_when = "{ axis != 0 }",
+                                                       doc = "Click a line of the sketch, or a straight or round edge of the body."))
+        if kind == "Offset Face":
+            self.add(specs, "faces", ParameterSpec(name = "faces", label = "Faces", kind = ParameterKind.info,
+                                                   doc = "The faces moved, kept by their names (Press Pull on faces of the body)."))
+            self.add(specs, "pick_offset_faces", ParameterSpec(name = "pick_offset_faces", label = "Pick faces", kind = ParameterKind.button,
+                                                               doc = "Show the body and pick the faces to move (Shift adds); Enter accepts."))
+        if kind == "Fillet":
+            let between = "{ type == 0 } { rule == 0 }"
+            self.add(specs, "rule_faces", ParameterSpec(name = "rule_faces", label = "Faces", kind = ParameterKind.info, hide_when = between,
+                                                        doc = "Rule fillet, Between faces: the first set of faces, kept by their names."))
+            self.add(specs, "pick_faces", ParameterSpec(name = "pick_faces", label = "Pick faces", kind = ParameterKind.button, hide_when = between,
+                                                        doc = "Show the body and pick the first set of faces (Shift adds); Enter accepts."))
+            self.add(specs, "rule_others", ParameterSpec(name = "rule_others", label = "Other faces", kind = ParameterKind.info, hide_when = between,
+                                                         doc = "Rule fillet, Between faces: the second set (none: any face next to the first set)."))
+            self.add(specs, "pick_other_faces", ParameterSpec(name = "pick_other_faces", label = "Pick other faces", kind = ParameterKind.button, hide_when = between,
+                                                              doc = "Show the body and pick the second set of faces (Shift adds); Enter accepts."))
         if kind in ["Fillet", "Chamfer"]:
-            self.add(specs, "edges", ParameterSpec(name = "edges", label = "Edges", kind = ParameterKind.info,
+            # A Rule fillet's edges come from its rule.
+            let ruled = "{ type == 1 }" if kind == "Fillet" else ""
+            self.add(specs, "edges", ParameterSpec(name = "edges", label = "Edges", kind = ParameterKind.info, hide_when = ruled,
                                                    doc = "The edges to blend, remembered by the faces they lie between, so they stay the same edges when anything upstream changes. None picked: every straight convex edge between flat faces."))
-            self.add(specs, "pick_edges", ParameterSpec(name = "pick_edges", label = "Pick edges", kind = ParameterKind.button, join = true,
+            self.add(specs, "pick_edges", ParameterSpec(name = "pick_edges", label = "Pick edges", kind = ParameterKind.button, join = true, hide_when = ruled,
                                                         doc = "Show the input body and pick the edges to blend (Enter accepts). Hole rims can be picked too."))
-            self.add(specs, "all_edges", ParameterSpec(name = "all_edges", label = "All edges", kind = ParameterKind.button,
+            self.add(specs, "all_edges", ParameterSpec(name = "all_edges", label = "All edges", kind = ParameterKind.button, hide_when = ruled,
                                                        doc = "Forget the picked edges: blend every straight convex edge between flat faces."))
         # A sketch's dimensions, each a row in the document's unit (an
         # angle in degrees); its constraint is the row's slot.
@@ -370,6 +410,15 @@ pub class Inspector:
                 self.parameters.set_text(index, node.texts[1] if node.texts[1] != "" else "None picked")
             elif role == "profiles":
                 self.parameters.set_text(index, cad_nodes.profiles_summary(node.texts[0]))
+            elif role == "object" or role == "object_two":
+                let picked = node.texts[cad_features.face_two_text if role == "object_two" else cad_features.face_text]
+                self.parameters.set_text(index, picked if picked != "" else "None picked")
+            elif role == "axis":
+                self.parameters.set_text(index, cad_features.axis_summary(node.texts[cad_features.axis_text]))
+            elif role == "faces" or role == "rule_faces" or role == "rule_others":
+                let text = node.texts[0 if role == "faces" else (1 if role == "rule_faces" else 2)]
+                let count = text.split(";").length
+                self.parameters.set_text(index, ("Any face" if role == "rule_others" else "None picked") if text.trim() == "" else ("1 face" if count == 1 else f"{count} faces"))
             elif role == "clear":
                 self.parameters.set_enabled(index, node.edits.length > 0)
             elif role == "keep_ids":

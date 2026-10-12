@@ -1,0 +1,320 @@
+## Stage 4 of the Fusion CAD plan (docs/research/FUSION-CAD-UX.md):
+## Extrude's directions, extents, taper and start; Revolve about a picked
+## axis, partial, two sided or symmetric; Press Pull dispatching on faces
+## and edges; and the features' handles in the viewport (arrows per side,
+## a taper ring, an angle ring), each a node in the chain.
+from app import Luce3D
+from workspace import Workspace
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_cad.sketch import CadSketch
+from geometry_data import GeometryData
+from luce_3d.graphics import Vector3
+from luce_geocore.geocore import Mesh
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+from view_projection import project
+from sketch_support import render
+import node_commands
+import selection_commands
+import sketch_commands
+import cad_features
+import handle_lines
+from luce_std import math
+
+pub func cad_extent_tests() -> unit!:
+    extrude_extents()
+    to_object_and_all()
+    revolve_axes()
+    press_pull()
+    handles_in_viewport()
+    print("PASS CAD extents: Extrude one side, two sides, symmetric (half and whole length), Fusion's taper sign (a frustum), start offset, To object (a face picked by name, with an offset), All (flipped, cut through); Revolve about an origin axis, a sketch line and a body edge, partial, two sided, symmetric and full; Press Pull on a face (Offset Face, area × distance) and on an edge (a Fillet); arrows per side, a taper ring and an angle ring dragged, a click opening the value box")
+
+## The tessellated volume of `model`.
+func volume(model: CadModel) -> float!:
+    let mesh = model.tessellate(32)
+    var total = 0.0
+    for triangle in 0..<mesh.index_count() // 3:
+        let a = mesh.vertex(mesh.index(triangle * 3)).position
+        let b = mesh.vertex(mesh.index(triangle * 3 + 1)).position
+        let c = mesh.vertex(mesh.index(triangle * 3 + 2)).position
+        total += a.dot(b.cross(c)) / 6.0
+    return total
+
+## Whether node `id`'s body has volume `expected` (to 0.3%).
+func volume_is(w: Workspace, id: int, expected: float) -> bool!:
+    let got = volume(body(w, id))
+    if math.abs(got - expected) > expected * 0.003: print(f"volume {got}, expected {expected}")
+    return math.abs(got - expected) <= expected * 0.003
+
+func body(w: Workspace, id: int) -> CadModel!:
+    return CadGeometry.model(w.network.evaluate_data(id).geometry, 0)
+
+## A CAD node holding a Sketch on XY with a `size` square centered on
+## the origin and an Extrude after it; the Extrude's id.
+func square_extrude(w: Workspace, size: float) -> int!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Sketch", 0.0, 0.0)
+    node_commands.set_parameter(w, 0, 0.0)
+    node_commands.set_text(w, 0, sketch_commands.rectangle_text(0.0, 0.0, size, size))
+    node_commands.add_node(w, "Extrude", 0.0, 120.0)
+    return w.network.selected
+
+## One side, two sides, symmetric, taper and start offset of a 10 mm square.
+func extrude_extents() -> unit!:
+    let w = Workspace()
+    let extrude = square_extrude(w, 10.0)
+    assert(volume_is(w, extrude, 1000.0))
+    # Fusion's taper: positive leans out, the top square 10 + 2 × 10 tan 5°.
+    node_commands.set_parameter(w, cad_features.taper_slot, 5.0)
+    let top = 10.0 + 2.0 * 10.0 * math.tan(5.0 * math.pi / 180.0)
+    assert(volume_is(w, extrude, 10.0 / 3.0 * (100.0 + top * top + 10.0 * top)))
+    let bounds = body(w, extrude).tessellate(8).bounds()
+    assert(bounds.maximum.x > 5.0 + 0.8)
+    # Negative: in.
+    node_commands.set_parameter(w, cad_features.taper_slot, -5.0)
+    let small = 10.0 - 2.0 * 10.0 * math.tan(5.0 * math.pi / 180.0)
+    assert(volume_is(w, extrude, 10.0 / 3.0 * (100.0 + small * small + 10.0 * small)))
+    node_commands.set_parameter(w, cad_features.taper_slot, 0.0)
+    # Two sides: 10 up, 5 down.
+    node_commands.set_parameter(w, cad_features.direction_slot, 1.0)
+    node_commands.set_parameter(w, cad_features.distance_two_slot, 5.0)
+    assert(volume_is(w, extrude, 1500.0))
+    let two = body(w, extrude).tessellate(8).bounds()
+    assert(math.abs(two.minimum.z + 5.0) < 1e-6 and math.abs(two.maximum.z - 10.0) < 1e-6)
+    # Symmetric, half length: 10 each way; whole length: 5 each way.
+    node_commands.set_parameter(w, cad_features.direction_slot, 2.0)
+    assert(volume_is(w, extrude, 2000.0))
+    node_commands.set_parameter(w, cad_features.measurement_slot, 1.0)
+    assert(volume_is(w, extrude, 1000.0))
+    node_commands.set_parameter(w, cad_features.measurement_slot, 0.0)
+    node_commands.set_parameter(w, cad_features.direction_slot, 0.0)
+    # Start offset 3: from z 3 to 13.
+    node_commands.set_parameter(w, cad_features.start_slot, 1.0)
+    node_commands.set_parameter(w, cad_features.start_offset_slot, 3.0)
+    let moved = body(w, extrude).tessellate(8).bounds()
+    assert(math.abs(moved.minimum.z - 3.0) < 1e-6 and math.abs(moved.maximum.z - 13.0) < 1e-6)
+    # The handles: an arrow from the start and its taper ring.
+    let handles = handle_lines.parse(w.network.require(extrude).handles)
+    assert(handles.length == 2 and handles[0].kind == "arrow" and handles[1].kind == "taper" and math.abs(handles[0].foot.z - 3.0) < 1e-9)
+
+## The face of `model` whose outward normal is `normal`: its name.
+func face_facing(model: CadModel, normal: Vector3) -> str!:
+    for face in 0..<model.face_count():
+        let name = CadModeling.face_name_of(model, face)
+        let at = CadModeling.face_point(model, name)
+        if at.found and at.normal.dot(normal) > 0.999:
+            return name
+    return ""
+
+## A 20 mm box with a 4 mm square sketched 30 below its middle on the
+## ground plane: To object its bottom face (and an offset), All through it
+## (flipped, cut).
+func to_object_and_all() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let box = w.network.selected
+    let bottom = face_facing(body(w, box), Vector3(0.0, -1.0, 0.0))
+    assert(bottom != "")
+    node_commands.add_node(w, "Sketch", 0.0, 120.0)
+    node_commands.set_parameter(w, 0, 1.0)
+    node_commands.set_parameter(w, 1, -30.0)
+    node_commands.set_text(w, 0, sketch_commands.rectangle_text(0.0, 0.0, 4.0, 4.0))
+    node_commands.add_node(w, "Extrude", 0.0, 240.0)
+    let extrude = w.network.selected
+    # To object with no face picked says so.
+    node_commands.set_parameter(w, cad_features.extent_slot, 1.0)
+    var asked = false
+    _ = w.network.evaluate_data(extrude) catch failure:
+        asked = failure.message.contains("pick the face")
+    assert(asked)
+    node_commands.set_text(w, cad_features.face_text, bottom)
+    # From y -30 up to the bottom (y -10), joined: 8000 + 16 × 20.
+    assert(volume_is(w, extrude, 8000.0 + 320.0) and w.network.require(extrude).automatic == "Join")
+    node_commands.set_parameter(w, cad_features.offset_slot, 5.0)
+    # 5 past the face, inside the box: the same body.
+    assert(volume_is(w, extrude, 8000.0 + 320.0))
+    node_commands.set_parameter(w, cad_features.offset_slot, 0.0)
+    # All, cut: a square hole through the box.
+    node_commands.set_parameter(w, cad_features.extent_slot, 2.0)
+    node_commands.set_parameter(w, cad_features.operation_slot, 3.0)
+    assert(volume_is(w, extrude, 8000.0 - 16.0 * 20.0))
+    # Flipped, All runs away from the box: nothing to cut, the box stays.
+    node_commands.set_parameter(w, cad_features.flip_slot, 1.0)
+    let kept = w.network.evaluate_data(extrude) catch failure:
+        recover GeometryData()
+    assert(CadGeometry.model_count(kept.geometry) == 0 or math.abs(volume(CadGeometry.model(kept.geometry, 0)) - 8000.0) < 24.0)
+
+## Revolve of a 2 × 1 rectangle 2 to 4 out along X on XY: about the Y
+## axis, a sketch line along it and a body edge; partial, two sided,
+## symmetric, full.
+func revolve_axes() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Sketch", 0.0, 0.0)
+    node_commands.set_parameter(w, 0, 0.0)
+    node_commands.set_text(w, 0, sketch_commands.rectangle_text(3.0, 0.5, 2.0, 1.0))
+    node_commands.add_node(w, "Revolve", 0.0, 120.0)
+    let revolve = w.network.selected
+    node_commands.set_parameter(w, cad_features.axis_slot, 2.0)
+    let full = math.pi * (16.0 - 4.0)
+    assert(volume_is(w, revolve, full))
+    # Partial 90°, one side; symmetric 45° each way; two sides 30 and 60.
+    node_commands.set_parameter(w, cad_features.angle_slot, 90.0)
+    assert(volume_is(w, revolve, full * 0.25))
+    node_commands.set_parameter(w, cad_features.revolve_direction_slot, 2.0)
+    node_commands.set_parameter(w, cad_features.angle_slot, 45.0)
+    assert(volume_is(w, revolve, full * 0.25))
+    node_commands.set_parameter(w, cad_features.revolve_direction_slot, 1.0)
+    node_commands.set_parameter(w, cad_features.angle_slot, 30.0)
+    node_commands.set_parameter(w, cad_features.angle_two_slot, 60.0)
+    assert(volume_is(w, revolve, full * 0.25))
+    # Its handles: two angle rings.
+    let rings = handle_lines.parse(w.network.require(revolve).handles)
+    assert(rings.length == 2 and rings[0].kind == "angle" and rings[1].scale < 0.0)
+    # Full: all the way round, no ring.
+    node_commands.set_parameter(w, cad_features.revolve_type_slot, 1.0)
+    assert(volume_is(w, revolve, full) and w.network.require(revolve).handles == "")
+    node_commands.set_parameter(w, cad_features.revolve_type_slot, 0.0)
+    node_commands.set_parameter(w, cad_features.revolve_direction_slot, 0.0)
+    node_commands.set_parameter(w, cad_features.angle_slot, 360.0)
+    # A construction line along the Y axis as the axis (picked: line 9).
+    let sketch = w.network.require(revolve).inputs[0]
+    node_commands.select_node(w, sketch)
+    let s = CadSketch.parse(w.network.require(sketch).texts[0])
+    _ = s.add_line(s.add_point(0.0, -1.0), s.add_point(0.0, 2.0), construction = true)
+    node_commands.set_text(w, 0, s.text())
+    node_commands.select_node(w, revolve)
+    node_commands.set_parameter(w, cad_features.axis_slot, 0.0)
+    node_commands.set_text(w, cad_features.axis_text, cad_features.line_axis(s.entity_count() - 1))
+    assert(volume_is(w, revolve, full))
+    # Moving the line moves the axis: at x = 1, radii 1 to 3.
+    node_commands.select_node(w, sketch)
+    s.place(s.part(s.entity_count() - 1, 0), 1.0, -1.0)
+    s.place(s.part(s.entity_count() - 1, 1), 1.0, 2.0)
+    node_commands.set_text(w, 0, s.text())
+    node_commands.select_node(w, revolve)
+    assert(volume_is(w, revolve, math.pi * (9.0 - 1.0)))
+
+## Press Pull on a 20 mm box: its top face selected, Offset Face 5 up
+## (8000 + 400 × 5); an edge selected, a Fillet with that edge.
+func press_pull() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let box = w.network.selected
+    render(editor)
+    selection_commands.set_mode(w, w.level_of(2))
+    let mesh = w.geometry else trap("no pick mesh")
+    let top = face_at_height(mesh, 10.0)
+    assert(top >= 0)
+    selection_commands.choose_component(w, top, false)
+    editor.panels.actions.refresh()
+    assert(editor.panels.actions.press_pull.is_enabled() and editor.panels.actions.offset_face.is_enabled())
+    editor.panels.actions.press_pull.trigger()
+    let offset = w.network.require(w.network.selected)
+    assert(offset.kind == "Offset Face" and offset.inputs[0] == box and offset.texts[0] != "")
+    node_commands.set_parameter(w, 0, 5.0)
+    assert(volume_is(w, offset.id, 10000.0))
+    let arrow = handle_lines.parse(w.network.require(offset.id).handles)
+    assert(arrow.length == 1 and arrow[0].way.y > 0.999 and math.abs(arrow[0].foot.y - 10.0) < 1e-6)
+    # An edge of the box (displayed again): Press Pull makes a Fillet.
+    node_commands.select_node(w, box)
+    node_commands.display_selected(w)
+    render(editor)
+    selection_commands.set_mode(w, w.level_of(4))
+    let edges = w.geometry else trap("no edges")
+    let tag = edges.find_attribute("cad_edge_reference", 4)
+    var rim = -1
+    for edge in 0..<edges.edge_count():
+        if rim < 0 and edges.attribute_text(tag, edge) != "":
+            rim = edge
+    assert(rim >= 0)
+    selection_commands.choose_component(w, rim, false)
+    editor.panels.actions.refresh()
+    editor.panels.actions.press_pull.trigger()
+    let fillet = w.network.require(w.network.selected)
+    assert(fillet.kind == "Fillet" and fillet.texts[0] != "" and body(w, fillet.id).face_count() == 7)
+    editor.close()
+
+## The pick mesh's face whose every point is at height `y`, or -1.
+func face_at_height(mesh: Mesh, y: float) -> int!:
+    for face in 0..<mesh.face_count():
+        var level = true
+        for corner in 0..<mesh.face_size(face):
+            level = level and math.abs(mesh.point(mesh.face_point(face, corner)).y - y) < 1e-6
+        if level:
+            return face
+    return -1
+
+## Drag from screen point `first` to `last` in the viewport (`bounds` origin).
+func drag(editor: Luce3D, first: list[float], last: list[float]) -> unit!:
+    let bounds = editor.panels.view.layout().bounds()
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + first[0], y = bounds.y + first[1]))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = bounds.x + first[0], y = bounds.y + first[1], button = 0))
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + (first[0] + last[0]) * 0.5, y = bounds.y + (first[1] + last[1]) * 0.5))
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + last[0], y = bounds.y + last[1]))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = bounds.x + last[0], y = bounds.y + last[1], button = 0))
+
+## Two sided Extrude: its side two arrow dragged sets Side 2 distance;
+## its taper ring pulled out sets a positive taper; a click on the arrow
+## opens its value box.
+func handles_in_viewport() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    w.snaps.flags[1] = false
+    let extrude = square_extrude(w, 10.0)
+    node_commands.display_selected(w)
+    node_commands.set_parameter(w, cad_features.direction_slot, 1.0)
+    w.view.yaw = 0.6
+    w.view.pitch = 0.3
+    w.view.distance = 80.0
+    w.view.target = Vector3()
+    w.view.update_camera()
+    render(editor)
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    assert(view.arrow.active())
+    let handles = handle_lines.parse(w.network.require(extrude).handles)
+    assert(handles.length == 4)
+    # Side two's arrow: from 10 down to 20 down (the grid snaps at this zoom).
+    let tip = view.arrow.tip(bounds.width, bounds.height, cad_features.distance_two_slot) else trap("no side two arrow")
+    let foot = handles[2].foot
+    let to = project(w, foot.add(Vector3(0.0, 0.0, -20.0)), bounds.width, bounds.height)
+    drag(editor, tip, to)
+    assert(math.abs(w.network.require(extrude).values[cad_features.distance_two_slot] - 20.0) < 1e-6, f"{w.network.require(extrude).values[cad_features.distance_two_slot]}")
+    assert(volume_is(w, extrude, 3000.0))
+    render(editor)
+    # The taper ring pulled out sideways: a positive (outward) taper.
+    let ring = view.arrow.tip(bounds.width, bounds.height, cad_features.taper_slot) else trap("no taper ring")
+    let lens = w.view.camera.projection(bounds.width / bounds.height)
+    let out = project(w, Vector3(0.0, 0.0, 10.0).add(lens.right.multiply_scalar(12.0)), bounds.width, bounds.height)
+    let start = project(w, Vector3(0.0, 0.0, 10.0), bounds.width, bounds.height)
+    drag(editor, ring, [ring[0] + (out[0] - start[0]) * 0.3, ring[1] + (out[1] - start[1]) * 0.3])
+    let taper = w.network.require(extrude).values[cad_features.taper_slot]
+    assert(taper > 1.0 and taper < 80.0, f"{taper}")
+    # A click on side one's arrow opens its value box: 12 typed.
+    render(editor)
+    let one = view.arrow.tip(bounds.width, bounds.height, cad_features.distance_slot) else trap("no arrow")
+    for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+        editor.app.dispatch(Event(kind = kind, x = bounds.x + one[0], y = bounds.y + one[1], button = 0))
+    render(editor)
+    assert(editor.panels.sketch_value.is_open())
+    for c in [49, 50]:
+        editor.app.dispatch(Event(kind = EventKind.text_input, codepoint = c))
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    assert(math.abs(w.network.require(extrude).values[cad_features.distance_slot] - 12.0) < 1e-6)
+    editor.close()

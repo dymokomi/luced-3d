@@ -40,6 +40,9 @@ class Computation:
     let cooks: map[int, int]
     ## Failures met while cooking this request, with node names.
     let failures: map[int, str]
+    ## The stamp of each shown node's last good cook: while a drag makes it
+    ## fail, the viewport keeps that (Fusion's last good preview).
+    let last_good: map[int, int]
     var preview_warning: str = ""
     var recipes: int = 0
     ## Meshes published under keys the UI may hold, kept alive so an identity
@@ -59,6 +62,7 @@ class Computation:
         self.sources = SourceCache()
         self.cooks = {}
         self.failures = {}
+        self.last_good = {}
         self.meshes = []
         self.keys = []
 
@@ -100,9 +104,11 @@ class Computation:
                     error(failure.code, failure.message)
                 if not item.outside:
                     notice = failure.message
-                    if self.publish_fallback(item.node, item.matrix):
-                        notice = f"{failure.message} (the viewport shows its input)"
+                    let shown = self.publish_fallback(item.node, item.matrix)
+                    if shown != "":
+                        notice = f"{failure.message} (the viewport {shown})"
                 continue
+            self.last_good[item.node.id] = item.node.stamp
             self.channel.progress(item.node.id, 0.95, "Preparing viewport")
             self.publish(item.node, self.slicer.shown(graph, item.node, data), item.matrix, slice_view.salt(graph, item.node))
         if let node = graph.find(graph.selected):
@@ -219,7 +225,7 @@ class Computation:
         else:
             let progress = func (fraction: float) -> unit!:
                 self.channel.progress(node.id, fraction, "Tessellating" if node.kind == "Tessellate" else (script_cook.phase(fraction) if node.kind == script_cook.kind_name else "Computing"))
-            result = node.compute(input, second, progress, self.sources, [graph.frame, graph.time(), graph.fps], input_keys(graph, node), graph.direct_children(node)) catch failure:
+            result = node.compute(input, second, progress, self.sources, [graph.frame, graph.time(), graph.fps], input_keys(graph, node), graph.direct_children(node), graph.sketch_text(node)) catch failure:
                 return self.own(node, failure.code, failure.message)
             if node.kind == "Render":
                 result = graph.render_result(node, result) catch failure:
@@ -310,6 +316,10 @@ class Computation:
                     pending.append(child.id)
             for source in node_paths.dependencies(self.graph.nodes, node):
                 pending.append(source.id)
+        # Each shown node's last good cook, kept for a drag that fails.
+        for item in view_items(self.graph):
+            if let stamp = self.last_good[item.node.id]:
+                result.insert(stamp)
         return result
 
     func outcomes(self) -> list[Outcome]:
@@ -323,6 +333,7 @@ class Computation:
             var console = ""
             var sketch_state = ""
             var automatic = ""
+            var handles = ""
             if let entry = self.store.peek(node.stamp):
                 cooked = node.stamp
                 summary = entry.summary
@@ -331,6 +342,7 @@ class Computation:
                 console = entry.console
                 sketch_state = entry.sketch_state
                 automatic = entry.automatic
+                handles = entry.handles
                 if entry.failure != "":
                     failure = f"{node.name}: {entry.failure}"
             elif failure != "":
@@ -340,6 +352,7 @@ class Computation:
             outcome.console = console
             outcome.sketch_state = sketch_state
             outcome.automatic = automatic
+            outcome.handles = handles
             result.append(outcome)
         return result
 
@@ -379,19 +392,27 @@ class Computation:
         self.publish_curves(node, data, matrix, placement)
         self.publish_cad_hulls(node, data, matrix, placement)
 
-    ## A failed node's place in the viewport: the nearest node upstream
-    ## that cooked (what the failing feature started from), published as
-    ## that node's, so the view never goes blank; false when none did.
-    func publish_fallback(self, node: Node, matrix: Matrix4) -> bool!:
+    ## A failed node's place in the viewport, so the view never goes blank:
+    ## while a drag makes it fail, its last good cook (kept); else the
+    ## nearest node upstream that cooked (what the failing feature started
+    ## from), published as that node's. What the viewport shows ("keeps its
+    ## last good result", "shows its input"), "" nothing.
+    func publish_fallback(self, node: Node, matrix: Matrix4) -> str!:
+        if self.graph.gesture:
+            if let stamp = self.last_good[node.id]:
+                if let entry = self.store.peek(stamp):
+                    if let data = entry.data:
+                        self.publish(node, data, matrix)
+                        return "keeps its last good result"
         for id in self.graph.upstream_chain(node.id):
-            let upstream = self.graph.find(id) else return false
+            let upstream = self.graph.find(id) else return ""
             let data = self.evaluate(upstream) catch failure:
                 if failure.message == "Computation superseded":
                     error(failure.code, failure.message)
                 continue
             self.publish(upstream, data, matrix)
-            return true
-        return false
+            return "shows its input"
+        return ""
 
     ## Overlay lines under `key`: the CAD edges (as wires and patch borders)
     ## with `edges`, the normal guides with `normals`.

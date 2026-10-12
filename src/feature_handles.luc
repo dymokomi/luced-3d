@@ -1,0 +1,313 @@
+## The selected CAD feature's handles in the viewport, Fusion's
+## manipulators, where its cook put them (handle_lines.luc, Node.handles):
+## Extrude's arrow per side and its taper rings, Revolve's angle rings, the
+## arrow of an Offset Face (Press Pull on a face) and of a Fillet's or
+## Chamfer's radius. Dragging one sets its value: an arrow's tip where the
+## pointer's ray passes nearest its line, snapped to the grid's 1, 2 or
+## 5 × 10ⁿ for the zoom; a taper ring's angle by how far it is pulled
+## sideways (out: positive, Fusion's sign); an angle ring round its axis;
+## whole degrees (Cmd or Ctrl drags freely). One undo step each; the worker
+## cooks each step as the parameter panel's drags do. A click on a handle
+## without dragging opens its value box there (panels.luc), the panel's
+## row, the box and the handle being one value.
+from luce_ui.ui import Painter, Point, Event
+from luce_gpu.gpu import Rect, Color
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3
+from workspace import Workspace
+from node import Node
+from handle_lines import HandleLine
+from snapping import grid_step, stepped
+from angles import radians, degrees
+import handle_lines
+import node_catalog
+import view_projection
+import theme
+from luce_std import math
+
+## How near a handle a press takes it, in points.
+let reach = 12.0
+## How far a taper ring stands beside its arrow, in points.
+let taper_gap = 36.0
+
+pub class FeatureHandles:
+    let w: Workspace
+    ## The handles as last parsed, and the text they came from.
+    var parsed: list[HandleLine]
+    var parsed_from: str = ""
+    ## The handle under the pointer or dragged (an index into parsed), -1
+    ## none.
+    pub var hovered: int = -1
+    pub var dragging: bool = false
+    ## Whether the drag moved (a press and release in place is a click).
+    var moved: bool = false
+    var pressed_x: float = 0.0
+    var pressed_y: float = 0.0
+    ## A handle clicked: its value box is wanted (panels reads and clears).
+    pub var clicked: int = -1
+
+    pub func init(self, w: Workspace):
+        self.w = w
+        self.parsed = []
+
+    ## The selected feature, when its handles show: enabled, no prompt open.
+    func feature(self) -> Node?:
+        let node = self.w.selected() else return none
+        if not (node.kind in ["Extrude", "Revolve", "Offset Face", "Fillet", "Chamfer"]) or not node.enabled or self.w.prompt != none:
+            return none
+        return node
+
+    ## Its handles, parsed once per report.
+    func handles(self, node: Node) -> list[HandleLine]!:
+        if node.handles != self.parsed_from:
+            self.parsed = handle_lines.parse(node.handles)
+            self.parsed_from = node.handles
+            if self.hovered >= self.parsed.length:
+                self.hovered = -1
+        return self.parsed
+
+    ## Whether any handle shows.
+    pub func active(self) -> bool!:
+        let node = self.feature() else return false
+        return self.handles(node).length > 0
+
+    ## Handle `h`'s grip (the arrow's tip, the ring) in the world.
+    func grip(self, node: Node, h: HandleLine, width: float, height: float) -> Vector3!:
+        let value = node.values[h.slot]
+        if h.kind == "angle":
+            let r = h.side.length()
+            let along = h.side.multiply_scalar(1.0 / math.max(r, 1e-12))
+            let turn = radians(value * h.scale)
+            return h.foot.add(along.multiply_scalar(r * math.cos(turn))).add(h.way.cross(along).multiply_scalar(r * math.sin(turn)))
+        if h.kind == "taper":
+            let (base, sideways, length, shift) = self.taper_frame(node, h, width, height)
+            return base.add(sideways.multiply_scalar(shift + length * math.tan(radians(math.max(-80.0, math.min(80.0, value))))))
+        return h.foot.add(h.way.multiply_scalar(value * h.scale))
+
+    ## A taper ring's frame: the arrow's tip it leans from, the way out
+    ## (square to the arrow, toward the screen's right), the arrow's length,
+    ## and the gap that keeps the ring beside the arrow (in world units).
+    func taper_frame(self, node: Node, h: HandleLine, width: float, height: float) -> (Vector3, Vector3, float, float)!:
+        let lens = self.w.view.camera.projection(math.max(1.0, width) / math.max(1.0, height))
+        let length = math.abs(node.values[h.reference]) * h.scale
+        let base = h.foot.add(h.way.multiply_scalar(length))
+        var sideways = lens.right.subtract(h.way.multiply_scalar(lens.right.dot(h.way)))
+        if sideways.length() < 1e-6:
+            sideways = lens.up.subtract(h.way.multiply_scalar(lens.up.dot(h.way)))
+        let along = sideways.multiply_scalar(1.0 / math.max(sideways.length(), 1e-12))
+        let depth = math.max(lens.near, -base.subtract(lens.position).dot(lens.backward))
+        let pixel = 2.0 * depth / (lens.focal * math.max(1.0, height))
+        return (base, along, length, taper_gap * pixel)
+
+    ## Handle `slot`'s grip on a viewport `width` by `height`, in its points
+    ## (none when no handle of that slot shows); -1: the first handle's.
+    pub func tip(self, width: float, height: float, slot: int = -1) -> list[float]?!:
+        let node = self.feature() else return none
+        for h in self.handles(node):
+            if slot < 0 or h.slot == slot:
+                let s = view_projection.project(self.w, self.grip(node, h, width, height), width, height)
+                return [s[0], s[1]]
+        return none
+
+    ## The slot of the handle a click wants a value box for (-1 none); asking
+    ## clears it.
+    pub func take_click(self) -> int:
+        let slot = self.clicked
+        self.clicked = -1
+        return slot
+
+    ## The handle near (`x`, `y`), or -1.
+    func near(self, node: Node, x: float, y: float, width: float, height: float) -> int!:
+        let shown = self.handles(node)
+        var best = -1
+        var nearest = reach
+        for at in 0..<shown.length:
+            let h = shown[at]
+            if h.kind == "taper" and math.abs(node.values[h.reference]) * h.scale < 1e-9:
+                continue
+            let s = view_projection.project(self.w, self.grip(node, h, width, height), width, height)
+            let gap = math.hypot(x - s[0], y - s[1])
+            if s[2] >= 0.0 and gap <= nearest:
+                nearest = gap
+                best = at
+        return best
+
+    ## Pointer events; whether one was used.
+    pub func event(self, event: Event, width: float, height: float) -> bool!:
+        let node = self.feature() else return false
+        let shown = self.handles(node)
+        if self.dragging:
+            if event.cancelled or event.kind in [EventKind.focus_lost, EventKind.overflow] or (event.kind == EventKind.key_down and event.key == Key.escape):
+                self.w.cancel()
+                self.dragging = false
+                return true
+            if event.kind == EventKind.pointer_up:
+                self.dragging = false
+                if self.moved:
+                    self.w.commit()
+                else:
+                    self.w.cancel()
+                    if self.hovered >= 0 and self.hovered < shown.length:
+                        self.clicked = shown[self.hovered].slot
+                        self.w.revision += 1
+                return true
+            if event.kind == EventKind.pointer_moved:
+                if math.hypot(event.x - self.pressed_x, event.y - self.pressed_y) < 3.0 and not self.moved:
+                    return true
+                self.moved = true
+                if self.hovered >= 0 and self.hovered < shown.length:
+                    self.drag_to(node, shown[self.hovered], event.x, event.y, width, height, not (event.meta or event.control))
+                return true
+            return false
+        if event.alt:
+            return false
+        if event.kind == EventKind.pointer_moved:
+            let at = self.near(node, event.x, event.y, width, height)
+            let changed = at != self.hovered
+            self.hovered = at
+            return changed
+        if event.kind == EventKind.pointer_down and event.button == 0 and event.inside:
+            let at = self.near(node, event.x, event.y, width, height)
+            if at < 0:
+                return false
+            self.hovered = at
+            self.w.begin(f"{node.kind} {self.label(node, shown[at]).lower()}")
+            self.dragging = true
+            self.moved = false
+            self.pressed_x = event.x
+            self.pressed_y = event.y
+            return true
+        return false
+
+    ## The name of the row handle `h` sets.
+    pub func label(self, node: Node, h: HandleLine) -> str!:
+        return self.row_name(node, h.slot)
+
+    ## The name of `node`'s row on value slot `slot`.
+    pub func row_name(self, node: Node, slot: int) -> str!:
+        for row in node_catalog.parameters(node.kind):
+            if row.slot == slot and row.valued():
+                return row.name
+        return "Value"
+
+    ## Whether `node`'s value on `slot` is an angle (its handle a ring).
+    pub func is_angle(self, node: Node, slot: int) -> bool!:
+        for h in self.handles(node):
+            if h.slot == slot:
+                return h.kind != "arrow"
+        return false
+
+    ## The slot of the first handle (-1 none).
+    pub func first_slot(self) -> int!:
+        let node = self.feature() else return -1
+        let shown = self.handles(node)
+        return shown[0].slot if shown.length > 0 else -1
+
+    ## Handle `h` dragged to the pointer at (`x`, `y`).
+    func drag_to(self, node: Node, h: HandleLine, x: float, y: float, width: float, height: float, snap: bool) -> unit!:
+        var value = node.values[h.slot]
+        if h.kind == "arrow":
+            let lens = self.w.view.camera.projection(math.max(1.0, width) / math.max(1.0, height))
+            let n = h.way
+            let r = view_projection.ray(self.w, x, y, width, height)
+            let gap = h.foot.subtract(lens.position)
+            let b = n.dot(r)
+            let c = r.dot(r)
+            let denominator = c - b * b
+            if math.abs(denominator) < 1e-9:
+                return
+            # The parameter along the arrow from its foot (n is a unit vector).
+            let t = (b * gap.dot(r) - c * n.dot(gap)) / denominator
+            value = stepped(t / h.scale, grid_step(self.w.view.distance), snap)
+        elif h.kind == "taper":
+            let (base, sideways, length, shift) = self.taper_frame(node, h, width, height)
+            let q = view_projection.plane(self.w, x, y, width, height, base, h.way.cross(sideways))
+            value = degrees(math.atan2(q.subtract(base).dot(sideways) - shift, math.max(length, 1e-12)))
+            value = stepped(value, 1.0, snap)
+        else:
+            let r = h.side.length()
+            let along = h.side.multiply_scalar(1.0 / math.max(r, 1e-12))
+            let q = view_projection.plane(self.w, x, y, width, height, h.foot, h.way).subtract(h.foot)
+            var turn = degrees(math.atan2(q.dot(h.way.cross(along)), q.dot(along))) * h.scale
+            if turn <= 0.0:
+                turn += 360.0
+            value = stepped(turn, 1.0, snap)
+        let values = node.values.copy()
+        values[h.slot] = self.clamped(node, h.slot, value)
+        self.w.preview_parameters(values)
+
+    ## `value` within the range of the row on `slot`.
+    func clamped(self, node: Node, slot: int, value: float) -> float!:
+        for row in node_catalog.parameters(node.kind):
+            if row.slot == slot and row.valued():
+                return math.max(row.minimum, math.min(row.maximum, value))
+        return value
+
+    ## The handles over the scene, lit when hovered or dragged.
+    pub func draw(self, p: Painter, width: float, height: float) -> unit!:
+        let node = self.feature() else return
+        let shown = self.handles(node)
+        for at in 0..<shown.length:
+            let h = shown[at]
+            let color = theme.grey(245.0) if at == self.hovered else theme.accent()
+            if h.kind == "arrow":
+                self.draw_arrow(p, node, h, color, width, height)
+            elif h.kind == "taper":
+                self.draw_taper(p, node, h, color, width, height)
+            else:
+                self.draw_angle(p, node, h, color, width, height)
+
+    ## A shaft from the foot to the tip, a head, and the tip's handle.
+    func draw_arrow(self, p: Painter, node: Node, h: HandleLine, color: Color, width: float, height: float) -> unit!:
+        let foot = view_projection.project(self.w, h.foot, width, height)
+        let tip = view_projection.project(self.w, self.grip(node, h, width, height), width, height)
+        if foot[2] < 0.0 or tip[2] < 0.0:
+            return
+        p.line(Point(foot[0], foot[1]), Point(tip[0], tip[1]), 2.5, color)
+        # The head: a triangle pointing along the shaft as seen.
+        let dx = tip[0] - foot[0]
+        let dy = tip[1] - foot[1]
+        let length = math.max(1e-6, math.hypot(dx, dy))
+        let ux = dx / length
+        let uy = dy / length
+        if length > 4.0:
+            let back = Point(tip[0] - ux * 14.0, tip[1] - uy * 14.0)
+            p.triangle(Point(tip[0], tip[1]), Point(back.x - uy * 7.0, back.y + ux * 7.0), Point(back.x + uy * 7.0, back.y - ux * 7.0), color)
+        p.rounded_rectangle(Rect(tip[0] - 6.0, tip[1] - 6.0, 12.0, 12.0), color, 6.0)
+
+    ## A thin line from beside the arrow's tip leaning by the angle, and a
+    ## ring at its end.
+    func draw_taper(self, p: Painter, node: Node, h: HandleLine, color: Color, width: float, height: float) -> unit!:
+        let (base, sideways, length, shift) = self.taper_frame(node, h, width, height)
+        if length < 1e-9:
+            return
+        let start = view_projection.project(self.w, h.foot.add(sideways.multiply_scalar(shift)), width, height)
+        let ring = view_projection.project(self.w, self.grip(node, h, width, height), width, height)
+        let corner = view_projection.project(self.w, base.add(sideways.multiply_scalar(shift)), width, height)
+        if start[2] < 0.0 or ring[2] < 0.0:
+            return
+        p.line(Point(start[0], start[1]), Point(corner[0], corner[1]), 1.0, theme.grey(150.0))
+        p.line(Point(start[0], start[1]), Point(ring[0], ring[1]), 1.5, color)
+        ring_at(p, ring[0], ring[1], color)
+
+    ## An arc round the axis from the profiles to the ring.
+    func draw_angle(self, p: Painter, node: Node, h: HandleLine, color: Color, width: float, height: float) -> unit!:
+        let r = h.side.length()
+        let along = h.side.multiply_scalar(1.0 / math.max(r, 1e-12))
+        let across = h.way.cross(along)
+        let turn = radians(node.values[h.slot] * h.scale)
+        let steps = 48
+        var last = view_projection.project(self.w, h.foot.add(h.side), width, height)
+        for step in 1..<steps + 1:
+            let a = turn * float(step) / float(steps)
+            let next = view_projection.project(self.w, h.foot.add(along.multiply_scalar(r * math.cos(a))).add(across.multiply_scalar(r * math.sin(a))), width, height)
+            if last[2] >= 0.0 and next[2] >= 0.0:
+                p.line(Point(last[0], last[1]), Point(next[0], next[1]), 2.0, color)
+            last = next
+        if last[2] >= 0.0:
+            ring_at(p, last[0], last[1], color)
+
+## A ring at (`x`, `y`): a disc of `color` with a dark middle.
+func ring_at(p: Painter, x: float, y: float, color: Color) -> unit!:
+    p.rounded_rectangle(Rect(x - 7.0, y - 7.0, 14.0, 14.0), color, 7.0)
+    p.rounded_rectangle(Rect(x - 4.0, y - 4.0, 8.0, 8.0), theme.grey(28.0), 4.0)
