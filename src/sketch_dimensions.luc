@@ -1,0 +1,230 @@
+## A sketch's dimensions on the screen, drawn as drawings draw them
+## (luce-cad lays each out: CadSketch.lay_out, sketch/dimensions.lucb):
+## extension lines, a dimension line or arc with filled arrowheads, the
+## value on it (R and Ø for radii and diameters, degrees for angles, a
+## driven dimension in parentheses). The same placement is what the editor
+## picks: a click on a label or its lines selects the dimension (they win
+## over geometry under the pointer, as in Fusion), a click on a selected
+## one opens its value box there, and a drag moves its label (kept relative
+## to what it measures).
+from luce_cad.sketch import CadSketch
+from luce_ui.ui import Painter, Point, Font, Unit
+from luce_gpu.gpu import Rect, Color
+from sketch_node import SketchFrame
+from workspace import Workspace
+from view_projection import project
+import view_projection
+import sketch_kinds as names
+import units
+import theme
+from luce_std import math
+
+## How near a dimension's line the pointer picks it, in points.
+let line_reach = 4.0
+## An arrowhead's length and half width, in points.
+let arrow_length = 9.0
+let arrow_half = 3.2
+
+## A dimension as placed on the screen: its constraint, its value's text
+## and the box it is drawn in, its lines (x1, y1, x2, y2 each) and its
+## arrowheads (tip x, y and the unit way they point on screen), in the
+## viewport's points; and whether it is driven.
+pub class ShownDimension:
+    pub let constraint: int
+    pub let label: str
+    pub let box: Rect
+    pub let lines: list[float]
+    pub let arrows: list[float]
+    pub let driven: bool
+
+    pub func init(self, constraint: int, label: str, box: Rect, lines: list[float], arrows: list[float], driven: bool):
+        self.constraint = constraint
+        self.label = label
+        self.box = box
+        self.lines = lines
+        self.arrows = arrows
+        self.driven = driven
+
+    ## Whether (`x`, `y`) is on its label or near one of its lines.
+    pub func under(self, x: float, y: float) -> bool:
+        let b = self.box
+        if x >= b.x - 2.0 and x <= b.x + b.width + 2.0 and y >= b.y - 2.0 and y <= b.y + b.height + 2.0:
+            return true
+        var at = 0
+        while at + 3 < self.lines.length:
+            if segment_distance(x, y, self.lines[at], self.lines[at + 1], self.lines[at + 2], self.lines[at + 3]) <= line_reach:
+                return true
+            at += 4
+        return false
+
+## The dimensions of a sketch as last placed, made again only when the
+## sketch, the plane or the view changed.
+pub class SketchDimensions:
+    let font: Font
+    var made_from: str = ""
+    pub var shown: list[ShownDimension]
+
+    pub func init(self) -> unit!:
+        self.font = Font()
+        self.shown = []
+
+    ## `sketch`'s dimensions on plane `f` on a viewport `width` by `height`
+    ## (`revision`: the editor's count of sketch changes).
+    pub func placed(self, w: Workspace, sketch: CadSketch, f: SketchFrame, revision: int, width: float, height: float) -> list[ShownDimension]!:
+        let view = w.view
+        let key = f"{revision}|{f.key()}|{view.yaw}|{view.pitch}|{view.distance}|{view.target.x}|{view.target.y}|{view.target.z}|{width}|{height}|{units.document_unit(w).suffix}"
+        if key == self.made_from:
+            return self.shown
+        self.made_from = key
+        self.shown = []
+        let pixel = pixel_size(w, f, width, height)
+        let shown_unit = units.document_unit(w)
+        for at in 0..<sketch.constraint_count():
+            let kind = sketch.constraint_kind(at)
+            if not names.is_dimension(kind) or not sketch.lay_out(at, pixel):
+                continue
+            let label_at = project(w, f.at(sketch.label_x(), sketch.label_y()), width, height)
+            if label_at[2] < 0.0:
+                continue
+            let lines: list[float] = []
+            for line in 0..<sketch.layout_line_count():
+                let a = project(w, f.at(sketch.layout_line(line, 0), sketch.layout_line(line, 1)), width, height)
+                let b = project(w, f.at(sketch.layout_line(line, 2), sketch.layout_line(line, 3)), width, height)
+                lines.extend([a[0], a[1], b[0], b[1]])
+            let arrows: list[float] = []
+            for arrow in 0..<sketch.layout_arrow_count():
+                let x = sketch.layout_arrow(arrow, 0)
+                let y = sketch.layout_arrow(arrow, 1)
+                let tip = project(w, f.at(x, y), width, height)
+                let toward = project(w, f.at(x + sketch.layout_arrow(arrow, 2) * pixel, y + sketch.layout_arrow(arrow, 3) * pixel), width, height)
+                let length = math.max(1e-9, math.hypot(toward[0] - tip[0], toward[1] - tip[1]))
+                arrows.extend([tip[0], tip[1], (toward[0] - tip[0]) / length, (toward[1] - tip[1]) / length])
+            let label = value_text(sketch, at, kind, shown_unit)
+            let text_width = self.font.measure(label)
+            let box = Rect(label_at[0] - text_width * 0.5 - 4.0, label_at[1] - 10.0, text_width + 8.0, 20.0)
+            self.shown.append(ShownDimension(at, label, box, lines, arrows, sketch.driven(at)))
+        return self.shown
+
+    ## The dimension under (`x`, `y`), the last drawn (on top) first; -1
+    ## for none.
+    pub func at(self, x: float, y: float) -> int:
+        var index = self.shown.length
+        while index > 0:
+            index -= 1
+            if self.shown[index].under(x, y):
+                return self.shown[index].constraint
+        return -1
+
+    ## Dimension `constraint` as last placed, if shown.
+    pub func find(self, constraint: int) -> ShownDimension?:
+        for d in self.shown:
+            if d.constraint == constraint:
+                return d
+        return none
+
+    ## Draw them: selected ones in the accent, the one under the pointer
+    ## lit, driven ones muted; each label over a dim patch so it reads over
+    ## the geometry.
+    pub func draw(self, p: Painter, selected: list[int], lit: int) -> unit!:
+        for d in self.shown:
+            let chosen = d.constraint in selected
+            let color = theme.accent() if chosen else (theme.grey(250.0) if d.constraint == lit else (theme.grey(150.0) if d.driven else theme.grey(205.0)))
+            var at = 0
+            while at + 3 < d.lines.length:
+                p.line(Point(d.lines[at], d.lines[at + 1]), Point(d.lines[at + 2], d.lines[at + 3]), 1.0, color)
+                at += 4
+            at = 0
+            while at + 3 < d.arrows.length:
+                let x = d.arrows[at]
+                let y = d.arrows[at + 1]
+                let ux = d.arrows[at + 2]
+                let uy = d.arrows[at + 3]
+                let bx = x - ux * arrow_length
+                let by = y - uy * arrow_length
+                p.triangle(Point(x, y), Point(bx - uy * arrow_half, by + ux * arrow_half), Point(bx + uy * arrow_half, by - ux * arrow_half), color)
+                at += 4
+            p.rounded_rectangle(d.box, theme.backdrop(), 3.0, opacity = 0.9)
+            if chosen or d.constraint == lit:
+                outline(p, d.box, color)
+            p.text(d.label, d.box.x + 4.0, d.box.y + 2.0, theme.text_muted() if d.driven and not chosen else (color if chosen else theme.text()), self.font)
+
+## A dimension pressed for a drag of its label: which (-1: none), whether
+## it was the selection already (a click on it then opens its value box),
+## whether it moved past a few points, where the press was on the screen,
+## and the label's offset from the pointer on the plane.
+pub class LabelDrag:
+    pub var constraint: int = -1
+    pub var was_selected: bool = false
+    pub var moved: bool = false
+    var press: list[float]
+    var grab: list[float]
+
+    pub func init(self):
+        self.press = [0.0, 0.0]
+        self.grab = [0.0, 0.0]
+
+    pub func active(self) -> bool:
+        return self.constraint >= 0
+
+    ## Dimension `constraint` of `sketch` pressed at screen (`x`, `y`), the
+    ## plane's `place` there, a screen point `pixel` long on the plane.
+    pub func begin(self, sketch: CadSketch, constraint: int, was_selected: bool, x: float, y: float, place: list[float], pixel: float) -> unit!:
+        self.constraint = constraint
+        self.was_selected = was_selected
+        self.moved = false
+        self.press = [x, y]
+        self.grab = [0.0, 0.0]
+        if sketch.lay_out(constraint, pixel):
+            self.grab = [sketch.label_x() - place[0], sketch.label_y() - place[1]]
+
+    ## The pointer at screen (`x`, `y`), the plane's `place` there: the
+    ## label follows once it moved a few points; whether it moved.
+    pub func follow(self, sketch: CadSketch, x: float, y: float, place: list[float]) -> bool!:
+        if not self.moved and math.hypot(x - self.press[0], y - self.press[1]) < 3.0:
+            return false
+        self.moved = true
+        sketch.place_label(self.constraint, place[0] + self.grab[0], place[1] + self.grab[1])
+        return true
+
+    ## Let go: the dimension pressed, and no press any more.
+    pub func finish(self) -> int:
+        let constraint = self.constraint
+        self.constraint = -1
+        return constraint
+
+## How long a screen point is on plane `f`, about where the view looks.
+pub func pixel_size(w: Workspace, f: SketchFrame, width: float, height: float) -> float!:
+    let middle = project(w, w.view.target, width, height)
+    let x = middle[0] if middle[2] >= 0.0 else width * 0.5
+    let y = middle[1] if middle[2] >= 0.0 else height * 0.5
+    let normal = f.normal()
+    let here = view_projection.plane(w, x, y, width, height, f.origin, normal)
+    let beside = view_projection.plane(w, x + 10.0, y, width, height, f.origin, normal)
+    return math.max(1e-9, here.subtract(beside).length() / 10.0)
+
+## Dimension `at`'s value as shown: a length in the document's unit (R or
+## Ø before a radius or diameter), an angle in degrees; in parentheses when
+## driven.
+pub func value_text(sketch: CadSketch, at: int, kind: int, shown_unit: Unit) -> str:
+    let value = sketch.constraint_value(at)
+    var label = units.angle_text(math.abs(value)) if kind == names.angle else units.length_text(value, shown_unit)
+    if kind == names.radius:
+        label = "R" + label
+    elif kind == names.diameter:
+        label = "Ø" + label
+    return f"({label})" if sketch.driven(at) else label
+
+## A rectangle's outline.
+func outline(p: Painter, r: Rect, color: Color) -> unit!:
+    p.rectangle(Rect(r.x, r.y, r.width, 1.0), color)
+    p.rectangle(Rect(r.x, r.y + r.height - 1.0, r.width, 1.0), color)
+    p.rectangle(Rect(r.x, r.y, 1.0, r.height), color)
+    p.rectangle(Rect(r.x + r.width - 1.0, r.y, 1.0, r.height), color)
+
+## How far (`x`, `y`) is from the segment (`x1`, `y1`) to (`x2`, `y2`).
+func segment_distance(x: float, y: float, x1: float, y1: float, x2: float, y2: float) -> float:
+    let dx = x2 - x1
+    let dy = y2 - y1
+    let squared = dx * dx + dy * dy
+    let t = math.max(0.0, math.min(1.0, ((x - x1) * dx + (y - y1) * dy) / squared)) if squared > 0.0 else 0.0
+    return math.hypot(x - x1 - dx * t, y - y1 - dy * t)

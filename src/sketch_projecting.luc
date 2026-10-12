@@ -1,0 +1,45 @@
+## Project in the Sketch editor (Fusion's Project): the input body's edges
+## cast onto the sketch plane while Project is the tool, made again when
+## the body or the plane moves; a click brings the edge under the cursor
+## in, fixed and linked, so it follows the body.
+from luce_cad.sketch import CadSketch, CadProjection
+from luce_cad.cad_geometry import CadGeometry
+from sketch_frames import FrameCache
+from sketch_node import SketchFrame
+from workspace import Workspace
+
+pub class SketchProjecting:
+    ## The edges cast, and the body stamp and plane they were cast from.
+    var projected: CadProjection? = none
+    var projected_key: str = ""
+
+    ## Sketch node `node`'s input body's edges cast on `f`; none without a
+    ## body.
+    pub func projection(self, w: Workspace, node: int, frames: FrameCache, f: SketchFrame) -> CadProjection?!:
+        let found = w.network.find(node) else return none
+        let data = frames.body(w, found) else return none
+        if CadGeometry.model_count(data.geometry) == 0:
+            return none
+        let key = f"{frames.body_stamp()}|{f.key()}"
+        if key != self.projected_key or self.projected == none:
+            self.projected = CadProjection.of(CadGeometry.model(data.geometry, 0), f.origin, f.u, f.v)
+            self.projected_key = key
+        return self.projected
+
+    ## Bring the edge nearest (`x`, `y`) within `reach` into `sketch`; what
+    ## to say when nothing could be ("": it was, or no edge is there), and
+    ## whether one was.
+    pub func project_at(self, w: Workspace, node: int, frames: FrameCache, f: SketchFrame, sketch: CadSketch, x: float, y: float, reach: float) -> (bool, str)!:
+        let found = self.projection(w, node, frames, f)
+        let cast = found else return (false, "Project casts the edges of the Sketch's input body: connect a body to it")
+        let edge = cast.nearest(x, y, reach)
+        if edge < 0:
+            return (false, "")
+        var failed = ""
+        _ = sketch.project(cast, edge) catch failure:
+            failed = failure.message
+            recover -1
+        if failed != "":
+            return (false, failed)
+        _ = sketch.solve()
+        return (true, "")

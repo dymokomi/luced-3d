@@ -18,6 +18,13 @@
 ##     Sketch.
 ##   cad_edge_menu: the cut box's rim edge right-clicked at the Edges
 ##     level: Fillet and Chamfer.
+##   cad_dims: a plate with a hole and a slanted cut, fully dimensioned
+##     (lengths, the hole's place and diameter, an angle), one label moved
+##     off; the pointer over the width.
+##   cad_typing: a Line begun at the origin, 25 typed in its Length box
+##     (locked, the line held at it) and Tab pressed: its Angle box focused.
+##   cad_dim_edit: the plate's width clicked twice: its value box open on
+##     its label.
 from luce_ui.ui import Event
 from luce_window.input import EventKind, Key
 from luce_3d.graphics import Vector3
@@ -30,9 +37,49 @@ import sketch_commands
 import selection_commands
 import sketch_glyphs
 import sketch_kinds as names
+import text as characters
 
 pub func scenes() -> list[str]:
-    return ["cad_glyphs", "cad_window", "cad_profiles", "cad_extrude", "cad_face_menu", "cad_rollback", "cad_marking", "cad_edge_menu"]
+    return ["cad_glyphs", "cad_window", "cad_profiles", "cad_extrude", "cad_face_menu", "cad_rollback", "cad_marking", "cad_edge_menu", "cad_dims", "cad_typing", "cad_dim_edit"]
+
+## A plate 60 by 30 with its bottom-left corner fixed at the origin, a
+## hole of 12 placed 15 and 15 from it, and its top-right corner cut at 30°
+## from the top: every length, the hole's place and diameter, and the
+## cut's angle dimensioned, so all of it is fully constrained. The width
+## dimension's index is the text's first dimension.
+func dimensioned_plate() -> str!:
+    let s = CadSketch.parse("")
+    let p0 = s.add_point(0.0, 0.0)
+    let p1 = s.add_point(60.0, 0.0)
+    let p2 = s.add_point(60.0, 18.0)
+    let p3 = s.add_point(39.2, 30.0)
+    let p4 = s.add_point(0.0, 30.0)
+    let bottom = s.add_line(p0, p1)
+    let right = s.add_line(p1, p2)
+    let cut = s.add_line(p2, p3)
+    let top = s.add_line(p3, p4)
+    let left = s.add_line(p4, p0)
+    _ = s.constrain(names.fix, p0)
+    _ = s.constrain(names.horizontal, bottom)
+    _ = s.constrain(names.vertical, right)
+    _ = s.constrain(names.horizontal, top)
+    _ = s.constrain(names.vertical, left)
+    _ = s.constrain(names.distance, p0, p1, value = 60.0)
+    _ = s.constrain(names.distance, p4, p0, value = 30.0)
+    _ = s.constrain(names.distance, p1, p2, value = 18.0)
+    _ = s.constrain(names.angle, top, cut, value = -0.5235987755982988)
+    let c = s.add_point(15.0, 15.0)
+    let hole = s.add_circle(c, 6.0)
+    _ = s.constrain(names.diameter, hole, value = 12.0)
+    _ = s.constrain(names.horizontal_distance, p0, c, value = 15.0)
+    _ = s.constrain(names.vertical_distance, p0, c, value = 15.0)
+    _ = s.solve()
+    return s.text()
+
+## Type `text` into what has the keyboard.
+func type_text(editor: Luce3D, text: str) -> unit!:
+    for character in text:
+        editor.app.dispatch(Event(kind = EventKind.text_input, codepoint = characters.code_of(character)))
 
 ## The view from (yaw, pitch) at `distance` round `target`.
 func look(editor: Luce3D, yaw: float, pitch: float, distance: float, target: Vector3) -> unit!:
@@ -145,6 +192,11 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
         look(editor, 0.5, 0.6, 75.0, Vector3())
         selection_commands.set_mode(w, w.level_of(2))
         editor.panels.refresh()
+    elif scene in ["cad_dims", "cad_dim_edit"]:
+        open_sketch(editor, dimensioned_plate(), 30.0, 13.0, 95.0)
+    elif scene == "cad_typing":
+        open_sketch(editor, "", 12.0, 8.0, 70.0)
+        editor.panels.view.sketch.editor.choose("Line")
     elif scene in ["cad_rollback", "cad_marking", "cad_edge_menu"]:
         cut_box(editor)
         let w = editor.workspace
@@ -195,3 +247,24 @@ pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
         # And again, held, to show the box over what it took.
         editor.app.dispatch(Event(kind = EventKind.pointer_down, x = area.x + a[0], y = area.y + a[1], button = 0, shift = true))
         editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + b[0], y = area.y + b[1], shift = true))
+    if scene in ["cad_dims", "cad_dim_edit"] and frame == last - 1:
+        let sketch = e.sketch else trap("no sketch")
+        _ = e.dimensions.placed(w, sketch, e.frame, e.revision, area.width, area.height)
+        let width = e.dimensions.find(5) else trap("no width dimension")
+        let x = area.x + width.box.x + width.box.width * 0.5
+        let y = area.y + width.box.y + width.box.height * 0.5
+        let clicks = 2 if scene == "cad_dim_edit" else 0
+        for _ in 0..<clicks:
+            for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+                editor.app.dispatch(Event(kind = kind, x = x, y = y, button = 0))
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = x, y = y))
+    if scene == "cad_typing" and frame == last - 1:
+        let start = project(w, e.frame.at(0.0, 0.0), area.width, area.height)
+        let toward = project(w, e.frame.at(16.0, 9.0), area.width, area.height)
+        for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+            editor.app.dispatch(Event(kind = kind, x = area.x + start[0], y = area.y + start[1], button = 0))
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + toward[0], y = area.y + toward[1]))
+        type_text(editor, "25")
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.tab))
+        # The tool's hint is no failure.
+        w.notice = ""

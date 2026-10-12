@@ -3,6 +3,8 @@
 ## the cursor where it is (preview, the rubber band). A click's point is the
 ## point it snapped to, else a new one (on the curve it snapped to).
 ##
+##   Line                 its ends (one drawn near level or upright is
+##                        made so)
 ##   Midpoint Line        its middle, then an end
 ##   2-Point Rectangle    two corners (sides level and upright)
 ##   3-Point Rectangle    a side's two ends, then how wide (square corners)
@@ -23,9 +25,12 @@
 ##                        leaves the way that curve does)
 ##
 ## Slots are sketch_slots.luc's, splines, ellipses and conics
-## sketch_freeform.luc's.
+## sketch_freeform.luc's. Values locked in the value boxes while drawing
+## (sketch_typing.luc) become the shape's dimensions in the same undo step
+## (typed_dimensions).
 from overlay_lines import OverlayLines
 from sketch_editor import SketchEditor
+from luce_cad.sketch import CadSketch
 from sketch_kinds import line_kind
 import sketch_kinds as k
 from sketch_slots import slot_tools, finish_slot, preview_slot
@@ -33,7 +38,7 @@ from sketch_geometry import side_of, ended_curve, through, turn_to, across
 from sketch_freeform import freeform_tools, finish_freeform, preview_freeform, curve_end
 from luce_std import math
 
-## How many sides the polygon tools make.
+## How many sides the polygon tools make, unless typed.
 let polygon_sides = 6
 
 ## Drawing tool `e.tool`'s clicks are in: make what it makes, as one undo.
@@ -41,7 +46,17 @@ pub func finish(e: SketchEditor) -> unit!:
     let sketch = e.sketch else return
     let c = e.clicks
     let tool = e.tool
-    if tool == "Midpoint Line":
+    # What the shape makes from here on gets the typed dimensions.
+    let first = sketch.entity_count()
+    if tool == "Line":
+        let a = e.made_point(0)
+        let b = e.made_point(1)
+        let line = sketch.add_line(a, b)
+        if sketch.y(a) == sketch.y(b):
+            _ = sketch.constrain(k.horizontal, line)
+        elif sketch.x(a) == sketch.x(b):
+            _ = sketch.constrain(k.vertical, line)
+    elif tool == "Midpoint Line":
         let m = e.made_point(0)
         let end = e.made_point(1)
         let start = sketch.add_point(2.0 * c[0][0] - c[1][0], 2.0 * c[0][1] - c[1][1])
@@ -92,8 +107,9 @@ pub func finish(e: SketchEditor) -> unit!:
         finish_slot(e)
     elif tool in freeform_tools():
         finish_freeform(e)
+    typed_dimensions(e, first)
     _ = sketch.solve()
-    e.commit(tool)
+    e.commit("Sketch line" if tool == "Line" else tool)
 
 ## A rectangle on corners `a`, `b`, `c`, `d` (in order): level and upright
 ## sides when `level`, else square corners kept by perpendicular and
@@ -126,7 +142,7 @@ func rectangle(e: SketchEditor, a: list[float], b: list[float], c: list[float], 
 func polygon(e: SketchEditor) -> unit!:
     let sketch = e.sketch else return
     let c = e.clicks
-    let n = polygon_sides
+    let n = int(e.typing.locked("Sides") else float(polygon_sides))
     var cx = c[0][0]
     var cy = c[0][1]
     var r = math.hypot(c[1][0] - cx, c[1][1] - cy)
@@ -370,3 +386,61 @@ func replaced(m: list[list[float]], column: int, values: list[float]) -> list[li
         copy[column] = values[row]
         result.append(copy)
     return result
+
+## The values locked in the value boxes as the shape's dimensions, on what
+## the tool made from entity `first` on: a line's Length and Angle (from a
+## level construction line at its start, as long as it), a rectangle's
+## Width and Height (or a 3-point one's Length and Width) on its first two
+## sides, a circle's Diameter, an arc's or a polygon's Radius. A Sweep, a
+## 3-point rectangle's Angle and Sides only shape it. Typed values that
+## would over-constrain what the shape snapped to are kept driven.
+func typed_dimensions(e: SketchEditor, first: int) -> unit!:
+    let sketch = e.sketch else return
+    let t = e.typing
+    if not t.any_locked():
+        return
+    let lines: list[int] = []
+    var round = -1
+    for at in first..<sketch.entity_count():
+        let kind = sketch.kind(at)
+        if kind == line_kind and not sketch.construction(at):
+            lines.append(at)
+        elif kind in [k.circle_kind, k.arc_kind] and round < 0:
+            round = at
+    let made: list[int] = []
+    if lines.length > 0:
+        if let length = t.locked("Length"):
+            made.append(length_of_line(sketch, lines[0], length))
+        if e.tool == "Line":
+            if let angle = t.locked("Angle"):
+                let line = lines[0]
+                let start = sketch.part(line, 0)
+                let end = sketch.part(line, 1)
+                let reach = math.hypot(sketch.x(end) - sketch.x(start), sketch.y(end) - sketch.y(start))
+                let level = sketch.add_line(start, sketch.add_point(sketch.x(start) + reach, sketch.y(start), true), true)
+                _ = sketch.constrain(k.horizontal, level)
+                _ = sketch.constrain(k.equal, level, line)
+                made.append(sketch.constrain(k.angle, level, line, value = angle))
+        if lines.length > 1:
+            if let width = t.locked("Width"):
+                made.append(length_of_line(sketch, lines[0] if e.tool != "3-Point Rectangle" else lines[1], width))
+            if let height = t.locked("Height"):
+                made.append(length_of_line(sketch, lines[1], height))
+    # A polygon's radius is its construction circle's.
+    for at in first..<sketch.entity_count():
+        if e.tool.ends_with("Polygon") and sketch.kind(at) == k.circle_kind:
+            round = at
+    if round >= 0:
+        if let diameter = t.locked("Diameter"):
+            made.append(sketch.constrain(k.diameter, round, value = diameter))
+        if let radius = t.locked("Radius"):
+            made.append(sketch.constrain(k.radius, round, value = radius))
+    if made.length == 0:
+        return
+    if not sketch.solve():
+        for at in made:
+            sketch.set_driven(at, true)
+
+## Line `line`'s length held at `value`: its constraint.
+func length_of_line(sketch: CadSketch, line: int, value: float) -> int!:
+    return sketch.constrain(k.distance, sketch.part(line, 0), sketch.part(line, 1), value = value)

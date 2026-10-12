@@ -1,11 +1,15 @@
 ## A Sketch node's input body and frame for the editor on the UI thread
 ## (sketch_node.luc): an origin plane's frame at once; a Face plane's, and
 ## the body that projected curves follow, need its input, cooked here on a
-## copy of the graph and kept until the input changes.
+## copy of the graph and kept until the input changes. And the view looking
+## straight at a sketch.
 from workspace import Workspace
 from node import Node
 from geometry_data import GeometryData
 from sketch_node import SketchFrame, node_frame, face_frame, face_plane
+from luce_cad.sketch import CadSketch
+import sketch_kinds
+from luce_std import math
 
 pub class FrameCache:
     var key: str = ""
@@ -49,3 +53,28 @@ pub class FrameCache:
         self.key = key
         self.kept = f
         return f
+
+## Look straight at `sketch` on plane `f` (x right, y up, as the frame
+## says), at the middle of what is drawn, as Fusion's Look At does.
+pub func look_at(w: Workspace, sketch: CadSketch, f: SketchFrame) -> unit!:
+    let n = f.normal()
+    let view = w.view
+    if math.abs(n.y) > 0.5:
+        view.yaw = 0.0
+        view.pitch = 1.5 if n.y > 0.0 else -1.5
+    else:
+        view.yaw = math.atan2(n.x, n.z)
+        view.pitch = 0.0
+    var low = [1.0e30, 1.0e30]
+    var high = [-1.0e30, -1.0e30]
+    for at in 0..<sketch.entity_count():
+        if sketch.kind(at) == sketch_kinds.point_kind:
+            low = [math.min(low[0], sketch.x(at)), math.min(low[1], sketch.y(at))]
+            high = [math.max(high[0], sketch.x(at)), math.max(high[1], sketch.y(at))]
+    if high[0] >= low[0]:
+        view.target = f.at((low[0] + high[0]) * 0.5, (low[1] + high[1]) * 0.5)
+        view.distance = math.max(20.0, 2.2 * math.max(high[0] - low[0], high[1] - low[1]))
+    else:
+        view.target = f.origin
+    view.update_camera()
+    w.revision += 1

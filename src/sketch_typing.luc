@@ -1,0 +1,317 @@
+## Fusion's heads-up value boxes while drawing (after SolidCraft's
+## sketch_dims, docs/research/FUSION-CAD-UX.md §5.2): once a shape's first
+## point is down, boxes follow the cursor beside what they measure, showing
+## its live size:
+##
+##   Line                         Length, Angle (from level)
+##   2-Point, Center Rectangle    Width, Height
+##   3-Point Rectangle            Length, then Width
+##   Center Diameter, 2-Point Circle  Diameter
+##   Center Point Arc             Radius, then Sweep
+##   Circumscribed, Inscribed Polygon  Radius, Sides
+##
+## Typing goes into the focused box (the first at first), replacing what it
+## shows, and locks it; Tab locks the focused box as it stands and moves to
+## the next (Shift+Tab back). A locked value steers the cursor (a line's
+## locked length keeps the pointer's direction at that length; a locked
+## angle stops level and upright inference). Enter places the point where
+## the boxes say, and the locked values become the shape's dimensions in
+## the same undo step (sketch_create.typed_dimensions); a Sweep or Sides
+## shapes the shape only. Lengths take any unit and arithmetic, as the
+## parameter fields do ("25.4", "1 in", "10 + 5 mm"); angles are degrees.
+from luce_ui import ui
+from luce_ui.ui import Unit, Event
+from luce_window.input import EventKind, Key
+from angles import radians
+import units
+import text as characters
+from luce_std import math
+
+## Screen points a box sits off what it measures.
+let box_offset = 22.0
+
+## One value box: what it measures, whether that is an angle (radians), a
+## count, or a length (mm); what was typed and whether it is locked; its
+## value (the locked one, or the live one) and where on the plane it shows.
+pub class ValueBox:
+    pub let label: str
+    pub let angle: bool
+    pub let count: bool
+    pub var text: str = ""
+    pub var locked: bool = false
+    ## What was typed reads as a number.
+    pub var valid: bool = true
+    pub var value: float = 0.0
+    pub var x: float = 0.0
+    pub var y: float = 0.0
+
+    pub func init(self, label: str, angle: bool = false, count: bool = false):
+        self.label = label
+        self.angle = angle
+        self.count = count
+
+pub class SketchTyping:
+    pub var boxes: list[ValueBox]
+    ## Boxes locked at the shape's earlier clicks (a center point arc's
+    ## Radius once its Sweep shows).
+    var earlier: list[ValueBox]
+    ## The box typing goes into, and whether its text shows selected (the
+    ## next keystroke replaces it).
+    pub var focus: int = 0
+    pub var fresh: bool = true
+    ## What the boxes are for: the tool and its placed clicks' count (a
+    ## line's chained segments count on).
+    var tool: str = ""
+    var clicks: int = 0
+    var placed: int = -1
+
+    pub func init(self):
+        self.boxes = []
+        self.earlier = []
+
+    ## Whether boxes show.
+    pub func active(self) -> bool:
+        return self.boxes.length > 0
+
+    ## Whether any value was locked (the shape gets dimensions).
+    pub func any_locked(self) -> bool:
+        for b in self.boxes + self.earlier:
+            if b.locked:
+                return true
+        return false
+
+    ## The boxes for `tool` after its `placed`th click (`clicks` of the
+    ## shape down), new when either changed; none before the first.
+    pub func follow(self, tool: str, clicks: int, placed: int):
+        if tool == self.tool and placed == self.placed:
+            return
+        # The same shape on: its locked boxes kept (a line's next segment is
+        # a new shape).
+        if tool == self.tool and clicks > self.clicks and tool != "Line":
+            for b in self.boxes:
+                if b.locked:
+                    self.earlier.append(b)
+        else:
+            self.earlier = []
+        self.tool = tool
+        self.clicks = clicks
+        self.placed = placed
+        self.focus = 0
+        self.fresh = true
+        self.boxes = boxes_for(tool, clicks)
+
+    ## No boxes (a shape ended or abandoned).
+    pub func clear(self):
+        self.boxes = []
+        self.earlier = []
+        self.tool = ""
+        self.placed = -1
+
+    ## Box `label`'s locked value, if it is locked and reads as a number.
+    pub func locked(self, label: str) -> float?:
+        for b in self.boxes + self.earlier:
+            if b.label == label and b.locked and b.valid:
+                return b.value
+        return none
+
+    ## Whether every locked box reads as a number; else the first that
+    ## does not.
+    pub func unreadable(self) -> str:
+        for b in self.boxes:
+            if b.locked and not b.valid:
+                return b.label
+        return ""
+
+    ## A key or typed character while boxes show; whether it was taken
+    ## (printable keys are, so tool letters and the marking menus wait).
+    ## `unit` is the document's (lengths typed without one are in it).
+    ## Enter, Escape and Delete are left to the editor.
+    pub func key(self, event: Event, shown_in: Unit) -> bool!:
+        if not self.active():
+            return false
+        if event.kind == EventKind.text_input:
+            if event.codepoint < 32 or event.codepoint == 127:
+                return true
+            let typed = characters.from_code(event.codepoint)
+            let b = self.boxes[self.focus]
+            b.text = typed if self.fresh or not b.locked else b.text + typed
+            b.locked = true
+            self.fresh = false
+            self.read(b, shown_in)
+            return true
+        if event.kind != EventKind.key_down:
+            return false
+        if event.key == Key.tab:
+            let b = self.boxes[self.focus]
+            if not b.locked:
+                # Locked as it stands: the live value.
+                b.locked = true
+                b.valid = true
+                b.text = shown(b, shown_in)
+            let step = self.boxes.length - 1 if event.shift else 1
+            self.focus = (self.focus + step) % self.boxes.length
+            self.fresh = true
+            return true
+        if event.key == Key.backspace:
+            let b = self.boxes[self.focus]
+            if b.locked:
+                b.text = "" if self.fresh or b.text.length == 0 else b.text[0..<b.text.length - 1]
+                b.locked = b.text != ""
+                self.fresh = false
+                self.read(b, shown_in)
+            return true
+        if event.key in [Key.enter, Key.escape, Key.delete]:
+            return false
+        # Shortcuts (Cmd or Ctrl) still work; plain keys type.
+        return not (event.meta or event.control)
+
+    ## Box `b`'s typed text read.
+    func read(self, b: ValueBox, shown_in: Unit):
+        if not b.locked:
+            return
+        let reading = ui.evaluate_number(b.text, b.value, Unit() if b.angle or b.count else shown_in)
+        b.valid = reading != none
+        if let value = reading:
+            b.value = radians(value) if b.angle else (math.round(value) if b.count else value)
+            if b.count:
+                b.valid = value >= 3.0 and value <= 64.0
+
+    ## Where tool `tool`'s next point goes for the cursor at `cursor`,
+    ## its placed `clicks` known, as the locked values steer it.
+    pub func steer(self, tool: str, clicks: list[list[float]], cursor: list[float]) -> list[float]:
+        if not self.active() or clicks.length == 0:
+            return cursor
+        let a = clicks[-1]
+        let first = clicks[0]
+        let dx = cursor[0] - a[0]
+        let dy = cursor[1] - a[1]
+        let length = math.hypot(dx, dy)
+        let angle = math.atan2(dy, dx)
+        if tool == "Line" or (tool == "3-Point Rectangle" and clicks.length == 1):
+            let l = self.locked("Length") else length
+            let turn = self.locked("Angle") else angle
+            return [a[0] + math.cos(turn) * l, a[1] + math.sin(turn) * l]
+        if tool in ["2-Point Rectangle", "Center Rectangle"]:
+            let half = 0.5 if tool == "Center Rectangle" else 1.0
+            var x = cursor[0]
+            var y = cursor[1]
+            if let w = self.locked("Width"):
+                x = a[0] + w * half * sign(dx)
+            if let h = self.locked("Height"):
+                y = a[1] + h * half * sign(dy)
+            return [x, y]
+        if tool in ["Center Diameter Circle", "2-Point Circle"]:
+            let d = self.locked("Diameter") else return cursor
+            let r = d * (0.5 if tool == "Center Diameter Circle" else 1.0)
+            return [a[0] + math.cos(angle) * r, a[1] + math.sin(angle) * r]
+        if tool in ["Center Point Arc", "Circumscribed Polygon", "Inscribed Polygon"] and clicks.length == 1:
+            let r = self.locked("Radius") else return cursor
+            return [a[0] + math.cos(angle) * r, a[1] + math.sin(angle) * r]
+        if tool == "Center Point Arc" and clicks.length == 2:
+            let sweep = self.locked("Sweep") else return cursor
+            let r = math.hypot(a[0] - first[0], a[1] - first[1])
+            let start = math.atan2(a[1] - first[1], a[0] - first[0])
+            return [first[0] + math.cos(start + sweep) * r, first[1] + math.sin(start + sweep) * r]
+        if tool == "3-Point Rectangle" and clicks.length == 2:
+            let w = self.locked("Width") else return cursor
+            let side = math.max(1e-12, math.hypot(a[0] - first[0], a[1] - first[1]))
+            let nx = -(a[1] - first[1]) / side
+            let ny = (a[0] - first[0]) / side
+            let way = sign((cursor[0] - first[0]) * nx + (cursor[1] - first[1]) * ny)
+            return [a[0] + nx * w * way, a[1] + ny * w * way]
+        return cursor
+
+    ## The unlocked boxes' live values, and every box's place, for the
+    ## point at `e` (steered), a screen point being `pixel` on the plane.
+    pub func live(self, tool: str, clicks: list[list[float]], e: list[float], pixel: float):
+        if not self.active() or clicks.length == 0:
+            return
+        let a = clicks[-1]
+        let first = clicks[0]
+        let off = box_offset * pixel
+        let dx = e[0] - a[0]
+        let dy = e[1] - a[1]
+        let length = math.hypot(dx, dy)
+        # The way across what is measured.
+        let ux = dx / length if length > 0.0 else 1.0
+        let uy = dy / length if length > 0.0 else 0.0
+        let values: list[float] = []
+        let places: list[list[float]] = []
+        if tool == "Line" or (tool == "3-Point Rectangle" and clicks.length == 1):
+            values.append(length)
+            places.append([(a[0] + e[0]) * 0.5 - uy * off, (a[1] + e[1]) * 0.5 + ux * off])
+            values.append(math.atan2(dy, dx))
+            let along = math.min(length * 0.3, 60.0 * pixel)
+            places.append([a[0] + ux * along + uy * off, a[1] + uy * along - ux * off])
+        elif tool in ["2-Point Rectangle", "Center Rectangle"]:
+            let scale = 2.0 if tool == "Center Rectangle" else 1.0
+            let sx = sign(dx)
+            let sy = sign(dy)
+            values.append(math.abs(dx) * scale)
+            values.append(math.abs(dy) * scale)
+            if tool == "Center Rectangle":
+                places.append([a[0], a[1] - dy - sy * off])
+                places.append([a[0] + dx + sx * 2.5 * off, a[1]])
+            else:
+                places.append([(a[0] + e[0]) * 0.5, a[1] - sy * off])
+                places.append([e[0] + sx * 2.5 * off, (a[1] + e[1]) * 0.5])
+        elif tool in ["Center Diameter Circle", "2-Point Circle"]:
+            values.append(length * (2.0 if tool == "Center Diameter Circle" else 1.0))
+            places.append([(a[0] + e[0]) * 0.5 - uy * off, (a[1] + e[1]) * 0.5 + ux * off])
+        elif clicks.length == 1 and tool in ["Center Point Arc", "Circumscribed Polygon", "Inscribed Polygon"]:
+            values.append(length)
+            places.append([(a[0] + e[0]) * 0.5 - uy * off, (a[1] + e[1]) * 0.5 + ux * off])
+            if tool != "Center Point Arc":
+                values.append(6.0)
+                places.append([a[0] + uy * off * 1.5, a[1] - ux * off * 1.5])
+        elif tool == "Center Point Arc":
+            let start = math.atan2(a[1] - first[1], a[0] - first[0])
+            var sweep = math.atan2(e[1] - first[1], e[0] - first[0]) - start
+            while sweep <= 0.0:
+                sweep += 2.0 * math.pi
+            values.append(sweep)
+            places.append([e[0] + off, e[1] + off])
+        elif tool == "3-Point Rectangle":
+            let side = math.max(1e-12, math.hypot(a[0] - first[0], a[1] - first[1]))
+            let nx = -(a[1] - first[1]) / side
+            let ny = (a[0] - first[0]) / side
+            values.append(math.abs((e[0] - first[0]) * nx + (e[1] - first[1]) * ny))
+            places.append([e[0] + off, e[1] + off])
+        let count = values.length if values.length < self.boxes.length else self.boxes.length
+        for at in 0..<count:
+            let b = self.boxes[at]
+            if not b.locked:
+                b.value = values[at]
+            b.x = places[at][0]
+            b.y = places[at][1]
+
+## The boxes of `tool` once `clicks` of its clicks are down.
+func boxes_for(tool: str, clicks: int) -> list[ValueBox]:
+    if clicks == 0:
+        return []
+    if tool == "Line":
+        return [ValueBox("Length"), ValueBox("Angle", angle = true)]
+    if tool in ["2-Point Rectangle", "Center Rectangle"] and clicks == 1:
+        return [ValueBox("Width"), ValueBox("Height")]
+    if tool == "3-Point Rectangle":
+        return [ValueBox("Length"), ValueBox("Angle", angle = true)] if clicks == 1 else [ValueBox("Width")]
+    if tool in ["Center Diameter Circle", "2-Point Circle"] and clicks == 1:
+        return [ValueBox("Diameter")]
+    if tool == "Center Point Arc":
+        return [ValueBox("Radius")] if clicks == 1 else [ValueBox("Sweep", angle = true)]
+    if tool in ["Circumscribed Polygon", "Inscribed Polygon"] and clicks == 1:
+        return [ValueBox("Radius"), ValueBox("Sides", count = true)]
+    return []
+
+## What box `b` shows: its typed text once locked, else its live value.
+pub func shown(b: ValueBox, shown_in: Unit) -> str:
+    if b.locked:
+        return b.text
+    if b.angle:
+        return units.angle_text(b.value)
+    if b.count:
+        return f"{int(b.value)}"
+    return units.length_text(b.value, shown_in)
+
+func sign(value: float) -> float:
+    return -1.0 if value < 0.0 else 1.0

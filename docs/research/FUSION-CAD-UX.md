@@ -72,7 +72,7 @@ The same luce-cad operations serve both workflows. A node runs them on its input
 |---|---|
 | 0 | Small fixes found here (done) |
 | 1 | Profiles you can see, pick and extrude (done) |
-| 2 | Dimensions while drawing, and on the canvas |
+| 2 | Dimensions while drawing, and on the canvas (done) |
 | 3 | Sketch on a face from the viewport, with projection and offset |
 | 4 | Extrude, Revolve and Press Pull in full |
 | 5 | Fillet and Chamfer in the viewport |
@@ -669,7 +669,11 @@ texts, values and the result's volume checked.
   - Arrow drags are tested through the same value path as typing.
   - A preview capture of the shaded profiles.
 
-**Stage 2: sizes while drawing, dimensions on the canvas** (G5, G6; luce-cad 6).
+**Stage 2: sizes while drawing, dimensions on the canvas** (G5, G6; luce-cad 6). Done 2026-10-11 (`sketch_dimension_tests`; luce-cad `dimension_tests`). As built:
+- Value boxes are drawn and typed by the editor itself (`sketch_typing.luc`), not widgets: the viewport takes text while they show, so tool letters and the A/S/D menus wait, and Tab stays theirs. Boxes: Line (Length, Angle), 2-point and center rectangles (Width, Height), 3-point rectangle (Length, then Width), center-diameter and 2-point circles (Diameter: Fusion's box for those tools), center point arc (Radius, then Sweep), polygons (Radius, Sides). A typed line angle is dimensioned against a level construction line at its start, as long as the line (no sketch origin axes yet).
+- Dimensions are laid out by luce-cad (`CadSketch.lay_out`, `dimensions.lucb`) and drawn by `sketch_dimensions.luc`; labels keep their place in the sketch's text (`g` lines). A click on a selected dimension opens its box on the label (this covers the double-click). Driven/Driving and Edit value are on the right-click menu. Hovering a glyph lights what it holds (stage 0).
+- Not built: inserting another dimension's name while typing (no named parameters yet), expressions kept as text (a typed value is stored as its number).
+- Plan as written:
 - Value boxes per tool and stage, Tab, Enter, locked values steering the cursor.
 - Typed values become dimensions in one undo.
 - Dimensions drawn with extension lines and arrows, clickable, draggable, double-click to edit, Driven/Driving, the over-constrain notice.

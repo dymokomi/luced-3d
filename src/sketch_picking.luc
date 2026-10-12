@@ -1,0 +1,104 @@
+## The Sketch editor's constraint and dimension tools, click by click: a
+## constraint tool takes its entities in order, the first the reference,
+## and applies once it has enough (sketch_constrain.luc says which
+## constraint); one that would over-constrain is taken back with Fusion's
+## notice. Sketch Dimension takes one entity or two, then a click where its
+## label goes; a dimension the sketch already holds is added driven (a
+## reference, in parentheses) with a notice, else its value box opens there.
+from sketch_editor import SketchEditor
+import sketch_constrain
+
+## A constraint or dimension tool's click on what is under the pointer.
+pub func pick_click(e: SketchEditor) -> unit!:
+    let at = e.hover
+    if e.tool == "Sketch Dimension":
+        if at >= 0 and e.picks.length < 2 and not (at in e.picks):
+            e.picks.append(at)
+        elif e.picks.length > 0:
+            dimension(e)
+            e.picks = []
+        e.revision += 1
+        return
+    if at < 0:
+        return
+    e.picks.append(at)
+    if constrain_picks(e):
+        e.picks = []
+    e.revision += 1
+
+## Apply the constraint tool to its picks when they are enough; whether
+## they were (applied, or refused as conflicting).
+pub func constrain_picks(e: SketchEditor) -> bool!:
+    let sketch = e.sketch else return false
+    let made = sketch_constrain.constrain_picks(sketch, e.tool, e.picks)
+    if made == sketch_constrain.more_picks:
+        return false
+    if made == sketch_constrain.unfixed:
+        e.commit("Unfix")
+        return true
+    if made == sketch_constrain.no_fit:
+        # Picks that do not fit: start again from the last.
+        e.picks = [e.picks[-1]]
+        e.say(f"{e.tool} does not join those: pick again")
+        return false
+    settle(e, made)
+    return true
+
+## Solve after constraint `constraint` was added: kept and written back
+## when it holds, else taken away with Fusion's over-constrained notice.
+func settle(e: SketchEditor, constraint: int) -> unit!:
+    let sketch = e.sketch else return
+    let solved = sketch.solve()
+    sketch.analyze()
+    if not solved or sketch.conflicting_count() > 0:
+        sketch.unconstrain(constraint)
+        _ = sketch.solve()
+        sketch.analyze()
+        e.say("Sketch geometry is over constrained")
+        e.revision += 1
+        return
+    e.commit(e.tool)
+
+## Sketch Dimension's placing click: its picks measured
+## (sketch_constrain.measure); its value is then typed where it was
+## placed, or edited in the parameter panel.
+func dimension(e: SketchEditor) -> unit!:
+    let sketch = e.sketch else return
+    let made = sketch_constrain.measure(sketch, e.picks)
+    if made < 0:
+        e.say("Sketch Dimension measures a line, a circle, an arc, two points, a point and a line, or two lines")
+        return
+    # Its label where the click was.
+    sketch.place_label(made, e.cursor[0], e.cursor[1])
+    # A dimension the sketch already has is kept as a driven one, said
+    # (Fusion's over-constrained notice).
+    if not sketch.solve():
+        sketch.set_driven(made, true)
+    sketch.analyze()
+    if sketch.conflicting_count() > 0 or sketch.redundant_count() > 0:
+        sketch.set_driven(made, true)
+    e.commit("Sketch dimension")
+    if sketch.driven(made):
+        e.say("That dimension would over-constrain the sketch: it was added driven (a reference, in parentheses)")
+    if not sketch.driven(made):
+        if let open = e.on_value:
+            open(made, e.pointer_x, e.pointer_y, false)
+
+## Make dimension `constraint` driven (a reference, measured) or driving;
+## one the sketch cannot hold stays driven, said.
+pub func set_driven(e: SketchEditor, constraint: int, driven: bool) -> unit!:
+    let sketch = e.sketch else return
+    if constraint < 0 or constraint >= sketch.constraint_count():
+        return
+    sketch.set_driven(constraint, driven)
+    if not driven:
+        let solved = sketch.solve()
+        sketch.analyze()
+        if not solved or sketch.conflicting_count() > 0 or sketch.redundant_count() > 0:
+            sketch.set_driven(constraint, true)
+            _ = sketch.solve()
+            sketch.analyze()
+            e.say("That dimension would over-constrain the sketch: it stays driven")
+            e.revision += 1
+            return
+    e.commit("Driven dimension" if driven else "Driving dimension")

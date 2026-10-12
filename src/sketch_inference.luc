@@ -1,0 +1,57 @@
+## Where a sketch tool's cursor lands (sketch_editor.luc): the snapping
+## layer's catch on the sketch (snapping.luc: points, middles, crossings,
+## curves; not the point just placed or dragged), else a line's end drawn
+## near level or upright lined up with its start (Fusion's inference,
+## within 3°), else the grid.
+from luce_cad.sketch import CadSketch
+from snapping import grid_step, on_grid, stepped, sketch_kind_name
+from workspace import Workspace
+from luce_std import math
+
+## How near level or upright a drawn line is made so (radians, 3°).
+let level_angle = 0.05235987755982988
+
+## Where the cursor landed: its place on the plane, the entity it snapped
+## to (-1: none), what kind of catch that was (CadSketch.snap's: 1 point,
+## 2 middle, 4 crossing, 8 curve; 0 none), a crossing's second curve, and
+## the mark to show ("": none).
+pub class Landing:
+    pub var cursor: list[float]
+    pub var snap: int = -1
+    pub var kind: int = 0
+    pub var other: int = -1
+    pub var mark: str = ""
+
+    pub func init(self, cursor: list[float]):
+        self.cursor = cursor
+
+## Where `cursor` lands on `sketch` within `reach` (sketch units), never
+## on entity `skip`; `start` is a line's start while its end is placed
+## (level and upright inference), else empty.
+pub func land(w: Workspace, sketch: CadSketch, cursor: list[float], reach: float, skip: int, start: list[float]) -> Landing!:
+    let snaps = w.snaps
+    let step = grid_step(w.view.distance)
+    let landing = Landing(cursor.copy())
+    let found = sketch.snap(cursor[0], cursor[1], reach, snaps.sketch_mask(), skip)
+    if found != 0:
+        landing.snap = sketch.snap_entity()
+        landing.kind = found
+        landing.other = sketch.snap_other()
+        landing.cursor = [sketch.snap_x(), sketch.snap_y()]
+        landing.mark = sketch_kind_name(found)
+        return landing
+    if start.length == 2:
+        let dx = cursor[0] - start[0]
+        let dy = cursor[1] - start[1]
+        if math.abs(dy) <= math.abs(dx) * math.tan(level_angle):
+            landing.cursor = [stepped(cursor[0], step, snaps.grid()), start[1]]
+            landing.mark = "Level"
+            return landing
+        if math.abs(dx) <= math.abs(dy) * math.tan(level_angle):
+            landing.cursor = [start[0], stepped(cursor[1], step, snaps.grid())]
+            landing.mark = "Upright"
+            return landing
+    if snaps.grid():
+        landing.cursor = [on_grid(cursor[0], step), on_grid(cursor[1], step)]
+        landing.mark = "Grid"
+    return landing

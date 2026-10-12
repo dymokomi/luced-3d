@@ -1,0 +1,208 @@
+## Stage 2 of the Fusion CAD plan (docs/research/FUSION-CAD-UX.md): sizes
+## typed while drawing, in value boxes that follow the cursor (Tab locks
+## and moves on, Enter places), becoming the shape's dimensions in its undo
+## step; dimensions drawn with extension lines and arrows, clicked to
+## select, clicked again to edit in a box on the label, dragged to move the
+## label (kept through the node's text), made driven or driving; a
+## dimension that would over-constrain added driven, with the notice.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_cad.sketch import CadSketch
+import node_commands
+import sketch_commands
+import sketch_picking
+import sketch_kinds as names
+from sketch_support import open_sketch, render, click, key, near, sketch_of, last_of, line_length
+from view_projection import project
+import text as characters
+from luce_std import math
+
+pub func sketch_dimension_tests() -> unit!:
+    typed_line()
+    typed_shapes()
+    canvas_dimensions()
+    print("PASS sketch dimensions: a line typed 25, Tab, 30, Enter (two dimensions, one undo), a rectangle 40 by 20, a circle 1 in (25.4 mm), locked values steering the cursor; dimensions drawn with extension lines and arrows, clicked to select, clicked again to edit on the label, dragged (one undo, kept in the text), Driven and Driving, a repeated dimension added driven with the notice")
+
+## Type `text` into what has the keyboard, a character at a time.
+func type_text(editor: Luce3D, text: str) -> unit!:
+    for character in text:
+        editor.app.dispatch(Event(kind = EventKind.text_input, codepoint = text_code(character)))
+
+func text_code(character: str) -> int:
+    return characters.code_of(character)
+
+## Move the pointer to sketch point (`x`, `y`) without clicking.
+func hover(editor: Luce3D, x: float, y: float) -> unit!:
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    let s = view_point(editor, x, y)
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + s[0], y = bounds.y + s[1]))
+
+func view_point(editor: Luce3D, x: float, y: float) -> list[float]!:
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    let f = view.sketch.editor.frame
+    return project(editor.workspace, f.at(x, y), bounds.width, bounds.height)
+
+## A Line from the origin typed 25, Tab, 30, Enter: 25 long at 30°, its
+## length and angle two dimensions (the angle from a level construction
+## line); one undo takes the line and both away. The boxes steer: with the
+## length locked, the pointer elsewhere still makes 25.
+func typed_line() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    let id = open_sketch(editor, 10.0, 5.0, 80.0)
+    let e = editor.panels.view.sketch.editor
+    e.choose("Line")
+    click(editor, 0.0, 0.0)
+    hover(editor, 12.0, 3.0)
+    assert(e.typing.active() and e.typing.boxes.length == 2 and e.typing.boxes[0].label == "Length")
+    # The live length follows the pointer.
+    assert(math.abs(e.typing.boxes[0].value - math.hypot(12.0, 3.0)) < 0.5, f"{e.typing.boxes[0].value}")
+    type_text(editor, "25")
+    assert(e.typing.boxes[0].locked and near(e.typing.boxes[0].value, 25.0))
+    # Locked: the cursor keeps the pointer's direction at 25.
+    assert(near(math.hypot(e.cursor[0], e.cursor[1]), 25.0), f"{e.cursor}")
+    key(editor, Key.tab)
+    assert(e.typing.focus == 1)
+    type_text(editor, "30")
+    key(editor, Key.enter)
+    key(editor, Key.escape)
+    let s = sketch_of(editor, id)
+    var line = -1
+    for at in 0..<s.entity_count():
+        if s.kind(at) == names.line_kind and not s.construction(at):
+            line = at
+    assert(line >= 0 and near(line_length(s, line), 25.0), f"{s.text()}")
+    let a = s.part(line, 0)
+    let b = s.part(line, 1)
+    assert(near(math.atan2(s.y(b) - s.y(a), s.x(b) - s.x(a)), math.pi / 6.0))
+    let dims = sketch_commands.dimensions(s.text())
+    assert(dims.length == 2 and near(dims[0].value, 25.0) and dims[1].angle and near(dims[1].value, math.pi / 6.0), f"{dims.length}")
+    assert(w.history.undo_label().contains("Sketch line"), w.history.undo_label())
+    w.undo()
+    assert(sketch_of(editor, id).entity_count() == 0)
+    editor.close()
+
+## A 2-Point Rectangle typed 40, Tab, 20, Enter: 40 by 20 with two
+## dimensions; a Center Diameter Circle typed "1 in": 25.4 mm across.
+func typed_shapes() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let id = open_sketch(editor, 20.0, 10.0, 120.0)
+    let e = editor.panels.view.sketch.editor
+    e.choose("2-Point Rectangle")
+    click(editor, 0.0, 0.0)
+    hover(editor, 10.0, 10.0)
+    assert(e.typing.boxes.length == 2 and e.typing.boxes[1].label == "Height")
+    type_text(editor, "40")
+    key(editor, Key.tab)
+    type_text(editor, "20")
+    key(editor, Key.enter)
+    let s = sketch_of(editor, id)
+    let dims = sketch_commands.dimensions(s.text())
+    assert(dims.length == 2 and near(dims[0].value, 40.0) and near(dims[1].value, 20.0), f"{s.text()}")
+    var high = [-1e9, -1e9]
+    for at in 0..<s.entity_count():
+        if s.kind(at) == names.point_kind:
+            high = [math.max(high[0], s.x(at)), math.max(high[1], s.y(at))]
+    assert(near(high[0], 40.0) and near(high[1], 20.0), f"{high}")
+    e.choose("Center Diameter Circle")
+    click(editor, 60.0, 0.0)
+    hover(editor, 64.0, 0.0)
+    type_text(editor, "1 in")
+    key(editor, Key.enter)
+    let circle = sketch_of(editor, id)
+    let found = last_of(circle, names.circle_kind)
+    assert(found >= 0 and near(circle.radius(found), 12.7), f"{circle.radius(found)}")
+    let all = sketch_commands.dimensions(circle.text())
+    assert(all.length == 3 and near(all[2].value, 25.4))
+    editor.close()
+
+## A 40 mm line with its length dimension: drawn with two extension lines,
+## a dimension line and two arrows; a click on its label selects it, a
+## second opens the value box on the label, which sets 30 (solved again,
+## one undo); a drag moves the label, one undo step, kept in the text;
+## Driven and back from the right-click menu's command; a second length
+## dimension on the now fixed line is added driven, said.
+func canvas_dimensions() -> unit!:
+    let editor = Luce3D()
+    editor.app.layout(1600.0, 1000.0)
+    let w = editor.workspace
+    let id = open_sketch(editor, 20.0, 0.0, 80.0)
+    let e = editor.panels.view.sketch.editor
+    let s = CadSketch.parse("")
+    let a = s.add_point(0.0, 0.0)
+    let b = s.add_point(40.0, 0.0)
+    let line = s.add_line(a, b)
+    _ = s.constrain(names.horizontal, line)
+    _ = s.constrain(names.fix, a)
+    let d = s.constrain(names.distance, a, b, value = 40.0)
+    node_commands.set_text(w, 0, s.text())
+    render(editor)
+    let shown = e.dimensions.find(d) else trap("the dimension is not drawn")
+    assert(shown.lines.length == 12 and shown.arrows.length == 8, f"{shown.lines.length} {shown.arrows.length}")
+    assert(shown.label.contains("40"), shown.label)
+    # A click on the label selects it; a second opens its value box.
+    click_label(editor, d)
+    assert(e.constraint_selection == [d])
+    assert(not editor.panels.sketch_value.is_open())
+    click_label(editor, d)
+    assert(editor.panels.sketch_value.is_open())
+    type_text(editor, "30")
+    key(editor, Key.enter)
+    let changed = sketch_of(editor, id)
+    assert(near(changed.x(b), 30.0) and w.history.undo_label().contains("Change dimension"), f"{changed.x(b)} {w.history.undo_label()}")
+    render(editor)
+    # Dragged: the label goes where it is let go, one undo step.
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    let moved = e.dimensions.find(d) else trap("no dimension")
+    let x = bounds.x + moved.box.x + moved.box.width * 0.5
+    let y = bounds.y + moved.box.y + moved.box.height * 0.5
+    let target = view_point(editor, 15.0, -12.0)
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = x, y = y))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = x, y = y, button = 0))
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + target[0], y = bounds.y + target[1]))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = bounds.x + target[0], y = bounds.y + target[1], button = 0))
+    assert(w.history.undo_label().contains("Move dimension label"), w.history.undo_label())
+    let placed = sketch_of(editor, id)
+    assert(placed.label_placed(d) and placed.text().contains("\ng "))
+    assert(placed.lay_out(d, 0.1))
+    let dx = placed.label_x()
+    let dy = placed.label_y()
+    assert(math.abs(dy + 12.0) < 1.0, f"{dx}, {dy}")
+    # Kept as text: read back, the label is where it was put.
+    let back = CadSketch.parse(placed.text())
+    assert(back.lay_out(d, 0.1) and near(back.label_x(), dx) and near(back.label_y(), dy))
+    render(editor)
+    # Driven, then driving again.
+    sketch_picking.set_driven(e, d, true)
+    assert(sketch_of(editor, id).driven(d))
+    render(editor)
+    let reference = e.dimensions.find(d) else trap("no dimension")
+    assert(reference.label.starts_with("("), reference.label)
+    sketch_picking.set_driven(e, d, false)
+    assert(not sketch_of(editor, id).driven(d))
+    # A second length on the fixed line: added driven, with the notice.
+    e.choose("Sketch Dimension")
+    click(editor, 15.0, 0.0)
+    click(editor, 15.0, 8.0)
+    let twice = sketch_of(editor, id)
+    let last = twice.constraint_count() - 1
+    assert(names.is_dimension(twice.constraint_kind(last)) and twice.driven(last), twice.text())
+    assert(w.notice.contains("over-constrain"), w.notice)
+    editor.close()
+
+## Click dimension `constraint`'s label where the view placed it.
+func click_label(editor: Luce3D, constraint: int) -> unit!:
+    render(editor)
+    let view = editor.panels.view
+    let bounds = view.layout().bounds()
+    let shown = view.sketch.editor.dimensions.find(constraint) else trap("no dimension")
+    let x = bounds.x + shown.box.x + shown.box.width * 0.5
+    let y = bounds.y + shown.box.y + shown.box.height * 0.5
+    for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+        editor.app.dispatch(Event(kind = kind, x = x, y = y, button = 0))

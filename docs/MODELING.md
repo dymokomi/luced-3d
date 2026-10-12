@@ -389,8 +389,32 @@ the top left choose what Select picks: Points, Lines or Shapes.
   arc (radius), two points, a point and a line, or two lines (their angle,
   or their distance when parallel), then a click to place it. It measures
   the sketch as it is; one that repeats or contradicts others is driven
-  (shown in parentheses). Each dimension is a row of the parameter panel
-  (d1, d2, …) in the document's unit; a new value re-solves the sketch.
+  (shown in parentheses), and the status line says so. Each dimension is a
+  row of the parameter panel (d1, d2, …) in the document's unit; a new value
+  re-solves the sketch.
+- **Dimensions on the canvas** are drawn as drawings draw them
+  (`sketch_dimensions.luc`, laid out by luce-cad's `CadSketch.lay_out`):
+  extension lines, a dimension line with filled arrows (outside when the
+  ends are close), R and Ø leaders, an arc for an angle, the value over a
+  dark patch; driven ones muted and in parentheses. A click on a label or
+  its lines selects the dimension; a click on the selected one opens its
+  value box on the label (Enter re-solves, one undo); a drag moves the label,
+  one undo, kept in the sketch's text relative to what it measures. The
+  right-click menu on a dimension has Edit value, Make driven / Make
+  driving (refused, said, when it would over-constrain) and Delete
+  dimension.
+- **Value boxes while drawing** (`sketch_typing.luc`, after Fusion's
+  heads-up boxes and SolidCraft's `sketch_dims`): once a shape's first point
+  is down, boxes follow the cursor beside what they measure: a line's Length
+  and Angle (from level), a rectangle's Width and Height (a 3-point one's
+  Length, then Width), a circle's Diameter, a center point arc's Radius then
+  Sweep, a polygon's Radius and Sides. Typing replaces the focused box and
+  locks it; Tab locks it as it stands and moves on (Shift+Tab back); locked
+  values steer the cursor; Enter places the point. Lengths read any unit and
+  arithmetic ("1 in", "10 + 5 mm"), angles degrees. The locked values become
+  the shape's dimensions in its undo step (a line's angle against a level
+  construction line at its start); Sweep, Sides and a 3-point rectangle's
+  Angle only shape it.
 - **Modify**: Trim (T), Extend and Break act on the curve clicked, where it
   is clicked (Trim takes the piece between its nearest crossings; a
   circle becomes the arc left). Fillet and Chamfer take two lines meeting
@@ -407,8 +431,8 @@ the top left choose what Select picks: Points, Lines or Shapes.
   whole curves, at Shapes whole chains (luce-cad's `CadSketch.select_box`
   on the box cast onto the plane), with the same modifiers; a plain box over
   nothing clears the selection. A click on a constraint's glyph or a
-  dimension's label selects the constraint (glyphs win over geometry,
-  `sketch_glyphs.luc`). Delete removes the selected constraints and
+  dimension selects the constraint (they win over geometry,
+  `sketch_glyphs.luc`, `sketch_dimensions.luc`). Delete removes the selected constraints and
   entities (and what is drawn on them) in one undo step, as the right-click
   menu's Delete does; X toggles construction.
 
