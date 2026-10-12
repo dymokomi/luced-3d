@@ -44,8 +44,9 @@ pub func edit_cad_direct_tests() -> unit!:
     face_tools()
     body_tools()
     revolve_axis()
+    to_object()
     step_handles()
-    print("PASS Edit CAD direct modeling: sketches as objects (on a plane and on a face, its loops projected once), Extrude of their profiles (Auto cut into the model), a sketch edited after its extrude leaving the extrude as it was; an L-bracket's inner wall moved 3 (3 × its area), a fillet's face deleted and healed to the sharp box, Press Pull, Offset Face, Remove Faces, Replace Face, Shell; Combine, Split Body, Move/Copy with Create copy; Revolve waiting for its axis; the last step's arrow dragged in the viewport (one undo) and its value box typed; every step's undo restoring the model exactly; failures said on the step and node with the model before shown")
+    print("PASS Edit CAD direct modeling: sketches as objects (on a plane and on a face, its loops projected once), Extrude of their profiles (Auto cut into the model), a sketch edited after its extrude leaving the extrude as it was; an L-bracket's inner wall moved 3 (3 × its area, still selected) and its top turned 5°, a fillet's face deleted and healed to the sharp box, Press Pull, Offset Face, Remove Faces, Replace Face, Shell; Combine, Split Body, Move/Copy with Create copy; Revolve waiting for its axis; an Extrude To object waiting for its face (a cut from inside up to the top); the last step's arrow dragged in the viewport (one undo) and its value box typed; every step's undo restoring the model exactly; failures said on the step and node with the model before shown")
 
 # -- Helpers.
 
@@ -238,6 +239,17 @@ func l_bracket_wall() -> unit!:
     assert(node.edits[-1].verb == "Transform Components" and node.warning == "")
     near(total_volume(w, node) - start, 3.0 * 25.0 * 20.0, 2.0, "the inner wall moved 3")
     assert(data_of(w, node).models().length == 1)
+    # The moved wall stays selected; the upright's top turned 5° about Z
+    # by Move/Copy's angle (about the face's middle): its volume stays,
+    # one corner rises.
+    assert(w.selected_count() > 0)
+    let moved = total_volume(w, node)
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99 and c.y > 29.0)
+    edit_cad_commands.move_copy(w)
+    modeling_commands.set_last_step(w, 5, 5.0, -360.0, 360.0)
+    assert(fresh(w, node).warning == "")
+    near(total_volume(w, node), moved, 1.0, "the top turned about its middle")
+    assert(CadGeometry.model(data_of(w, node).geometry, 0).tessellate(8).bounds().maximum.y > 30.1)
 
 ## A 2 mm box's edge filleted 0.4; the fillet's face deleted (Fusion's
 ## Delete): healed back to the sharp box, the unfilleted volume.
@@ -420,6 +432,25 @@ func revolve_axis() -> unit!:
     modeling_commands.set_last_step(w, cad_features.axis_slot, 2.0, 0.0, 3.0)
     edit_cad_picks.accept_pick(w, node)
     near(total_volume(w, node), math.pi * (16.0 - 4.0) * 3.0, 0.5, "the ring revolved")
+
+## A square sketched on the ground inside a 2 mm box, extruded To object:
+## the step waits for the face it runs to, the box's top clicked; from
+## inside, Auto cuts up to it.
+func to_object() -> unit!:
+    let w = Workspace()
+    let node = model_node(w)
+    modeling_commands.create(w, "Box")
+    edit_cad_commands.create_sketch(w, 1)
+    draw(w, node, sketch_commands.rectangle_text(0.0, 0.0, 0.5, 0.5))
+    edit_cad_commands.feature_from_sketch(w, "Extrude")
+    modeling_commands.set_last_step(w, cad_features.extent_slot, 1.0, 0.0, 2.0)
+    edit_cad_commands.pick_extent_face(w)
+    let prompt = w.prompt else trap("To object waits for its face")
+    assert(prompt.label == edit_cad_picks.object_label and w.level_index() == 3)
+    select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
+    assert(w.prompt == none and fresh(w, node).edits[-1].text(cad_features.face_text) != "")
+    near(total_volume(w, node), 8.0 - 0.25, 1e-3, "the cut up to the top")
+    assert(fresh(w, node).automatic == "Cut")
 
 ## The last step's handle in the viewport: a 2 mm box's top Press Pulled,
 ## its arrow dragged out 1 more (one undo step, the step's own number), its
