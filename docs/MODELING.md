@@ -678,16 +678,23 @@ data matched) or G3; **Tangency weight** (Fusion's, 0.1 to 2, 1 the plain
 fillet, constant or variable radius): more hugs the faces longer and turns
 tighter in the middle, less is flatter; a G1 fillet with a weight is a conic
 (Fusion's), its corners setbacks. A dome's rim fillets too (Fusion's torus at
-G1), and a plane meeting a cylinder along it at G2 under any weight. Tangent
-chain as Fusion's.
+G1), and a plane meeting a cylinder along it (a D-shaft's flat) at G1, G2 and
+G3 under any weight (G3 too heavily weighted there is refused: its section
+would cross the cylinder). G2 and G3 follow a curved face's curvature at their
+contact, G3 its change too. A variable radius straight between two radii at G1
+(weight 1) rolls a ball, its face a cone, as Fusion's. Tangent chain as
+Fusion's.
 Chamfer's **Type** is Equal distance, **Two distances** (Distance along the
 first face, the one more of the picked edges lie on, such as a top round its
-rim; Distance 2 along the other; Flip swaps) or **Distance and angle**
-(leaving the first face at Angle). **Corner type**, where three chamfers meet
+rim, else a curved face over a flat one, as Fusion's; Distance 2 along the
+other; Flip swaps) or **Distance and angle** (leaving the first face at Angle
+from its own tangent where the chamfer meets it, as Fusion's: on a dome's
+sphere the contact's tangent, not the rim's). **Corner type**, where three chamfers meet
 at a corner: Chamfer (Fusion's default: a flat face joins them), Miter (they
 run on to a point) or Blend (the chamfers set back and one flat face closes the
 corner, as Fusion's). A chamfer's distance on a curved face is straight from the
-edge (a chord), as Fusion's; a dome's rim chamfers too. In Edit CAD a
+edge (a chord), as Fusion's; a dome's rim chamfers too (every type checked
+against Fusion, domes cut at and off their middle, and a D-shaft's flat). In Edit CAD a
 Fillet step blends the edges picked; the rule is the node's.
 
 **Check** (`cad_check.luc`; Inspect in the CAD menus, the S menu, and Check
