@@ -75,7 +75,7 @@ The same luce-cad operations serve both workflows. A node runs them on its input
 | 2 | Dimensions while drawing, and on the canvas (done) |
 | 3 | Sketch on a face from the viewport, with projection and offset (done) |
 | 4 | Extrude, Revolve and Press Pull in full (done; the parity round added Thin, faces as profiles, Start object, Extend, Objects To Cut and Revolve To) |
-| 5 | Fillet and Chamfer in the viewport (done; the parity round added Full round, chord length, variable radius and chamfer corner types; G1 setback corners open) |
+| 5 | Fillet and Chamfer in the viewport (done; the parity round added Full round, chord length, variable radius, G1 setback corners and chamfer corner types) |
 | 6 | Edit CAD direct modeling (done; Split Face, Replace Face onto several targets, Move Face by Point to Point and a face sketch's Redefine open) |
 | 7 | Shell, Move/Copy, Combine as nodes |
 | 8 | A timeline strip and history polish |
@@ -790,8 +790,9 @@ texts, values and the result's volume checked.
 - **Marking menus**: in a CAD network the A and S menus lead with Repeat and the CAD tool used last, under the repeat icon (a command again, or its node added bare when nothing selected applies).
 - **The ghost wireframe** round filleted bodies (`stage45/shots/cad_g3_chain.png`, `kernel/shots2/runout_fillet_g3.png`) was the B-spline faces' control nets, drawn as the control hull: G2/G3 strips and setback patches showed their nets standing off the body. luce-cad `hull_lines` now leaves out faces a modeling feature named (imported and freeform surfaces keep theirs); likewise a CAD network's sketch curves no longer show their circles' control triangles (`cad_nodes.shows_curve_hulls`). Fusion draws neither.
 - **Open ends that stop flat** (a fillet's open end where the face going on does not turn away): Fusion's help, its API reference and the forums found do not say what Fusion does there (ACIS/ShapeManager "capping" is not documented publicly either); the flat end face (luce-cad `cap_runout.lucb`) stays, documented as unverified against Fusion.
-- **Still open**: G1 setback corners (Fusion's Corner type Setback for tangent fillets: the setback patch must be rational to meet circular strips exactly, and `patch_fit.lucb` fits non-rational quads), so the Fillet node has no Corner type row: G1 corners are rolling balls, G2 and G3 corners setbacks, as before; variable radius beyond one straight edge (chains, curved faces, corners with other fillets, G2/G3).
-- Screenshots: `luce_work/cad/parity/shots/` (`cad_crossing`, `cad_repeat`, `cad_filter`, `cad_thin`, `cad_face_extrude`, `cad_through`, `cad_bodies`, `cad_revolve_to`, `cad_full_round`, `cad_chamfer_corner`, `cad_chamfer_blend`, `cad_shown_sketch`, `cad_variable`, `g3_after`).
+- Fillet **Corner type** Rolling ball or **Setback** (G1; G2 and G3 corners are always setbacks): luce-cad fits the setback patch rational now (homogeneous fit, the weights first) and gives the edges' tools the same rational arc as their section, so the patch meets them exactly.
+- **Still open**: variable radius beyond one straight edge (chains, curved faces, corners with other fillets, G2/G3).
+- Screenshots: `luce_work/cad/parity/shots/` (`cad_crossing`, `cad_repeat`, `cad_filter`, `cad_thin`, `cad_face_extrude`, `cad_through`, `cad_bodies`, `cad_revolve_to`, `cad_full_round`, `cad_chamfer_corner`, `cad_chamfer_blend`, `cad_shown_sketch`, `cad_variable`, `cad_setback`, `g3_after`).
 
 **Stage 7: Shell, Move/Copy, Combine as nodes** (luce-cad 10).
 - Tests: a shelled box's volume (outer minus inner, with the removed face open). Inside, Outside and Both.

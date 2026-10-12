@@ -598,7 +598,9 @@ and to the faces across its longest parallel edges). Radius type: Constant,
 **Chord length** (the distance between where the fillet leaves its two
 faces), or **Variable** (Radius at the edge's start, End radius at its end,
 Points between as "position radius" pairs, Smooth transition or straight;
-one straight edge between flat faces ending at faces square to it, G1). Continuity is G1
+one straight edge between flat faces ending at faces square to it, G1).
+**Corner type** (G1): Rolling ball, or Setback (the fillets stop short of the
+corner and a patch blends them, as G2 and G3 corners always are). Continuity is G1
 (Fusion's Tangent), G2 (Curvature) or G3; Tangent chain as Fusion's.
 Chamfer's **Type** is Equal distance, **Two distances** (Distance along the
 first face, the one more of the picked edges lie on, such as a top round its
