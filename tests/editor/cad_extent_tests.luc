@@ -203,6 +203,27 @@ func revolve_axes() -> unit!:
     node_commands.set_text(w, 0, s.text())
     node_commands.select_node(w, revolve)
     assert(volume_is(w, revolve, math.pi * (9.0 - 1.0)))
+    # A body edge as the axis: a 20 mm box wired into the sketch, its
+    # upright edge at x = z = 10 projected onto XY (x = 10): radii 6 to 8,
+    # a new body beside the box.
+    node_commands.add_node(w, "Solid Box", 300.0, 0.0)
+    let box = w.network.selected
+    let cube = body(w, box)
+    w.network.connect(box, sketch, 0)
+    node_commands.select_node(w, revolve)
+    node_commands.set_parameter(w, cad_features.operation_slot, 1.0)
+    var upright = ""
+    for face in 0..<cube.face_count():
+        for use in 0..<cube.face_edge_count(face):
+            let a = cube.face_edge_point(face, use, 0.0)
+            let b = cube.face_edge_point(face, use, 1.0)
+            if a.x > 9.99 and b.x > 9.99 and a.z > 9.99 and b.z > 9.99:
+                upright = CadModeling.edge_references(cube, [cube.face_edge_id(face, use)])
+    node_commands.set_text(w, cad_features.axis_text, cad_features.edge_axis(upright))
+    let both = w.network.evaluate_data(revolve)
+    assert(CadGeometry.model_count(both.geometry) == 2)
+    let ring = volume(CadGeometry.model(both.geometry, 1))
+    assert(math.abs(ring - math.pi * (64.0 - 36.0)) < math.pi * 28.0 * 0.003, f"{ring}")
 
 ## Press Pull on a 20 mm box: its top face selected, Offset Face 5 up
 ## (8000 + 400 × 5); an edge selected, a Fillet with that edge.
@@ -317,4 +338,36 @@ func handles_in_viewport() -> unit!:
         editor.app.dispatch(Event(kind = EventKind.text_input, codepoint = c))
     editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
     assert(math.abs(w.network.require(extrude).values[cad_features.distance_slot] - 12.0) < 1e-6)
+    revolve_ring(editor)
     editor.close()
+
+## A Revolve of a rectangle 2 to 4 along X about the Y axis, 90°: its ring
+## dragged a quarter turn on round, to 180°.
+func revolve_ring(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Sketch", 0.0, 0.0)
+    node_commands.set_parameter(w, 0, 0.0)
+    node_commands.set_text(w, 0, sketch_commands.rectangle_text(3.0, 0.5, 2.0, 1.0))
+    node_commands.add_node(w, "Revolve", 0.0, 120.0)
+    let revolve = w.network.selected
+    node_commands.display_selected(w)
+    node_commands.set_parameter(w, cad_features.axis_slot, 2.0)
+    node_commands.set_parameter(w, cad_features.angle_slot, 90.0)
+    w.view.yaw = 0.3
+    w.view.pitch = 1.2
+    w.view.distance = 30.0
+    w.view.target = Vector3()
+    w.view.update_camera()
+    render(editor)
+    let bounds = editor.panels.view.layout().bounds()
+    let ring = handle_lines.parse(w.network.require(revolve).handles)[0]
+    let tip = editor.panels.view.arrow.tip(bounds.width, bounds.height) else trap("no ring")
+    # The ring turned 180° from the profile: the radius reversed.
+    let half = project(w, ring.foot.subtract(ring.side), bounds.width, bounds.height)
+    drag(editor, tip, half)
+    let angle = w.network.require(revolve).values[cad_features.angle_slot]
+    assert(math.abs(angle - 180.0) < 1e-6, f"{angle}")
+    assert(volume_is(w, revolve, math.pi * 12.0 * 0.5))
