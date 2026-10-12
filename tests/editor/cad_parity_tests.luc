@@ -33,7 +33,7 @@ pub func cad_parity_tests() -> unit!:
     revolve_to()
     blend_options()
     shown_sketch()
-    print("PASS CAD parity: Thin extrude on Side 1, Side 2 and Center; a face extruded as its own profile (Extrude face, Pick profiles); Start: Object from a picked face; a start offset with To object and All; Extend To body and Through body; Objects To Cut picked and Auto-select, Cut on each body apart; Revolve To a picked face, either way; Full round of a rib's picked top, a fillet by chord length and by a variable radius (G1 and G2), Setback corners, chamfer corners as Chamfer and Miter; a shown sketch's profile picked at the Faces level over the face beneath, extruded; its line picked at Smart as a Revolve's axis")
+    print("PASS CAD parity: Thin extrude on Side 1, Side 2 and Center, a closed rectangle and an open line, Fusion's own bounds and volumes; Fillet's Tangency weight (1 the plain fillet, 2 more of the corner, G1 and G2); a face extruded as its own profile (Extrude face, Pick profiles); Start: Object from a picked face; a start offset with To object and All; Extend To body and Through body; Objects To Cut picked and Auto-select, Cut on each body apart; Revolve To a picked face, either way; Full round of a rib's picked top, a fillet by chord length and by a variable radius (G1 and G2), Setback corners, chamfer corners as Chamfer and Miter; a shown sketch's profile picked at the Faces level over the face beneath, extruded; its line picked at Smart as a Revolve's axis")
 
 ## The tessellated volume of every body of node `id`.
 func volume(w: Workspace, id: int) -> float!:
@@ -70,28 +70,54 @@ func cad(w: Workspace) -> unit!:
     node_commands.add_node(w, "CAD", 0.0, 0.0)
     node_commands.enter_group(w, w.network.selected)
 
-## A 20 x 10 rectangle on XY, extruded 2 thin: the wall inside (20 x 10
-## less 18 x 8), outside (22 x 12 less it) and centered (21 x 11 less
-## 19 x 9).
+## Fusion 2705's own Thin Extrude (the probe of 2026-10-12): a 20 x 10
+## rectangle from (0, 0) on XY, wall 2, 5 high: Side 1 inside it (20 x 10,
+## 520), Side 2 outside (24 x 14, 680), Center half each way (22 x 12,
+## 600); a line drawn from (0, 0) to (20, 0): Side 1 to its left (y 0 to
+## 2), Side 2 its right (-2 to 0), Center -1 to 1.
 func thin_extrude() -> unit!:
     let w = Workspace()
     cad(w)
     node_commands.add_node(w, "Sketch", 0.0, 0.0)
+    let sketch = w.network.selected
     node_commands.set_parameter(w, 0, 0.0)
-    node_commands.set_text(w, 0, sketch_commands.rectangle_text(0.0, 0.0, 20.0, 10.0))
+    node_commands.set_text(w, 0, sketch_commands.rectangle_text(10.0, 5.0, 20.0, 10.0))
     node_commands.add_node(w, "Extrude", 0.0, 120.0)
     let extrude = w.network.selected
-    node_commands.set_parameter(w, cad_features.distance_slot, 2.0)
+    node_commands.set_parameter(w, cad_features.distance_slot, 5.0)
     node_commands.set_parameter(w, cad_features.type_slot, 1.0)
-    node_commands.set_parameter(w, cad_features.thickness_slot, 1.0)
-    assert(volume_is(w, extrude, (200.0 - 144.0) * 2.0))
-    node_commands.set_parameter(w, cad_features.wall_slot, 1.0)
-    assert(volume_is(w, extrude, (264.0 - 200.0) * 2.0))
-    node_commands.set_parameter(w, cad_features.wall_slot, 2.0)
-    assert(volume_is(w, extrude, (231.0 - 171.0) * 2.0))
+    node_commands.set_parameter(w, cad_features.thickness_slot, 2.0)
+    let volumes = [520.0, 680.0, 600.0]
+    let lows = [0.0, -2.0, -1.0]
+    let highs = [(20.0, 10.0), (22.0, 12.0), (21.0, 11.0)]
+    for side in 0..<3:
+        node_commands.set_parameter(w, cad_features.wall_slot, float(side))
+        assert(volume_is(w, extrude, volumes[side]))
+        let (x, y) = highs[side]
+        assert(spans(w, extrude, lows[side], lows[side], x, y, 5.0))
     # Back to a plain Extrude: the whole rectangle.
     node_commands.set_parameter(w, cad_features.type_slot, 0.0)
-    assert(volume_is(w, extrude, 400.0))
+    assert(volume_is(w, extrude, 1000.0))
+    # The open line, drawn left to right.
+    let line = CadSketch.parse("")
+    _ = line.add_line(line.add_point(0.0, 0.0), line.add_point(20.0, 0.0))
+    node_commands.select_node(w, sketch)
+    node_commands.set_text(w, 0, line.text())
+    node_commands.select_node(w, extrude)
+    node_commands.set_parameter(w, cad_features.type_slot, 1.0)
+    let bottoms = [0.0, -2.0, -1.0]
+    for side in 0..<3:
+        node_commands.set_parameter(w, cad_features.wall_slot, float(side))
+        assert(spans(w, extrude, 0.0, bottoms[side], 20.0, bottoms[side] + 2.0, 5.0), f"open line, wall location {side}")
+
+## Whether node `id`'s bodies span x `x0` to `x1`, y `y0` to `y1` and z 0
+## to `height` (Fusion's bounding box).
+func spans(w: Workspace, id: int, x0: float, y0: float, x1: float, y1: float, height: float) -> bool!:
+    let data = w.network.evaluate_data(id)
+    let bounds = CadGeometry.model(data.geometry, 0).tessellate(8).bounds()
+    let ok = math.abs(bounds.minimum.x - x0) < 1e-6 and math.abs(bounds.minimum.y - y0) < 1e-6 and math.abs(bounds.minimum.z) < 1e-6 and math.abs(bounds.maximum.x - x1) < 1e-6 and math.abs(bounds.maximum.y - y1) < 1e-6 and math.abs(bounds.maximum.z - height) < 1e-6
+    if not ok: print(f"spans ({bounds.minimum.x}, {bounds.minimum.y}, {bounds.minimum.z}) to ({bounds.maximum.x}, {bounds.maximum.y}, {bounds.maximum.z})")
+    return ok
 
 ## A box's top face selected at the Faces level and Extrude face: an
 ## Extrude of the face itself (no sketch), joined: 8000 + 400 × 10. Pick
@@ -333,6 +359,26 @@ func blend_options() -> unit!:
     node_commands.set_text(v, cad_blends.points_text, "0.5 2")
     node_commands.set_parameter(v, cad_blends.smooth_slot, 1.0)
     assert(CadGeometry.model_count(v.network.evaluate_data(chord).geometry) == 1)
+    # Tangency weight on a constant radius: 1 the kernel's plain fillet,
+    # 2 keeping more of the corner, at G1 (a conic) and G2.
+    node_commands.set_parameter(v, cad_blends.radius_type_slot, 0.0)
+    node_commands.set_parameter(v, cad_blends.size_slot, 4.0)
+    for continuity in [0, 1]:
+        node_commands.set_parameter(v, cad_blends.continuity_slot, float(continuity))
+        node_commands.set_parameter(v, cad_blends.tangency_slot, 1.0)
+        let plain = volume(v, chord)
+        let kernel = CadModeling.filleted(model, CadModeling.edge_references(model, front), 4.0, "k", continuity + 1, false).tessellate(32)
+        var expected = 0.0
+        for triangle in 0..<kernel.index_count() // 3:
+            let a = kernel.vertex(kernel.index(triangle * 3)).position
+            let b = kernel.vertex(kernel.index(triangle * 3 + 1)).position
+            let c = kernel.vertex(kernel.index(triangle * 3 + 2)).position
+            expected += a.dot(b.cross(c)) / 6.0
+        assert(math.abs(plain - expected) < 1e-6, f"{plain} against {expected}")
+        node_commands.set_parameter(v, cad_blends.tangency_slot, 2.0)
+        assert(volume(v, chord) > plain + 1.0)
+    node_commands.set_parameter(v, cad_blends.tangency_slot, 1.0)
+    node_commands.set_parameter(v, cad_blends.continuity_slot, 0.0)
     # Fusion's Setback corner type: three G1 fillets at the corner, a
     # patch instead of a ball (more faces).
     node_commands.select_node(v, box)

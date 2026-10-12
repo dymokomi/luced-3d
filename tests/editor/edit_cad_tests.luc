@@ -11,6 +11,7 @@ from cad_display_tests import dome_model
 from luce_cad.cad_geometry import CadGeometry
 from luce_3d.graphics import Vector3
 import edit_cad
+import cad_blends
 from luce_std import math
 import modeling_commands
 import node_commands
@@ -102,7 +103,9 @@ pub func edit_cad_tests() -> unit!:
 
 ## Fillet as an Edit CAD tool: a box's edge picked, Fillet makes the step
 ## the Fillet node's code runs (a seventh face); the tool bar shows its
-## Radius, Continuity and Tangent chain, and a radius set there reruns it.
+## Radius, Continuity, Tangency weight and Tangent chain, and a radius set
+## there reruns it; a weight set there changes the step's fillet (2: more of
+## the corner kept), 1 giving back the plain one.
 func fillet_tool() -> unit!:
     let editor = Luce3D()
     let w = editor.workspace
@@ -125,12 +128,18 @@ func fillet_tool() -> unit!:
     assert(filleted.face_count() == 7)
     editor.panels.refresh()
     let bar = editor.panels.tool_bar
-    assert(bar.is_open() and bar.panel.count() == 3)
+    assert(bar.is_open() and bar.panel.count() == 4)
     near(bar.panel.component(0, 0), 1.0)
     modeling_commands.set_last_step(w, 0, 0.4, 0.0001, 100000.0)
     editor.panels.refresh()
     near(bar.panel.component(0, 0), 0.4)
     assert(CadGeometry.model(w.network.evaluate_data(node.id).geometry, 0).face_count() == 7)
+    # The step's Tangency weight: 2 keeps more of the corner; 1 the plain.
+    let plain = step_volume(w, node.id)
+    modeling_commands.set_last_step(w, cad_blends.tangency_slot, 2.0, 0.1, 2.0)
+    assert(step_volume(w, node.id) > plain + 1e-4)
+    modeling_commands.set_last_step(w, cad_blends.tangency_slot, 1.0, 0.1, 2.0)
+    assert(math.abs(step_volume(w, node.id) - plain) < 1e-9)
     # At G2 the strip is a B-spline face a feature made: its control net is
     # drawn at the CVs level, where its cvs are edited, and nowhere else
     # (Fusion shows a modeled body no control frame).
@@ -141,6 +150,17 @@ func fillet_tool() -> unit!:
     selection_commands.set_mode(w, 3)
     assert(hull_points(w) == 0)
     editor.close()
+
+## The tessellated volume of node `id`'s first body.
+func step_volume(w: Workspace, id: int) -> float!:
+    let mesh = CadGeometry.model(w.network.evaluate_data(id).geometry, 0).tessellate(32)
+    var total = 0.0
+    for triangle in 0..<mesh.index_count() // 3:
+        let a = mesh.vertex(mesh.index(triangle * 3)).position
+        let b = mesh.vertex(mesh.index(triangle * 3 + 1)).position
+        let c = mesh.vertex(mesh.index(triangle * 3 + 2)).position
+        total += a.dot(b.cross(c)) / 6.0
+    return total
 
 ## Control hull points the viewport draws.
 func hull_points(w: Workspace) -> int:

@@ -673,14 +673,18 @@ G2 or G3; a straight edge ending at any flat faces, a chain round a flat face
 running out where it stops, a loop between curved faces).
 **Corner type** (G1): Rolling ball, or Setback (the fillets stop short of the
 corner and a patch blends them, as G2 and G3 corners always are). Continuity is G1
-(Fusion's Tangent), G2 (Curvature) or G3; Tangent chain as Fusion's.
+(Fusion's Tangent), G2 (Curvature) or G3; **Tangency weight** (Fusion's, 0.1 to 2,
+1 the plain fillet): more hugs the faces longer and turns tighter in the
+middle, less is flatter; a G1 fillet with a weight is a conic, its corners
+setbacks. Tangent chain as Fusion's.
 Chamfer's **Type** is Equal distance, **Two distances** (Distance along the
 first face, the one more of the picked edges lie on, such as a top round its
 rim; Distance 2 along the other; Flip swaps) or **Distance and angle**
 (leaving the first face at Angle). **Corner type**, where three chamfers meet
 at a corner: Chamfer (Fusion's default: a flat face joins them), Miter (they
-run on to a point) or Blend (a patch blends them into the faces; equal
-distances). In Edit CAD a
+run on to a point) or Blend (the chamfers set back and one flat face closes the
+corner, as Fusion's). A chamfer's distance on a curved face is straight from the
+edge (a chord), as Fusion's; a dome's rim chamfers too. In Edit CAD a
 Fillet step blends the edges picked; the rule is the node's.
 
 **Handles** (`feature_handles.luc`). The selected Extrude, Revolve, Offset
