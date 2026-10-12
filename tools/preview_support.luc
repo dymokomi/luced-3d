@@ -1,0 +1,33 @@
+## What the capture scenes share with each other when the worker runs
+## (preview.py --background): the app then cooks in a worker, and the
+## network on the UI thread keeps no results (compute_session.luc drops each
+## node's cache once the worker reports). A scene's setup that reads a body
+## or picks on the shown mesh goes through these, as the app's own commands
+## read what the worker published.
+import time
+from geometry_data import GeometryData
+from luce_geocore.geocore import Mesh
+from workspace import Workspace
+
+## Wait for the worker (when one runs) to finish what it was given.
+pub func settle(w: Workspace) -> unit!:
+    let worker = w.compute else return
+    let deadline = time.now() + 60000000000
+    while worker.busy and time.now() < deadline: _ = w.poll_compute()
+
+## The shown mesh that picks read, once the worker has published it.
+pub func shown(w: Workspace) -> Mesh?!:
+    settle(w)
+    return w.geometry
+
+## Node `id`'s result cooked on this thread from a copy of the network, as
+## a test does: a worker's results stay in its own mirror of the network.
+pub func cooked(w: Workspace, id: int) -> GeometryData!:
+    if w.compute == none:
+        return w.network.evaluate_data(id)
+    let graph = w.network.copy()
+    graph.background = false
+    for node in graph.nodes:
+        node.dirty = true
+        node.cache = none
+    return graph.evaluate_data(id)

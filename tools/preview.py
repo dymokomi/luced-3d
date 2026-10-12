@@ -78,6 +78,7 @@ with tempfile.TemporaryDirectory(prefix="luced-3d-preview-") as temporary:
     shutil.copy2(ROOT / "tools/preview_parity.luc", project / "src/preview_parity.luc")
     shutil.copy2(ROOT / "tools/preview_parity2.luc", project / "src/preview_parity2.luc")
     shutil.copy2(ROOT / "tools/preview_surfacing.luc", project / "src/preview_surfacing.luc")
+    shutil.copy2(ROOT / "tools/preview_support.luc", project / "src/preview_support.luc")
     # The tutorial scenes build the part with the end-to-end test's own code.
     shutil.copy2(ROOT / "tools/preview_tutorial.luc", project / "src/preview_tutorial.luc")
     shutil.copy2(ROOT / "tests/editor/cad_tutorial_tests.luc", project / "src/cad_tutorial_tests.luc")
