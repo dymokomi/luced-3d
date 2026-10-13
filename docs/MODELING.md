@@ -1055,7 +1055,8 @@ one end, Fusion's). **Selection sets** (Fusion's
 edges (Set k edges, Pick set k edges) and Set k radius, an arrow on each
 set's first edge; where radii differ at a corner, a setback corner. With
 Variable radius, set 2 is the constant edges the picked edges' law runs into
-at corners (its End radius must be theirs there). A dome's rim fillets too (Fusion's torus at
+at corners (a straight law runs in as Fusion's, a cone to a setback corner by Fusion's rule; any
+other must end at their radius). A dome's rim fillets too (Fusion's torus at
 G1), and a plane meeting a cylinder along it (a D-shaft's flat) at G1, G2 and
 G3 under any weight (G3 too heavily weighted there is refused: its section
 would cross the cylinder). G2 and G3 follow a curved face's curvature at their
