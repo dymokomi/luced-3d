@@ -2258,13 +2258,49 @@ setbacks, Identify blends and reblend, Shell, Stitch; luced-3d MODELING.md):
 Captures (`tools/preview.py --scene`): `kernel_cliff_edge`, `kernel_rolled_on` (also `--mode 7`),
 `cad_fillet_sets`, `cad_variable_corner`, `cad_fillet_step_sets`, `cad_reblend`, `surf8_corner_center`.
 
-Not done (left for later): Y-blends of two edges of different convexity at a vertex and vertex
-blends (they need a mixed-convexity corner patch: two blends in one pass leave flat facets where
-they meet, and in turn the second blend's end has no face to stop at), round order at mixed corners
-beyond the lone kind first, cliff-end overflow and concave edges' rolled overflow, limits
-where blends start to overlap, Alias's Pivot Curve Length Ratio and Corner Blend's Edge Shape sliders, G2 Corner fills of G2 fillets (their rate conflicts
-at the walls), laws on chains round faces and loops between curved faces at corners, and the face
-soup's arrangement for bodies that are not convex.
+Not done in the second round: Y-blends and vertex blends, round order at mixed corners, cliff-end
+and concave edges' rolled overflow, overlap limits, Alias's Pivot Curve Length Ratio and Corner
+Blend's Edge Shape sliders, G2 Corner fills of G2 fillets, laws on chains round faces and loops
+between curved faces at corners, and the face soup's arrangement for bodies that are not convex
+(the third round, below).
+
+**Stage 8, third round** (2026-10-13; luce-cad MODELING.md, Fillets meeting at corners (Y corners,
+Vertex blends, the corner's controls), Parasolid's sections, limits and setbacks (Inside edges and
+ends); probes 14 and 15, `luce_work/cad/fusion/FINDINGS.md` 31–37):
+
+- **Y-blends** (`modeling/y_blend.lucb`, the direct build's fifth corner kind): an inside and an
+  outside fillet meeting where the third edge stays sharp. The one of the sharp edge's kind runs on,
+  the other's section rolls round its end: Fusion's torus at G1 (a boss's upright and one foot,
+  14 faces, the closed form 1815.952928 against Fusion's solid 1815.952915; radii 1 and 2 either
+  way; an L's inside upright and one top edge, 11 faces), the section swept round the rim at G2 and
+  G3 (fitted, held G2/G3 to every strip and face; the cut on the plate a crease, as Fusion's).
+  Fusion's reported volumes are its default accuracy's; its STEP solids are measured instead.
+- **Mixed corners of three** (one of a kind and a pair): the same sweep round all of the lone
+  edge's end, built directly at G1, G2 and G3 (Fusion's rolling ball: its G1 tori; its G2 boss
+  1816.998776, ours 1816.997967).
+- **Setbacks and vertex blends**: setback corners stop 2 r back (Fusion's; 1.5 r before), their G1
+  face curves Fusion's circles; under the Setback corner type G1 corners are built directly, and
+  mixed corners are vertex blends (the same six quads). Fusion's own patch is fuller (a hexagon's
+  transfinite fit): volumes within 0.2% (cube) to 1.2 (L); Corner fullness about 1.3 (G1) or 1.1
+  (G2) meets them.
+- **G2 corners of G2 fillets**: the kernel's setback corners hold G2 on every edge exactly (the face
+  curves G2 sections, flat at their ends, so the strips' rows and the faces' agree at the hole's
+  corners; Fusion's circles there would break it). Corner (Fill) on such a hole: G2 exact while the
+  hole stays within about a third of the box (r 0.3 on a 2-box); larger holes leave Fill's quads
+  singular (a Fill limit, open). Fusion's own default for three G2 fillets is a three-sided patch
+  between their end sections at r (7845.375), which has the rate conflicts at its corners; ours keeps
+  the setback corner there.
+- **Alias's corner controls** on setback corners: Corner edge shape (Corner Blend's Edge Shape:
+  the face curves' rho, 0.5 the circle) and Corner fullness (Ball Corner's Pivot Curve Length
+  Ratio: the patch's bulge scaled), on the Fillet node and step (More options).
+- **Overflow on inside edges and ends**: an inside foot rolls onto its wall's rounded top (Fusion's
+  1764.688847); a foot over a step ends flush (cliff end, Fusion's); a notch under one end trims a
+  convex fillet (Fusion's 7761.5377437); Parasolid's overlap limit (Limits' At overlap) stops it
+  square where it stops fitting.
+
+Captures (`tools/preview.py --scene`): `kernel_y_boss`, `kernel_y_boss_g2` (`--mode 7`),
+`kernel_y_ell`, `kernel_mixed_g2` (`--mode 7`, `--background`), `kernel_vertex_blend` (its rows),
+`kernel_inside_rolled`, `kernel_notch_end`.
 
 ## 9. Notes for the build
 

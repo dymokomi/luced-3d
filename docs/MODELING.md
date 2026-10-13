@@ -979,15 +979,25 @@ another, its sections turning to a slanted end face) and round closed loops;
 where the law is steep enough that the envelope would fold, the section
 scales instead, as Fusion's does.
 **Corner type** (G1): Rolling ball, or Setback (the fillets stop short of the
-corner and a patch blends them, as G2 and G3 corners always are). Continuity is G1
+corner, 2 radii, Fusion's, and a patch blends them, as G2 and G3 corners always
+are; where inside and outside fillets meet, a vertex blend). Where an inside and
+an outside fillet meet with the corner's third edge sharp (a Y corner), or one
+of a kind meets two of the other, the pair's section rolls round the lone one's
+end, Fusion's rolling ball (a torus at G1, the section swept at G2 and G3). Continuity is G1
 (Fusion's Tangent), G2 (Curvature: Fusion's own curve, its faces' B-spline
 data matched) or G3; **Tangency weight** (Fusion's, 0.1 to 2, 1 the plain
 fillet, constant or variable radius): more hugs the faces longer and turns
 tighter in the middle, less is flatter; a G1 fillet with a weight is a conic
 (Fusion's), its corners setbacks. Parasolid's sections (Stage 8): **Conic**
 (G1) by Rho, Rho relative (0.5 the circle) or Middle radius; **G2 shape** by
-Depth and Skew or by Softness; **Limits**; **Setback** (radii); **Overflow**
-with its Smooth, Cliff and Notch behaviours. **Selection sets** (Fusion's
+Depth and Skew or by Softness; **Limits** (with **At overlap**, Parasolid's
+overlap limit: only where the fillet fits its faces); **Setback** (radii); the
+setback corner's **Corner edge shape** (G1, Alias's Corner Blend Edge Shape: its
+curves on the faces as conics, 0.5 the circle) and **Corner fullness** (Alias's
+Pivot Curve Length Ratio: its patch's bulge scaled, 1 the fairest fill);
+**Overflow** with its Smooth, Cliff and Notch behaviours (Smooth rolls an inside
+foot onto a wall's rounded top; Notch trims a fillet where a notch cuts under
+one end, Fusion's). **Selection sets** (Fusion's
 "+" in its Fillet dialog): Selection sets 2 to 9, each further set its own
 edges (Set k edges, Pick set k edges) and Set k radius, an arrow on each
 set's first edge; where radii differ at a corner, a setback corner. With
