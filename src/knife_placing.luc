@@ -1,0 +1,104 @@
+## The Knife's stroke in the viewport (the `knife` gesture,
+## docs/research/POLY-MODELING.md Stage 5), after Blender's Knife: clicks
+## place the stroke's points on the surface under the cursor, snapped to the
+## edited mesh's points within reach (Ctrl: to its edges' middles; Shift:
+## no snapping); with the angle snap on (C) each segment keeps a multiple of
+## 15° on screen from the point before. Z toggles Cut through, Backspace
+## takes the last point back. The finished stroke is the Knife's numbers:
+## Cut through, the mean of the view rays it was clicked along, the count,
+## then the points.
+from luce_3d.graphics import Vector3, EditOverlay, Renderer, SurfaceHit, SurfaceHits
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_std import math
+from workspace import Workspace
+from place_prompt import PlacePrompt
+import view_projection as gm
+from snapping import SnapMark
+
+## Where the next stroke point lands for a cursor at (x, y).
+pub func corner_at(w: Workspace, placing: PlacePrompt, overlay: EditOverlay, renderer: Renderer?, x: float, y: float, width: float, height: float, control: bool, shift: bool) -> SurfaceHit!:
+    var sx = x
+    var sy = y
+    # The angle snap: the segment's direction on screen in 15° steps.
+    if placing.angle and placing.corners.length > 0:
+        let last = gm.project(w, placing.corners[-1], width, height)
+        let dx = x - last[0]
+        let dy = y - last[1]
+        let reach = math.sqrt(dx * dx + dy * dy)
+        let step = math.pi / 12.0
+        let turned = math.round(math.atan2(dy, dx) / step) * step
+        sx = last[0] + reach * math.cos(turned)
+        sy = last[1] + reach * math.sin(turned)
+    let direction = gm.ray(w, sx, sy, width, height).normalized()
+    let origin = gm.origin(w, sx, sy, width, height)
+    if let mesh = w.geometry:
+        if not shift and not placing.angle and mesh.point_count() > 0:
+            var face = -2
+            if let drawn = renderer:
+                face = drawn.pick_face(mesh, w.view.camera, sx, sy, width, height) catch failure:
+                    recover -2
+            overlay.show(mesh, 1 if control else 0, none, -1)
+            let picked = overlay.pick(w.view.camera, sx, sy, width, height, face)
+            if picked >= 0:
+                if control:
+                    let middle = mesh.point(mesh.edge_point(picked, 0)).add(mesh.point(mesh.edge_point(picked, 1))).multiply_scalar(0.5)
+                    w.snap_mark = SnapMark(middle, "Midpoint")
+                    return SurfaceHit(true, middle, Vector3(0.0, 1.0, 0.0), 0.0)
+                w.snap_mark = SnapMark(mesh.point(picked), "Point")
+                return SurfaceHit(true, mesh.point(picked), Vector3(0.0, 1.0, 0.0), 0.0)
+    let hit = w.surface_at(origin, direction)
+    if hit.found:
+        w.snap_mark = SnapMark(hit.point, "Surface")
+        return hit
+    # Off the surface: on the plane facing the view through the last point
+    # (the model's middle for the first).
+    var base = Vector3()
+    if placing.corners.length > 0:
+        base = placing.corners[-1]
+    elif let mesh = w.geometry:
+        let box = mesh.bounds()
+        base = box.minimum.add(box.maximum).multiply_scalar(0.5)
+    w.snap_mark = none
+    return SurfaceHits.plane(origin, direction, base, direction.multiply_scalar(-1.0))
+
+## The view ray's direction at (x, y).
+pub func ray_at(w: Workspace, x: float, y: float, width: float, height: float) -> Vector3!:
+    return gm.ray(w, x, y, width, height).normalized()
+
+## A key while the Knife draws: C and Z toggle, Backspace takes the last
+## point back (their typed letters swallowed too); whether it was used.
+pub func key(w: Workspace, event: Event) -> bool!:
+    let placing = w.placing else return false
+    if placing.gesture != "knife":
+        return false
+    if event.kind == EventKind.text_input:
+        return event.codepoint in [99, 67, 122, 90]
+    if event.kind != EventKind.key_down or event.meta or event.control or event.alt:
+        return false
+    if event.key == Key.c:
+        placing.angle = not placing.angle
+    elif event.key == Key.z:
+        placing.through = not placing.through
+    elif event.key == Key.backspace:
+        if placing.corners.length > 0:
+            placing.corners = placing.corners[..<placing.corners.length - 1]
+            placing.rays = placing.rays[..<placing.rays.length - 1]
+    else:
+        return false
+    w.notice = placing.hint()
+    w.revision += 1
+    return true
+
+## The Knife's numbers for the stroke `placing` drew.
+pub func numbers(placing: PlacePrompt) -> list[float]!:
+    var direction = Vector3()
+    for ray in placing.rays:
+        direction = direction.add(ray)
+    if direction.length() == 0.0:
+        direction = Vector3(0.0, -1.0, 0.0)
+    direction = direction.normalized()
+    var result = [1.0 if placing.through else 0.0, direction.x, direction.y, direction.z, float(placing.corners.length)]
+    for corner in placing.corners:
+        result = result + [corner.x, corner.y, corner.z]
+    return result

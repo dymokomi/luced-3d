@@ -1,0 +1,195 @@
+## The Stage 5 tools' gestures (POLY-MODELING.md Stage 5), driven by real
+## viewport events on the 4 by 4 grid over -1..1 (point z*5+x, face
+## z*4+x) seen from above:
+##
+## - the Knife's stroke: clicks inside faces 0 and 3 and Enter cut faces 1
+##   and 2 (one undo step); a click near a point takes the point, Ctrl near
+##   an edge its middle; C holds the next segment to 15° steps on screen; Z
+##   cuts through; Backspace takes a point back; the first point again
+##   closes the stroke; Escape drops it; outside an Edit node it is a node;
+## - Bridge given one run waits for its second loop, which the selection
+##   fills and Enter keeps, as a step and as a node; Target Weld waits for
+##   its target the same way;
+## - a drag after Spin turns its Angle, one undo step with the tool;
+## - every new tool with a drag row takes the drag.
+from app import Luce3D
+from luce_window.input import Key
+from luce_3d.graphics import Vector3
+from luce_geocore.geocore import Selection
+from edit_types import point_level, edge_level, face_level
+from tool_drag_tests import editor_on, at, click, drag, key, last, choose, near
+import modeling_commands
+import tool_prompts
+import tool_registry
+from luce_ui.ui import Event
+from luce_window.input import EventKind
+from luce_std import math
+
+pub func modify_tool_tests() -> unit!:
+    knife_stroke()
+    knife_snaps()
+    knife_node()
+    second_picks()
+    spin_angle()
+    new_drags()
+    print("PASS Stage 5 gestures from viewport events: the Knife's stroke cuts on Enter as one undo step, snaps to points and (Ctrl) edge middles, holds 15° with C, cuts through with Z, takes a point back with Backspace, closes on its first point, drops on Escape, and is a node outside an Edit node; Bridge and Target Weld wait for their second picks as steps and nodes; Spin's drag turns its Angle; every new tool with a drag row takes the drag")
+
+## The grid's point `index`.
+func grid_point(index: int) -> Vector3:
+    return Vector3(-1.0 + 0.5 * float(index % 5), 0.0, -1.0 + 0.5 * float(index // 5))
+
+## How many faces the viewport shows.
+func faces(editor: Luce3D) -> int:
+    return (editor.workspace.geometry else trap("no geometry")).face_count()
+
+## A click with Ctrl held.
+func control_click(editor: Luce3D, point: list[float]) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = point[0], y = point[1], control = true))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = point[0], y = point[1], button = 0, control = true))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = point[0], y = point[1], button = 0, control = true))
+    editor.panels.refresh()
+
+func knife_stroke() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    let before = w.history.cursor
+    modeling_commands.model(w, "Knife")
+    let placing = w.placing else trap("the Knife draws no stroke")
+    assert(placing.gesture == "knife")
+    # From inside face 0 to inside face 3: the ends trimmed, faces 1 and 2
+    # split.
+    click(editor, at(editor, Vector3(-0.75, 0.0, -0.8)))
+    click(editor, at(editor, Vector3(0.75, 0.0, -0.8)))
+    assert(placing.corners.length == 2)
+    key(editor, Key.enter)
+    assert(w.placing == none and faces(editor) == 18 and w.history.cursor == before + 1)
+    let node = w.selected() else trap("edit")
+    assert(node.edits[-1].verb == "Knife" and last(editor)[4] == 2.0 and last(editor)[0] == 0.0)
+    w.undo()
+    assert(faces(editor) == 16)
+    # Z cuts through; Backspace takes the last point back; Escape drops.
+    modeling_commands.model(w, "Knife")
+    let again = w.placing else trap("no stroke")
+    key(editor, Key.z)
+    assert(again.through)
+    click(editor, at(editor, Vector3(-0.75, 0.0, -0.8)))
+    click(editor, at(editor, Vector3(0.2, 0.0, -0.8)))
+    key(editor, Key.backspace)
+    assert(again.corners.length == 1)
+    click(editor, at(editor, Vector3(0.75, 0.0, -0.8)))
+    key(editor, Key.enter)
+    assert(last(editor)[0] == 1.0 and faces(editor) == 18)
+    w.undo()
+    modeling_commands.model(w, "Knife")
+    click(editor, at(editor, Vector3(-0.75, 0.0, -0.8)))
+    key(editor, Key.escape)
+    assert(w.placing == none and faces(editor) == 16)
+    # A closed square round the middle point: its fourth click on the first
+    # point closes and cuts the four faces round it.
+    modeling_commands.model(w, "Knife")
+    let ring = w.placing else trap("no stroke")
+    let square = [Vector3(-0.25, 0.0, -0.25), Vector3(0.25, 0.0, -0.25), Vector3(0.25, 0.0, 0.25), Vector3(-0.25, 0.0, 0.25)]
+    for corner in square:
+        click(editor, at(editor, corner))
+    assert(ring.corners.length == 4)
+    click(editor, at(editor, square[0]))
+    assert(w.placing == none and faces(editor) == 20)
+    assert(last(editor)[4] == 5.0)
+
+func knife_snaps() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    modeling_commands.model(w, "Knife")
+    let placing = w.placing else trap("no stroke")
+    # Four points off point 6 on screen: the point itself.
+    let six = at(editor, grid_point(6))
+    click(editor, [six[0] + 4.0, six[1] + 3.0])
+    near(placing.corners[0].subtract(grid_point(6)).length(), 0.0)
+    # Ctrl near the middle of edge 7-8: its middle.
+    let middle = grid_point(7).add(grid_point(8)).multiply_scalar(0.5)
+    let near_middle = at(editor, middle)
+    control_click(editor, [near_middle[0] + 2.0, near_middle[1] + 3.0])
+    near(placing.corners[1].subtract(middle).length(), 0.0)
+    # C: the next segment on screen at a multiple of 15° from the last.
+    key(editor, Key.c)
+    assert(placing.angle)
+    let origin_at = at(editor, placing.corners[1])
+    click(editor, [origin_at[0] + 100.0, origin_at[1] + 37.0])
+    let to = at(editor, placing.corners[2])
+    let degrees = math.atan2(to[1] - origin_at[1], to[0] - origin_at[0]) * 180.0 / math.pi
+    near(math.round(degrees / 15.0) * 15.0, degrees, 0.05)
+    key(editor, Key.escape)
+
+func knife_node() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6), edit = false)
+    let w = editor.workspace
+    modeling_commands.model(w, "Knife")
+    click(editor, at(editor, Vector3(-0.75, 0.0, -0.8)))
+    click(editor, at(editor, Vector3(0.75, 0.0, -0.8)))
+    key(editor, Key.enter)
+    let node = w.network.require(w.network.display)
+    assert(node.kind == "Knife" and faces(editor) == 18)
+
+## Bridge and Target Weld ask for their second picks: as steps, then nodes.
+func second_picks() -> unit!:
+    for edit in [true, false]:
+        let editor = editor_on(Vector3(0.0, 5.0, 0.6), edit = edit)
+        let w = editor.workspace
+        # Two rows of faces gone: runs p5-9 and p10-14 face each other.
+        choose(editor, face_level, "4-11", 2)
+        modeling_commands.model(w, "Delete")
+        choose(editor, edge_level, "p5-6-7-8-9", 4)
+        modeling_commands.model(w, "Bridge")
+        let prompt = w.prompt else trap("Bridge waits for no second loop")
+        assert(prompt.picking() and prompt.label == "Pick second loop")
+        w.selection = Selection.of(w.geometry else trap("mesh"), "p10-11-12-13-14", 4)
+        tool_prompts.follow_prompt(w)
+        key(editor, Key.enter)
+        assert(w.prompt == none)
+        let made = w.network.require(w.network.display)
+        if edit:
+            assert(made.edits[-1].verb == "Bridge" and made.edits[-1].text(0) != "")
+        else:
+            assert(made.kind == "Bridge" and made.texts[1] != "")
+        # One row of four quads between the runs (no cuts).
+        assert(faces(editor) == 12 and (w.geometry else trap("mesh")).point_count() == 20)
+        # Target Weld: point 6 onto point 7 beside it.
+        let welding = editor_on(Vector3(0.0, 5.0, 0.6), edit = edit)
+        let v = welding.workspace
+        choose(welding, point_level, "6", 0)
+        modeling_commands.model(v, "Target Weld")
+        assert(v.prompt != none)
+        v.selection = Selection.of(v.geometry else trap("mesh"), "7", 0)
+        tool_prompts.follow_prompt(v)
+        key(welding, Key.enter)
+        assert((v.geometry else trap("mesh")).point_count() == 24)
+
+func spin_angle() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    choose(editor, edge_level, "p0-1", 4)
+    let before = w.history.cursor
+    modeling_commands.model(w, "Spin")
+    let s = w.drag_session else trap("Spin took no drag")
+    near(last(editor)[4], 360.0)
+    let center = at(editor, s.frame.center_point())
+    drag(editor, [center[0] + 80.0, center[1]], [center[0], center[1] + 80.0], meta = true)
+    assert(math.abs(last(editor)[4] - 360.0) > 1.0 and math.abs(last(editor)[4]) <= 360.0)
+    assert(w.history.cursor == before + 1)
+
+## Every new tool with a drag row: a drag of 100 points changes that row.
+func new_drags() -> unit!:
+    let cases = [("Poke", face_level, "5", 2), ("Solidify", face_level, "5 6", 2), ("Rip", edge_level, "p6-7", 4), ("Snap to Symmetry", point_level, "*", 0),
+                 ("Limited Dissolve", face_level, "*", 2), ("Decimate", face_level, "*", 2), ("Screw", edge_level, "p0-1", 4), ("Relax", point_level, "*", 0)]
+    for (label, level, expression, domain) in cases:
+        let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+        let w = editor.workspace
+        let tool = tool_registry.find(label) else trap(label)
+        let row = tool.row_at(tool.drag) else trap(label)
+        choose(editor, level, expression, domain)
+        modeling_commands.model(w, label)
+        let s = w.drag_session else trap(label)
+        let start_value = last(editor)[row.slot]
+        let center = at(editor, s.frame.center_point())
+        drag(editor, [center[0] + 60.0, center[1]], [center[0] + 160.0, center[1]], meta = true)
+        assert(last(editor)[row.slot] != start_value, label)

@@ -4,15 +4,17 @@
 ## node after a plain node, and through its own cook; a Select tool's
 ## selection is its node's cook selection.
 from workspace import Workspace
-from luce_geocore.geocore import Selection, Mesh
+from luce_geocore.geocore import Selection, Mesh, Vector3
 from view_projection import project
 from geometry_data import GeometryData
 from tool_record import Tool
 from tools import ToolRun
 from edit_steps import add_tool_node
 import modeling_commands
+import placing_commands
 import node_commands
 import selection_commands
+import tool_prompts
 import tool_registry
 from edit_types import point_level, edge_level, face_level
 
@@ -43,7 +45,15 @@ func picked(tool: Tool, edit: bool) -> Workspace!:
 ## A knife stroke down the screen through face 5's middle.
 func stroke(w: Workspace) -> unit!:
     let middle = project(w, (w.geometry else trap("grid")).face_center(5), 800.0, 600.0)
-    modeling_commands.knife(w, middle[0] + 1.0, middle[1] - 40.0, middle[0] - 1.0, middle[1] + 40.0, 800.0, 600.0)
+    modeling_commands.bisect(w, middle[0] + 1.0, middle[1] - 40.0, middle[0] - 1.0, middle[1] + 40.0, 800.0, 600.0)
+
+## A Knife stroke across face 5 seen from above: two points on the grid.
+func knife_cut(w: Workspace, tool: Tool) -> unit!:
+    let middle = (w.geometry else trap("grid")).face_center(5)
+    placing_commands.start_placing(w, tool.label, "knife")
+    placing_commands.add_corner(w, middle.add(Vector3(-0.5, 0.0, 0.1)), Vector3(0.0, -1.0, 0.0))
+    placing_commands.add_corner(w, middle.add(Vector3(0.5, 0.0, 0.1)), Vector3(0.0, -1.0, 0.0))
+    placing_commands.finish_placing(w)
 
 ## `tool` on its selection: as a step (`edit`) or a node. A Select tool
 ## changes the selection in both; its node is checked apart (selected). A
@@ -53,10 +63,15 @@ func ran(tool: Tool, edit: bool) -> Workspace!:
     let w = picked(tool, edit)
     if tool.gesture == "stroke":
         stroke(w)
+    elif tool.gesture == "knife":
+        knife_cut(w, tool)
     elif tool.gesture == "hover":
         modeling_commands.model(w, tool.label, tool.starting())
     else:
         modeling_commands.model(w, tool.label)
+    # A tool asking for a second pick (Bridge given one loop) takes none.
+    if w.prompt != none:
+        tool_prompts.accept_prompt(w)
     return w
 
 ## A Select tool as a node after the grid: its cook selection becomes the
@@ -91,7 +106,7 @@ pub func tool_parity_tests() -> unit!:
         let node = selected(tool) if tool.section == "Select" else ran(tool, false)
         if tool.section != "Select":
             assert((step.selected() else trap("edit")).edits.length == 1)
-            assert(node.network.require(node.network.display).kind == tool.name)
+            assert(node.network.require(node.network.display).kind == tool.name, tool.label)
         if not same(step, node):
             print(f"FAIL {tool.label}: the step and the node differ")
             assert(false)

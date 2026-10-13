@@ -239,9 +239,16 @@ guarded. Very large selections show as a summary in the Group field.
   on the ring take the new points, and a quad already cut by one ring stops a
   crossing ring. The new loop edges are selected.
 - Bridge joins pairs of boundary loops or runs among the group's edges (each
-  with the nearest one of its kind) with rows of quads when they have as many
-  edges, else with triangles zipped by distance along them. Loops are paired
-  facing each other; coplanar holes twist. Twist turns where a loop starts.
+  with the nearest one of its kind, or with a chain of its second pick, which
+  it asks for when the first holds one loop) with Cuts + 1 rows of quads when
+  they have as many edges, shaped Linear, Blend path or Blend surface with a
+  Profile swell, else with triangles zipped by distance along them; faces
+  picked bridge their outlines; Merge welds the loops instead. Twist turns
+  where a loop starts. The other Stage 5 tools (Knife, Grid Fill, Solidify,
+  Poke, Rotate Edge, Edge Split, Rip, Separate, Delete Edge Loop, Limited
+  Dissolve, Collapse, Target Weld, Screw, Symmetrize, Snap to Symmetry,
+  Relax, Tris to Quads, Decimate) are in docs/TOOLS.md and
+  docs/research/POLY-MODELING.md's "Stage 5 as built".
 - PolyBevel is Blender's bevel (docs/TOOLS.md lists its rows and keys): the
   group's edges become strips of 1–64 segments, their width measured as
   Offset, Width, Depth, Percent or Absolute, their profile a superellipse
@@ -356,9 +363,11 @@ Hide unselected leave faces out of the viewport (not drawn, not picked,
 never selected) until Unhide shows them selected; hiding is kept with undo
 and ends when the mesh's topology changes. Besides the modeling verbs its
 tools include
-Knife (drag a stroke across the model, Shift snapping it to 15°: the cut is
-the plane through the eye and the stroke, recorded as a Clip with its own
-point and normal, cutting the selection or else every face under the stroke),
+Knife (click the stroke's points on the surface, snapping to points or, with
+Ctrl, edge middles; C holds 15° steps, Z cuts through, Enter cuts), Bisect
+(drag a stroke across the model, Shift snapping it to 15°: the cut is the
+plane through the eye and the stroke, recorded as a Clip with its own point
+and normal, cutting the selection or else every face under the stroke),
 Connect (the tool amount places the new points), Edge Slide (the tool
 amount is how far), PolyMirror (Polygons: across X through the origin,
 welded), Spin (Edges: a full turn about Y in 12 steps), Crease (Edges: the

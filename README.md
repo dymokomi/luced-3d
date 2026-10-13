@@ -218,8 +218,9 @@ topology operations; `Cd` affects rendering and corner `uv` supports seams.
 Each Edit kind (Edit Mesh, Edit CAD, Edit SDF) has its own
 selection levels, tool strip and primitives, generated from its registry
 entry. Edit Mesh's strip holds the luce-geocore modeling verbs (extrude, inset,
-bevel, loop cut, bridge, fill, dissolve, knife, connect, edge slide, mirror,
-spin, crease, PolyDraw and the point and face operators), each offered on the
+bevel, loop cut, bridge, fill, grid fill, dissolve, knife, bisect, rip,
+solidify, connect, edge slide, mirror, spin, crease, PolyDraw and the point and
+face operators), each offered on the
 levels it applies to; Edit CAD moves and deletes models and faces and edits
 control vertices. Set **Tool amount** in Parameters before applying a tool;
 hover icons for names. **Soft radius** and **Falloff** let nearby points

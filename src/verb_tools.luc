@@ -6,9 +6,10 @@
 from luce_geocore.geocore import Mesh, Verbs
 from geometry_data import GeometryData
 from tool_record import Tool, Pick, Invocation, ToolKey
-from edit_operations import verb_numbers
+from edit_operations import verb_numbers, second_of
 from edit_types import object_level, point_level, edge_level, face_level
 import verb_rows
+import pick_kinds
 from luce_ui import ui
 
 ## The Edit kind mesh tools are steps of, and the network context they are
@@ -37,13 +38,21 @@ func keys_of(index: int) -> list[ToolKey]:
         result.append(ToolKey(Verbs.key_name(index, key), Verbs.key_parm(index, key), Verbs.key_action(index, key), Verbs.key_mode(index, key)))
     return result
 
-## The verb's picks (one at every level when it declares none).
+## The verb's picks (one at every level when it declares none): the first
+## is a node's Group (text 0) and a step's group; a later one (Bridge's
+## second loop, Target Weld's target) a group a node keeps in text k and a
+## step in its text k - 1.
 func picks_of(index: int) -> list[Pick]:
     let result: list[Pick] = []
     for pick in 0..<Verbs.pick_count(index):
-        result.append(Pick(Verbs.pick_label(index, pick), levels_of(Verbs.pick_levels(index, pick)), Verbs.pick_prompt(index, pick)))
+        let levels = levels_of(Verbs.pick_levels(index, pick))
+        let prompt = Verbs.pick_prompt(index, pick)
+        if pick == 0:
+            result.append(Pick(Verbs.pick_label(index, pick), levels, prompt, pick_kinds.components, 0, pick_kinds.group))
+        else:
+            result.append(Pick(Verbs.pick_label(index, pick), levels, prompt, pick_kinds.components, pick, pick - 1))
     if result.length == 0:
-        result.append(Pick("Components", []))
+        result.append(Pick("Components", [], "", pick_kinds.components, 0, pick_kinds.group))
     return result
 
 ## A verb's level words ("objects faces") as Edit levels.
@@ -80,8 +89,9 @@ pub func gesture_of(name: str) -> str:
 func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
     return data.with_operand(run(call, data.operand() else Mesh.empty()))
 
-## Run `call`'s verb on `mesh` (a move as well as a tool's verb).
+## Run `call`'s verb on `mesh` (a move as well as a tool's verb); a verb of
+## two picks reads its second from the step's first text.
 pub func run(call: Invocation, mesh: Mesh) -> Mesh!:
     if call.topology != 0 and call.topology != mesh.topology_hash():
         error(ui.invalid, "Edit input topology changed. Undo the upstream change or clear this node's edits.")
-    return Verbs.run(call.verb, mesh, call.group(), call.group_type, verb_numbers(call.verb, call.numbers), call.symmetry, call.keep).mesh()
+    return Verbs.run(call.verb, mesh, call.group(), call.group_type, verb_numbers(call.verb, call.numbers), call.symmetry, call.keep, second_of(call.verb, call.texts)).mesh()

@@ -1,7 +1,8 @@
-## A CAD tool's picks asked for in order (docs/research/POLY-MODELING.md
-## Stage 1), as the selection fields of Fusion 360's dialogs: one prompt
-## chain for a node and for an Edit CAD step, read from the tool's
-## declaration (tool_record.Pick). While a pick waits the viewport shows
+## A tool's picks asked for in order (docs/research/POLY-MODELING.md
+## Stages 1 and 5), as the selection fields of Fusion 360's dialogs: one
+## prompt chain for a node and for an Edit step, read from the tool's
+## declaration (tool_record.Pick): a CAD tool's, and a mesh tool's later
+## picks (Bridge's second loop, Target Weld's target), kept as groups. While a pick waits the viewport shows
 ## what it is picked on (a node's input; the Edit node's model as the steps
 ## before the last left it), at the level its kind takes, and what is
 ## clicked goes where the pick is kept, by name: a node's text or values, or
@@ -190,6 +191,8 @@ func step_picks(tool: Tool) -> list[int]:
 ## level for Project and U/V).
 func level_for(w: Workspace, node: Node, pick: Pick, step: bool) -> int!:
     let kind = kind_of(pick, node, step)
+    if kind == pick_kinds.components:
+        return pick.levels[0] if pick.levels.length > 0 else w.level_index()
     if pick_kinds.whole_bodies(kind):
         return object_level
     if kind in [pick_kinds.edge, pick_kinds.edges, pick_kinds.point, pick_kinds.axis, pick_kinds.align_input]:
@@ -311,12 +314,19 @@ pub func start_named(w: Workspace, id: int, label: str) -> unit!:
 
 # -- Picking.
 
+## The tool a prompt names: a CAD tool, else a mesh tool (Bridge's second
+## loop, Target Weld's target).
+func prompted_tool(name: str) -> Tool?:
+    if let cad = tool_registry.cad(name):
+        return cad
+    return tool_registry.find(name)
+
 ## The tool, its node and the pick a prompt waits for, when it is a tool's.
 func waiting(w: Workspace) -> (Tool, Node, Pick, ToolPrompt)?!:
     let prompt = w.prompt else return none
     if not prompt.picking():
         return none
-    let tool = tool_registry.cad(prompt.tool) else return none
+    let tool = prompted_tool(prompt.tool) else return none
     let node = w.network.find(prompt.node) else return none
     if prompt.step and node.edits.length == 0:
         return none
@@ -342,6 +352,11 @@ pub func follow(w: Workspace, mesh: Mesh, chosen: Selection) -> unit!:
     let kind = kind_of(pick, node, step)
     let first = chosen.next(-1)
     let level = w.level_index()
+    # A mesh tool's later pick: the selection's group, until Enter.
+    if kind == pick_kinds.components:
+        put(node, pick, step, chosen.expression(mesh) if chosen.count() > 0 else "")
+        changed(w, node)
+        return
     if kind in [pick_kinds.align_input, pick_kinds.align_master]:
         let words = edit_cad_align.pick_words(mesh, first, level, kind == pick_kinds.align_master) if first >= 0 else ""
         if words == "":

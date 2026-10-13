@@ -1,6 +1,6 @@
 ## The viewport side of placing (place_prompt.luc): a click becomes a world
 ## point and the workspace takes it; the cursor's would-be corner is the
-## rubber band's end. Hit tests are Base calls: the edited mesh's points by
+## rubber band's end. The Knife's points land as knife_placing.luc says. Hit tests are Base calls: the edited mesh's points by
 ## screen distance (EditOverlay.pick), the displayed surfaces
 ## (SurfaceHits.cast), the ground plane (SurfaceHits.plane).
 from luce_ui.ui import Painter
@@ -10,6 +10,7 @@ from place_prompt import PlacePrompt
 import theme
 import view_projection as gm
 import placing_commands
+import knife_placing
 from snapping import SnapMark, grid_step, on_grid
 
 ## Screen pixels within which a click lands on a mesh point or closes a
@@ -24,27 +25,32 @@ pub class ViewportPlacing:
     pub func init(self, workspace: Workspace):
         self.workspace = workspace
 
-    ## A click while drawing: a corner, or the finish on the first corner.
-    pub func click(self, placing: PlacePrompt, overlay: EditOverlay, renderer: Renderer?, x: float, y: float, width: float, height: float) -> unit!:
+    ## A click while drawing: a corner, or the finish on the first corner
+    ## (the Knife's stroke closes there, back at its first point).
+    pub func click(self, placing: PlacePrompt, overlay: EditOverlay, renderer: Renderer?, x: float, y: float, width: float, height: float, control: bool = false, shift: bool = false) -> unit!:
         let w = self.workspace
         if placing.corners.length >= 3 and near_on_screen(w, placing.corners[0], x, y, width, height):
+            if placing.gesture == "knife":
+                placing_commands.add_corner(w, placing.corners[0], knife_placing.ray_at(w, x, y, width, height))
             placing_commands.finish_placing(w)
             return
-        let hit = self.corner_at(placing, overlay, renderer, x, y, width, height)
+        let hit = self.corner_at(placing, overlay, renderer, x, y, width, height, control, shift)
         if hit.found:
-            placing_commands.add_corner(w, hit.point)
+            placing_commands.add_corner(w, hit.point, knife_placing.ray_at(w, x, y, width, height))
 
     ## The pointer moved while drawing: the rubber band follows.
-    pub func hover(self, placing: PlacePrompt, overlay: EditOverlay, renderer: Renderer?, x: float, y: float, width: float, height: float) -> unit!:
-        let hit = self.corner_at(placing, overlay, renderer, x, y, width, height)
+    pub func hover(self, placing: PlacePrompt, overlay: EditOverlay, renderer: Renderer?, x: float, y: float, width: float, height: float, control: bool = false, shift: bool = false) -> unit!:
+        let hit = self.corner_at(placing, overlay, renderer, x, y, width, height, control, shift)
         placing.cursor = hit.point if hit.found else none
         self.moved = true
 
     ## Where a corner lands, as snapping allows (snapping.luc): an
     ## edited-mesh point within reach, else the surface under the cursor,
     ## else the ground through the first corner (on the grid).
-    func corner_at(self, placing: PlacePrompt, overlay: EditOverlay, renderer: Renderer?, x: float, y: float, width: float, height: float) -> SurfaceHit!:
+    func corner_at(self, placing: PlacePrompt, overlay: EditOverlay, renderer: Renderer?, x: float, y: float, width: float, height: float, control: bool, shift: bool) -> SurfaceHit!:
         let w = self.workspace
+        if placing.gesture == "knife":
+            return knife_placing.corner_at(w, placing, overlay, renderer, x, y, width, height, control, shift)
         let snaps = w.snaps
         let direction = view_direction(w, x, y, width, height)
         if let mesh = w.geometry:

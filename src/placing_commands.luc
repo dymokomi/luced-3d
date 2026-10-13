@@ -1,26 +1,35 @@
 ## Drawing on surfaces (place_prompt.luc): a drawing tool collects corners
 ## in the viewport until Enter makes them one step of the displayed Edit
-## node.
+## node; the Knife's stroke (knife_placing.luc) becomes its step, or its
+## node after the displayed one outside an Edit node.
 from luce_3d.graphics import Vector3
 from workspace import Workspace
 from place_prompt import PlacePrompt
+from edit_operations import EditStep
+from tools import ToolRun
+from edit_steps import add_tool_node
+import knife_placing
+import tool_registry
 
-## Start drawing with tool `name`.
-pub func start_placing(w: Workspace, name: str) -> unit!:
-    let placing = PlacePrompt(name)
+## Start drawing with tool `name` (its gesture: "place" or "knife").
+pub func start_placing(w: Workspace, name: str, gesture: str = "place") -> unit!:
+    let placing = PlacePrompt(name, gesture)
     w.placing = placing
     w.notice = placing.hint()
     w.revision += 1
 
-## One more drawn corner.
-pub func add_corner(w: Workspace, point: Vector3) -> unit!:
+## One more drawn corner, clicked along view ray `ray` (none: unknown).
+pub func add_corner(w: Workspace, point: Vector3, ray: Vector3? = none) -> unit!:
     let placing = w.placing else return
     placing.corners.append(point)
+    placing.rays.append(ray else Vector3())
     w.revision += 1
 
 ## Enter (or the first corner again): the drawing becomes one step.
 pub func finish_placing(w: Workspace) -> unit!:
     let placing = w.placing else return
+    if placing.gesture == "knife":
+        return finish_knife(w, placing)
     let kind = w.active_kind() else return w.cancel_placing()
     let node = w.selected() else return w.cancel_placing()
     let draw = kind.drawn else return w.cancel_placing()
@@ -34,3 +43,24 @@ pub func finish_placing(w: Workspace) -> unit!:
         w.network.invalidate(node.id)
         w.adopt_output = true
         w.rebuild())
+
+## The Knife's stroke as its step in the edited node, else as its node
+## after the displayed one; a stroke of fewer than two points is dropped.
+func finish_knife(w: Workspace, placing: PlacePrompt) -> unit!:
+    let tool = tool_registry.find(placing.name) else return w.cancel_placing()
+    w.placing = none
+    w.notice = ""
+    w.revision += 1
+    if placing.corners.length < 2:
+        return
+    let numbers = knife_placing.numbers(placing)
+    if w.editing():
+        let node = w.selected() else return
+        w.perform(tool.label, func () -> unit!:
+            node.edits.append(EditStep(tool.name, "", 0, numbers, 0))
+            w.network.invalidate(node.id)
+            w.adopt_output = true
+            w.rebuild())
+        return
+    let mesh = w.geometry else return
+    add_tool_node(w, tool.label, ToolRun(tool.name, numbers), "", mesh)

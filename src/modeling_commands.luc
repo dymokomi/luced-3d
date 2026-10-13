@@ -1,14 +1,14 @@
 ## Modeling commands on the displayed geometry: a tool on the selection
 ## becomes a step of the displayed Edit node, or a verb node inserted after
 ## the displayed node (edit_steps.luc; Tool → Select waits for components
-## when nothing is selected: tool_prompts.luc); primitives, the knife,
+## when nothing is selected: tool_prompts.luc); primitives, Bisect's stroke,
 ## extrusion, the tool bar's step numbers and clearing edits. Moves are
 ## component_moves.luc's.
-from luce_geocore.geocore import Domain, Mesh, Selection
+from luce_geocore.geocore import Domain, Mesh, Selection, Verbs
 from luce_3d.graphics import Knife
 from workspace import Workspace
 from luce_std import math
-from edit_operations import EditStep
+from edit_operations import EditStep, verb_numbers
 from edit_kinds import is_edit
 from edit_types import symmetry_slot, keep_slot, edge_level, domain_number
 from tools import ToolRun
@@ -21,13 +21,15 @@ import selection_commands
 from edit_steps import append_step, add_tool_node, insert_after_display
 from tool_prompts import start_prompt
 import tool_drag
+import tool_picks
 
 ## Run tool `operation` on the selection: a step of the active Edit node,
 ## or a new node after the displayed one, its Group the selection's
 ## expression and its guard the topology it was made on. With nothing
 ## selected a node waits for its components (Tool → Select). A registry
-## tool (tool_registry.luc) says how: a stroke tool (the knife) waits for
-## its stroke, a Select tool changes the selection, a whole tool runs on
+## tool (tool_registry.luc) says how: the Knife draws its stroke
+## (knife_placing.luc), a stroke tool (Bisect) waits for its stroke, a
+## Select tool changes the selection, a whole tool runs on
 ## everything with nothing selected; a hover tool (Loop Cut) with nothing
 ## selected at its level waits for a click on the edge it shows under the
 ## pointer. A tool with a drag row then takes the viewport's drag
@@ -60,6 +62,10 @@ pub func model(w: Workspace, operation: str, numbers: list[float]? = none) -> un
     if let given = numbers:
         run = ToolRun(run.verb, given)
     if let tool = registered:
+        # The Knife draws its stroke first, on everything.
+        if tool.gesture == "knife":
+            placing_commands.start_placing(w, tool.label, "knife")
+            return
         if tool.gesture == "stroke":
             choose_tool(w, tool.label)
             w.notice = "Drag across the model to cut it; Shift snaps the stroke to 15°"
@@ -96,12 +102,27 @@ func run_tool(w: Workspace, operation: str, registered: Tool?, run: ToolRun, gro
         append_step(w, operation, run.verb, group, run.numbers, mesh)
         if let tool = registered:
             remember(w, operation, run.numbers, -1)
+            # A tool that wants its second pick (Bridge given one loop)
+            # waits for it; else its drag.
+            if asks_second(tool, run, group, group_type, mesh):
+                tool_picks.ask(w, node, tool, 1)
+                return
             tool_drag.start(w, tool, mesh, group, group_type, true, symmetry)
         return
     add_tool_node(w, operation, run, group, mesh)
     remember(w, operation, run.numbers, w.network.selected)
     if let tool = registered:
+        if asks_second(tool, run, group, group_type, mesh):
+            tool_picks.start(w, w.network.require(w.network.selected), tool, 1)
+            return
         tool_drag.start(w, tool, mesh, group, group_type, false)
+
+## Whether mesh tool `tool` run as `run` on `group` still wants its second
+## pick (a CAD tool asks for its picks itself: tool_run.luc).
+func asks_second(tool: Tool, run: ToolRun, group: str, group_type: int, mesh: Mesh) -> bool!:
+    if tool.picks.length < 2 or Verbs.index_of(tool.name) < 0:
+        return false
+    return Verbs.wants_second(tool.name, mesh, group, group_type, verb_numbers(tool.name, run.numbers))
 
 ## A hover tool (Loop Cut) chosen: at the Edge level the viewport shows what
 ## it would make on the edge under the pointer until a click places it
@@ -170,11 +191,11 @@ pub func create(w: Workspace, name: str) -> unit!:
         w.pending_level = 0
         w.rebuild())
 
-## A knife stroke from (x0, y0) to (x1, y1) of the viewport: a Clip that
+## A Bisect stroke from (x0, y0) to (x1, y1) of the viewport: a Clip that
 ## keeps both sides along the plane through the eye and the stroke
 ## (recorded as a point and a normal, so replays need no camera). It
 ## cuts the selection, or the faces the stroke passes over.
-pub func knife(w: Workspace, x0: float, y0: float, x1: float, y1: float, width: float, height: float) -> unit!:
+pub func bisect(w: Workspace, x0: float, y0: float, x1: float, y1: float, width: float, height: float) -> unit!:
     let mesh = w.geometry else return
     let plane = Knife.plane(w.view.camera, x0, y0, x1, y1, width, height) catch failure:
         w.notice = failure.message
@@ -202,23 +223,23 @@ pub func knife(w: Workspace, x0: float, y0: float, x1: float, y1: float, width: 
     numbers[9] = plane.normal.z
     if w.editing():
         let node = w.selected() else return
-        w.perform("Knife", func () -> unit!:
+        w.perform("Bisect", func () -> unit!:
             node.edits.append(EditStep("Clip", group, group_type, numbers, mesh.topology_hash(), int(node.values[symmetry_slot]), node.values[keep_slot] != 0.0))
             w.network.invalidate(node.id)
             w.adopt_output = true
             w.rebuild())
-        remember(w, "Knife", numbers, -1)
+        remember(w, "Bisect", numbers, -1)
         # A tool is used once.
         w.end_modal_tool()
         return
-    w.perform("Knife", func () -> unit!:
+    w.perform("Bisect", func () -> unit!:
         let node = insert_after_display(w, ToolRun("Clip", numbers))
         node.texts[0] = group
         node.values[node_catalog.group_type_slot] = float(group_type)
         node.guard = mesh.topology_hash()
         w.adopt_output = true
         w.rebuild())
-    remember(w, "Knife", numbers, -1)
+    remember(w, "Bisect", numbers, -1)
     w.end_modal_tool()
 
 pub func extrude(w: Workspace) -> unit!:

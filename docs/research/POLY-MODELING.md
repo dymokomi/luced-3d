@@ -1231,7 +1231,7 @@ built" below).
   round the L's inner corner, can fold faces flat and then pass the input through with a
   warning.
 
-**Stage 5: everyday modify tools.**
+**Stage 5: everyday modify tools.** **Done 2026-10-13** (see "Stage 5 as built" below).
 - Knife with segments, snapping to points and edge middles, angle snap, cut through.
 - Grid Fill; Bridge's cuts, interpolation and merge; Solidify; Rip and Rip Fill; Edge Split;
   Delete Edge Loop; Collapse; Target Weld; Poke; Rotate Edge; Symmetrize; Snap to Symmetry;
@@ -1242,6 +1242,85 @@ built" below).
   - Rip of an edge in a grid leaves two boundary edges;
   - Delete Edge Loop on a cylinder's middle loop leaves one row fewer;
   - Symmetrize of a lopsided sphere matches its mirror within 1e-6.
+
+**Stage 5 as built.**
+- Every tool is one luce-geocore verb (its file under `src/verbs/`) and one line in `makers`
+  (and ORDER); luced-3d took no per-tool wiring. Blender's source was read for the algorithms
+  and written our own way. New verbs: **Knife** (`knife`, `knife_faces`), **Grid Fill**,
+  **Solidify**, **Poke**, **Rotate Edge**, **Edge Split** and **Rip** (`rip`), **Separate**,
+  **Delete Edge Loop** and **Limited Dissolve** (`dissolve`, with Dissolve moved out of
+  `fill_dissolve`), **Collapse** and **Target Weld** (`cleanup`), **Screw** (`spin`),
+  **Symmetrize** and **Snap to Symmetry**, **Relax** (`smoothing`, with Smooth),
+  **Tris to Quads** (`quadrangulate`), **Decimate** (`PolyReduce`: `decimate`,
+  `unsubdivide`) and Triangulate's methods (`triangulate`). Clip's tool is now **Bisect**
+  (its stroke, `bisect_stroke.luc`); the Knife is the new verb.
+- Options, after Blender, Houdini and Modo:
+  - Knife: points on the surface (snapping to points, Ctrl to edge middles, Shift none), C holds
+    each segment to 15° on screen, Z cuts through (else only faces facing the view that nothing
+    hides, by a ray back from each cut's middle), Backspace, the first point again closes, Enter
+    cuts. A path ending inside a face is trimmed back to its last edge (Blender leaves a dangling
+    edge; our faces have none). Faces split along every path across them, through the stroke's
+    corners inside them; crossing paths in one face are left out with a warning.
+  - Bridge: Cuts, Twist, Interpolation (Linear, Blend path, Blend surface), Smoothness, Profile
+    with six shapes, Merge and Merge factor; faces as the first pick bridge their outlines and
+    go; a second pick (`PickSpec` 2, `Verbs.run(..., second)`) pairs its loops with the first's.
+  - Grid Fill: Span (0 finds it from the corners), Offset, Simple; Coons-patch inner points.
+  - Solidify: Thickness, Offset, Even thickness, Fill rim, Flip.
+  - Poke: Offset, Relative, Center (weighted mean, mean, bounds).
+  - Rip: Offset, Fill (Rip Fill), Flip, Turn (a point's split); chain ends inside the surface
+    cut one edge on, by Blender's rule, so a ripped interior edge opens a hole of six boundary
+    edges (its two copies among them), not the two the plan guessed.
+  - Merge Points gains At point; Collapse; Target Weld; Separate (Selection, Loose parts; paths
+    suffixed .001…); Dissolve's Clean points; Delete Edge Loop; Limited Dissolve (Angle,
+    Boundaries, delimits); Decimate (Collapse by quadrics with Lock boundary, Un-subdivide,
+    Planar); Tris to Quads (Face and Shape angles, delimits); Triangulate (five quad methods,
+    two n-gon methods); Subdivide's Smoothness; Smooth's Keep volume, Keep boundary and Axes;
+    Relax; Spin's Flip; Screw (Turns, Steps, Rise); Symmetrize (six directions, Threshold);
+    Snap to Symmetry (Direction, Threshold, Factor, Center).
+- Two picks: `Verb.wants` says whether the first pick alone wants the second (Bridge with fewer
+  than two loops, Target Weld always; `Verbs.wants_second`). A mesh tool's later pick is a
+  `Pick` of kind components kept in a node's text 1 (its own row) and a step's text 0; after the
+  tool runs, `tool_picks.luc` (now for mesh tools too) asks for it ("Pick second loop"), the
+  selection fills it, Enter keeps it.
+- Gestures: `knife` (`knife_placing.luc` on the placing prompt, `place_prompt.luc` now carries
+  the gesture, the rays clicked along and the toggles; a stroke outside an Edit node makes a
+  node); Bridge's second loop through the pick chain; Spin's angle drag is the drag driver's
+  `angle` mode.
+- Parallel kernels with ordered output: `batched_faces` (face_batch.lucb) runs a verb's faces in
+  ranges, each into its own `FaceBatch`, joined in order; `TopologyBuilder.extend_points` and
+  `place_point` let threads place points. Poke, Solidify and Triangulate build their faces this
+  way; Solidify's points, Snap to Symmetry's pairing, Smooth and Relax's rounds and Tris to
+  Quads' pricing run in parallel. Decimate keeps each point's live triangles as a slice
+  rewritten on each merge, numbers only the group's points, and breaks ties by edge length (a
+  flat grid priced every collapse 0 and piled them on one point: 1.8 s to 80 ms for 100k
+  triangles).
+- Benchmarks (837 × 837 grid, `tests/bench`; luce-geocore docs/API.md has every row): Poke of 100k faces 54 ms; Solidify of every
+  face with Even thickness 70 ms (1.4M faces out); Symmetrize of everything 103 ms; Snap to
+  Symmetry of every point 44 ms; Knife cutting through a row of 837 faces 55 ms; Grid Fill of a
+  22-edge hole 17 ms; Bridge of two 837-edge loops with 3 cuts, Blend path and Profile 19 ms;
+  Edge Split of a 1k-face block's inner edges 58 ms; Separate of 100k faces as loose parts
+  26 ms; Limited Dissolve of the whole grid into one face 150 ms; Collapse of 100k faces' edges
+  24 ms; Triangulate (Beauty) of everything 71 ms; Tris to Quads of the grid in triangles
+  137 ms (518 ms before its pricing ran in parallel); Decimate of 100k triangles to half 88 ms
+  (1.86 s before the tie-break and the compact lists), Un-subdivide of 836 × 836 quads 76 ms;
+  Subdivide with Smoothness 745 ms (2.8M faces).
+- Tests: luce-geocore `face_tool_checks`, `symmetry_checks`, `fill_checks`, `split_checks`,
+  `dissolve_tool_checks`, `merge_checks`, `sweep_checks`, `knife_checks`, `reduce_checks`,
+  `shape_checks`, all under the allocation-failure sweep (Grid Fill's 4×4 on a 16-gon hole and
+  the prism's volume; Solidify's 2F + rim, closed, volume area × thickness, Even on a cube;
+  Delete Edge Loop giving the cylinder back; Symmetrize within 1e-6; Spin and Screw counts and
+  places; Bridge counts, profile radius 1.5, merge; Decimate halving a sphere and keeping a
+  grid's square; Tris to Quads giving the grid back; …). luced-3d `modify_tool_tests` (real
+  viewport events: the Knife's stroke, snaps, angle, through, Backspace, closing, Escape, as a
+  node; Bridge's and Target Weld's second picks as steps and nodes; Spin's angle drag; every new
+  drag row), and `tool_parity_tests` over every tool (the Knife drawn, second picks accepted).
+- Preview scenes `tools/preview_modify.luc` (modify_knife, modify_knife_cut, modify_bridge,
+  modify_bridge_pick, modify_grid_fill, modify_solidify, modify_poke, modify_rip,
+  modify_symmetrize, modify_screw, modify_decimate).
+- Not yet: Knife's crossing paths in one face and holes inside a face; Decimate's symmetry and
+  weights; Bridge's loop pairs mode; Grid Fill between two open runs; Subdivide by selection
+  (it subdivides the whole mesh); Extrude to cursor, Matrix extrude, Offset Edge Loops' slide
+  (as before).
 
 **Stage 6: primitives in full, and Poly Pen.**
 - Box divisions; ico and quad spheres; caps and rows; Disc; Tube; Capsule; platonic solids;

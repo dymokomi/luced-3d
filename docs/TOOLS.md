@@ -87,6 +87,22 @@ Copy the group's faces, offset along their normals.
 | --- | --- | --- | --- |
 | Offset | 0.2 | yes | Distance of the copies along their face normals. |
 
+##### Solidify
+
+Give the group's faces a thickness: a second sheet behind them, joined at the rim.
+
+- Node `Solidify` in Geo; a step of Edit Mesh.
+- Works on objects or faces.
+- After it runs, a drag in the viewport sets Thickness (hauled away from the selection's center); a click keeps it.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Thickness | 0.1 | yes | How far apart the two sheets stand. |
+| Offset | -1.0 | yes | Where the shell lies against the surface: -1 behind it, 1 in front, 0 centered. |
+| Even thickness | off | yes | Keep every face's sheets Thickness apart where faces meet at an angle. |
+| Fill rim | on | yes | Join the two sheets along the group's outline. |
+| Flip | off | yes | Turn the shell's faces over. |
+
 #### Bevel
 
 ##### Bevel
@@ -167,7 +183,7 @@ Add two edge loops either side of the group's loops.
 | Even | off | yes | Put every new point the same distance from its loop. |
 | Cap ends | off | yes | Take the new loops round the ends of open runs instead of meeting there. |
 
-##### Knife
+##### Bisect
 
 Cut the group's faces with a plane; keep one side, or both.
 
@@ -183,6 +199,20 @@ Cut the group's faces with a plane; keep one side, or both.
 | Keep | Above | yes | The side of the plane kept; Both cuts and keeps everything. |
 | Plane point | 0.0, 0.0, 0.0 | no | Custom: a point on the plane. |
 | Plane normal | 0.0, 0.0, 0.0 | no | Custom: the plane's normal; above is the side it points to. |
+
+##### Knife
+
+Cut the group's faces along a stroke of segments, through or on the visible surface.
+
+- Node `Knife` in Geo; a step of Edit Mesh.
+- Works on components, or everything when nothing is selected.
+- Gesture: clicks place the stroke's points on the surface (points snap, Ctrl edge middles, Shift none; C holds 15° angles, Z cuts through, Backspace takes a point back, the first point again closes); Enter cuts.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Cut through | off | yes | Cut every face the stroke passes over, hidden ones too. |
+| Direction | 0.0, 0.0, 0.0 | no | The direction the stroke was drawn along (the view's). |
+| Points | 0 | no | How many stroke points follow the parameters. |
 
 ##### Connect
 
@@ -228,6 +258,17 @@ Slide the group's points along their edges.
 | Flip | off | yes | With Even: keep every point the same distance from its edge's far end. |
 | Clamp | on | yes | Keep the amount within 0..1 and every point on its edge. |
 
+##### Rotate Edge
+
+Turn each of the group's edges within the two faces beside it.
+
+- Node `Rotate Edge` in Geo; a step of Edit Mesh.
+- Works on edges.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Direction | Clockwise | yes | Which way each edge turns, seen from its faces' front. |
+
 #### Fill
 
 ##### Fill
@@ -244,16 +285,38 @@ Cap each closed loop of the group's boundary edges.
 
 ##### Bridge
 
-Join pairs of boundary loops or runs among the group's edges with faces.
+Join pairs of boundary loops or runs with faces, or weld them.
 
 - Node `Bridge` in Geo; a step of Edit Mesh.
-- Works on edges.
-- With nothing selected: "Select two boundary loops or runs of edges".
+- Works on edges or faces.
+- Also picks second loop.
+- With nothing selected: "Select two boundary loops or runs of edges (or faces whose outlines to bridge)".
+- After it runs, a drag in the viewport sets Profile (rightward, its range over 300 points); a click keeps it, the wheel steps Cuts.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
-| Divisions | 1 | yes | Rows of faces across each bridge (chains with as many edges). |
+| Cuts | 0 | yes | Loops of points across each bridge between its two ends (chains with as many edges). |
 | Twist | 0 | yes | Turn where a closed pair's second loop starts, by this many points. |
+| Interpolation | Blend path | yes | How the cuts run: straight across, along a curve leaving each loop square to its plane, or each along a curve leaving the faces beside it. |
+| Smoothness | 1.0 | yes | How far the blend curves keep their loops' directions. |
+| Profile | 0.0 | yes | Swell (or pinch, below 0) the cuts away from the bridge's middle line. |
+| Profile shape | Smooth | yes | How the swell grows from the ends to the middle. |
+| Merge | off | yes | Weld the two loops into one instead of bridging them (chains with as many edges). |
+| Merge factor | 0.5 | yes | Where merged loops meet: 0 at the first, 1 at the second. |
+
+##### Grid Fill
+
+Fill each hole the group's boundary edges close with a grid of quads.
+
+- Node `Grid Fill` in Geo; a step of Edit Mesh.
+- Works on edges.
+- With nothing selected: "Select the boundary edges around each hole".
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Span | 0 | yes | Edges along the grid's first side (0: from the hole's corners). |
+| Offset | 0 | yes | Points the grid's first corner moves along the hole from its sharpest corner. |
+| Simple | off | yes | Blend between the first and third sides only, not across all four. |
 
 #### Merge
 
@@ -278,8 +341,25 @@ Merge the group's points: at their center, first, last, per island or by distanc
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
-| Mode | At center | yes | Where the group's points merge: all at their center, the first or the last point; each connected island at its center; or those within the distance. |
+| Mode | At center | yes | Where the group's points merge: all at their center, the first or the last point; each connected island at its center; those within the distance; or all at the point below (Blender's At Cursor). |
 | Distance | 0.001 | yes | By distance: points of the group closer than this merge. |
+| Point | 0.0, 0.0, 0.0 | yes | At point: where the merged point goes (the 3D cursor's place). |
+
+##### Collapse
+
+Collapse each island of the group's edges or faces into one point at its center.
+
+- Node `Collapse` in Geo; a step of Edit Mesh.
+- Works on points or edges or faces.
+
+##### Target Weld
+
+Weld the group's points onto a picked point.
+
+- Node `Target Weld` in Geo; a step of Edit Mesh.
+- Works on points.
+- Also picks target.
+- With nothing selected: "Select the points to weld".
 
 #### Delete
 
@@ -308,6 +388,50 @@ Join the faces across the group's interior edges (or around its points), one fac
 - Node `Dissolve` in Geo; a step of Edit Mesh.
 - Works on points or edges or faces.
 
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Clean points | on | yes | Take out points left between two edges once the faces join (Blender's Dissolve Vertices). |
+
+##### Delete Edge Loop
+
+Remove the group's edge loops: the faces either side join and the loop's points go.
+
+- Node `Delete Edge Loop` in Geo; a step of Edit Mesh.
+- Works on edges.
+
+##### Limited Dissolve
+
+Join the group's faces where they meet flatter than an angle, and take out the points left on straight runs.
+
+- Node `Limited Dissolve` in Geo; a step of Edit Mesh.
+- Works on objects or faces, or everything when nothing is selected.
+- After it runs, a drag in the viewport sets Angle (rightward, its range over 300 points); a click keeps it.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Angle | 5.0 | yes | Faces meeting flatter than this many degrees join; points whose two edges bend less go. |
+| Boundaries | off | yes | Take out points on the mesh's boundary too, where it runs straight. |
+| Delimit sharp | off | yes | Keep edges marked sharp. |
+| Delimit seams | off | yes | Keep edges marked as seams. |
+| Delimit materials | off | yes | Keep edges between faces of different materials. |
+| Delimit UVs | off | yes | Keep edges where the UVs part. |
+
+##### Decimate
+
+Fewer faces: collapse edges to a share of the triangles, undo subdivision, or join flat faces.
+
+- Node `PolyReduce` in Geo; a step of Edit Mesh.
+- Works on objects or faces, or everything when nothing is selected.
+- After it runs, a drag in the viewport sets Ratio (rightward, its range over 300 points); a click keeps it.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Mode | Collapse | yes | Collapse edges to a share of the triangles, undo subdivision, or join faces flatter than the angle. |
+| Ratio | 0.5 | yes | Collapse: the share of the group's triangles kept. |
+| Iterations | 1 | yes | Un-subdivide: how many subdivisions to undo. |
+| Angle | 5.0 | yes | Planar: faces meeting flatter than this many degrees join. |
+| Lock boundary | off | yes | Collapse: keep the outline's points where they are. |
+
 #### Split
 
 ##### Split
@@ -316,6 +440,40 @@ Detach the group's faces: they get their own points.
 
 - Node `Split` in Geo; a step of Edit Mesh.
 - Works on faces.
+
+##### Separate
+
+Make the group's faces pieces of their own: one, or one per island.
+
+- Node `Separate` in Geo; a step of Edit Mesh.
+- Works on objects or faces.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Mode | Selection | yes | The group as one new piece, or each of its parts as its own. |
+
+##### Edge Split
+
+Tear the surface open along the group's edges: the faces either side get their own points.
+
+- Node `Edge Split` in Geo; a step of Edit Mesh.
+- Works on edges.
+
+##### Rip
+
+Tear the surface open along the group's edges (or at its points) and pull one side away.
+
+- Node `Rip` in Geo; a step of Edit Mesh.
+- Works on points or edges or faces.
+- After it runs, a drag in the viewport sets Offset (hauled away from the selection's center); a click keeps it.
+- While its drag lasts: F flips Flip, L flips Fill.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Offset | 0.1 | yes | How far the ripped side moves away from the cut, along its faces. |
+| Fill | off | yes | Close the opened gap with faces. |
+| Flip | off | yes | Rip the other side (the other half of a point's fan). |
+| Turn | 0 | yes | A ripped point: which pair of its edges splits its fan, counted round it. |
 
 #### Sweep
 
@@ -348,15 +506,55 @@ Sweep the group's edges around an axis into a surface of revolution.
 | Center | 0.0, 0.0, 0.0 | yes | A point on the axis. |
 | Angle | 360.0 | yes | How far the profile turns, in degrees; 360 closes it. |
 | Steps | 12 | yes | Copies of the profile along the turn. |
+| Flip | off | yes | Turn the new faces over. |
+
+##### Screw
+
+Sweep the group's edges round an axis in turns, rising along it: a spring or a thread.
+
+- Node `Screw` in Geo; a step of Edit Mesh.
+- Works on edges.
+- After it runs, a drag in the viewport sets Rise (hauled away from the selection's center); a click keeps it, the wheel steps Turns.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Axis | Y | yes | The axis the profile turns about and rises along. |
+| Center | 0.0, 0.0, 0.0 | yes | A point on the axis. |
+| Turns | 2 | yes | Whole turns. |
+| Steps | 12 | yes | Copies of the profile in each turn. |
+| Rise | 1.0 | yes | How far the profile rises along the axis each turn. |
+| Flip | off | yes | Turn the new faces over. |
 
 #### Subdivide
 
 ##### Triangulate
 
-Split the group's faces into their triangles.
+Split the group's faces into triangles.
 
 - Node `Triangulate` in Geo; a step of Edit Mesh.
-- Works on objects or faces.
+- Works on objects or faces, or everything when nothing is selected.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Quad method | Beauty | yes | Which diagonal splits a quad. |
+| N-gon method | Beauty | yes | How larger faces split: rounder triangles, or the ear-clipped display triangles. |
+
+##### Tris to Quads
+
+Join pairs of the group's triangles into quads, the squarest first.
+
+- Node `Quadrangulate` in Geo; a step of Edit Mesh.
+- Works on objects or faces, or everything when nothing is selected.
+- After it runs, a drag in the viewport sets Shape angle (rightward, its range over 300 points); a click keeps it.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Face angle | 40.0 | yes | Join triangles whose faces meet within this many degrees. |
+| Shape angle | 40.0 | yes | Join only into quads whose corners stay within this many degrees of square. |
+| Delimit sharp | off | yes | Keep edges marked sharp. |
+| Delimit seams | off | yes | Keep edges marked as seams. |
+| Delimit materials | off | yes | Keep edges between faces of different materials. |
+| Delimit UVs | off | yes | Keep edges where the UVs part. |
 
 ##### Subdivide
 
@@ -369,6 +567,7 @@ Split faces into quads, optionally with Catmull-Clark smoothing.
 | --- | --- | --- | --- |
 | Levels | 1 | yes | Each level splits every face into quads. |
 | Method | Catmull-Clark | yes | Catmull-Clark smooths as it splits; Linear keeps the shape. |
+| Smoothness | 0.0 | yes | Linear: round the new points out along the surface's curve (1: onto the circle the normals describe). |
 
 ##### Crease
 
@@ -383,11 +582,25 @@ Set the crease sharpness of the group's edges for subdivision.
 | Sharpness | 10.0 | yes | USD crease sharpness: 0 smooth, 10 infinitely sharp; s stays sharp for s levels. |
 | Mode | Set | yes | Give the group's edges this sharpness, or make them smooth. |
 
+##### Poke
+
+Fan each of the group's faces into triangles round a new point at its center.
+
+- Node `Poke` in Geo; a step of Edit Mesh.
+- Works on faces.
+- After it runs, a drag in the viewport sets Offset (along the selection's average normal); a click keeps it.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Offset | 0.0 | yes | How far each new center moves along its face's normal. |
+| Relative | off | yes | Scale Offset by each face's mean distance from its center to its corners. |
+| Center | Weighted mean | yes | Where the new point sits: the corners' mean weighted by the lengths of their edges, their plain mean, or the middle of their bounds. |
+
 #### Shape
 
 ##### Smooth
 
-Laplacian relaxation of the group's points.
+Laplacian smoothing of the group's points.
 
 - Node `Smooth` in Geo; a step of Edit Mesh.
 - Works on components.
@@ -395,8 +608,25 @@ Laplacian relaxation of the group's points.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
-| Amount | 0.5 | yes | How far each point moves toward the average of its neighbors. |
+| Amount | 0.5 | yes | How far each point moves toward the mean of its neighbors in a round. |
 | Iterations | 1 | yes | Rounds of smoothing. |
+| Keep volume | off | yes | Step back after each round (Taubin's smoothing), so the surface does not shrink. |
+| Keep boundary | off | yes | Hold the points on the mesh's boundary. |
+| Axes | 1.0, 1.0, 1.0 | yes | How much of the move each axis takes (0 holds an axis). |
+
+##### Relax
+
+Even out the group's points along the surface, keeping its shape.
+
+- Node `Relax` in Geo; a step of Edit Mesh.
+- Works on components.
+- After it runs, a drag in the viewport sets Amount (rightward, its range over 300 points); a click keeps it, the wheel steps Iterations.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Amount | 0.5 | yes | How far each point moves along the surface toward the mean of its neighbors in a round. |
+| Iterations | 5 | yes | Rounds of relaxing. |
+| Keep boundary | on | yes | Hold the points on the mesh's boundary. |
 
 ##### Noise
 
@@ -454,6 +684,35 @@ Flip the winding of the group's faces.
 
 - Node `Reverse` in Geo; a step of Edit Mesh.
 - Works on objects or faces.
+
+#### Symmetry
+
+##### Symmetrize
+
+Make the group's faces symmetric: one half cut away and the other mirrored over it.
+
+- Node `Symmetrize` in Geo; a step of Edit Mesh.
+- Works on objects or faces, or everything when nothing is selected.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Direction | -X to +X | yes | The half kept, and the half it is mirrored over. |
+| Threshold | 0.0001 | yes | Points this close to the plane move onto it, where the halves weld. |
+
+##### Snap to Symmetry
+
+Move the group's points to symmetric places, each pair meeting across the plane.
+
+- Node `Snap to Symmetry` in Geo; a step of Edit Mesh.
+- Works on points or edges or faces, or everything when nothing is selected.
+- After it runs, a drag in the viewport sets Factor (rightward, its range over 300 points); a click keeps it.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Direction | -X to +X | yes | The half whose points lead (the first named). |
+| Threshold | 0.05 | yes | How far a point's partner may sit from its mirror image. |
+| Factor | 0.5 | yes | Where a pair meets: 0 at the leading point, 0.5 halfway, 1 at its partner's reflection. |
+| Center | on | yes | Move unpaired points within Threshold of the plane onto it. |
 
 ### Select
 
