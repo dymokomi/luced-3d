@@ -3,8 +3,15 @@
 ## of them, view.luc's), the selection levels (top left, 1-5) and beside
 ## them whether boxes select through the depth (V), the transform tools
 ## (left center, Q, W, E, R, T; Select alone while nothing is selected)
-## with the tool in use below them, a tool prompt's hint, the snapping button and its options (bottom
-## left), and where the pointer snapped.
+## with the tool in use below them, a tool prompt's hint, the snapping
+## button and its options (bottom left), and where the pointer snapped.
+##
+## With four panes it is docked: drawn once over the whole viewport (as
+## Maya's and Blender's one tool palette), in the viewport's coordinates
+## (button_at's `dock`), its view buttons beside the levels acting on every
+## pane, and the context display button with them; each pane keeps only
+## its own view's controls (the shading button, the camera menu and the
+## navigation gizmo, view.luc's).
 from luce_ui.ui import Painter, Point
 from luce_gpu.gpu import Rect, Color
 from workspace import Workspace
@@ -44,22 +51,51 @@ pub class ViewportChrome:
         self.workspace = workspace
         self.actions = actions
 
-    ## The view buttons, top right: Frame, Grid and Control hulls; then the
-    ## switchers, the prompt and snapping.
+    ## Whether the chrome is docked over four panes (see the top).
+    pub func docked(self) -> bool:
+        return self.workspace.panes.four
+
+    ## The view buttons, top right (docked, beside the levels): Frame, Grid
+    ## and Control hulls; then the switchers, the prompt and snapping.
     pub func draw(self, painter: Painter, width: float, height: float) -> unit!:
         let w = self.workspace
+        let docked = self.docked()
         let names = ["Frame", "Grid", "Hulls"]
-        let tips = ["Frame geometry (F)", "Toggle grid (G)", "Toggle control hulls"]
-        let shown = [false, w.view.grid_visible, w.display.hulls_visible]
+        let tips = ["Frame every pane (F: the pane under the pointer)", "Grid in every pane (G: the pane under the pointer)", "Toggle control hulls"] if docked else ["Frame geometry (F)", "Toggle grid (G)", "Toggle control hulls"]
+        var grids = false
+        for view in w.panes.views:
+            grids = grids or view.grid_visible
+        let shown = [false, grids if docked else w.view.grid_visible, w.display.hulls_visible]
         for index in 0..<names.length:
-            let x = width - view_buttons_width() + float(index) * 38.0
+            let x = self.view_button_x(index, width)
             painter.rounded_rectangle(Rect(x, 8.0, 32.0, 30.0), theme.surface(), 4.0)
             draw_icon(painter, names[index], x + 6.0, 13.0, 20.0, theme.accent() if self.hover_tool == index + 100 or shown[index] else theme.text())
             if self.hover_tool == index + 100:
-                painter.rounded_rectangle(Rect(width - 196.0, 43.0, 180.0, 30.0), theme.surface(), 4.0)
-                painter.text(tips[index], width - 188.0, 49.0, theme.text())
-        self.draw_switchers(painter, height)
+                if docked:
+                    tip(painter, tips[index], x, 44.0)
+                else:
+                    painter.rounded_rectangle(Rect(width - 196.0, 43.0, 180.0, 30.0), theme.surface(), 4.0)
+                    painter.text(tips[index], width - 188.0, 49.0, theme.text())
+        self.draw_switchers(painter, width, height)
         self.draw_cv_modes(painter)
+
+    ## The left of view button `index` (Frame, Grid, Hulls) in a viewport
+    ## `width` wide: top right, or docked after the context display button.
+    func view_button_x(self, index: int, width: float) -> float:
+        if self.docked():
+            return self.dock_eye().x + float(index + 1) * 38.0
+        return width - view_buttons_width() + float(index) * 38.0
+
+    ## Where the levels' row ends: past the levels and the through-the-depth
+    ## button.
+    func row_end(self) -> float:
+        let shown = self.workspace.shown_levels()
+        return level_x(shown.length) + (38.0 if self.actions.through_depth.is_enabled() else 0.0)
+
+    ## Docked, the context display button: first of the view buttons, after
+    ## the levels' row.
+    pub func dock_eye(self) -> Rect:
+        return Rect(self.row_end() + 10.0, 8.0, 32.0, 30.0)
 
     ## Under the levels at Edit CAD's CVs, Alias's Transform CV modes and
     ## the falloff kinds (the Edit node's CV move and CV falloff), the
@@ -94,7 +130,7 @@ pub class ViewportChrome:
 
     ## Top left, the selection levels (1-5); left center, the transform
     ## tools (Q, W, E, R, T); a tool prompt's hint at the bottom.
-    func draw_switchers(self, painter: Painter, height: float) -> unit!:
+    func draw_switchers(self, painter: Painter, width: float, height: float) -> unit!:
         let w = self.workspace
         let levels = w.levels()
         let sketching = w.sketching()
@@ -111,7 +147,7 @@ pub class ViewportChrome:
             if self.hover_tool == 200 + index:
                 tip(painter, f"{self.level_label(index)}  ({index + 1})", x, 44.0)
         # Beside them, lit while boxes select through the depth (V).
-        var caption_x = level_x(shown.length) + 4.0
+        var caption_x = (self.view_button_x(3, 0.0) if self.docked() else level_x(shown.length)) + 4.0
         if self.actions.through_depth.is_enabled():
             let x = level_x(shown.length)
             let through = self.actions.through_depth.is_checked()
@@ -119,14 +155,23 @@ pub class ViewportChrome:
             ui.draw_icon(painter.target(), "ghosted", Rect(x + 5.0, 12.0, 22.0, 22.0), theme.grey(0.0) if through else (theme.accent() if self.hover_tool == 500 else theme.text()))
             if self.hover_tool == 500:
                 tip(painter, ("Selecting through the depth" if through else "Selecting what shows") + "  (V)", x, 44.0)
-            caption_x += 38.0
+            if not self.docked():
+                caption_x += 38.0
+        var caption = ""
         if sketching:
-            painter.text(sketch_level_names()[w.sketch_level], caption_x, 15.0, theme.text_muted())
+            caption = sketch_level_names()[w.sketch_level]
         else:
             # A prompt's filter shows what alone is picked while it waits.
             let filtered = w.prompt_level() >= 0
-            let caption = w.level().name + (" only" if filtered else (" (Smart)" if w.component_mode == smart_level else ""))
-            painter.text(caption + (f" / {w.selected_entities()} selected" if w.selected_entities() > 0 else ""), caption_x, 15.0, theme.text_muted())
+            caption = w.level().name + (" only" if filtered else (" (Smart)" if w.component_mode == smart_level else ""))
+            caption = caption + (f" / {w.selected_entities()} selected" if w.selected_entities() > 0 else "")
+        if self.docked():
+            # Docked, the network's path follows (no pane has it), as far
+            # as the top left pane has room left of its camera menu.
+            let room = (width - 2.0) * 0.5 - 200.0 - caption_x
+            let where = caption + "    " + w.network.path()
+            caption = where if float(where.length) * 7.5 <= room else (caption if float(caption.length) * 7.5 <= room else "")
+        painter.text(caption, caption_x, 15.0, theme.text_muted())
         let tools = transform_tools()
         let keys = transform_key_names()
         let current = self.current_tool()
@@ -251,8 +296,11 @@ pub class ViewportChrome:
         return ""
 
     ## The button under (x, y): see hover_tool (400 the snapping button,
-    ## 410 + one of its options).
-    pub func button_at(self, x: float, y: float, width: float, height: float) -> int:
+    ## 410 + one of its options); -1 in a pane while docked, and over the
+    ## whole viewport (`dock`) while not.
+    pub func button_at(self, x: float, y: float, width: float, height: float, dock: bool = false) -> int:
+        if dock != self.docked():
+            return -1
         if y >= cv_row_y and y <= cv_row_y + 24.0:
             let buttons = self.cv_buttons() catch failure:
                 recover []
@@ -260,8 +308,11 @@ pub class ViewportChrome:
                 _ = on
                 if x >= left and x <= left + float(label.length) * 7.5 + 14.0:
                     return button
-        if y >= 8.0 and y <= 38.0 and x >= width - view_buttons_width() and x <= width - 18.0:
-            return 100 + int((x - width + view_buttons_width()) / 38.0)
+        if y >= 8.0 and y <= 38.0:
+            for index in 0..<3:
+                let left = self.view_button_x(index, width)
+                if x >= left and x <= left + 32.0:
+                    return 100 + index
         let shown = self.workspace.shown_levels()
         if y >= 8.0 and y <= 38.0 and x >= 16.0 and x < level_x(shown.length) - 6.0:
             return 200 + shown[int((x - 16.0) / 38.0)]
@@ -310,6 +361,10 @@ pub class ViewportChrome:
                 self.actions.tools[index].trigger()
         elif button >= 200:
             self.actions.modes[button - 200].trigger()
+        elif self.docked() and button == 100:
+            self.workspace.frame_every_pane()
+        elif self.docked() and button == 101:
+            self.workspace.toggle_every_grid()
         else:
             [self.actions.frame, self.actions.grid, self.actions.hulls][button - 100].trigger()
 
@@ -340,13 +395,16 @@ pub func outline(painter: Painter, r: Rect, color: Color) -> unit!:
 pub func view_buttons_width() -> float:
     return 126.0
 
-## The shading button, left of the view buttons.
-pub func shading_button(width: float) -> Rect:
+## The shading button, left of the view buttons; among four panes
+## (`compact`), alone in the top right corner, the camera menu left of it.
+pub func shading_button(width: float, compact: bool = false) -> Rect:
+    if compact:
+        return Rect(width - 48.0, 8.0, 32.0, 30.0)
     return Rect(width - view_buttons_width() - 38.0, 8.0, 32.0, 30.0)
 
 ## Whether (`x`, `y`) is on the shading button.
-pub func on_shading_button(x: float, y: float, width: float) -> bool:
-    let r = shading_button(width)
+pub func on_shading_button(x: float, y: float, width: float, compact: bool = false) -> bool:
+    let r = shading_button(width, compact)
     return x >= r.x and x <= r.x + r.width and y >= r.y and y <= r.y + r.height
 
 ## A tool's icon: a sketch tool's own, else the editor's map's.

@@ -11,11 +11,15 @@
 ##
 ## It shows one pane or four (view_panes.luc), each drawn through its own
 ## view, with its camera menu (camera_menu.luc) and navigation gizmo
-## (view_cube.luc) at the top right. The workspace's `view` is the pane
-## being drawn or handled: every tool reads it. Events go to the pane under
-## the pointer (a drag stays with the pane it began in), which becomes the
-## active one; the active pane is drawn last, so what the tools keep from a
-## draw (dimension labels, glyphs) is the active pane's. Space tapped shows
+## (view_cube.luc) at the top right; among four, each pane keeps only those
+## and its shading button, and the rest of the chrome (the levels, the
+## tools, snapping, the view buttons) is docked once over the viewport
+## (viewport_chrome.luc), its events taken before any pane's. The
+## workspace's `view` is the pane being drawn or handled: every tool reads
+## it. Events go to the pane under the pointer (a drag stays with the pane
+## it began in), which becomes the active one; the active pane is drawn
+## last, so what the tools keep from a draw (dimension labels, glyphs) is
+## the active pane's. Space tapped shows
 ## the pane alone or the four again (space_tap.luc); held with F the
 ## viewport fills the window.
 from luce_ui.ui import Widget, Layout, Constraints, Size, Event, Painter
@@ -45,7 +49,7 @@ from actions import Actions
 from marking_menu import MarkingMenu, MarkItem
 from render_mode import RenderMode
 from camera_menu import CameraMenu
-from view_cube import ViewCube
+from view_cube import ViewCube, Place
 from view_state import front_view, back_view, left_view, right_view, scene_camera
 import camera_views
 import sketch_camera
@@ -57,6 +61,7 @@ import units
 import time
 from shading_menu import mode_icon
 from context_view import is_outside
+from viewport_objects import authored_node
 import context_display
 import modeling_commands
 import component_moves
@@ -139,6 +144,9 @@ pub class SceneViewport: Widget:
     var moving_camera: bool = false
     ## Whether the viewport takes typed text now (take_text).
     var typing: bool = false
+    ## What of the docked chrome is under the pointer: on_dock_eye, a
+    ## chrome button (viewport_chrome.luc's) or -1.
+    var dock_hover: int = -1
 
     pub func poll_hold(self) -> unit!:
         if self.marking.poll(time.now()):
@@ -210,6 +218,17 @@ pub class SceneViewport: Widget:
         for render in self.renders:
             render.stop()
 
+    ## The context display button, in the window: left of the active
+    ## pane's shading button, or docked among four panes.
+    pub func context_button(self) -> Rect:
+        let bounds = self.layout().bounds()
+        if self.workspace.panes.four:
+            let eye = self.tools.chrome.dock_eye()
+            return Rect(bounds.x + eye.x, bounds.y + eye.y, eye.width, eye.height)
+        let pane = self.pane_bounds()
+        let r = context_display.button(shading_button(pane.width))
+        return Rect(pane.x + r.x, pane.y + r.y, r.width, r.height)
+
     ## The active pane's rectangle, in the window.
     pub func pane_bounds(self) -> Rect:
         let bounds = self.layout().bounds()
@@ -230,12 +249,20 @@ pub class SceneViewport: Widget:
                 continue
             w.view = w.panes.views[index]
             w.view.aspect = r.width / r.height
+            if w.view.fit_model:
+                w.view.fit_model = false
+                w.frame_model()
             self.draw_pane(target.region(r), index, index == w.panes.active)
         w.view = w.panes.view()
         if w.panes.four:
             let r = w.panes.rect_of(w.panes.active, size.width, size.height)
             let edge = Painter(target)
             outline(edge, r, theme.accent())
+            # The docked chrome over the panes, and the context display
+            # button with its view buttons.
+            self.tools.chrome.draw(edge, size.width, size.height)
+            let eye = self.tools.chrome.dock_eye()
+            context_display.draw_at(edge, eye, w.display.context_mode, w.network.scope >= 0, self.dock_hover == on_dock_eye)
             edge.close()
 
     ## Pane `index` into `target`, through the workspace's view (the pane's);
@@ -308,6 +335,7 @@ pub class SceneViewport: Widget:
                     batch.draw(w.view.camera, target, theme.ghost(), 1.0)
             for batch in w.batches.hull_batches:
                 batch.draw(w.view.camera, target, theme.grey(110.0))
+            self.draw_glyphs(target)
         if not sketching:
             for batch in w.batches.curve_batches:
                 batch.draw(w.view.camera, target, theme.grey(225.0), 1.5)
@@ -352,10 +380,16 @@ pub class SceneViewport: Widget:
         let overlay = Painter(target)
         # Where we are, centered along the top: the network's path; along
         # the bottom in a pane too narrow for it between the top's buttons.
-        let where = self.workspace.network.path()
-        let roomy = size.width - float(where.length) * 7.5 > 2.0 * 420.0
-        overlay.text(where, (size.width - float(where.length) * 7.5) * 0.5, 14.0 if roomy else size.height - 32.0, theme.text_muted())
-        overlay.text(f"Y up  /  grid: {units.length_text(grid_step(w.view.distance), units.document_unit(w))}", snap_row_end() + 10.0, size.height - 32.0, theme.text_muted())
+        # Among four, the docked chrome shows the path once.
+        let four = w.panes.four
+        if not four:
+            let where = self.workspace.network.path()
+            let roomy = size.width - float(where.length) * 7.5 > 2.0 * 420.0
+            overlay.text(where, (size.width - float(where.length) * 7.5) * 0.5, 14.0 if roomy else size.height - 32.0, theme.text_muted())
+        # The grid's step, right of the snapping button (among four, of the
+        # docked tools along the left panes).
+        let footer = snap_row_end() + 10.0 if not four or index % 2 == 0 else 16.0
+        overlay.text(f"Y up  /  grid: {units.length_text(grid_step(w.view.distance), units.document_unit(w))}", footer, size.height - 32.0, theme.text_muted())
         if rendering:
             # What the render is at, in the bottom-right corner.
             let label = render.label()
@@ -376,19 +410,41 @@ pub class SceneViewport: Widget:
                 return project(w, at, size.width, size.height))
         if active:
             self.marking.draw(overlay, size.width, size.height)
-        # The shading button, left of the view buttons.
-        let shading = shading_button(size.width)
+        # The shading button, left of the view buttons (among four, alone
+        # in the corner).
+        let shading = shading_button(size.width, four)
         overlay.rounded_rectangle(shading, theme.surface(), 4.0)
         mode_icon(overlay, w.view.display_mode, shading.x + 4.0, 11.0)
         overlay.rectangle(Rect(shading.x + 28.0, 34.0, 3.0, 3.0), theme.accent())
-        # The context display button, left of it.
-        context_display.draw_button(overlay, shading, w.display.context_mode, w.network.scope >= 0, active and context_display.on_button(self.pointer_x, self.pointer_y, shading))
-        # Under them, the camera menu and the navigation gizmo; the menu's
-        # list over everything.
+        # The context display button, left of it (docked among four).
+        if not four:
+            context_display.draw_button(overlay, shading, w.display.context_mode, w.network.scope >= 0, active and context_display.on_button(self.pointer_x, self.pointer_y, shading))
+        # Under them (among four, beside the shading button), the camera
+        # menu, the navigation gizmo under it; the menu's list over
+        # everything.
         self.cameras.draw(overlay, index, w.view, size.width)
-        self.cube.draw(overlay, w.view, size.width, active)
+        self.cube.draw(overlay, w.view, Place(size.width, size.height, four), active)
         self.cameras.draw_list(overlay, index, w.view, size.width)
         overlay.close()
+
+    ## The scene's Camera and Light glyphs, the rest of the scene's around a
+    ## context greyed or left out as its lines are; not the camera the pane
+    ## looks through, as Maya hides it there.
+    func draw_glyphs(self, target: RenderTarget) -> unit!:
+        let w = self.workspace
+        let mode = w.display.context_mode
+        for at in 0..<w.batches.scenes.length:
+            let node = w.batches.scene_nodes[at]
+            let around = is_outside(w.network, node)
+            if around and mode == context_display.hidden:
+                continue
+            let scene = w.batches.scenes[at].scene()
+            let glyphs = w.batches.glyph_batches(at)
+            for index in 0..<glyphs.length:
+                if w.view.looking == scene_camera and scene.is_camera(index) and authored_node(w, scene.path(index), "Camera", node) == w.view.camera_node:
+                    continue
+                let ink = (theme.grey(120.0) if mode == context_display.all else theme.grey(68.0)) if around else theme.grey(110.0)
+                glyphs[index].draw(w.view.camera, target, ink)
 
     ## The point clouds and fog volumes to draw: the rest of the scene's
     ## faded (Greyed) or left out (Hidden) around a context.
@@ -503,6 +559,10 @@ pub class SceneViewport: Widget:
         if pointer:
             self.viewport_x = event.x
             self.viewport_y = event.y
+        # The docked chrome takes its events before the panes, leaving the
+        # active pane as it is.
+        if self.dock_event(event, bounds.width, bounds.height):
+            return
         var index = w.panes.pane_at(self.viewport_x, self.viewport_y, bounds.width, bounds.height)
         if self.captured >= 0:
             index = self.captured
@@ -526,18 +586,62 @@ pub class SceneViewport: Widget:
                 self.moving_camera = false
                 w.commit()
 
+    ## The docked chrome's pointer events over a viewport `width` by
+    ## `height` (four panes; none while a press in a pane drags or a menu
+    ## is open): hover, a button pressed, the context display button
+    ## clicked (the next mode) or held or right-clicked (its menu, as
+    ## poll_hold opens it). Whether the event was the dock's.
+    func dock_event(self, event: Event, width: float, height: float) -> bool!:
+        let chrome = self.tools.chrome
+        if not chrome.docked() or self.captured >= 0 or self.marking.is_open() or self.cameras.open_pane >= 0:
+            return false
+        if not (event.kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]):
+            return false
+        if event.kind == EventKind.pointer_up and self.context_press >= 0:
+            self.context_press = -1
+            self.workspace.set_context_mode((self.workspace.display.context_mode + 1) % context_display.names().length)
+            self.layout().invalidate()
+            return true
+        let eye = chrome.dock_eye()
+        let on_eye = event.inside and not event.alt and event.x >= eye.x and event.x <= eye.x + eye.width and event.y >= eye.y and event.y <= eye.y + eye.height
+        let button = chrome.button_at(event.x, event.y, width, height, dock = true) if event.inside and not event.alt else -1
+        if event.kind == EventKind.pointer_moved:
+            let hover = on_dock_eye if on_eye else button
+            if hover != self.dock_hover or button != chrome.hover_tool:
+                self.layout().invalidate()
+            self.dock_hover = hover
+            chrome.hover_tool = button
+            return hover >= 0
+        if event.kind == EventKind.pointer_up:
+            return on_eye or button >= 0
+        if on_eye:
+            if event.button == 1:
+                if let open = self.on_context_menu:
+                    open(false)
+            else:
+                self.context_press = time.now()
+            return true
+        # A click away from the snapping options closes them.
+        if chrome.snaps_open and button < 400:
+            chrome.snaps_open = false
+            self.layout().invalidate()
+        if button >= 0 and event.button == 0:
+            chrome.press(button)
+            self.layout().invalidate()
+            return true
+        return false
+
     ## Space: tapped over a pane, that pane alone or the four again; the
     ## press is spent by any other key or button (Space with F fills the
     ## window: Workspace.frame_or_fill). Whether the event was Space's.
-    func space(self, event: Event, index: int) -> bool:
+    func space(self, event: Event, index: int) -> bool!:
         let tap = self.workspace.panes.space
         if event.kind == EventKind.key_down and event.key == Key.space:
             tap.press(time.now())
             return true
         if event.kind == EventKind.key_up and event.key == Key.space:
             if tap.release(time.now()):
-                self.workspace.panes.toggle(index)
-                self.workspace.revision += 1
+                self.workspace.toggle_pane(index)
                 self.layout().invalidate()
             return true
         if event.kind == EventKind.key_down or event.kind == EventKind.pointer_down:
@@ -604,7 +708,8 @@ pub class SceneViewport: Widget:
         if not event.alt and self.cameras.event(index, self.workspace.view, event, width):
             self.layout().invalidate()
             return
-        if not event.alt and self.cube.event(self.workspace.view, event, width, func (dx: float, dy: float) -> unit!: self.navigate(0, dx, dy, height)):
+        let four = self.workspace.panes.four
+        if not event.alt and self.cube.event(self.workspace.view, event, Place(width, height, four), func (dx: float, dy: float) -> unit!: self.navigate(0, dx, dy, height)):
             self.layout().invalidate()
             return
         if event.cancelled or event.kind == EventKind.focus_lost:
@@ -615,7 +720,7 @@ pub class SceneViewport: Widget:
             tool_prompts.set_peek(self.workspace, event.shift or event.meta)
         elif event.kind == EventKind.focus_lost:
             tool_prompts.set_peek(self.workspace, false)
-        if event.kind == EventKind.pointer_down and event.inside and not event.alt and on_shading_button(event.x, event.y, bounds.width):
+        if event.kind == EventKind.pointer_down and event.inside and not event.alt and on_shading_button(event.x, event.y, bounds.width, four):
             if event.button == 1:
                 if let open = self.on_shading:
                     open(false)
@@ -629,7 +734,7 @@ pub class SceneViewport: Widget:
             return
         # The context display button: a click steps the mode, a held press
         # or a right click opens its menu.
-        if event.kind == EventKind.pointer_down and event.inside and not event.alt and context_display.on_button(event.x, event.y, shading_button(bounds.width)):
+        if event.kind == EventKind.pointer_down and event.inside and not event.alt and not four and context_display.on_button(event.x, event.y, shading_button(bounds.width)):
             if event.button == 1:
                 if let open = self.on_context_menu:
                     open(false)
@@ -774,3 +879,6 @@ func grid_facing(looking: int) -> int:
     if looking == left_view or looking == right_view:
         return 0
     return 1
+
+## dock_hover's answer for the docked context display button.
+let on_dock_eye = 1000

@@ -204,11 +204,36 @@ and picking live in `node_gizmos`/`gizmo_math`, independent of evaluation.
   every tool reads the pane it works in. Space with F makes the viewport
   fill the window (the other panels and the timeline hidden, their layout
   kept); Space alone pans only in the Network, as before.
+- Among four panes the chrome is docked once over the viewport, as Maya's
+  and Blender's single tool palette (`viewport_chrome.luc`): the levels, the
+  context display, Frame (every pane), Grid (every pane) and Hulls buttons
+  and the caption with the network's path along the top left, the tools
+  down the left edge, snapping in the bottom left. Its events come before
+  any pane's and leave the active pane as it is. Each pane keeps only its
+  own view's controls on one row in its top right corner, the camera menu
+  beside the shading button, with the navigation gizmo under them, smaller
+  in a small pane (26 to 44 points across its radius).
+- As the four panes appear (and as a project opens) each orthographic pane
+  frames the model alone, centered and whole, once its size is known (its
+  next draw; `ViewState.fit_model`); Camera and Light glyphs count only when
+  nothing else shows. F in a pane frames it as before, the glyphs too.
+  Orthographic framing leaves a wider margin than perspective's (1.4 of the
+  extent), the pane's buttons sitting over its edges.
+- A pane looking through a Camera node does not draw that camera's glyph
+  (Maya hides it there). Camera and Light glyphs draw from the displayed
+  scenes, one batch each (`ViewportBatches.glyph_batches`), not in the
+  control hulls' batch.
 - Projection: luce-3d's `Camera` sees in perspective or orthographically
   (`set_orthographic`); every renderer, the grid (which faces the plane an
   orthographic view looks square at), lines, gizmos, picking, marquees,
   splats and fog follow it through `Projection`'s `screen`, `ray_origin`,
-  `ray_direction`, `pixel` and `clip`. An orthographic view's height follows
+  `ray_direction`, `pixel` and `clip`. Lines over faces take the same depth
+  bias in both projections: a share of the depth range, whose f32 precision
+  is alike in both (luce-3d's mesh_pixels test draws wires on faces seen
+  square on orthographically). The ground grid is depth tested: it hides
+  behind a body standing above it and shows through none; a body that
+  crosses the ground plane (a CAD box centered on the origin) has the grid
+  in front of its lower part, as in Fusion. An orthographic view's height follows
   the orbit distance, so switching keeps the size of what is at the target;
   its eye stands far back so nothing near the target is cut away; framing
   fits the extent across the pane. Render mode renders orthographic views

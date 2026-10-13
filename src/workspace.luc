@@ -178,12 +178,6 @@ pub class Workspace:
     ## The scope the worker's lines were split for (context_view.luc).
     var batches_scope: int = -2
     let sources: SourceCache
-    var pending_frame: bool = false
-    ## The camera when a frame was put off till the worker cooked: the frame
-    ## happens only if it is still there (a camera set or moved meanwhile,
-    ## the user's or a scene's, is not taken away).
-    var pending_view: list[float] = []
-    var pending_pane: int = 0
     var project_epoch: int = 0
 
     pub func init(self) -> unit!:
@@ -218,7 +212,8 @@ pub class Workspace:
     pub func replace_network(self, graph: Network) -> unit!:
         self.pending = none
         self.pending_changed = false
-        self.pending_frame = false
+        for view in self.panes.views:
+            view.pending_frame = 0
         for node in self.network.nodes:
             if node.source_revision > self.project_epoch: self.project_epoch = node.source_revision
         self.project_epoch += 1
@@ -236,10 +231,9 @@ pub class Workspace:
         self.notice = ""
         self.rebuild()
 
-    ## Frame selected components while editing, else the displayed scene,
-    ## including Camera/Light glyphs so their gizmos can be reached.
+    ## F: frame selected components while editing, else the displayed
+    ## scene, including Camera/Light glyphs so their gizmos can be reached.
     pub func frame_cube(self) -> unit!:
-        let points: list[Vector3] = []
         if self.selected_count() > 0:
             let mesh = self.geometry else return
             let chosen = self.selection else return
@@ -248,11 +242,30 @@ pub class Workspace:
             let bounds = mesh.bounds()
             self.frame_points([box.minimum, box.maximum], bounds.maximum.subtract(bounds.minimum).length() * 0.01)
             return
+        self.frame_scene(true)
+
+    ## Frame the displayed model alone, centered and whole: the orthographic
+    ## panes as the four show and as a project opens (Camera and Light
+    ## glyphs count only when nothing else is shown).
+    pub func frame_model(self) -> unit!:
+        self.frame_scene(false)
+
+    ## Frame every pane as F frames the one under the pointer.
+    pub func frame_every_pane(self) -> unit!:
+        let acting = self.view
+        for view in self.panes.views:
+            self.view = view
+            self.frame_cube()
+        self.view = acting
+
+    ## Frame the displayed scene, its Camera/Light glyphs too when
+    ## `glyphs`; while the worker cooks, once it is done (the view's
+    ## pending_frame).
+    func frame_scene(self, glyphs: bool) -> unit!:
+        let points: list[Vector3] = []
         if let session = self.compute:
             if session.busy:
-                self.pending_frame = true
-                self.pending_view = self.camera_key()
-                self.pending_pane = self.panes.index_of(self.view)
+                self.view.ask_frame(1 if glyphs else 2)
                 return
             for point in self.publisher.bounds:
                 points.append(point)
@@ -272,16 +285,6 @@ pub class Workspace:
                 let box = batch.bounds()
                 points.append(box.minimum)
                 points.append(box.maximum)
-        for at in 0..<self.batches.scenes.length:
-            for helper in self.batches.helpers(at):
-                if self.display.hulls_visible and helper.count() > 0:
-                    let box = helper.bounds()
-                    points.append(box.minimum)
-                    points.append(box.maximum)
-        # Even with helpers hidden, a selected Camera/Light has a movable origin.
-        if let node = self.selected():
-            if node.kind in ["Camera", "Light"]:
-                points.append(Vector3(node.values[1], node.values[2], node.values[3]))
         # The context frames; the rest of the scene only when there is none.
         let items = view_items(self.network)
         var context = false
@@ -293,11 +296,18 @@ pub class Workspace:
             let data = self.network.evaluate_data(item.node.id) catch failure:
                 continue
             append_bounds(data, item.matrix, points)
+        if glyphs or points.length == 0:
+            for at in 0..<self.batches.scenes.length:
+                for helper in self.batches.helpers(at):
+                    if self.display.hulls_visible and helper.count() > 0:
+                        let box = helper.bounds()
+                        points.append(box.minimum)
+                        points.append(box.maximum)
+            # Even with helpers hidden, a selected Camera/Light has a movable origin.
+            if let node = self.selected():
+                if node.kind in ["Camera", "Light"]:
+                    points.append(Vector3(node.values[1], node.values[2], node.values[3]))
         self.frame_points(points)
-
-    ## Where the camera is (its view's state).
-    func camera_key(self) -> list[float]:
-        return self.view.state()
 
     ## Frame `points`, from at least `least` away.
     func frame_points(self, points: list[Vector3], least: float = 0.001) -> unit!:
@@ -321,7 +331,24 @@ pub class Workspace:
 
     ## The active pane alone, or the four panes.
     pub func toggle_four(self) -> unit!:
-        self.panes.toggle(self.panes.active)
+        self.toggle_pane(self.panes.active)
+
+    ## Pane `index` alone, or the four again: their orthographic views
+    ## framed on the model as they appear.
+    pub func toggle_pane(self, index: int) -> unit!:
+        self.panes.toggle(index)
+        if self.panes.four:
+            self.panes.fit_orthographic()
+        self.revision += 1
+
+    ## The docked Grid button among four panes: every pane's grid on, or off
+    ## when one shows.
+    pub func toggle_every_grid(self) -> unit!:
+        var shown = false
+        for view in self.panes.views:
+            shown = shown or view.grid_visible
+        for view in self.panes.views:
+            view.grid_visible = not shown
         self.revision += 1
 
     pub func reset_view(self) -> unit!:
@@ -919,15 +946,15 @@ pub class Workspace:
         self.sync_selection()
         session.service.release_result(self.publisher.kept)
         self.revision += 1
-        if self.pending_frame:
-            self.pending_frame = false
-            # Only a camera nobody moved since is framed, in the pane that
-            # asked.
-            let acting = self.view
-            self.view = self.panes.views[self.pending_pane]
-            if self.camera_key() == self.pending_view:
-                self.frame_cube()
-            self.view = acting
+        # The frames put off till now, each in the pane that asked, if
+        # nobody moved its view since.
+        let acting = self.view
+        for view in self.panes.views:
+            let kind = view.take_frame()
+            if kind != 0:
+                self.view = view
+                self.frame_scene(kind == 1)
+        self.view = acting
         return true
 
     ## The nearest visible surface along a view ray (the displayed scene).

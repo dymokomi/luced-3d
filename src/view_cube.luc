@@ -15,18 +15,27 @@ import camera_menu
 import theme
 from luce_std import math
 
-## The gizmo's radius, its balls' radius and the gap above it, in points.
-pub let radius = 44.0
-let ball = 9.0
+## The gap above the gizmo, in points.
 let above = 12.0
 
 ## The six balls: +X, +Y, +Z, then -X, -Y, -Z; and hit's answer for the
 ## gizmo's disc between them.
 pub let disc = 6
 
-## The gizmo's center in a pane `width` wide.
-pub func center(width: float) -> Point:
-    return Point(width - 18.0 - radius, camera_menu.top + 26.0 + above + radius)
+## Where the gizmo sits in a pane `width` by `height`, under its camera
+## menu (`compact`: a pane of four, the menu beside the shading button):
+## its center, its radius (smaller in a small pane, so it keeps out of the
+## scene's way: 44 points in a pane 490 or more each way, down to 26) and
+## its balls' radius.
+pub class Place:
+    pub let center: Point
+    pub let radius: float
+    pub let ball: float
+
+    pub func init(self, width: float, height: float, compact: bool):
+        self.radius = math.max(26.0, math.min(44.0, math.min(width, height) * 0.09))
+        self.ball = math.max(7.0, math.min(9.0, self.radius * 0.2))
+        self.center = Point(width - 18.0 - self.radius, camera_menu.top(compact) + 26.0 + above + self.radius)
 
 ## The view ball `index` looks from.
 pub func view_of(index: int) -> int:
@@ -51,11 +60,12 @@ pub class ViewCube:
     pub func orbiting(self) -> bool:
         return self.dragging
 
-    ## The balls on screen for `view` in a pane `width` wide, farthest first:
-    ## each one's index, x, y and depth toward the eye.
-    func balls(self, view: ViewState, width: float) -> list[(int, float, float, float)]!:
+    ## The balls on screen for `view` with the gizmo at `place`, farthest
+    ## first: each one's index, x, y and depth toward the eye.
+    func balls(self, view: ViewState, place: Place) -> list[(int, float, float, float)]!:
         let lens = view.camera.projection(1.0)
-        let c = center(width)
+        let c = place.center
+        let radius = place.radius
         let xs: list[float] = []
         let ys: list[float] = []
         let depths: list[float] = []
@@ -80,14 +90,16 @@ pub class ViewCube:
             result.append((index, xs[index], ys[index], depths[index]))
         return result
 
-    ## The gizmo for `view` in a pane `width` wide; lit under the pointer
-    ## in the `active` pane.
-    pub func draw(self, p: Painter, view: ViewState, width: float, active: bool) -> unit!:
-        let c = center(width)
+    ## The gizmo for `view` at `place`; lit under the pointer in the
+    ## `active` pane.
+    pub func draw(self, p: Painter, view: ViewState, place: Place, active: bool) -> unit!:
+        let c = place.center
+        let radius = place.radius
+        let ball = place.ball
         let hovered = self.hovered if active else -1
         if hovered >= 0 or (active and self.dragging):
             p.rounded_rectangle(Rect(c.x - radius - ball - 4.0, c.y - radius - ball - 4.0, 2.0 * (radius + ball + 4.0), 2.0 * (radius + ball + 4.0)), theme.grey(90.0), radius + ball + 4.0, opacity = 0.35)
-        for (index, x, y, depth) in self.balls(view, width):
+        for (index, x, y, depth) in self.balls(view, place):
             let k = index % 3
             let color = theme.axis(k)
             let lit = index == hovered
@@ -101,30 +113,30 @@ pub class ViewCube:
                 if lit:
                     p.text("-" + ["X", "Y", "Z"][k], x - 8.0, y - 8.0, theme.grey(20.0))
 
-    ## The ball under (x, y) of a pane `width` wide (the nearest first), the
-    ## disc, or -1.
-    pub func hit(self, view: ViewState, x: float, y: float, width: float) -> int!:
-        let found = self.balls(view, width)
+    ## The ball under (x, y) with the gizmo at `place` (the nearest first),
+    ## the disc, or -1.
+    pub func hit(self, view: ViewState, x: float, y: float, place: Place) -> int!:
+        let found = self.balls(view, place)
         for at in 0..<found.length:
             let (index, bx, by, depth) = found[found.length - 1 - at]
-            if math.hypot(x - bx, y - by) <= ball + 1.0:
+            if math.hypot(x - bx, y - by) <= place.ball + 1.0:
                 return index
-        let c = center(width)
-        if math.hypot(x - c.x, y - c.y) <= radius + ball:
+        let c = place.center
+        if math.hypot(x - c.x, y - c.y) <= place.radius + place.ball:
             return disc
         return -1
 
     ## Pane `view`'s pointer events on the gizmo: hover, a ball clicked
     ## (the pane looks from that side), a drag orbiting. Whether it took
     ## the event; `orbit` turns the view by a drag's (dx, dy).
-    pub func event(self, view: ViewState, event: Event, width: float, orbit: func(float, float) -> unit!) -> bool!:
+    pub func event(self, view: ViewState, event: Event, place: Place, orbit: func(float, float) -> unit!) -> bool!:
         if event.kind == EventKind.pointer_moved and self.pressed < 0:
-            let at = self.hit(view, event.x, event.y, width) if event.inside else -1
+            let at = self.hit(view, event.x, event.y, place) if event.inside else -1
             let changed = at != self.hovered
             self.hovered = at
             return changed or at >= 0
         if event.kind == EventKind.pointer_down and event.button == 0 and not event.alt and event.inside:
-            let at = self.hit(view, event.x, event.y, width)
+            let at = self.hit(view, event.x, event.y, place)
             if at < 0:
                 return false
             self.pressed = at

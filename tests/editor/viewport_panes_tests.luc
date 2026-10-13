@@ -2,8 +2,9 @@
 ## camera_views.luc, sketch_camera.luc): orthographic projection and picking
 ## in a Front view, framing in a Top view, the layout and pane views kept and
 ## set again (and through a project file), Space tapped against held, a scene
-## camera looked through moving its node, and a sketch's square view given
-## back when it is finished.
+## camera looked through moving its node, a sketch's square view given back
+## when it is finished, the orthographic panes framed on the model as the
+## four appear, and the chrome docked once over the four.
 from app import Luce3D
 from luce_ui.ui import Event
 from luce_window.input import EventKind, Key
@@ -28,7 +29,9 @@ pub func viewport_panes_tests() -> unit!:
     space_tap()
     camera_look_through()
     sketch_view_restored()
-    print("PASS viewport panes: orthographic projection and picking, framing in Top, layout and views kept and restored (project too), Space tap and Space+F, a camera looked through moved as one undo step, a sketch's square view given back")
+    four_framed()
+    docked_chrome()
+    print("PASS viewport panes: orthographic projection and picking, framing in Top, layout and views kept and restored (project too), Space tap and Space+F, a camera looked through moved as one undo step, a sketch's square view given back, the orthographic panes framed on the model as the four appear (F frames the camera too), the chrome docked once over four panes")
 
 func near(a: float, b: float, within: float = 0.000001):
     assert(math.abs(a - b) <= within, f"{a} is not {b}")
@@ -232,4 +235,79 @@ func sketch_view_restored() -> unit!:
     assert(not w.sketching())
     assert(sketch_camera.follow(w) or w.view.state() == kept)
     assert(w.view.state() == kept, "finishing the sketch did not give the view back")
+    editor.close()
+
+## The default cube and a Camera node far off to one side. As the four
+## panes appear, each orthographic one frames the cube alone, centered and
+## whole (the camera's glyph left out); F in a pane frames the camera too.
+func four_framed() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.leave_group(w)
+    node_commands.add_node(w, "Camera", 300.0, 0.0)
+    for (slot, value) in [(1, -30.0), (2, 20.0), (3, 40.0)]:
+        node_commands.set_parameter(w, slot, value)
+    render(editor)
+    w.toggle_four()
+    render(editor)
+    let area = editor.panels.view.layout().bounds()
+    # The default cube: 2 on a side, standing on the ground at the origin.
+    let middle = Vector3(0.0, 1.0, 0.0)
+    for index in [0, 2, 3]:
+        let r = w.panes.rect_of(index, area.width, area.height)
+        w.view = w.panes.views[index]
+        assert(w.view.orthographic)
+        let c = project(w, middle, r.width, r.height)
+        near(c[0], r.width * 0.5, 1.0)
+        near(c[1], r.height * 0.5, 1.0)
+        for corner in 0..<8:
+            let p = Vector3(1.0 if corner % 2 == 1 else -1.0, 2.0 if (corner // 2) % 2 == 1 else 0.0, 1.0 if corner >= 4 else -1.0)
+            let s = project(w, p, r.width, r.height)
+            assert(s[0] > r.width * 0.1 and s[0] < r.width * 0.9 and s[1] > r.height * 0.1 and s[1] < r.height * 0.9, f"pane {index}: a corner is near or off its edge: {s}")
+    # F in the Front pane frames the camera too: its place lands inside.
+    let front = w.panes.rect_of(2, area.width, area.height)
+    w.view = w.panes.views[2]
+    w.frame_cube()
+    let seen = project(w, Vector3(-30.0, 20.0, 40.0), front.width, front.height)
+    assert(seen[0] >= 0.0 and seen[0] <= front.width and seen[1] >= 0.0 and seen[1] <= front.height, f"F left the camera out: {seen}")
+    w.view = w.panes.view()
+    editor.close()
+
+## Among four panes the chrome is docked: its buttons answer over the
+## viewport, not in a pane; pointing at them leaves the active pane as it
+## is; the dock's Grid turns every pane's grid off, then on.
+func docked_chrome() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    render(editor)
+    let view = editor.panels.view
+    let chrome = view.tools.chrome
+    assert(not chrome.docked())
+    w.toggle_four()
+    render(editor)
+    assert(chrome.docked())
+    let area = view.layout().bounds()
+    # The first level button, top left of the viewport (over the Top pane).
+    assert(chrome.button_at(30.0, 20.0, area.width, area.height, dock = true) >= 200)
+    assert(chrome.button_at(30.0, 20.0, area.width, area.height) == -1)
+    w.panes.active = 3
+    editor.app.focus(view.layout())
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + 30.0, y = area.y + 20.0))
+    assert(w.panes.active == 3, "pointing at the dock made another pane active")
+    # The dock's Grid button: every pane's grid off, then on again.
+    var grid = -1.0
+    for x in 0..<int(area.width * 0.5):
+        if chrome.button_at(float(x), 20.0, area.width, area.height, dock = true) == 101:
+            grid = float(x)
+            break
+    assert(grid >= 0.0, "no Grid button in the dock")
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = area.x + grid + 4.0, y = area.y + 20.0, button = 0))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = area.x + grid + 4.0, y = area.y + 20.0, button = 0))
+    for pane in w.panes.views:
+        assert(not pane.grid_visible)
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = area.x + grid + 4.0, y = area.y + 20.0, button = 0))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = area.x + grid + 4.0, y = area.y + 20.0, button = 0))
+    for pane in w.panes.views:
+        assert(pane.grid_visible)
+    assert(w.panes.active == 3)
     editor.close()
