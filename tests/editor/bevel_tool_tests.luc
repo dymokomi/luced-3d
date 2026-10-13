@@ -1,0 +1,156 @@
+## Bevel in the editor (POLY-MODELING.md Stage 4), on the 4 by 4 grid over
+## -1..1 (point z*5+x):
+##
+## - its rows: twenty, the Group Type's slot 15 skipped, the Custom profile
+##   a ramp over slots 20 to 46 that a new node starts with the round ramp;
+##   the node's values hand the verb its 46 numbers without slot 15;
+## - a node with the Custom profile set to a step makes the stepped strip,
+##   the ramp edited in the node's slots and on the tool bar as one change;
+## - Blender's keys during the drag, from real viewport events: P drags the
+##   Shape, S the Segments (whole), the wheel steps Segments, M cycles the
+##   Width Type, C flips Clamp overlap, A drags the Width again and typed
+##   0.25 with Enter keeps it; all of it one undo step with the tool.
+from luce_window.input import Key
+from luce_3d.graphics import Vector3
+from luce_geocore.geocore import Mesh
+from edit_types import edge_level
+from edit_operations import verb_numbers
+from parameter_rows import Parameter, padded, ramp_numbers
+from app import Luce3D
+from tool_drag_tests import editor_on, at, move, press, release, key, type_text, wheel, last, choose, near
+import node_catalog
+import node_evaluation
+import verb_rows
+import modeling_commands
+import node_commands
+
+pub func bevel_tool_tests() -> unit!:
+    bevel_rows()
+    custom_profile()
+    drag_keys()
+    print("PASS Bevel in the editor: its rows skip the Group Type's slot, the Custom profile is a ramp in value slots that starts round and steps the strip when edited, on a node and on the tool bar; P, S, the wheel, M, C, A and typing during the drag, one undo step")
+
+func row_named(name: str) -> Parameter!:
+    for row in node_catalog.fields("PolyBevel"):
+        if row.name == name:
+            return row
+    trap(f"no row {name}")
+
+func bevel_rows() -> unit!:
+    assert(node_catalog.group_type_slot == verb_rows.group_type_slot)
+    let ramp = row_named("Custom profile")
+    assert(ramp.value_ramp() and ramp.slot == 20 and ramp.components == 27)
+    assert(row_named("Face strength").slot == 16 and row_named("Mark sharp").slot == 14)
+    for row in node_catalog.fields("PolyBevel"):
+        if row.slot == node_catalog.group_type_slot and (row.valued() or row.value_ramp()):
+            assert(row.name == "Group Type")
+    var found = false
+    for row in node_catalog.tool_rows("PolyBevel"):
+        if row.name == "Custom profile":
+            found = true
+    assert(found)
+    # A new node starts with the round ramp, and hands the verb 46 numbers.
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6), edit = false)
+    let w = editor.workspace
+    node_commands.add_node(w, "PolyBevel", 0.0, 100.0)
+    let node = w.selected() else trap("no node")
+    let data = ramp_numbers(node.values[20..<47])
+    assert(data.length == 12 and data[2] == 3.0)
+    near(data[7], math_sqrt2() - 1.0)
+    node.values[16] = 2.0
+    let numbers = verb_numbers("PolyBevel", node.values)
+    assert(numbers.length == 46 and numbers[15] == 2.0 and numbers[19] == 1.0)
+
+func math_sqrt2() -> float:
+    return 1.4142135623730951
+
+## The Custom profile as a step on a node: a cube edge's strip steps (its
+## points move off the round profile's), and the ramp set through the
+## node's slots is one change.
+func custom_profile() -> unit!:
+    let cube = Mesh.cube()
+    let values: list[float] = []
+    for _ in 0..<node_catalog.value_slots:
+        values.append(0.0)
+    let starting = verb_rows.initial_numbers("PolyBevel")
+    for index in 0..<starting.length:
+        values[index] = starting[index]
+    values[node_catalog.group_type_slot] = 2.0
+    values[1] = 4.0
+    values[7] = 1.0
+    let round = node_evaluation.evaluate_verb("PolyBevel", values, ["p0-1"], cube)
+    assert(round.warning == "")
+    # Depth 0 to the middle, then 1 (the step), constant between.
+    let step = padded([1.0, 1.0, 3.0, 0.0, 0.0, 0.0, 0.5, 1.0, 0.0, 1.0, 1.0, 0.0], 27)
+    for index in 0..<27:
+        values[20 + index] = step[index]
+    let stepped = node_evaluation.evaluate_verb("PolyBevel", values, ["p0-1"], cube)
+    assert(stepped.warning == "")
+    let a = round.mesh else trap("no mesh")
+    let b = stepped.mesh else trap("no mesh")
+    assert(a.point_count() == b.point_count() and a.face_count() == b.face_count())
+    var differs = false
+    for point in 0..<a.point_count():
+        if a.point(point).subtract(b.point(point)).length() > 0.000001:
+            differs = true
+    assert(differs)
+    # Set on a node as one change.
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6), edit = false)
+    let w = editor.workspace
+    node_commands.add_node(w, "PolyBevel", 0.0, 100.0)
+    let before = w.history.cursor
+    node_commands.set_parameters(w, 20, step)
+    let node = w.selected() else trap("no node")
+    assert(w.history.cursor == before + 1 and node.values[21] == 1.0 and node.values[27] == 1.0)
+
+## Blender's modal keys while Bevel's drag is held, from viewport events.
+func drag_keys() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    choose(editor, edge_level, "p11-12", 4)
+    let before = w.history.cursor
+    modeling_commands.model(w, "Bevel")
+    let s = w.drag_session else trap("Bevel took no drag")
+    let middle = at(editor, s.frame.center_point())
+    let start = [middle[0] + 60.0, middle[1]]
+    move(editor, start)
+    press(editor, start)
+    move(editor, [start[0] + 20.0, start[1]], meta = true)
+    let width = last(editor)[0]
+    assert(width > 0.1)
+    # P: the pointer sets the Shape (over 300 points its range).
+    letter(editor, Key.p, "p")
+    assert(s.row.name == "Shape")
+    move(editor, [start[0] + 50.0, start[1]], meta = true)
+    near(last(editor)[0], width)
+    near(last(editor)[2], 0.5 + 30.0 / 300.0, 0.0001)
+    # S: the Segments, whole numbers; the wheel steps them too.
+    letter(editor, Key.s, "s")
+    move(editor, [start[0] + 150.0, start[1]], meta = true)
+    assert(last(editor)[1] == float(int(last(editor)[1])) and last(editor)[1] > 1.0)
+    let segments = last(editor)[1]
+    wheel(editor, [start[0] + 150.0, start[1]], 1.0)
+    near(last(editor)[1], segments + 1.0)
+    # M cycles the Width Type, C flips Clamp overlap.
+    letter(editor, Key.m, "m")
+    near(last(editor)[3], 1.0)
+    letter(editor, Key.c, "c")
+    near(last(editor)[5], 0.0)
+    # A: the Width again; typed 0.25 and Enter keep it.
+    letter(editor, Key.a, "a")
+    assert(s.row.name == "Width")
+    type_text(editor, "0.25")
+    key(editor, Key.enter)
+    near(last(editor)[0], 0.25)
+    release(editor, [start[0] + 150.0, start[1]])
+    assert(w.drag_session == none and w.history.cursor == before + 1)
+    near(last(editor)[3], 1.0)
+    # The tool bar shows the Custom profile; setting it is one change.
+    let marked = w.history.cursor
+    modeling_commands.set_last_step_values(w, 20, padded([1.0, 1.0, 2.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 27))
+    assert(w.history.cursor == marked + 1 and last(editor)[22] == 2.0)
+
+## A letter key as the keyboard sends it: the key, then its character.
+func letter(editor: Luce3D, pressed: Key, character: str) -> unit!:
+    key(editor, pressed)
+    type_text(editor, character)

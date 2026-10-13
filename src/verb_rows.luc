@@ -1,10 +1,19 @@
 ## A luce-geocore verb's parameters as parameter rows, in consecutive value
 ## slots from 0: the node's rows (node_catalog) and the tool's (verb_tools)
-## are the same rows. A mesh verb's parameter with `bar` off stays off the
-## tool bar (`in_steps`); those with `more` follow a More options folder,
-## shut at first, after the others.
+## are the same rows. A verb node keeps its Group Type in slot 15
+## (`group_type_slot`), so a verb with more numbers than that (Bevel) skips
+## the slot: its numbers run 0 to 14, then on from 16 (edit_operations'
+## `verb_numbers` takes the slot out again). A mesh verb's parameter with
+## `bar` off stays off the tool bar (`in_steps`); those with `more` follow a
+## More options folder, shut at first, after the others. A ramp parameter
+## (Bevel's Custom profile) is a ramp row over its value slots.
 from luce_geocore.geocore import Verbs, VerbCatalog
-from parameter_rows import Parameter, number, whole, vector, toggle, menu, more_options
+from parameter_rows import Parameter, number, whole, vector, toggle, menu, more_options, ramp_values
+
+## The value slot a verb node keeps its Group Type in (node_catalog's
+## `group_type_slot`, which sits above this module; a test checks they
+## agree).
+pub let group_type_slot: int = 15
 
 ## The rows of catalog verb `verb` (VerbCatalog's index).
 pub func rows(verb: int) -> list[Parameter]:
@@ -19,6 +28,9 @@ pub func rows(verb: int) -> list[Parameter]:
         let low = VerbCatalog.parm_minimum(verb, parm)
         let high = VerbCatalog.parm_maximum(verb, parm)
         let doc = VerbCatalog.parm_doc(verb, parm)
+        let components = VerbCatalog.parm_components(verb, parm)
+        if slot <= group_type_slot and slot + components > group_type_slot:
+            slot = group_type_slot + 1
         var row = number(label, slot, initial, low, high, 0.1, doc, VerbCatalog.parm_soft(verb, parm) > 0.0, VerbCatalog.parm_soft(verb, parm))
         if kind == 1:
             row = whole(label, slot, initial, low, high, doc, true)
@@ -26,30 +38,41 @@ pub func rows(verb: int) -> list[Parameter]:
             row = toggle(label, slot, initial, doc)
         elif kind == 3:
             let defaults: list[float] = []
-            for component in 0..<VerbCatalog.parm_components(verb, parm):
+            for component in 0..<components:
                 defaults.append(initial)
             row = vector(label, slot, defaults, doc, low, high)
         elif kind == 4:
             row = menu(label, slot, VerbCatalog.parm_choices(verb, parm), initial, doc)
+        elif kind == 5:
+            let defaults: list[float] = []
+            for component in 0..<components:
+                defaults.append(VerbCatalog.parm_initial_at(verb, parm, component))
+            row = ramp_values(label, slot, components, defaults, doc)
         if mesh_verb:
             row.in_steps = Verbs.parm_bar(verb, parm)
         if mesh_verb and Verbs.parm_more(verb, parm):
             later.append(row)
         else:
             result.append(row)
-        slot += row.components
+        slot += components
     if later.length > 0:
         return result + [more_options()] + later
     return result
 
 ## Verb `name`'s initial numbers, one per value slot (a vector's components
-## each), or none for no verb.
+## each, a ramp's numbers; 0 in the Group Type's slot when the verb skips
+## it), or none for no verb.
 pub func initial_numbers(name: str) -> list[float]:
     let result: list[float] = []
     let verb = VerbCatalog.index_of(name)
     if verb < 0:
         return result
-    for parm in 0..<VerbCatalog.parm_count(verb):
-        for component in 0..<VerbCatalog.parm_components(verb, parm):
-            result.append(VerbCatalog.parm_initial(verb, parm))
+    for row in rows(verb):
+        if not row.valued() and not row.value_ramp():
+            continue
+        while result.length < row.slot + row.components:
+            result.append(0.0)
+        result[row.slot] = row.initial
+        for component in 1..<row.components:
+            result[row.slot + component] = row.rest[component - 1]
     return result

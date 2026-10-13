@@ -87,18 +87,48 @@ Copy the group's faces, offset along their normals.
 
 #### Bevel
 
-Bevel the group's edges into strips of faces.
+Bevel the group's edges into strips with corner patches, or cut off its points.
 
 - Node `PolyBevel` in Geo; a step of Edit Mesh.
-- Works on edges.
-- After it runs, a drag in the viewport sets Offset (hauled away from the selection's center); a click keeps it, the wheel steps Segments.
+- Works on edges or points.
+- After it runs, a drag in the viewport sets Width (hauled away from the selection's center); a click keeps it, the wheel steps Segments.
+- While its drag lasts: A drags Width, P drags Shape, S drags Segments, M cycles Width Type, V cycles Affect, O cycles Miter Outer, I cycles Miter Inner, Z cycles Profile Type, N cycles Intersection, C flips Clamp overlap, H flips Harden normals, U flips Mark seams, K flips Mark sharp, L flips Loop slide.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
-| Offset | 0.1 | yes | Distance from each beveled edge to the sides of its strip, measured in the faces beside it. |
+| Width | 0.1 | yes | How far the bevel reaches; Width Type says how it is measured (Percent reads it as a percentage). |
 | Segments | 1 | yes | Faces across each strip. |
-| Profile | 0.5 | yes | Shape across the strip: 0.5 round, toward 1 the original corner, 0 flat. |
-| Clamp overlap | on | yes | Keep each offset within half of the edges it slides along, so strips cannot cross. |
+| Shape | 0.5 | yes | The profile across a strip: 0.5 round, 0.25 a straight chamfer, 1 the square corner, 0 hollowed in to the opposite corner. |
+| Width Type | Offset | yes | Offset: from the edge to the strip's sides across the faces. Width: the strip's own width. Depth: from the edge straight in to the strip. Percent: a share of the edges beside. Absolute: along the edges beside. |
+| Affect | Auto | yes | Bevel edges, or cut off points; Auto cuts off points for a group of points and bevels edges otherwise. |
+| Clamp overlap | on | yes | Keep the width below where strips and patches would cross. |
+| Loop slide | on | yes | Slide the strip's sides along an unbeveled edge between two beveled ones, keeping edge loops straight. |
+| Profile Type | Superellipse | yes | The profile's shape: the superellipse Shape sets, or the Custom profile ramp. |
+| Miter Outer | Sharp | yes | Where three or more beveled edges meet round an outside corner over 180°: a sharp miter, a patch, or an arc. |
+| Miter Inner | Sharp | yes | Where beveled edges meet inside a corner under 180°: a sharp miter or an arc, spread apart by Spread. |
+| Spread | 0.1 | yes | How far an inner arc miter's points spread along their edges. |
+| Intersection | Grid Fill | yes | How a corner where three or more beveled edges meet fills: a grid of faces following the profiles, or a face cutting off each strip's end. |
+| Harden normals | off | yes | Give the bevel's corners normals that blend into the faces beside it (writes N on corners). |
+| Mark seams | off | yes | Carry a beveled edge's seam across the corner patches to the next beveled seam. |
+| Mark sharp | off | yes | Carry a beveled edge's sharp mark across the corner patches to the next sharp one. |
+| Face strength | None | yes | Write face_strength for weighted normals: 1 weak on corner patches, 2 medium on strips, 3 strong on the faces kept; New the bevel's faces, Affected also the rebuilt faces, All every face. |
+| Material | -1 | yes | The new faces' material: -1 keeps the material of the faces beside them, 0 and up the mesh's material of that number (in order of first use). |
+| Limit | None | yes | Bevel only the group's edges whose faces meet at more than Angle, or whose bevel_weight is above 0 (the weight also scales the width). |
+| Angle | 30.0 | yes | With Limit Angle: the least angle between an edge's face normals, in degrees. |
+| Custom profile | a ramp | yes | With Profile Type Custom: the profile across a strip, its depth from the straight chamfer (0) to the square corner (1) at each place across (0 to 1). |
+
+#### Bevel Weight
+
+Set the bevel_weight of the group's edges or points for Bevel's Limit Weight.
+
+- Node `Bevel Weight` in Geo; a step of Edit Mesh.
+- Works on edges or points.
+- After it runs, a drag in the viewport sets Weight (rightward, its range over 300 points); a click keeps it.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Weight | 1.0 | yes | The weight the group's edges (or points) get: Bevel with Limit Weight scales its width by it, and leaves those of weight 0. |
+| Mode | Set | yes | Give the group this weight, or clear it to 0. |
 
 ### Cut
 

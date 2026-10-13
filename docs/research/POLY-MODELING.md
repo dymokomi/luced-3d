@@ -1053,7 +1053,7 @@ built" below).
   hover preview, three cuts by the wheel, the click and the slide; Edge Slide; Vertex Slide's
   picked edge), and `tool_parity_tests` over every tool (a hover tool runs on the selection).
 
-**Stage 4: Bevel in full.**
+**Stage 4: Bevel in full.** **Done 2026-10-13** (see "Stage 4 as built" below).
 - Offset types; vertex bevel; profile superellipse and custom ramp; miters outer
   sharp/patch/arc and inner sharp/arc; corner patches as grids (`ADJ`-style refinement) and
   cutoff; loop slide; harden normals; mark sharp.
@@ -1063,6 +1063,83 @@ built" below).
   - vertex bevel of a cube corner adds one triangle;
   - outer arc miter on a 270° corner keeps the strip width;
   - a custom profile of a step makes a stepped strip.
+
+**Stage 4 as built.**
+- luce-geocore: PolyBevel rewritten after Blender's bmesh bevel, read for its algorithm and
+  written our own way (nothing copied; the files' notes describe it). A run: which edges or
+  points bevel (`bevel_setup`: the group, Limit Angle or Weight, `bevel_weight`; an edge of
+  three or more faces, or a bevel vertex whose faces are not one fan, refuses with a message;
+  boundary edges are left), each bevel vertex's halves counterclockwise from outside with
+  their widths by Width Type (Offset, Width = offset·2 sin(a/2), Depth = offset·cos(a/2),
+  Percent and Absolute along the legs); Clamp overlap (`bevel_widths`: the widest bevel before
+  a strip collapses or a side runs off its edge, all widths scaled to just short of it); the
+  rings of boundary points (`bevel_boundary`, `bevel_meet`: offset lines meeting in a face or
+  dropped onto one between, Loop slide onto the one unbeveled edge between, terminal edges,
+  cut-off points, outer Patch and Arc miters, inner Arc miters spread along their edges); the
+  even-widths pass along loop-slid chains (least squares by CGLS); the profiles
+  (`bevel_profile`: the unit-square superellipse, Shape s → r = −2 ln 2 / ln s, points by equal
+  chords — exact angles for the circle, legs for the square shapes, bisection otherwise; the
+  Custom profile a ramp of depth from the chamfer to the square corner, its points on the
+  ramp's points first so a step stays a step; the custom profile's side kept along chains); the
+  vertex meshes (`bevel_grid`, `bevel_corners`, `bevel_patches`: Grid Fill refined by
+  Catmull-Clark with Sabin's center rule and resampled, its starting center placed so the
+  refined center lands on the profile's fullness (the refinement is affine, so two refinements
+  fix it — no table); the cube corner as an octant of the superellipsoid; pipes snapped to
+  the pipe's profile; the square shape's offset-line grid; the hollow corner; Cutoff's faces;
+  polygons and fans; two strips welded); the output (`bevel_emit`: rebuilt faces, strips and
+  patches, corner values by mean value coordinates in the face each lies in, shared per point
+  and face; coincident patch points welded so square and hollow shapes keep no zero-area
+  faces); the finishing passes (`bevel_marks`: every edge value of a beveled edge onto its
+  strip's sides and of an unbeveled edge onto its remaining piece; Mark seams and sharp along
+  the patch boundary to the next marked edge; Harden normals' corner N by Blender's rules;
+  face_strength 1/2/3 by Face strength's mode; Material). Rings and vertex meshes are built in
+  parallel (each ring's size is known first). `bevel_weights.lucb` is the new **Bevel Weight**
+  verb. Thirteen files, none over 520 lines.
+- The verb's records: `ParmKind.ramp` (a ramp in a parameter's components, its default in
+  `ParmSpec.initials`), `KeySpec` and `Verb.keys` (Blender's modal keys as data:
+  `Verbs.key_*`), `Verbs.parm_initial_at`.
+- Choices that differ from Blender: Shape follows Blender's mapping (0.25 is the chamfer, 0
+  hollows to the opposite corner; 0.5 round, 1 square); Clamp stops 0.01% short of the
+  collision so squeezed faces keep an area (our verbs refuse zero-area faces); Affect has an
+  Auto choice (points picked cut points off); Material is the mesh's n-th material in order of
+  first use (our materials are paths, not slots); the Grid Fill center is solved, not looked up.
+- luced-3d: a verb's rows skip the Group Type's slot 15 when it has more numbers (Bevel has
+  46; `verb_numbers` takes the slot out again); a ramp parameter is a value ramp row
+  (`parameter_rows.ramp_values`) on the node's pane and the tool bar, set as one change
+  (`set_parameters`, `set_last_step_values`); `Tool.keys` (`ToolKey`) from the verb's keys, and
+  the drag driver acts on them during a live drag before anything is typed: A, P and S switch
+  what the pointer sets (Width by length, Shape and Segments by amount; a whole-number row
+  drags in whole steps), M, V, O, I, Z and N cycle the menus, C, H, U, K and L flip the
+  toggles, the wheel steps Segments, typing sets the row the pointer sets. docs/TOOLS.md lists
+  the keys.
+- Tests: luce-geocore `bevel_checks` (closed forms, under the allocation-failure sweep): a cube
+  edge at 1–16 segments against the polygon's volume and area and their round limit; Shapes 1,
+  0.25, 0 and the square's odd corner chord; the five width types; the three-edge corner at 2–5
+  segments (Blender's patch counts, every patch point on the sphere of radius w about the inner
+  corner) and every edge at 3 segments (all quads but 8 triangles); vertex bevel (8 − w³/6, one
+  triangle); bevel_weight and the Bevel Weight verb; Limit Angle; Clamp overlap (the octahedron
+  of face centers, 4/3, every face outward; unclamped, faces turn inside out); a stepped custom
+  profile (8 − 2·w²/4); Cutoff; the L block's sharp and arc miters (strips ending square at x
+  and z = 1 + w with their round end profile, the arc's middle on its circle of radius 2w);
+  Loop slide on a sheared grid; a flat pipe; Harden normals, Mark sharp continuity, Face
+  strength, Material; a boundary edge and a non-manifold edge refused; a sweep of every option
+  over a cube, the L block, a cylinder (n-gon caps), a sphere (pole fans) and a torus, all
+  closed and outward; `modeling_checks` and `select_checks` updated. luced-3d
+  `bevel_tool_tests` (the rows and slots, a node's custom profile, the tool bar's ramp, and P,
+  S, the wheel, M, C, A and typed 0.25 from real viewport events, one undo step), the drag and
+  parity tests over every tool (Bevel Weight included).
+- Preview scenes (`tools/preview_bevel.luc`, shaded wireframe): every edge of a box at 3
+  segments, one corner's grid at 4, top corners cut off, the L block's arc miter, a stepped
+  Custom profile with More options open on its ramp, and a drag after P (the box by the pointer
+  reading Shape).
+- Benchmarks (837 × 837 grid, `tests/bench`): 1k faces' inner edges 98 ms, 100k faces' at 3
+  segments 1.04 s (2.2M faces out: grid corners), every edge 1.98 s (the old bevel took 63 ms,
+  454 ms and 1.10 s with one patch face per corner and two-corner blends).
+- Not yet: Blender's per-corner UV seam snapping (corners interpolate in one face each, which
+  keeps UVs continuous unless a seam runs through a corner patch); vertex groups (weights come
+  from `bevel_weight`); a square cut-off point at odd segments, and Cutoff with Percent widths
+  round the L's inner corner, can fold faces flat and then pass the input through with a
+  warning.
 
 **Stage 5: everyday modify tools.**
 - Knife with segments, snapping to points and edge middles, angle snap, cut through.

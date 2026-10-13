@@ -242,12 +242,16 @@ guarded. Very large selections show as a summary in the Group field.
   with the nearest one of its kind) with rows of quads when they have as many
   edges, else with triangles zipped by distance along them. Loops are paired
   facing each other; coplanar holes twist. Twist turns where a loop starts.
-- PolyBevel bevels the group's interior edges by a constant offset measured in
-  the faces beside them, with 1–64 segments along a profile (0.5 round, 0
-  flat) and overlap clamping. Where three or more beveled edges meet, the hole
-  becomes one patch face (no grid patch); a lone beveled edge's end vertex
-  stays and its strip fans around it. Edges at non-manifold points are skipped
-  with a warning.
+- PolyBevel is Blender's bevel (docs/TOOLS.md lists its rows and keys): the
+  group's edges become strips of 1–64 segments, their width measured as
+  Offset, Width, Depth, Percent or Absolute, their profile a superellipse
+  (Shape 0.5 round, 0.25 a chamfer, 1 square, 0 hollow) or a Custom profile
+  ramp; corners fill with a grid patch (Grid Fill) or cut faces (Cutoff),
+  with Sharp, Patch or Arc miters; Clamp overlap, Loop slide, Harden normals,
+  Mark seams and sharp, Face strength, Material and the Angle or Weight limit
+  (Bevel Weight sets `bevel_weight`). With points picked (or Affect
+  Vertices) it cuts the points off. Non-manifold edges and points refuse with
+  a message on the node.
 - Subdivision marks a mesh to be shown as its Catmull-Clark (Loop, bilinear)
   limit surface at a display level; nodes after it still get the cage, and Edit
   edits the cage while the viewport shows the smooth surface. Crease sets USD
@@ -1262,9 +1266,9 @@ Houdini's [Subdivide](https://www.sidefx.com/docs/houdini/nodes/sop/subdivide.ht
 references for these operators, and each is broader than ours: Subdivide
 motivated separate topology/position handling and linear attribute interpolation;
 Fuse shows that merging points needs explicit attribute ownership (ours keeps the
-first representative, and Clean is separate); PolyBevel also offers point
-bevels, per-edge offsets and patterned corner patches, where ours makes one
-patch face per corner; Smooth has more controls than our amount-and-iterations neighbor relaxation. The
+first representative, and Clean is separate); PolyBevel follows Blender's
+bevel in full (point bevels, per-edge weights, grid corner patches, miters);
+Smooth has more controls than our amount-and-iterations neighbor relaxation. The
 limits above document these differences rather than claiming SOP equivalence.
 Fields should arrive as a deliberate type-system addition, not ad-hoc
 expressions inside widgets.
