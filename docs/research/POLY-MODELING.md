@@ -932,16 +932,30 @@ built" below).
   right-click menu and Modify, a docs/TOOLS.md section and a parity check, with no other file
   changed.
 - Tests: `cad_tool_parity_tests` (node = step for every CAD tool that runs on a box's face,
-  edge or body with nothing more to pick: Offset Face, Shell, Delete, Remove, Scale Body,
-  Fillet, Chamfer, Trim, Untrim, Trim Convert, Shrink, Stitch, Unstitch; Move/Copy recorded as
-  differing: its node starts from its rows, whose scale slots are 0); `tool_registry_tests`
+  edge or body with nothing more to pick: Offset Face, Shell, Delete, Move/Copy, Remove, Scale
+  Body, Fillet, Chamfer, Trim, Untrim, Trim Convert, Shrink, Stitch, Unstitch; and, through
+  `cad_pick_parity.luc`, the tools that take more picks, clicked as their prompts ask:
+  Replace Face, Split Body, Split Face, Combine, Intersect, Square, Skin, Rail, Profile,
+  Align, Project, Extrude To object and Revolve about a picked edge); `tool_registry_tests`
   covers every CAD tool's declaration and the CAD network's and Edit CAD's menus; the CAD test
   files pass with only their wiring calls renamed (`tool_run.run`, `tool_picks.accept`, the
   prompts' labels, which are now "Pick " and the pick's label: "Pick sections", "Pick axis").
 - Disabled tools draw pale (luce-ui's `Theme.disabled`): marking menu entries, the tool column,
   the level switchers; the icon shelf's buttons keep their tooltips.
-- Not yet: the CAD declarations live in luced-3d (question 2: luce-cad later); a CAD node does
-  not take the drag driver (its handles and value box do); the Move node's starting values.
+- Follow-up round (2026-10-13):
+  - Move node parity: a tool's node inserted from the viewport (and a prompt's pick) wrote the
+    Group Type into slot 15, which a CAD node uses for its own rows (Move/Copy's Create copy),
+    so a Move node of faces made a copy; the Group Type is now written only to nodes that have
+    that row (`node_catalog.takes_group_type`).
+  - A node keeps asking for more of its first pick while its tool still waits for it (Square's
+    other boundaries, Skin's next section), as a step does (`tool_picks.node_next`).
+  - Extrude and Revolve run with a flat face selected take that face as the profile, as Fusion
+    does (`cad_commands.face_feature`, Edit CAD's sketch on the face and the feature); a
+    Revolve's Profiles text can name a face as Extrude's can, and then waits for its axis.
+  - A CAD node made from a menu keeps its viewport handles and takes the drag driver as a step
+    does: a drag anywhere sets its drag row, in the tool's undo step (`tool_run.as_node`,
+    `tool_drag_tests`' Offset Face node). Preview scenes `drag_cad_node` and `revolve_face`.
+- Not yet: the CAD declarations live in luced-3d (question 2: luce-cad later).
 
 **Stage 2: selection.** **Done 2026-10-13** (see "Stage 2 as built" below).
 - In luce-geocore:
@@ -1197,9 +1211,20 @@ built" below).
   segments, one corner's grid at 4, top corners cut off, the L block's arc miter, a stepped
   Custom profile with More options open on its ramp, and a drag after P (the box by the pointer
   reading Shape).
-- Benchmarks (837 × 837 grid, `tests/bench`): 1k faces' inner edges 98 ms, 100k faces' at 3
-  segments 1.04 s (2.2M faces out: grid corners), every edge 1.98 s (the old bevel took 63 ms,
-  454 ms and 1.10 s with one patch face per corner and two-corner blends).
+- Benchmarks (837 × 837 grid, `tests/bench`): 1k faces' inner edges 31 ms, 100k faces' at 3
+  segments 210 ms (2.2M faces out: grid corners), every edge 455 ms. As first built (serial
+  output) it took 98 ms, 1.04 s and 1.98 s; the old bevel 63 ms, 454 ms and 1.10 s with one
+  patch face per corner and two-corner blends. The speed round: face normals, choosing edges
+  (whole bit words per range), the bevel vertices (each one's room of halves known from its
+  point's edges, built in parallel; a refusal is reported for the first vertex in order),
+  ring sizes and rooms, Clamp overlap, the even-widths pass's re-placing, the grid points'
+  numbering and the output all in parallel. The output is built in pieces (4096 input faces,
+  8192 edges or 2048 vertices each), every piece into its own `FaceBatch`
+  (luce-geocore `verbs/face_batch.lucb`) with its own corner-mix cache, joined in order by
+  `append_batches`, so the mesh is the same on any number of threads; edge-value pairs, face
+  kinds and corner flags are only collected when a finishing pass reads them (the output's
+  edge topology was built on every run before). Every `bevel_checks` result was compared
+  byte for byte (all 937 bevels saved as .prism) against the serial build.
 - Not yet: Blender's per-corner UV seam snapping (corners interpolate in one face each, which
   keeps UVs continuous unless a seam runs through a corner patch); vertex groups (weights come
   from `bevel_weight`); a square cut-off point at odd segments, and Cutoff with Percent widths

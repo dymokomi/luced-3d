@@ -26,6 +26,7 @@ from handle_lines import HandleLine
 from luce_ui import ui
 from angles import radians
 import sketch_node
+import extrude_inputs
 from luce_std import math
 
 # -- Extrude's value slots (node_catalog.cad_fields lays its rows on them).
@@ -277,8 +278,8 @@ pub func axis_summary(text: str) -> str:
 ## sketch line (of `sketch`, the nearest Sketch's text, on the plane of
 ## the curves in `data`) or body edge (of the body flowing with the
 ## sketch), projected onto the sketch's plane as Fusion's Project Axis does.
-func axis_of(v: list[float], texts: list[str], data: GeometryData, sketch: str) -> Axis!:
-    let plane = sketch_node.plane_of(data.geometry)
+func axis_of(v: list[float], texts: list[str], data: GeometryData, shape: GeometrySet, sketch: str) -> Axis!:
+    let plane = sketch_node.plane_of(shape)
     let n = plane.normal()
     var axis = Axis(Vector3(), Vector3(1.0, 0.0, 0.0))
     let chosen = int(v[axis_slot])
@@ -343,12 +344,21 @@ func turning(axis: Axis, anchor: ProfileAnchor) -> (Vector3, Vector3, Vector3):
     let way = axis.direction if axis.direction.cross(radial).dot(anchor.normal) >= 0.0 else axis.direction.multiply_scalar(-1.0)
     return (center, way, radial)
 
+## The curves a Revolve's Profiles text `text` takes its profiles from and
+## their keys: the sketch's in `data`, or a face of the body's loops (all
+## of them) as Extrude takes one (extrude_inputs.luc).
+func profile_shape(data: GeometryData, text: str) -> (GeometrySet, str)!:
+    let face = extrude_inputs.profile_face(text)
+    if face == "":
+        return (data.geometry, text)
+    return (extrude_inputs.face_curves(data, face), "")
+
 ## The solid a Revolve with values `v` makes from the profiles in `data`,
 ## and the point halfway round it (for Auto) when there is a profile.
 pub func revolved(v: list[float], texts: list[str], data: GeometryData, tag: str, sketch: str, target: GeometryData?) -> (CadModel, Vector3)!:
-    let profiles = texts[0]
-    let axis = axis_of(v, texts, data, sketch)
-    let anchor = CadModeling.profile_anchor(data.geometry, profiles)
+    let (shape, profiles) = profile_shape(data, texts[0])
+    let axis = axis_of(v, texts, data, shape, sketch)
+    let anchor = CadModeling.profile_anchor(shape, profiles)
     if not anchor.found:
         error(ui.invalid, "The sketch has no closed profile to revolve")
     let (center, way, radial) = turning(axis, anchor)
@@ -358,11 +368,11 @@ pub func revolved(v: list[float], texts: list[str], data: GeometryData, tag: str
         if face == "":
             error(ui.invalid, "Revolve To: pick the face to turn to (Pick object)")
         let sense = -1.0 if v[revolve_flip_slot] != 0.0 else 1.0
-        let made = CadModeling.revolved_to(data.geometry, axis.origin, axis.direction, tag, target_body(target), face, sense, profiles)
+        let made = CadModeling.revolved_to(shape, axis.origin, axis.direction, tag, target_body(target), face, sense, profiles)
         return (made, center.add(radial.rotated_about(way, sense * radians(5.0))))
     let span = span_of(v)
     let whole = span[1] - span[0] >= 360.0 - 1e-9
-    var made = CadModeling.revolved_about(data.geometry, axis.origin, way, tag, radians(360.0 if whole else span[1] - span[0]), profiles)
+    var made = CadModeling.revolved_about(shape, axis.origin, way, tag, radians(360.0 if whole else span[1] - span[0]), profiles)
     if not whole and span[0] != 0.0:
         made = CadModeling.moved_body(made, Vector3(), axis.origin, way, radians(span[0]))
     let middle = radians((span[0] + span[1]) * 0.5)
@@ -373,10 +383,11 @@ pub func revolve_handles(v: list[float], texts: list[str], data: GeometryData, s
     let handles: list[HandleLine] = []
     if int(v[revolve_type_slot]) != 0:
         return handles
-    let anchor = CadModeling.profile_anchor(data.geometry, texts[0])
+    let (shape, profiles) = profile_shape(data, texts[0])
+    let anchor = CadModeling.profile_anchor(shape, profiles)
     if not anchor.found:
         return handles
-    let (center, way, radial) = turning(axis_of(v, texts, data, sketch), anchor)
+    let (center, way, radial) = turning(axis_of(v, texts, data, shape, sketch), anchor)
     let direction = int(v[revolve_direction_slot])
     handles.append(HandleLine("angle", angle_slot, 1.0, center, way, -1, radial))
     if direction == 1:

@@ -37,7 +37,7 @@ POLY_SCENES = ["poly_marking_edges", "poly_menu_faces", "poly_marking_select", "
 # Selection in Edit Mesh (tools/preview_select.luc).
 SELECT_SCENES = ["select_d_edges", "select_d_faces", "select_loop", "select_ring", "select_path", "select_similar", "select_hide"]
 # Drags after tools and the interactive tools in Edit Mesh (tools/preview_drag.luc).
-DRAG_SCENES = ["drag_extrude", "drag_extrude_lock", "drag_bevel", "loopcut_hover", "loopcut_slide", "edge_slide"]
+DRAG_SCENES = ["drag_extrude", "drag_extrude_lock", "drag_bevel", "loopcut_hover", "loopcut_slide", "edge_slide", "drag_cad_node", "revolve_face"]
 # Bevel in full in Edit Mesh (tools/preview_bevel.luc).
 BEVEL_SCENES = ["bevel_box", "bevel_corner", "bevel_vertex", "bevel_miter", "bevel_custom", "bevel_keys"]
 # The viewport's panes and cameras (tools/preview_viewport.luc).

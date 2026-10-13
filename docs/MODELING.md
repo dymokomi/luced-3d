@@ -923,6 +923,9 @@ profile) and Press Pull; for selected edges Press Pull, Fillet and Chamfer (the 
 after the displayed node with those edges); else the CAD Create nodes. The
 A and S marking menus and the menu bar's Create and Modify (CAD features)
 hold the same entries (`cad_commands.luc`). No plain key is taken for them.
+Extrude or Revolve run from a menu with a flat face selected and no sketch
+edited takes the face as its profile, as Fusion does (a Revolve then waits
+for its axis), in a CAD node and in Edit CAD alike.
 
 **Extrude, as Fusion's dialog** (`cad_features.luc`, `extrude_inputs.luc`).
 Type: Extrude, or **Thin extrude** (a wall along the profiles' curves, open

@@ -1,0 +1,309 @@
+## Node and step parity for the CAD tools that need more than their first
+## pick (POLY-MODELING.md Stage 1's follow-up): Replace Face, Split Body,
+## Split Face, Combine, Intersect, the builders that take two picks or more
+## (Square, Skin, Rail, Profile), Align, Project, Extrude To object and
+## Revolve about a picked edge. Each runs from the viewport as a node after
+## its scene's chain and as a step of an Edit CAD after the same chain:
+## the first pick selected, the tool run, then its rows set and its other
+## picks clicked as the prompts ask, Enter ending a list. Both must make
+## the same bodies and curves.
+from workspace import Workspace
+from luce_3d.graphics import Vector3
+from luce_cad.cad_curves import CadCurves
+from luce_cad.modeling import CadModeling
+from luce_cad.model import CadModel
+from geometry_data import GeometryData
+from edit_types import object_level, edge_level, face_level, curve_level, step_reason
+import cad_moves
+import cad_features
+import edit_cad_align
+import edit_cad_surfaces
+import build_ops
+import align_ops
+import tool_run
+import tool_move
+import modeling_commands
+import tool_picks
+import tool_prompts
+import node_commands
+import selection_commands
+from luce_std import math
+
+## Something clicked: a face whose middle and normal `keep` takes, an edge
+## whose middle and a face beside it `keep` takes, or curve `index`.
+class Target:
+    pub var level: int
+    pub var keep: func(Vector3, Vector3) -> bool
+    pub var index: int = -1
+
+    pub func init(self, level: int, keep: func(Vector3, Vector3) -> bool, index: int = -1):
+        self.level = level
+        self.keep = keep
+        self.index = index
+
+## What happens after the first pick and the tool: a row set, a pick
+## started by its label, or a target clicked for the pick that waits.
+class Action:
+    pub var slot: int = -1
+    pub var value: float = 0.0
+    pub var start: str = ""
+    pub var target: Target? = none
+
+    pub func init(self, slot: int = -1, value: float = 0.0, start: str = "", target: Target? = none):
+        self.slot = slot
+        self.value = value
+        self.start = start
+        self.target = target
+
+## A tool's scene and clicks.
+class Scenario:
+    pub var tool: str
+    ## The chain the tool comes after, built in a CAD network.
+    pub var scene: func(Workspace) -> unit!
+    pub var first: Target
+    pub var then: list[Action]
+    ## Its step takes the other clicks with the first, Shift adding them
+    ## (Intersect's two faces), where its node asks for them.
+    pub var together: bool = false
+
+    pub func init(self, tool: str, scene: func(Workspace) -> unit!, first: Target, then: list[Action], together: bool = false):
+        self.tool = tool
+        self.scene = scene
+        self.first = first
+        self.then = then
+        self.together = together
+
+pub func cad_pick_parity() -> list[str]!:
+    let checked: list[str] = []
+    for scenario in scenarios():
+        let node = run(scenario, false)
+        let step = run(scenario, true)
+        assert(not node.starts_with("not made") and node != "no bodies", f"{scenario.tool} as a node: {node}")
+        assert(node == step, f"{scenario.tool}: node {node}, step {step}")
+        checked.append(scenario.tool)
+    return checked
+
+func clicking(target: Target) -> Action:
+    return Action(target = target)
+
+func set_to(slot: int, value: float) -> Action:
+    return Action(slot = slot, value = value)
+
+func begin_pick(label: str) -> Action:
+    return Action(start = label)
+
+func face(keep: func(Vector3, Vector3) -> bool) -> Target:
+    return Target(face_level, keep)
+
+## A body, by a face of it.
+func whole(keep: func(Vector3, Vector3) -> bool) -> Target:
+    return Target(object_level, keep)
+
+func edge(keep: func(Vector3, Vector3) -> bool) -> Target:
+    return Target(edge_level, keep)
+
+func near(a: float, b: float) -> bool:
+    return math.abs(a - b) < 1e-6
+
+func scenarios() -> list[Scenario]!:
+    # Two 20 mm boxes, the second 10 along X (overlapping; for Intersect
+    # also 5 up); the box and its top raised 5 as a surface; the box and a
+    # copy 40 above.
+    let top = face(func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99 and near(c.y, 10.0) and near(c.x, 0.0))
+    let copy_end = face(func (c: Vector3, n: Vector3) -> bool: return n.x < -0.99 and near(c.x, 0.0))
+    let first_body = whole(func (c: Vector3, n: Vector3) -> bool: return n.x < -0.99 and near(c.x, -10.0))
+    let second_body = whole(func (c: Vector3, n: Vector3) -> bool: return n.x > 0.99 and near(c.x, 20.0))
+    let raised = face(func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99 and near(c.y, 15.0))
+    let above = face(func (c: Vector3, n: Vector3) -> bool: return n.y < -0.99 and near(c.y, 30.0))
+    # The unstitched box's edges: the top's at +X and the side's there,
+    # the bottom's at +X, the side's upright edge at +X +Z.
+    let top_x = edge(func (c: Vector3, n: Vector3) -> bool: return near(c.x, 10.0) and near(c.y, 10.0) and n.y > 0.99)
+    let side_x = edge(func (c: Vector3, n: Vector3) -> bool: return near(c.x, 10.0) and near(c.y, 10.0) and n.x > 0.99)
+    let bottom_x = edge(func (c: Vector3, n: Vector3) -> bool: return near(c.x, 10.0) and near(c.y, -10.0) and n.y < -0.99)
+    let upright = edge(func (c: Vector3, n: Vector3) -> bool: return near(c.x, 10.0) and near(c.z, 10.0) and near(c.y, 0.0) and n.x > 0.99)
+    let top_z = edge(func (c: Vector3, n: Vector3) -> bool: return near(c.z, 10.0) and near(c.y, 10.0) and n.z > 0.99)
+    # The box's top edge at +X, as an axis.
+    let axis = edge(func (c: Vector3, n: Vector3) -> bool: return near(c.x, 10.0) and near(c.y, 10.0) and n.y > 0.99)
+    return [Scenario("Replace Face", raised_top, top, [clicking(raised)]),
+            Scenario("Split Body", pair, first_body, [clicking(copy_end)]),
+            Scenario("Split Face", pair, top, [clicking(copy_end)]),
+            Scenario("Combine", pair, first_body, [clicking(second_body)]),
+            Scenario(edit_cad_surfaces.intersect_verb, raised_pair, top, [clicking(copy_end)], together = true),
+            Scenario(build_ops.square_verb, unstitched, side_x, [clicking(edge(func (c: Vector3, n: Vector3) -> bool: return near(c.z, 10.0) and near(c.y, 10.0) and n.z > 0.99)),
+                                                                   clicking(edge(func (c: Vector3, n: Vector3) -> bool: return near(c.x, -10.0) and near(c.y, 10.0) and n.x < -0.99)),
+                                                                   clicking(edge(func (c: Vector3, n: Vector3) -> bool: return near(c.z, -10.0) and near(c.y, 10.0) and n.z < -0.99))]),
+            Scenario(build_ops.skin_verb, unstitched, bottom_x, [clicking(top_x)]),
+            Scenario(build_ops.rail_verb, unstitched, top_z, [clicking(upright)]),
+            Scenario(build_ops.profile_verb, unstitched, top_z, [clicking(upright)]),
+            Scenario(align_ops.align_verb, unstitched, top_x, [clicking(side_x)]),
+            Scenario(edit_cad_surfaces.project_verb, curve_over_box, Target(curve_level, top.keep, 0), [clicking(top)]),
+            Scenario("Extrude", box_and_above, top, [set_to(cad_features.extent_slot, 1.0), begin_pick("Object"), clicking(above)]),
+            Scenario("Revolve", box, top, [clicking(axis), set_to(cad_features.axis_slot, 0.0), set_to(cad_features.angle_slot, 90.0)])]
+
+# -- Scenes: each a chain in the CAD network, its last node displayed.
+
+func box(w: Workspace) -> unit!:
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+
+## A Move after the box (whole bodies, or its top face), Translate by
+## `by`, Create copy.
+func copied(w: Workspace, by: Vector3, faces: bool) -> unit!:
+    box(w)
+    let first = w.network.evaluate_data(w.network.selected).models()[0]
+    node_commands.add_node(w, "Move", 0.0, 120.0)
+    node_commands.set_text(w, 0, facing(first, Vector3(0.0, 1.0, 0.0)))
+    node_commands.set_parameter(w, cad_moves.type_slot, 1.0)
+    node_commands.set_parameter(w, 0, by.x)
+    node_commands.set_parameter(w, 1, by.y)
+    node_commands.set_parameter(w, 2, by.z)
+    node_commands.set_parameter(w, cad_moves.copy_slot, 1.0)
+    node_commands.set_parameter(w, tool_move.object_slot, 1.0 if faces else 0.0)
+
+func pair(w: Workspace) -> unit!:
+    copied(w, Vector3(10.0, 0.0, 0.0), false)
+
+## The copy also 5 up: its end at x = 0 crosses the box's top.
+func raised_pair(w: Workspace) -> unit!:
+    copied(w, Vector3(10.0, 5.0, 0.0), false)
+
+func raised_top(w: Workspace) -> unit!:
+    copied(w, Vector3(0.0, 5.0, 0.0), true)
+
+func box_and_above(w: Workspace) -> unit!:
+    copied(w, Vector3(0.0, 40.0, 0.0), false)
+
+## The box's six faces as sheets.
+func unstitched(w: Workspace) -> unit!:
+    box(w)
+    let first = w.network.evaluate_data(w.network.selected).models()[0]
+    node_commands.add_node(w, edit_cad_surfaces.unstitch_verb, 0.0, 120.0)
+    node_commands.set_text(w, 0, facing(first, Vector3(0.0, 1.0, 0.0)))
+
+## A curve across above the box.
+func curve_over_box(w: Workspace) -> unit!:
+    box(w)
+    node_commands.add_node(w, "Curve", 0.0, 120.0)
+    node_commands.set_text(w, 0, "-15 15 2; -5 15 -1; 5 15 3; 15 15 1")
+
+func facing(model: CadModel, normal: Vector3) -> str!:
+    for f in 0..<model.face_count():
+        let name = model.face_name(f)
+        let frame = CadModeling.face_frame(model, name)
+        if frame.found and frame.u.cross(frame.v).dot(normal) > 0.999:
+            return name
+    trap("no such face")
+
+# -- Running.
+
+## `scenario` from the viewport, as a node (`step` off) or a step of an
+## Edit CAD after the scene: its bodies' faces and volume and its curves,
+## or why it was not made.
+func run(scenario: Scenario, step: bool) -> str!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    scenario.scene(w)
+    if step:
+        node_commands.add_node(w, "Edit CAD", 0.0, 400.0)
+    let before: list[int] = []
+    for node in w.network.nodes:
+        before.append(node.id)
+    # A CAD network picks bodies at the Faces level (a face names its body).
+    selection_commands.set_mode(w, face_level if scenario.first.level == object_level and not step else scenario.first.level)
+    choose(w, scenario.first)
+    let together = step and scenario.together
+    if together:
+        for action in scenario.then:
+            if let target = action.target:
+                choose(w, target, true)
+    tool_run.run(w, scenario.tool)
+    # The node the tool made, or the Edit CAD its step is in.
+    var made = w.network.display
+    for node in w.network.nodes:
+        if not (node.id in before):
+            made = node.id
+    for action in scenario.then:
+        if let target = action.target:
+            if together:
+                continue
+            if w.prompt == none:
+                let at = w.network.require(made)
+                return f"no pick waits for a click: {at.kind} {at.texts} {at.warning}"
+            choose(w, target)
+        elif action.start != "":
+            tool_picks.start_named(w, made, action.start)
+        else:
+            set_row(w, made, action.slot, action.value, step)
+    # Picks still waiting take what they hold (Enter ends a list).
+    for _ in 0..<4:
+        if w.prompt == none:
+            break
+        tool_prompts.accept_prompt(w)
+    return summary(w, made)
+
+## A row of the tool's node, or of the Edit CAD's last step.
+func set_row(w: Workspace, id: int, slot: int, value: float, step: bool) -> unit!:
+    if step:
+        w.network.selected = id
+        modeling_commands.set_last_step(w, slot, value, -1.0e9, 1.0e9)
+        return
+    let node = w.network.require(id)
+    node.values[slot] = value
+    w.network.invalidate(id)
+    w.rebuild()
+
+## Click `target` on the pick geometry at the level that shows.
+func choose(w: Workspace, target: Target, extend: bool = false) -> unit!:
+    if target.index >= 0:
+        selection_commands.choose_component(w, target.index, extend)
+        return
+    let mesh = w.geometry else trap("no pick geometry")
+    if target.level == edge_level:
+        let polygon_models = mesh.find_attribute("cad_model", 2)
+        let edge_models = mesh.find_attribute("cad_edge_model", 4)
+        for at in 0..<mesh.edge_count():
+            let a = mesh.point(mesh.edge_point(at, 0))
+            let b = mesh.point(mesh.edge_point(at, 1))
+            let middle = a.add(b).multiply_scalar(0.5)
+            for polygon in 0..<mesh.face_count():
+                if int(mesh.attribute_value(polygon_models, polygon)) != int(mesh.attribute_value(edge_models, at)):
+                    continue
+                var ends = 0
+                for k in 0..<mesh.face_size(polygon):
+                    if edit_cad_align.on_segment(mesh.point(mesh.face_point(polygon, k)), a, b, 1e-6):
+                        ends += 1
+                if ends >= 2 and target.keep(middle, mesh.face_normal(polygon)):
+                    selection_commands.choose_component(w, at, extend)
+                    return
+        trap("no such edge")
+    for polygon in 0..<mesh.face_count():
+        if target.keep(mesh.face_center(polygon), mesh.face_normal(polygon)):
+            selection_commands.choose_component(w, polygon, extend)
+            return
+    trap("no such face")
+
+## Node `id`'s bodies (faces, volume) and curves, or why it was not made.
+func summary(w: Workspace, id: int) -> str!:
+    let shown = w.network.require(id)
+    var failed = ""
+    var made: GeometryData? = none
+    made = w.network.evaluate_data(id) catch failure:
+        failed = failure.message
+        recover none
+    let data = made else return "not made: " + (failed[shown.name.length + 2..] if failed.starts_with(shown.name + ": ") else failed)
+    if data.warning.starts_with("Step "):
+        return "not made: " + step_reason(data.warning)
+    if shown.warning != "":
+        return "not made: " + shown.warning
+    var faces = 0
+    var total = 0.0
+    for model in data.models():
+        faces += model.face_count()
+        let triangles = model.tessellate(32)
+        for triangle in 0..<triangles.index_count() // 3:
+            let a = triangles.vertex(triangles.index(triangle * 3)).position
+            let b = triangles.vertex(triangles.index(triangle * 3 + 1)).position
+            let c = triangles.vertex(triangles.index(triangle * 3 + 2)).position
+            total += a.dot(b.cross(c)) / 6.0
+    return f"{data.models().length} bodies, {faces} faces, volume {math.round(total * 10.0) / 10.0}, {CadCurves.count(data.geometry)} curves"
