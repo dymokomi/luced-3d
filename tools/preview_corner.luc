@@ -13,7 +13,11 @@
 ##     opposite sides: the half cylinder, the sides trimmed to it, the top
 ##     consumed.
 ##   surf8_corner: Corner (Ball corner) on a rounded box corner's three
-##     fillets, its ball taken away (try --mode 7).
+##     fillets, its ball taken away (try --mode 7): the ball again.
+##   surf8_corner_g2: the same corner of three G3 fillets, the setback
+##     patch taken away, Corner at G2: six quads round a center.
+##   cad_fillet_step: an Edit CAD box's edge filleted G2 by depth and
+##     skew: the step's rows along the bottom.
 import preview_support
 import preview_blend
 from luce_3d.graphics import Vector3
@@ -26,12 +30,13 @@ import edit_cad_commands
 import edit_cad_picks
 import blend_ops
 import cad_blends
+import modeling_commands
 from luce_cad.cad_geometry import CadGeometry
 from luce_cad.model import CadModel
 from luce_cad.modeling import CadModeling
 
 pub func scenes() -> list[str]:
-    return ["surf8_conic", "surf8_g2_depth", "surf8_limits", "surf8_setback", "surf8_bridge", "surf8_corner"]
+    return ["surf8_conic", "surf8_g2_depth", "surf8_limits", "surf8_setback", "surf8_bridge", "surf8_corner", "surf8_corner_g2", "cad_fillet_step"]
 
 ## A CAD network's 2-box and a Fillet node on edges `keep` takes (their
 ## ends), radius `radius`; the Fillet node selected and displayed.
@@ -101,9 +106,11 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
         edit_cad_picks.accept_pick(w, node)
         preview_support.settle(w)
         preview_blend.look(editor, 0.6, 0.45, 7.0, Vector3(0.0, 0.3, 0.0))
-    elif scene == "surf8_corner":
+    elif scene == "surf8_corner" or scene == "surf8_corner_g2":
         let source = box_fillet(editor, 0.5, at_corner)
         _ = source
+        if scene == "surf8_corner_g2":
+            node_commands.set_parameter(w, cad_blends.continuity_slot, 2.0)
         preview_support.settle(w)
         let model = CadGeometry.model(preview_support.cooked(w, w.network.selected).geometry, 0)
         let blends: list[str] = []
@@ -120,9 +127,38 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
         node_commands.set_text(w, 0, corner_faces.join(";"))
         node_commands.add_node(w, blend_ops.corner_verb, 40.0, 320.0)
         node_commands.set_text(w, blend_ops.first_text, blends.join(";"))
+        if scene == "surf8_corner_g2":
+            # G2; the check's labels off, so the zebra shows through.
+            node_commands.set_parameter(w, blend_ops.corner_continuity_slot, 3.0)
+            node_commands.set_parameter(w, blend_ops.corner_check_slot, 0.0)
+            node_commands.set_parameter(w, blend_ops.corner_conflicts_slot, 0.0)
         node_commands.display_selected(w)
         preview_support.settle(w)
         preview_blend.look(editor, 0.75, 0.6, 4.5, Vector3(0.6, 0.6, 0.6))
+    elif scene == "cad_fillet_step":
+        node_commands.delete_selected(w)
+        node_commands.add_node(w, "CAD", 40.0, 40.0)
+        node_commands.enter_group(w, w.network.selected)
+        node_commands.add_node(w, "Edit CAD", 40.0, 40.0)
+        preview_support.settle(w)
+        modeling_commands.create(w, "Box")
+        preview_support.settle(w)
+        selection_commands.set_mode(w, 2)
+        preview_support.settle(w)
+        let mesh = preview_support.shown(w) else trap("no pick mesh")
+        let tag = mesh.find_attribute("cad_edge", 4)
+        var edge = -1
+        for at in 0..<mesh.edge_count():
+            if edge < 0 and mesh.attribute_value(tag, at) >= 0.0:
+                edge = at
+        selection_commands.choose_component(w, edge, false)
+        modeling_commands.model(w, "Fillet")
+        preview_support.settle(w)
+        modeling_commands.set_last_step(w, cad_blends.size_slot, 0.4, 0.0001, 100000.0)
+        modeling_commands.set_last_step(w, cad_blends.continuity_slot, 1.0, 0.0, 2.0)
+        modeling_commands.set_last_step(w, cad_blends.g2_shape_slot, 1.0, 0.0, 2.0)
+        preview_support.settle(w)
+        preview_blend.look(editor, 0.75, 0.5, 6.0, Vector3(0.0, 0.0, 0.0))
     editor.panels.refresh()
 
 ## At the Faces level, the pick mesh's polygon whose middle and normal

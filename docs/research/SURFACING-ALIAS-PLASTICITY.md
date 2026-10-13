@@ -2202,6 +2202,25 @@ Tests, against closed forms (luce-cad `blend_shape_tests.luc`, `blend_build_test
 - in the editor: the Fillet node's conic, depth and limits; Bridge Fillet's three prompts and its
   half cylinder; Corner on a rounded corner's three fillets.
 
+**Class-A corners and lids** (2026-10-12; luce-cad MODELING.md, Fill, Class-A corners and lids).
+The ball corner's and the lid's zebra stripes drew into stars. Three constructions, measured by the
+new `CadMeasure.fairness` (the mean curvature's spread and ripple, the peak curvature over the mean,
+the smallest area element) before and after:
+
+| Case | Before | After |
+|---|---|---|
+| Ball corner (three G1 fillets, ball taken away) | plate 2.7% of r off the ball; spread 18%, ripple 25%, peak 2.0 | the ball itself (rational window, poles off it), 1e-15 off; spread 0, ripple 0, peak 1.0 |
+| Lid on four walls, Quad G1 / G2 | smallest area element 0.06 / 0.02 of the mean, peak 42 / 73, ripple 2247% / 5727%; 4 by 4 | 0.73 / 0.63, 4.7 / 4.1, 65% / 93% (strips held through the corners' turns); 16 by 16 / 32 by 32 |
+| Five-sided corner, G3 fillets and walls, G2 | trimmed net 96 by 64, 107 s, G2 up to 199% off | five quads, about 1 s; G1 1e-4°, walls G2 exact, fillets within 2% but near the hole's corners |
+| Box corner of three G3 fillets, setback patch taken away, G2 | (G1 trimmed fill) | six quads, G1 and G2 exact on all twelve edges, seams G2 |
+
+The Fill step's and node's Domain row gains Quads; the Corner step fills a ball's hole with the ball
+and a setback corner's with quads. Zebra's stars on a ball are the stripe cylinder's pole, not the
+surface's (`surf8_corner` now shows the pole the ball itself shows). Captures: `surf8_corner`,
+`surf8_corner_g2`, `surf_fill_lid` (all with `--mode 7`), and `cad_fillet_step`: the Edit CAD fillet
+step's rows regrouped, the section's first and Limits, Setback and Overflow behind More options
+(closed), Tangent chain beside Radius.
+
 Not done (left for later): Y-blends of two edges of different convexity at a vertex, vertex blends
 (rolling past sharp edges of the other convexity), round order at mixed corners, a choice among the overflow behaviours
 (and rolling on onto curved tangent faces, cliff-edge blends along the cliff), limits where blends
