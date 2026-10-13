@@ -71,10 +71,23 @@ pub class Tool:
     pub let picks: list[Pick]
     ## Its parameter rows (`in_steps`: on the tool bar after it runs).
     pub let rows: list[Parameter]
-    ## The row a drag in the viewport sets after it runs (-1: none).
+    ## The row a drag in the viewport sets after it runs (-1: none), and
+    ## how the pointer sets it (tool_drag.luc): "length", "normal",
+    ## "amount", "angle" or "slide".
     pub let drag: int
+    pub let drag_mode: str
+    ## Whether the value follows the pointer as soon as the tool runs, no
+    ## button held (Blender's Extrude); a click keeps it.
+    pub let follows: bool
+    ## The count row the wheel steps during the drag, the vector row X, Y
+    ## and Z set (an axis lock) and the menu row switched to its last choice
+    ## with it (-1: none).
+    pub let wheel: int
+    pub let axis: int
+    pub let axis_choice: int
     ## Viewport input besides the selection: "" none, "stroke" (the knife),
-    ## "place" (PolyDraw's clicked corners).
+    ## "place" (PolyDraw's clicked corners), "hover" (Loop Cut's ring under
+    ## the pointer, cut by a click).
     pub let gesture: str
     ## Whether it runs on everything with nothing selected.
     pub let whole: bool
@@ -85,7 +98,8 @@ pub class Tool:
     pub let function: str
 
     pub func init(self, name: str, label: str, section: str, family: str, icon: str, doc: str, contexts: list[str], kinds: list[str], picks: list[Pick],
-                  rows: list[Parameter], drag: int, gesture: str, whole: bool, cook: func(Invocation, GeometryData, str) -> GeometryData!, function: str = ""):
+                  rows: list[Parameter], drag: int, gesture: str, whole: bool, cook: func(Invocation, GeometryData, str) -> GeometryData!, function: str = "",
+                  drag_mode: str = "length", follows: bool = false, wheel: int = -1, axis: int = -1, axis_choice: int = -1):
         self.name = name
         self.label = label
         self.section = section
@@ -97,6 +111,11 @@ pub class Tool:
         self.picks = picks
         self.rows = rows
         self.drag = drag
+        self.drag_mode = drag_mode
+        self.follows = follows
+        self.wheel = wheel
+        self.axis = axis
+        self.axis_choice = axis_choice
         self.gesture = gesture
         self.whole = whole
         self.cook = cook
@@ -106,9 +125,40 @@ pub class Tool:
     pub func first_pick(self) -> Pick:
         return self.picks[0] if self.picks.length > 0 else Pick("", [])
 
-    ## Whether it is offered at selection level `level`.
+    ## Whether it is offered at selection level `level`: its first pick's
+    ## levels; a hover tool at every component level (it picks under the
+    ## pointer, at Edges).
     pub func offered(self, level: int) -> bool:
-        return self.first_pick().takes(level)
+        return self.offered_levels().length == 0 or level in self.offered_levels()
+
+    ## The levels it is offered at ([] every level).
+    pub func offered_levels(self) -> list[int]:
+        if self.gesture == "hover":
+            return [1, 2, 3]
+        return self.first_pick().levels
+
+    ## Parameter `parm`'s row (a verb's parameter index: its valued rows in
+    ## slot order, past any folder heading), if it has one.
+    pub func row_at(self, parm: int) -> Parameter?:
+        if parm < 0:
+            return none
+        # Its place among the valued rows by slot (More options' rows come
+        # after the others on the bar, but keep their slots).
+        for row in self.rows:
+            if not row.valued():
+                continue
+            var before = 0
+            for other in self.rows:
+                if other.valued() and other.slot < row.slot:
+                    before += 1
+            if before == parm:
+                return row
+        return none
+
+    ## Parameter `parm`'s value slot (-1 for none).
+    pub func slot_of(self, parm: int) -> int:
+        let row = self.row_at(parm) else return -1
+        return row.slot
 
     ## Its starting numbers: each row's initial value in its slot (a
     ## vector's in each component's).

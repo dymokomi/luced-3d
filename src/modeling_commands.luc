@@ -4,13 +4,13 @@
 ## when nothing is selected: tool_prompts.luc); primitives, the knife,
 ## extrusion, the tool bar's step numbers and clearing edits. Moves are
 ## component_moves.luc's.
-from luce_geocore.geocore import Domain
+from luce_geocore.geocore import Domain, Mesh, Selection
 from luce_3d.graphics import Knife
 from workspace import Workspace
 from luce_std import math
 from edit_operations import EditStep
 from edit_kinds import is_edit
-from edit_types import symmetry_slot, keep_slot
+from edit_types import symmetry_slot, keep_slot, edge_level, domain_number
 from tools import ToolRun
 from tool_record import Tool
 from verb_rows import initial_numbers
@@ -20,6 +20,7 @@ import placing_commands
 import selection_commands
 from edit_steps import append_step, add_tool_node, insert_after_display
 from tool_prompts import start_prompt
+import tool_drag
 
 ## Run tool `operation` on the selection: a step of the active Edit node,
 ## or a new node after the displayed one, its Group the selection's
@@ -27,9 +28,13 @@ from tool_prompts import start_prompt
 ## selected a node waits for its components (Tool → Select). A registry
 ## tool (tool_registry.luc) says how: a stroke tool (the knife) waits for
 ## its stroke, a Select tool changes the selection, a whole tool runs on
-## everything with nothing selected. `numbers` replace its starting numbers
-## (Repeat's).
+## everything with nothing selected; a hover tool (Loop Cut) with nothing
+## selected at its level waits for a click on the edge it shows under the
+## pointer. A tool with a drag row then takes the viewport's drag
+## (tool_drag.luc). `numbers` replace its starting numbers (Repeat's).
 pub func model(w: Workspace, operation: str, numbers: list[float]? = none) -> unit!:
+    # The tool run before keeps what its drag set.
+    tool_drag.settle(w)
     let mesh = w.geometry else return
     var registered: Tool? = none
     var run = ToolRun("", [])
@@ -59,6 +64,11 @@ pub func model(w: Workspace, operation: str, numbers: list[float]? = none) -> un
             choose_tool(w, tool.label)
             w.notice = "Drag across the model to cut it; Shift snaps the stroke to 15°"
             return
+        # A hover tool with nothing of its own to run on waits for the edge
+        # under the pointer; on selected edges it runs on them.
+        if tool.gesture == "hover" and numbers == none and (w.selected_count() == 0 or not tool.first_pick().takes(w.level_index())):
+            start_hover(w, tool)
+            return
         if tool.section == "Select":
             remember(w, tool.label, run.numbers, -1)
             selection_commands.select_with(w, tool, run.numbers)
@@ -73,13 +83,42 @@ pub func model(w: Workspace, operation: str, numbers: list[float]? = none) -> un
         start_prompt(w, operation, run)
         return
     let group = chosen.expression(mesh) if not whole else ""
+    run_tool(w, operation, registered, run, group, mesh)
+
+## Run `run` (tool `operation`; `registered` when the registry has it) on
+## `group` of `mesh`: a step of the edited node, or a node after the
+## displayed one. A registry tool with a drag row then takes the drag.
+func run_tool(w: Workspace, operation: str, registered: Tool?, run: ToolRun, group: str, mesh: Mesh) -> unit!:
+    let group_type = w.group_type()
     if w.editing():
+        let node = w.selected() else return
+        let symmetry = int(node.values[symmetry_slot])
         append_step(w, operation, run.verb, group, run.numbers, mesh)
-        if registered != none:
+        if let tool = registered:
             remember(w, operation, run.numbers, -1)
-    else:
-        add_tool_node(w, operation, run, group, mesh)
-        remember(w, operation, run.numbers, w.network.selected)
+            tool_drag.start(w, tool, mesh, group, group_type, true, symmetry)
+        return
+    add_tool_node(w, operation, run, group, mesh)
+    remember(w, operation, run.numbers, w.network.selected)
+    if let tool = registered:
+        tool_drag.start(w, tool, mesh, group, group_type, false)
+
+## A hover tool (Loop Cut) chosen: at the Edge level the viewport shows what
+## it would make on the edge under the pointer until a click places it
+## (hover_gesture.luc).
+func start_hover(w: Workspace, tool: Tool) -> unit!:
+    if w.level_index() != edge_level:
+        selection_commands.set_mode(w, edge_level)
+    choose_tool(w, tool.label)
+    w.notice = f"{tool.label}: hover an edge to see its ring, the wheel sets the cuts; click to cut, then move to slide and click"
+
+## Hover tool `tool` placed on edge `edge` with `numbers`: run as any tool
+## on that edge, its drag then following the pointer.
+pub func place_hover(w: Workspace, tool: Tool, edge: int, numbers: list[float]) -> unit!:
+    let mesh = w.geometry else return
+    let group = Selection.empty(mesh, domain_number(Domain.edge)).changed(edge, 3).expression(mesh)
+    w.end_modal_tool()
+    run_tool(w, tool.label, tool, ToolRun(tool.name, numbers), group, mesh)
 
 ## Keep tool `label` and its numbers (and the node it made) for Repeat.
 func remember(w: Workspace, label: str, numbers: list[float], node: int):
@@ -212,6 +251,9 @@ pub func set_last_step(w: Workspace, slot: int, value: float, minimum: float, ma
 ## Choose tool `tool`. Select chosen again while splats are edited cycles
 ## how a drag selects them: box, lasso, brush.
 pub func choose_tool(w: Workspace, tool: str):
+    # The tool run before keeps what its drag set.
+    tool_drag.settle(w) catch failure:
+        w.drag_session = none
     if tool == "Select" and w.edit_tool == "Select":
         if let kind = w.active_kind():
             if kind.tints:

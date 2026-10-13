@@ -1,0 +1,132 @@
+## The `hover` gesture (POLY-MODELING.md M4), Loop Cut's (Blender's Loop Cut
+## and Slide): with a hover tool chosen, the edge under the pointer shows in
+## amber what the tool would make there (its output selection on its
+## result: the new loops), the wheel steps the tool's count row (the cuts)
+## and a click runs it on that edge, as a step of the edited node or as a
+## node; its drag then follows the pointer (tool_drag.luc: the cut slides)
+## until the next click. Escape leaves the tool. Nothing here names a tool:
+## the registry's gesture, wheel row and verb say it all.
+from luce_ui.ui import Painter, Event
+from luce_gpu.gpu import Rect
+from luce_window.input import EventKind, Key, ScrollUnit
+from luce_geocore.geocore import Mesh, Selection, Domain, Verbs
+from workspace import Workspace
+from tool_record import Tool
+from edit_operations import verb_numbers
+from edit_types import domain_number
+import tool_registry
+import modeling_commands
+import theme
+from luce_std import math
+
+## Trackpad points to one wheel step.
+let scroll_step = 40.0
+
+pub class HoverGesture:
+    let w: Workspace
+    ## The edge hovered (-1 none) and the count the wheel set.
+    pub var edge: int = -1
+    pub var count: int = 1
+    ## What a click there would make: its mesh and the elements it selects.
+    pub var made: Mesh? = none
+    pub var preview: Selection? = none
+    var made_for: list[int]
+    var scrolled: float = 0.0
+    var pointer_x: float = -1.0
+    var pointer_y: float = 0.0
+
+    pub func init(self, w: Workspace):
+        self.w = w
+        self.made_for = []
+
+    ## The hover tool chosen, if one is.
+    pub func tool(self) -> Tool?:
+        if tool_registry.gesture_of(self.w.edit_tool) != "hover" or not self.w.selecting():
+            return none
+        return tool_registry.find(self.w.edit_tool)
+
+    ## The tool's numbers with the count in its wheel row.
+    func numbers(self, tool: Tool) -> list[float]:
+        let values = tool.starting()
+        let slot = tool.slot_of(tool.wheel)
+        if slot >= 0:
+            values[slot] = float(self.count)
+        return values
+
+    ## The hovered edge `edge`: what the tool makes there, made again only
+    ## when the edge, the count or the model changed.
+    pub func hover(self, edge: int) -> unit!:
+        let tool = self.tool() else return self.clear()
+        let wanted = [edge, self.count, self.w.revision]
+        if wanted == self.made_for:
+            return
+        self.made_for = wanted
+        self.edge = edge
+        self.made = none
+        self.preview = none
+        let source = self.w.geometry else return
+        if edge < 0:
+            return
+        let group = Selection.empty(source, domain_number(Domain.edge)).changed(edge, 3).expression(source)
+        let result = Verbs.run(tool.name, source, group, 2, verb_numbers(tool.name, self.numbers(tool))) catch failure:
+            return
+        if result.warning() != "":
+            return
+        self.made = result.mesh()
+        self.preview = result.selection()
+
+    func clear(self) -> unit:
+        self.edge = -1
+        self.made = none
+        self.preview = none
+        self.made_for = []
+
+    ## Wheel, Escape and clicks while a hover tool is chosen; whether one was
+    ## used. Moves only follow the pointer (the viewport's hover picks the
+    ## edge and calls `hover`).
+    pub func event(self, event: Event) -> bool!:
+        let tool = self.tool() else return false
+        if event.kind == EventKind.pointer_moved:
+            self.pointer_x = event.x
+            self.pointer_y = event.y
+            return false
+        if event.kind == EventKind.key_down and event.key == Key.escape:
+            self.w.end_modal_tool()
+            self.clear()
+            self.w.revision += 1
+            return true
+        if event.kind == EventKind.scroll and tool.wheel >= 0:
+            var steps = 0
+            if event.scroll_unit == ScrollUnit.points:
+                self.scrolled += event.scroll_y
+                while self.scrolled >= scroll_step:
+                    self.scrolled -= scroll_step
+                    steps += 1
+                while self.scrolled <= -scroll_step:
+                    self.scrolled += scroll_step
+                    steps -= 1
+            else:
+                steps = 1 if event.scroll_y > 0.0 else (-1 if event.scroll_y < 0.0 else 0)
+            let row = tool.row_at(tool.wheel) else return true
+            self.count = int(math.max(row.minimum, math.min(row.maximum, float(self.count + steps))))
+            self.hover(self.edge)
+            return true
+        if event.kind == EventKind.pointer_down and event.button == 0 and event.inside and not event.alt:
+            if self.edge >= 0:
+                let edge = self.edge
+                self.clear()
+                modeling_commands.place_hover(self.w, tool, edge, self.numbers(tool))
+            return true
+        return false
+
+    ## The count by the pointer while an edge is hovered.
+    pub func draw(self, p: Painter) -> unit!:
+        let tool = self.tool() else return
+        if self.edge < 0 or tool.wheel < 0 or self.pointer_x < 0.0:
+            return
+        let row = tool.row_at(tool.wheel) else return
+        let text = f"{row.name}  {self.count}"
+        let r = Rect(self.pointer_x + 18.0, self.pointer_y + 14.0, math.max(70.0, float(text.length) * 7.5 + 14.0), 22.0)
+        p.rounded_rectangle(r, theme.surface(), 3.0)
+        p.rectangle(Rect(r.x, r.y + r.height - 1.5, r.width, 1.5), theme.preview())
+        p.text(text, r.x + 6.0, r.y + 3.0, theme.text())

@@ -1,0 +1,188 @@
+## How far a tool's drag has gone, in its row's own units (tool_drag.luc):
+## the value is the value at the anchor plus the measure's change since.
+## Each mode reads the frame the tool's group gave (drag_session.luc):
+##
+## - "length": a world distance, the pointer hauled away from the group's
+##   center on screen (or rightward when it starts on the center), a screen
+##   point being worth what it covers at the center (Blender's Bevel and
+##   Inset);
+## - "normal": along the group's average normal, or the locked world axis,
+##   as an arrow handle measures (Blender's Extrude); "length" when the axis
+##   faces the eye;
+## - "amount": rightward, the row's range over 300 points;
+## - "angle": degrees turned about the center on screen, counterclockwise;
+## - "slide": along the rails of the element nearest the pointer when the
+##   drag began, a rail's whole length being 1 (Blender's Edge Slide), where
+##   the rail passes nearest the pointer's ray.
+##
+## The snapping steps (stepped unless Cmd or Ctrl is held, as the CAD
+## handles' are): a tenth of the scene grid's step for distances, a
+## hundredth of the range for amounts, whole degrees, twentieths of a rail.
+from luce_3d.graphics import Vector3
+from workspace import Workspace
+from drag_session import DragSession
+from snapping import grid_step
+import view_projection
+from luce_std import math
+
+## The points that make an amount's whole range.
+let amount_span = 300.0
+
+## The drag's measure at (`x`, `y`) of a pane `width` by `height`.
+pub func measure(w: Workspace, s: DragSession, x: float, y: float, width: float, height: float) -> float!:
+    let mode = s.tool.drag_mode
+    if mode == "normal":
+        if let along = along_axis(w, s, x, y, width, height):
+            return along - (along_axis(w, s, s.anchor_x, s.anchor_y, width, height) else along)
+    if mode == "slide":
+        return slid(w, s, x, y, width, height) - slid(w, s, s.anchor_x, s.anchor_y, width, height)
+    if mode == "angle":
+        return s.turned
+    let (ux, uy) = haul_way(w, s, width, height)
+    let travel = (x - s.anchor_x) * ux + (y - s.anchor_y) * uy
+    if mode == "amount":
+        return travel / amount_span * span(s)
+    return travel * view_projection.pixel_at(w, s.frame.center_point(), width, height)
+
+## The step a snapped value keeps to.
+pub func step(w: Workspace, s: DragSession) -> float:
+    let mode = s.tool.drag_mode
+    if mode == "angle":
+        return 1.0
+    if mode == "slide":
+        return 0.05
+    if mode == "amount":
+        return span(s) / 100.0
+    return grid_step(w.view.distance) / 10.0
+
+## The way a haul measures along: from the center out through the anchor,
+## or rightward when the anchor sits on the center.
+func haul_way(w: Workspace, s: DragSession, width: float, height: float) -> (float, float)!:
+    let c = view_projection.project(w, s.frame.center_point(), width, height)
+    let dx = s.anchor_x - c[0]
+    let dy = s.anchor_y - c[1]
+    let gap = math.hypot(dx, dy)
+    if c[2] < 0.0 or gap < 30.0:
+        return (1.0, 0.0)
+    return (dx / gap, dy / gap)
+
+## The row's range for an amount: its slider's end, else its bounds.
+func span(s: DragSession) -> float:
+    let row = s.row
+    let high = row.soft_maximum if row.soft_maximum > 0.0 else row.maximum
+    return math.max(0.000001, math.min(1.0e6, high - row.minimum))
+
+## The axis a "normal" drag runs along: the locked world axis, else the
+## group's average normal (none when it has none).
+pub func drag_axis(s: DragSession) -> Vector3?:
+    if s.locked >= 0:
+        return view_projection.axis(s.locked)
+    let normal = s.frame.normal()
+    if normal.length() == 0.0:
+        return none
+    return normal
+
+## Where along the axis through the group's center the pointer's ray at
+## (`x`, `y`) passes nearest it; none when the axis faces the eye (a short
+## stub of it on screen).
+func along_axis(w: Workspace, s: DragSession, x: float, y: float, width: float, height: float) -> float?!:
+    let axis = drag_axis(s) else return none
+    let center = s.frame.center_point()
+    let pixel = view_projection.pixel_at(w, center, width, height)
+    let a = view_projection.project(w, center, width, height)
+    let b = view_projection.project(w, center.add(axis.multiply_scalar(40.0 * pixel)), width, height)
+    if a[2] < 0.0 or math.hypot(b[0] - a[0], b[1] - a[1]) < 8.0:
+        return none
+    let start = view_projection.origin(w, x, y, width, height)
+    let r = view_projection.ray(w, x, y, width, height)
+    let gap = center.subtract(start)
+    let along = axis.dot(r)
+    let square = r.dot(r)
+    let denominator = square - along * along
+    if math.abs(denominator) < 1e-9:
+        return none
+    return (along * gap.dot(r) - square * axis.dot(gap)) / denominator
+
+## The rails of the element a slide runs on: from its first rail while the
+## owner stays the same.
+pub func rails_of(s: DragSession) -> list[int]!:
+    let result: list[int] = []
+    if s.rail < 0:
+        return result
+    let owner = s.frame.rail_owner(s.rail)
+    var at = s.rail
+    while at < s.frame.rail_count() and s.frame.rail_owner(at) == owner:
+        result.append(at)
+        at += 1
+    return result
+
+## How far along a rail of the slid element the point (`x`, `y`) lies: on
+## the chosen rail when one was picked, else on whichever rail the pointer
+## has gone furthest along (its side's sign); 0 back at the element.
+func slid(w: Workspace, s: DragSession, x: float, y: float, width: float, height: float) -> float!:
+    if s.chosen_rail >= 0:
+        return s.frame.rail_sign(s.chosen_rail) * share_along(w, s, s.chosen_rail, x, y, width, height)
+    var best = 0.0
+    var value = 0.0
+    for rail in rails_of(s):
+        let t = share_along(w, s, rail, x, y, width, height)
+        if t > best:
+            best = t
+            value = s.frame.rail_sign(rail) * t
+    return value
+
+## How far along rail `rail` (a share of it, from its origin) the pointer
+## at (`x`, `y`) is: where the rail's line passes nearest the pointer's ray,
+## so a pointer over the rail's middle reads 0.5 in any perspective.
+pub func share_along(w: Workspace, s: DragSession, rail: int, x: float, y: float, width: float, height: float) -> float!:
+    let o = s.frame.rail_origin(rail)
+    let way = s.frame.rail_end(rail).subtract(o)
+    let r = view_projection.ray(w, x, y, width, height)
+    let gap = o.subtract(view_projection.origin(w, x, y, width, height))
+    let a = way.dot(way)
+    let b = way.dot(r)
+    let c = r.dot(r)
+    let denominator = a * c - b * b
+    if a == 0.0 or math.abs(denominator) < 1e-12 * a * c:
+        return 0.0
+    return (b * r.dot(gap) - c * way.dot(gap)) / denominator
+
+## The rail of the slid element whose screen direction runs most along the
+## move from (`x0`, `y0`) to (`x1`, `y1`) (Vertex Slide's first move picks
+## its edge); -1 without rails.
+pub func rail_along(w: Workspace, s: DragSession, x0: float, y0: float, x1: float, y1: float, width: float, height: float) -> int!:
+    let moved = math.hypot(x1 - x0, y1 - y0)
+    var best = -1
+    var lean = -2.0
+    for rail in rails_of(s):
+        let o = view_projection.project(w, s.frame.rail_origin(rail), width, height)
+        let e = view_projection.project(w, s.frame.rail_end(rail), width, height)
+        let length = math.hypot(e[0] - o[0], e[1] - o[1])
+        if length < 1.0 or moved == 0.0:
+            continue
+        let cosine = ((e[0] - o[0]) * (x1 - x0) + (e[1] - o[1]) * (y1 - y0)) / (length * moved)
+        if cosine > lean:
+            lean = cosine
+            best = rail
+    return best
+
+## The rail of the slid element most along world axis `index`.
+pub func rail_on_axis(s: DragSession, index: int) -> int!:
+    let axis = view_projection.axis(index)
+    var best = -1
+    var lean = -2.0
+    for rail in rails_of(s):
+        let way = s.frame.rail_end(rail).subtract(s.frame.rail_origin(rail))
+        let length = way.length()
+        if length == 0.0:
+            continue
+        if way.dot(axis) / length > lean:
+            lean = way.dot(axis) / length
+            best = rail
+    return best
+
+## The angle of (`x`, `y`) about the group's center on screen, degrees
+## counterclockwise.
+pub func screen_angle(w: Workspace, s: DragSession, x: float, y: float, width: float, height: float) -> float!:
+    let c = view_projection.project(w, s.frame.center_point(), width, height)
+    return math.atan2(c[1] - y, x - c[0]) * 180.0 / math.pi

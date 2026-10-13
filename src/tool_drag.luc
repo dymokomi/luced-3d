@@ -1,0 +1,420 @@
+## The drag driver (POLY-MODELING.md §6.1, owner answer 7): right after a
+## tool with a drag row runs (tool_record.luc's `drag`), dragging anywhere in
+## the viewport sets that row, and a click keeps it. A tool that `follows`
+## (Extrude, as Blender's E; the slides) takes the value from the pointer
+## with no button held until the click. While the value moves:
+##
+## - a box beside the pointer shows it, and typing goes into the box (any
+##   unit and arithmetic, as the CAD value boxes take); Enter keeps it;
+## - the wheel steps the tool's count row (Bevel's segments, Loop Cut's
+##   cuts, Extrude's divisions);
+## - X, Y and Z lock a tool with an axis row to that world axis (Extrude
+##   along Z), the same key again unlocks;
+## - the value snaps to steps (tool_drag_measure.luc) unless Cmd or Ctrl
+##   is held, as the CAD handles do;
+## - Escape, or a right click, puts back the numbers the tool ran with.
+##
+## Every drag folds into the tool's own undo step. The session
+## (drag_session.luc) ends with the click, Escape, Enter, or as soon as the
+## node or its recipe is not the one the tool made.
+from luce_ui.ui import Painter, Event, Point, Unit
+from luce_ui import ui
+from luce_gpu.gpu import Rect
+from luce_window.input import EventKind, Key, ScrollUnit
+from luce_geocore.geocore import Verbs, Mesh
+from luce_3d.graphics import Vector3
+from workspace import Workspace
+from drag_session import DragSession
+from tool_record import Tool
+from edit_operations import verb_numbers
+from edit_kinds import is_edit
+from snapping import stepped
+import tool_drag_measure
+import view_projection
+import theme
+import units
+import text as characters
+from luce_std import math
+
+## Trackpad points to one wheel step.
+let scroll_step = 40.0
+
+## Start a drag for `tool`, which just ran on `group` (picked as
+## `group_type`) of `input` as the selected node's last step (`step`) or as
+## the selected node itself.
+pub func start(w: Workspace, tool: Tool, input: Mesh, group: str, group_type: int, step: bool, symmetry: int = 0) -> unit!:
+    settle(w)
+    let row = tool.row_at(tool.drag) else return
+    let node = w.selected() else return
+    if step and (node.edits.length == 0 or node.edits[-1].verb != tool.name):
+        return
+    if not step and node.kind != tool.name:
+        return
+    let numbers = node.edits[-1].numbers.copy() if step else node.values.copy()
+    let frame = Verbs.frame(tool.name, input, group, group_type, verb_numbers(tool.name, numbers), symmetry) catch failure:
+        return
+    w.drag_session = DragSession(node.id, step, node.edits.length, tool, row, numbers, frame, input, group, group_type, symmetry, w.history.cursor, tool.follows)
+
+## Keep whatever the drag has set and end it: before another tool runs, a
+## tool is chosen or a marking menu opens.
+pub func settle(w: Workspace) -> unit!:
+    let s = w.drag_session else return
+    if s.open and w.in_transaction():
+        fold(w, s)
+    w.drag_session = none
+
+## Close the drag's transaction into the tool's undo step.
+func fold(w: Workspace, s: DragSession) -> unit!:
+    s.open = false
+    if not w.in_transaction():
+        return
+    w.commit()
+    if w.history.cursor == s.mark + 1:
+        w.history.merge_last()
+    # Repeat runs the tool with what it was set to.
+    if w.last_tool == s.tool.label and w.last_tool_node < 0:
+        if let node = w.network.find(s.node):
+            w.last_tool_numbers = node.edits[-1].numbers.copy() if s.step else node.values.copy()
+
+pub class ToolDrag:
+    let w: Workspace
+
+    pub func init(self, w: Workspace):
+        self.w = w
+
+    ## The session, while the node and its recipe are still the ones the
+    ## tool made (ended as soon as they are not).
+    pub func session(self) -> DragSession?:
+        let s = self.w.drag_session else return none
+        let node = self.w.network.find(s.node) else return self.dropped()
+        let fits = (is_edit(node.kind) and node.edits.length == s.steps and node.edits[-1].verb == s.tool.name and self.w.network.display == s.node) if s.step else node.kind == s.tool.name
+        # Its transaction taken away (an undo) ends it too.
+        if not fits or self.w.network.selected != s.node or (s.open and not self.w.in_transaction()):
+            return self.dropped()
+        return s
+
+    func dropped(self) -> DragSession?:
+        self.w.drag_session = none
+        return none
+
+    ## Whether a drag is live (typing and the axis keys go to it).
+    pub func live(self) -> bool:
+        let s = self.session() else return false
+        return s.live()
+
+    ## The numbers the drag changes, as they are now.
+    func current(self, s: DragSession) -> list[float]!:
+        let node = self.w.network.require(s.node)
+        return node.edits[-1].numbers.copy() if s.step else node.values.copy()
+
+    func label(self, s: DragSession) -> str:
+        return f"{s.tool.label} {s.row_name().lower()}"
+
+    ## Show `values` live inside the open transaction (one begun if none).
+    func show(self, s: DragSession, values: list[float]) -> unit!:
+        if not self.w.in_transaction():
+            self.w.begin(self.label(s))
+            s.open = true
+        if s.step:
+            self.w.preview_step(values)
+        else:
+            self.w.preview_parameters(values)
+
+    func fold(self, s: DragSession) -> unit!:
+        fold(self.w, s)
+
+    ## `values` as a change of their own, folded into the tool's step
+    ## (inside a live drag, part of it).
+    func change(self, s: DragSession, values: list[float]) -> unit!:
+        let own = not self.w.in_transaction()
+        self.show(s, values)
+        if own:
+            self.fold(s)
+
+    ## The numbers with the drag's row at `value` (within its range).
+    func with_value(self, s: DragSession, value: float) -> list[float]!:
+        let values = self.current(s)
+        values[s.slot] = math.max(s.row.minimum, math.min(s.row.maximum, value))
+        return values
+
+    func end(self) -> unit:
+        self.w.drag_session = none
+        self.w.revision += 1
+
+    ## Keep the value (the box's when something was typed) and end.
+    pub func keep(self, s: DragSession) -> unit!:
+        if s.box.locked and s.box.valid:
+            self.show(s, self.with_value(s, s.box.value))
+        self.fold(s)
+        self.end()
+
+    ## Put back the numbers the tool ran with and end.
+    pub func restore(self, s: DragSession) -> unit!:
+        if s.open and self.w.in_transaction():
+            self.w.cancel()
+        s.open = false
+        if self.current(s) != s.start:
+            self.change(s, s.start)
+        self.end()
+
+    ## Pointer, wheel and key events over a pane `width` by `height`;
+    ## whether the drag used one.
+    pub func event(self, event: Event, width: float, height: float) -> bool!:
+        let s = self.session() else return false
+        if event.kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+            s.pointer_x = event.x
+            s.pointer_y = event.y
+        if event.kind == EventKind.key_down:
+            if event.key == Key.escape:
+                self.restore(s)
+                return true
+            if event.key == Key.enter:
+                self.keep(s)
+                return true
+            return false
+        if event.kind == EventKind.scroll and s.live() and s.wheel_slot >= 0:
+            self.wheel(s, event, width, height)
+            return true
+        if event.cancelled or event.kind == EventKind.focus_lost:
+            if s.dragging:
+                s.dragging = false
+                s.open = false
+                self.w.cancel()
+            return false
+        if event.alt:
+            return false
+        let snap = not (event.meta or event.control)
+        if event.kind == EventKind.pointer_moved:
+            if s.dragging:
+                if not s.moved and math.hypot(event.x - s.anchor_x, event.y - s.anchor_y) < 3.0:
+                    return true
+                s.moved = true
+                self.follow(s, event.x, event.y, width, height, snap)
+                return true
+            if not s.following:
+                return false
+            if s.anchor_x < 0.0:
+                self.anchor(s, event.x, event.y, width, height)
+            else:
+                self.follow(s, event.x, event.y, width, height, snap)
+            return true
+        if event.kind == EventKind.pointer_down and event.inside:
+            if event.button == 0:
+                # Following, a click keeps; else a press starts a drag.
+                if s.following:
+                    self.keep(s)
+                    return true
+                self.anchor(s, event.x, event.y, width, height)
+                s.dragging = true
+                s.moved = false
+                return true
+            if event.button == 1 and s.live():
+                self.restore(s)
+                return true
+            return false
+        if event.kind == EventKind.pointer_up and event.button == 0 and s.dragging:
+            s.dragging = false
+            if s.moved:
+                self.fold(s)
+            else:
+                # A click: the value stays as it is.
+                if s.open and self.w.in_transaction():
+                    self.w.cancel()
+                s.open = false
+                self.end()
+            return true
+        return false
+
+    ## Where measuring starts: the pointer at (`x`, `y`), the value now, and
+    ## for a slide the element nearest the pointer.
+    func anchor(self, s: DragSession, x: float, y: float, width: float, height: float) -> unit!:
+        s.anchor_x = x
+        s.anchor_y = y
+        s.anchor_value = self.current(s)[s.slot]
+        s.turned = 0.0
+        s.last_angle = tool_drag_measure.screen_angle(self.w, s, x, y, width, height)
+        if s.tool.drag_mode != "slide":
+            return
+        let lens = self.w.view.camera.projection(math.max(1.0, width) / math.max(1.0, height))
+        s.rail = s.frame.nearest(view_projection.origin(self.w, x, y, width, height), view_projection.ray(self.w, x, y, width, height), lens.orthographic())
+        s.chosen_rail = tool_drag_measure.rail_on_axis(s, s.locked) if s.locked >= 0 else -1
+
+    ## The pointer at (`x`, `y`) sets the value (unless one was typed).
+    func follow(self, s: DragSession, x: float, y: float, width: float, height: float, snap: bool) -> unit!:
+        if s.box.locked:
+            return
+        if s.tool.drag_mode == "angle":
+            let angle = tool_drag_measure.screen_angle(self.w, s, x, y, width, height)
+            var turn = angle - s.last_angle
+            while turn > 180.0:
+                turn -= 360.0
+            while turn <= -180.0:
+                turn += 360.0
+            s.turned += turn
+            s.last_angle = angle
+        var direction: Vector3? = none
+        # A slide with an axis row (Vertex Slide) takes its edge from the
+        # first move, and that edge's way as its direction.
+        if s.tool.drag_mode == "slide" and s.axis_slot >= 0 and s.chosen_rail < 0:
+            if math.hypot(x - s.anchor_x, y - s.anchor_y) < 6.0:
+                return
+            s.chosen_rail = tool_drag_measure.rail_along(self.w, s, s.anchor_x, s.anchor_y, x, y, width, height)
+            if s.chosen_rail < 0:
+                return
+            direction = s.frame.rail_end(s.chosen_rail).subtract(s.frame.rail_origin(s.chosen_rail))
+        let value = stepped(s.anchor_value + tool_drag_measure.measure(self.w, s, x, y, width, height), tool_drag_measure.step(self.w, s), snap)
+        let values = self.with_value(s, value)
+        if let way = direction:
+            let along = way.multiply_scalar(1.0 / math.max(way.length(), 1e-12))
+            values[s.axis_slot] = along.x
+            values[s.axis_slot + 1] = along.y
+            values[s.axis_slot + 2] = along.z
+        self.show(s, values)
+
+    ## The wheel steps the count row; a slide's rails are measured again
+    ## (Loop Cut's move with its cuts).
+    func wheel(self, s: DragSession, event: Event, width: float, height: float) -> unit!:
+        var steps = 0
+        if event.scroll_unit == ScrollUnit.points:
+            s.scrolled += event.scroll_y
+            while s.scrolled >= scroll_step:
+                s.scrolled -= scroll_step
+                steps += 1
+            while s.scrolled <= -scroll_step:
+                s.scrolled += scroll_step
+                steps -= 1
+        else:
+            steps = 1 if event.scroll_y > 0.0 else (-1 if event.scroll_y < 0.0 else 0)
+        if steps == 0:
+            return
+        let row = s.wheel_row else return
+        let values = self.current(s)
+        values[s.wheel_slot] = math.max(row.minimum, math.min(row.maximum, math.round(values[s.wheel_slot]) + float(steps)))
+        if s.tool.drag_mode == "slide":
+            s.frame = Verbs.frame(s.tool.name, s.input, s.group, s.group_type, verb_numbers(s.tool.name, values), s.symmetry)
+            if s.anchor_x >= 0.0:
+                self.anchor(s, s.pointer_x, s.pointer_y, width, height)
+        self.change(s, values)
+
+    ## X, Y or Z (`index` 0..2): lock the drag to that world axis (the tool's
+    ## axis row, its menu set to the vector), or the same again unlock.
+    func lock(self, s: DragSession, index: int) -> unit!:
+        let values = self.current(s)
+        if s.locked == index:
+            s.locked = -1
+            for component in 0..<3:
+                values[s.axis_slot + component] = s.start[s.axis_slot + component]
+            if s.choice_slot >= 0:
+                values[s.choice_slot] = s.start[s.choice_slot]
+        else:
+            s.locked = index
+            for component in 0..<3:
+                values[s.axis_slot + component] = 1.0 if component == index else 0.0
+            if s.choice_slot >= 0:
+                values[s.choice_slot] = s.choice_value
+        s.chosen_rail = tool_drag_measure.rail_on_axis(s, s.locked) if s.locked >= 0 and s.tool.drag_mode == "slide" else -1
+        # Measured afresh from where the pointer is.
+        s.anchor_x = s.pointer_x
+        s.anchor_y = s.pointer_y
+        s.anchor_value = values[s.slot]
+        self.change(s, values)
+
+    ## A key or typed character while the drag is live: X, Y and Z lock an
+    ## axis, anything printable goes into the value box (Enter and Escape are
+    ## left to `event`); whether it was used.
+    pub func typing(self, event: Event) -> bool!:
+        let s = self.session() else return false
+        if not s.live():
+            return false
+        if event.kind == EventKind.key_down:
+            if event.meta or event.control:
+                return false
+            if s.axis_slot >= 0 and event.key in [Key.x, Key.y, Key.z]:
+                self.lock(s, 0 if event.key == Key.x else (1 if event.key == Key.y else 2))
+                return true
+            if event.key == Key.backspace:
+                s.box.text = s.box.text[0..<s.box.text.length - 1] if s.box.text.length > 0 else ""
+                s.box.locked = s.box.text != ""
+                self.read(s)
+                return true
+            return not (event.key in [Key.escape, Key.enter, Key.tab])
+        if event.kind == EventKind.text_input:
+            if event.codepoint < 32 or event.codepoint == 127:
+                return true
+            let typed = characters.from_code(event.codepoint)
+            if s.axis_slot >= 0 and typed.lower() in ["x", "y", "z"]:
+                return true
+            s.box.text = s.box.text + typed if s.box.locked else typed
+            s.box.locked = true
+            self.read(s)
+            return true
+        return false
+
+    ## The box's text read as the row's value (a length in the document's
+    ## unit), shown live when it reads.
+    func read(self, s: DragSession) -> unit!:
+        if not s.box.locked:
+            s.box.valid = true
+            return
+        let reading = ui.evaluate_number(s.box.text, self.current(s)[s.slot], self.typed_unit(s))
+        s.box.valid = reading != none
+        if let value = reading:
+            s.box.value = value
+            self.show(s, self.with_value(s, value))
+
+    ## The unit the row is typed and shown in: the document's for distances.
+    func typed_unit(self, s: DragSession) -> Unit!:
+        if s.tool.drag_mode in ["length", "normal"]:
+            return units.document_unit(self.w)
+        return Unit(suffix = "°") if s.tool.drag_mode == "angle" else Unit()
+
+    ## The box's text: what was typed, else the value.
+    func shown(self, s: DragSession) -> str!:
+        if s.box.locked:
+            return s.box.text
+        let value = self.current(s)[s.slot]
+        if s.tool.drag_mode in ["length", "normal"]:
+            return units.length_text(value, self.typed_unit(s))
+        if s.tool.drag_mode == "angle":
+            return f"{math.round(value * 10.0) / 10.0}°"
+        return f"{math.round(value * 1000.0) / 1000.0}"
+
+    ## The value box by the pointer, and the line the value moves along: the
+    ## locked axis in its color, the normal or the slid rails in amber.
+    pub func draw(self, p: Painter, width: float, height: float) -> unit!:
+        let s = self.session() else return
+        self.draw_guide(p, s, width, height)
+        if s.anchor_x < 0.0 and s.pointer_x == 0.0 and s.pointer_y == 0.0:
+            return
+        let text = f"{s.row_name()}  {self.shown(s)}"
+        let box_width = math.max(90.0, float(text.length) * 7.5 + 14.0)
+        let r = Rect(s.pointer_x + 18.0, s.pointer_y + 14.0, box_width, 22.0)
+        p.rounded_rectangle(r, theme.surface_raised() if s.box.locked else theme.surface(), 3.0)
+        if s.box.locked:
+            p.rounded_rectangle(r, theme.accent(), 3.0, opacity = 0.22)
+        let edge = theme.warning() if not s.box.valid else (theme.accent() if s.live() else theme.border())
+        p.rectangle(Rect(r.x, r.y, r.width, 1.5), edge)
+        p.rectangle(Rect(r.x, r.y + r.height - 1.5, r.width, 1.5), edge)
+        p.rectangle(Rect(r.x, r.y, 1.5, r.height), edge)
+        p.rectangle(Rect(r.x + r.width - 1.5, r.y, 1.5, r.height), edge)
+        p.text(text, r.x + 6.0, r.y + 3.0, theme.text() if s.live() else theme.text_muted())
+
+    func draw_guide(self, p: Painter, s: DragSession, width: float, height: float) -> unit!:
+        if not s.live():
+            return
+        if s.tool.drag_mode == "normal":
+            let axis = tool_drag_measure.drag_axis(s) else return
+            let center = s.frame.center_point()
+            let reach = view_projection.pixel_at(self.w, center, width, height) * math.max(width, height)
+            let a = view_projection.project(self.w, center.subtract(axis.multiply_scalar(reach)), width, height)
+            let b = view_projection.project(self.w, center.add(axis.multiply_scalar(reach)), width, height)
+            if a[2] >= 0.0 and b[2] >= 0.0:
+                p.line(Point(a[0], a[1]), Point(b[0], b[1]), 1.5, theme.axis(s.locked) if s.locked >= 0 else theme.preview())
+        elif s.tool.drag_mode == "slide":
+            for rail in tool_drag_measure.rails_of(s):
+                if s.chosen_rail >= 0 and rail != s.chosen_rail:
+                    continue
+                let o = view_projection.project(self.w, s.frame.rail_origin(rail), width, height)
+                let e = view_projection.project(self.w, s.frame.rail_end(rail), width, height)
+                if o[2] >= 0.0 and e[2] >= 0.0:
+                    p.line(Point(o[0], o[1]), Point(e[0], e[1]), 2.5, theme.preview())

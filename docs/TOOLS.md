@@ -32,19 +32,24 @@ Add a polygon through drawn positions, or through the group's points.
 
 #### Extrude
 
-Extrude faces (as regions or one by one) or edges.
+Extrude faces (as regions or one by one), edges or points.
 
 - Node `PolyExtrude` in Geo; a step of Edit Mesh.
-- Works on faces or edges.
-- A drag in the viewport after it runs sets Distance.
+- Works on faces or edges or points.
+- After it runs, moving the pointer sets Distance (along the selection's average normal); a click keeps it, the wheel steps Divisions, X, Y or Z locks Vector to that axis.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
-| Distance | 0.2 | yes | How far the fronts move along their faces' normals. |
-| Inset | 0.0 | yes | How far the fronts' boundaries move inward across the faces. |
+| Distance | 0.2 | yes | How far the fronts move. |
+| Inset | 0.0 | yes | How far the fronts' boundaries move inward across the faces; for points, how far along each edge a spike's base sits (0: a quarter of the edge). |
 | Divisions | 1 | yes | Rows of faces along each wall. |
-| Individual faces | off | yes | Extrude each face on its own instead of each connected region. |
+| Individual faces | off | yes | Extrude each face on its own, along its own normal, instead of each connected region. |
+| Direction | Region normal | yes | Which way the fronts move: along each region's average normal, along each point's normal, or along Vector. |
 | Clamp inset | on | yes | Keep each inset within half of the boundary edges beside it. |
+| Vector | 0.0, 0.0, 0.0 | yes | The way the fronts move when Direction is Vector (its length does not matter; zero moves along the region's normal). |
+| Twist | 0.0 | yes | Degrees each front turns about its region's center, the wall rows turning with it. |
+| Taper | 1.0 | yes | How each front scales about its region's center (1 keeps its size), the wall rows following. |
+| Manifold | off | yes | Merge each wall that would lie in the plane of the face beside it into that face, so faces pushed into a solid cut it cleanly. |
 
 #### Inset
 
@@ -52,14 +57,19 @@ Inset faces by a distance, as regions or one by one.
 
 - Node `Inset` in Geo; a step of Edit Mesh.
 - Works on faces.
-- A drag in the viewport after it runs sets Thickness.
+- After it runs, a drag in the viewport sets Thickness (hauled away from the selection's center); a click keeps it.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
 | Thickness | 0.1 | yes | How far the inner faces' boundaries move inward. |
 | Depth | 0.0 | yes | How far the inner faces move along their normals. |
 | Individual faces | off | yes | Inset each face on its own instead of each connected region. |
+| Outset | off | yes | Move the rim outward into the faces around the group, which keeps its size and stays selected. |
+| Even | on | yes | Keep the rim's width at corners: a point goes further where the boundary turns. |
 | Clamp | on | yes | Keep each inset within half of the boundary edges beside it. |
+| Relative | off | yes | Scale the thickness at each point by the mean length of the boundary edges there. |
+| Edge rail | off | yes | Slide each boundary point along the edge between the two group faces beside it, where there is one. |
+| Boundary | on | yes | Inset along the mesh's open edges too; off, the rim slides along them. |
 
 #### Duplicate
 
@@ -67,7 +77,7 @@ Copy the group's faces, offset along their normals.
 
 - Node `Duplicate` in Geo; a step of Edit Mesh.
 - Works on objects or faces.
-- A drag in the viewport after it runs sets Offset.
+- After it runs, a drag in the viewport sets Offset (along the selection's average normal); a click keeps it.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
@@ -81,7 +91,7 @@ Bevel the group's edges into strips of faces.
 
 - Node `PolyBevel` in Geo; a step of Edit Mesh.
 - Works on edges.
-- A drag in the viewport after it runs sets Offset.
+- After it runs, a drag in the viewport sets Offset (hauled away from the selection's center); a click keeps it, the wheel steps Segments.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
@@ -98,13 +108,30 @@ Cut edge loops across the rings of the group's edges.
 
 - Node `Loop Cut` in Geo; a step of Edit Mesh.
 - Works on edges.
-- A drag in the viewport after it runs sets Slide.
+- Gesture: the edge under the pointer shows what it makes, the wheel sets the count; a click makes it there.
+- After it runs, moving the pointer sets Slide (along the rails of the element under the pointer); a click keeps it, the wheel steps Cuts.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
 | Cuts | 1 | yes | New loops across each ring. |
 | Slide | 0.0 | yes | Move the loops toward one side of the ring (-1..1). |
+| Even | off | yes | Slide every cut the same distance, so each loop keeps its shape. |
+| Flip | off | yes | With Even: keep each loop the same distance from the next loop on the slide's side, taking its shape. |
 | Whole ring | on | yes | Cut the whole ring through each of the group's edges; off: only across the group's edges. |
+
+#### Offset Edge Loops
+
+Add two edge loops either side of the group's loops.
+
+- Node `Offset Edge Loops` in Geo; a step of Edit Mesh.
+- Works on edges.
+- After it runs, moving the pointer sets Amount (along the rails of the element under the pointer); a click keeps it.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Amount | 0.25 | yes | How far along the edges beside the loops the new loops sit, as a share of each (of their mean length with Even). |
+| Even | off | yes | Put every new point the same distance from its loop. |
+| Cap ends | off | yes | Take the new loops round the ends of open runs instead of meeting there. |
 
 #### Knife
 
@@ -130,7 +157,7 @@ Connect the group's points or edge middles across their faces.
 - Node `Connect` in Geo; a step of Edit Mesh.
 - Works on points or edges.
 - With nothing selected: "Select points (or edges) across faces".
-- A drag in the viewport after it runs sets Position.
+- After it runs, a drag in the viewport sets Position (rightward, its range over 300 points); a click keeps it.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
@@ -142,11 +169,30 @@ Slide the group's edges along the faces beside them.
 
 - Node `Edge Slide` in Geo; a step of Edit Mesh.
 - Works on edges.
-- A drag in the viewport after it runs sets Amount.
+- After it runs, moving the pointer sets Amount (along the rails of the element under the pointer); a click keeps it.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
-| Amount | 0.5 | yes | How far along the rails, as a fraction of each rail; the sign picks the side. |
+| Amount | 0.0 | yes | How far along the rails, as a share of each rail (of their mean length with Even); the sign picks the side. |
+| Even | off | yes | Move every point the same distance, so the loop keeps its shape. |
+| Flip | off | yes | With Even: keep every point the same distance from its rail's end, so the loop takes the shape of the loop beyond. |
+| Clamp | on | yes | Keep the amount within -1..1 and every point on its rail. |
+
+#### Vertex Slide
+
+Slide the group's points along their edges.
+
+- Node `Vertex Slide` in Geo; a step of Edit Mesh.
+- Works on points.
+- After it runs, moving the pointer sets Amount (along the rails of the element under the pointer); a click keeps it, X, Y or Z locks Direction to that axis.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Amount | 0.0 | yes | How far along each point's edge, as a share of it (of the edges' mean length with Even). |
+| Direction | 0.0, 0.0, 0.0 | yes | Each point slides along its edge that runs most this way (a drag picks it). |
+| Even | off | yes | Move every point the same distance. |
+| Flip | off | yes | With Even: keep every point the same distance from its edge's far end. |
+| Clamp | on | yes | Keep the amount within 0..1 and every point on its edge. |
 
 ### Fill
 
@@ -183,7 +229,7 @@ Merge nearby points of the group.
 
 - Node `Fuse` in Geo; a step of Edit Mesh.
 - Works on objects or points.
-- A drag in the viewport after it runs sets Distance.
+- After it runs, a drag in the viewport sets Distance (hauled away from the selection's center); a click keeps it.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
@@ -260,7 +306,7 @@ Sweep the group's edges around an axis into a surface of revolution.
 
 - Node `Spin` in Geo; a step of Edit Mesh.
 - Works on edges.
-- A drag in the viewport after it runs sets Angle.
+- After it runs, a drag in the viewport sets Angle (turned about the selection's center); a click keeps it, the wheel steps Steps.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
@@ -296,7 +342,7 @@ Set the crease sharpness of the group's edges for subdivision.
 
 - Node `Crease` in Geo; a step of Edit Mesh.
 - Works on edges.
-- A drag in the viewport after it runs sets Sharpness.
+- After it runs, a drag in the viewport sets Sharpness (rightward, its range over 300 points); a click keeps it.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
@@ -311,7 +357,7 @@ Laplacian relaxation of the group's points.
 
 - Node `Smooth` in Geo; a step of Edit Mesh.
 - Works on components.
-- A drag in the viewport after it runs sets Amount.
+- After it runs, a drag in the viewport sets Amount (rightward, its range over 300 points); a click keeps it, the wheel steps Iterations.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
@@ -324,7 +370,7 @@ Deterministic noise displacement.
 
 - Node `Mountain` in Geo; a step of Edit Mesh.
 - Works on components.
-- A drag in the viewport after it runs sets Height.
+- After it runs, a drag in the viewport sets Height (hauled away from the selection's center); a click keeps it.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
@@ -337,7 +383,7 @@ Move points along their normals.
 
 - Node `Peak` in Geo; a step of Edit Mesh.
 - Works on components.
-- A drag in the viewport after it runs sets Distance.
+- After it runs, a drag in the viewport sets Distance (along the selection's average normal); a click keeps it.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
@@ -360,7 +406,7 @@ Snap points to a grid.
 
 - Node `Snap` in Geo; a step of Edit Mesh.
 - Works on components.
-- A drag in the viewport after it runs sets Spacing.
+- After it runs, a drag in the viewport sets Spacing (hauled away from the selection's center); a click keeps it.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |

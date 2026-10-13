@@ -4,7 +4,9 @@
 ## (knife_stroke.luc), object picking (object_box.luc), component boxes
 ## (component_box.luc), splat selection (splat_select.luc) and the node
 ## gizmos
-## (node_gizmos.luc). Topology and intersections remain in luce-3d.
+## (node_gizmos.luc), a tool's drag after it runs (tool_drag.luc) and the
+## hover gesture's preview and click (hover_gesture.luc). Topology and
+## intersections remain in luce-3d.
 from luce_ui.ui import Painter, Event
 from luce_3d.graphics import EditOverlay
 from luce_window.input import EventKind
@@ -19,6 +21,8 @@ from knife_stroke import KnifeStroke
 from object_box import ObjectBox
 from component_box import ComponentBox
 from splat_select import SplatSelect
+from tool_drag import ToolDrag
+from hover_gesture import HoverGesture
 import selection_commands
 import selection_gestures
 from luce_geocore.geocore import Selection
@@ -41,6 +45,9 @@ pub class ViewportTools:
     pub let components: ComponentBox
     ## Box, lasso and brush selection of splats (Edit GSplats).
     pub let splats: SplatSelect
+    ## The drag of the tool run last, and a hover tool's preview.
+    pub let drag: ToolDrag
+    pub let hovering: HoverGesture
     ## The hovered component, and under Smart its level (-1: the
     ## selection's).
     pub var hovered: int = -1
@@ -83,6 +90,8 @@ pub class ViewportTools:
         self.objects = ObjectBox(workspace)
         self.components = ComponentBox(workspace)
         self.splats = SplatSelect(workspace)
+        self.drag = ToolDrag(workspace)
+        self.hovering = HoverGesture(workspace)
         self.preview_for = []
         # The renderer tints selected faces (Renderer.set_face_selection).
         self.overlay.set_fill(false)
@@ -111,7 +120,12 @@ pub class ViewportTools:
             let cad_hover = w.picking_brep() and self.hovered >= 0
             self.overlay.set_fill(w.picking_brep())
             self.overlay.show(mesh, w.overlay_mode(), w.selection, self.hovered if own and not cad_hover else -1)
-            self.overlay.set_preview(mesh, self.preview)
+            # A hover tool shows what it would make; else what a
+            # double-click would take.
+            if let made = self.hovering.made:
+                self.overlay.set_preview(made, self.hovering.preview)
+            else:
+                self.overlay.set_preview(mesh, self.preview)
             self.overlay.set_hidden(mesh, w.hidden_faces())
             # A kind whose pick geometry the viewport does not draw (Edit
             # SDF's proxies) shows its selection through surfaces, dimmed.
@@ -128,6 +142,8 @@ pub class ViewportTools:
         if active:
             self.components.draw(painter)
             self.knife.draw(painter)
+            self.drag.draw(painter, width, height)
+            self.hovering.draw(painter)
         self.gizmos.draw(painter, width, height)
         self.chrome.draw_snap(painter, width, height)
 
@@ -158,6 +174,11 @@ pub class ViewportTools:
         self.dragging = self.gizmos.dragging
         if handled:
             return true
+        # The tool run last takes drags anywhere (not on the buttons).
+        if button < 0 and self.drag.event(event, width, height):
+            return true
+        if self.hovering.event(event):
+            return true
         if self.knife.event(event, width, height, button >= 0):
             return true
         if self.objects.event(event, width, height):
@@ -186,6 +207,7 @@ pub class ViewportTools:
                 else:
                     self.hovered = self.pick(event.x, event.y, width, height)
             self.follow_hover(event.control or event.meta)
+            self.hovering.hover(self.hovered)
         if event.kind == EventKind.pointer_left or event.kind == EventKind.focus_lost or event.cancelled or event.alt:
             self.hovered = -1
             self.chrome.hover_tool = -1

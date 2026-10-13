@@ -1,0 +1,336 @@
+## The drag driver and the interactive tools (POLY-MODELING.md Stage 3),
+## driven by real viewport events on an Edit Mesh of the 4 by 4 grid over
+## -1..1 (point z*5+x, face z*4+x):
+##
+## - after Bevel a drag of 100 points away from the edge sets Offset by what
+##   100 points cover there (free with Cmd, else on the grid's tenth), one
+##   undo step with the tool; Escape puts back 0.1; a click keeps the value;
+##   the same as a node after a plain Grid;
+## - Extrude follows the pointer with no button: along its normal exactly,
+##   the wheel steps Divisions, typed "1.25" and Enter keep 1.25, Y locks
+##   the extrusion to the Y axis, Escape puts the tool's numbers back;
+## - Loop Cut hovering an edge previews its ring's loop, the wheel makes it
+##   three cuts, a click cuts and the cut then slides with the pointer along
+##   the ring until a click;
+## - Edge Slide follows along its rails; Vertex Slide's first move picks the
+##   edge it slides on.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key, ScrollUnit
+from luce_3d.graphics import Vector3
+from luce_geocore.geocore import Selection
+from view_projection import project, pixel_at
+from snapping import grid_step
+from edit_types import point_level, edge_level, face_level
+import node_commands
+import selection_commands
+import modeling_commands
+import text as characters
+from luce_std import math
+
+pub func tool_drag_tests() -> unit!:
+    bevel_drag()
+    node_drag()
+    extrude_follows()
+    loop_cut_hover()
+    slides()
+    print("PASS tool drags from viewport events: Bevel's 100-point drag sets Offset by the screen-to-world amount as one undo step with the tool, snapped without Cmd, Escape restores, a click keeps, as a node too; Extrude follows the pointer along its normal, the wheel sets Divisions, typed 1.25 and Enter keep it, Y locks the axis, Escape restores; Loop Cut's hover preview, three cuts by the wheel, a click to cut and a slide along the ring; Edge Slide on its rails; Vertex Slide's edge picked by the first move")
+
+## An editor showing the grid (an Edit Mesh after it when `edit`) from
+## `eye`, the viewport holding the keyboard.
+func editor_on(eye: Vector3, edit: bool = true) -> Luce3D!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1400.0, 900.0)
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Grid", 0.0, 0.0)
+    if edit:
+        node_commands.add_node(w, "Edit Mesh", 0.0, 100.0)
+    w.view.camera.set_position(eye)
+    w.view.camera.look_at(Vector3(0.0, 0.0, 0.0))
+    editor.panels.refresh()
+    editor.app.focus(editor.panels.view.layout())
+    return editor
+
+## Where world point `p` shows in the window.
+func at(editor: Luce3D, p: Vector3) -> list[float]!:
+    let area = editor.panels.view.layout().bounds()
+    let on = project(editor.workspace, p, area.width, area.height)
+    return [area.x + on[0], area.y + on[1]]
+
+## What a screen point covers at `p`.
+func pixel(editor: Luce3D, p: Vector3) -> float!:
+    let area = editor.panels.view.layout().bounds()
+    return pixel_at(editor.workspace, p, area.width, area.height)
+
+func move(editor: Luce3D, point: list[float], meta: bool = false) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = point[0], y = point[1], meta = meta))
+    editor.panels.refresh()
+
+func press(editor: Luce3D, point: list[float], meta: bool = false) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = point[0], y = point[1], button = 0, meta = meta))
+
+func release(editor: Luce3D, point: list[float], meta: bool = false) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = point[0], y = point[1], button = 0, meta = meta))
+    editor.panels.refresh()
+
+func click(editor: Luce3D, point: list[float]) -> unit!:
+    move(editor, point)
+    press(editor, point)
+    release(editor, point)
+
+## A click where the pointer is (a following value stays put).
+func click_here(editor: Luce3D, point: list[float]) -> unit!:
+    press(editor, point)
+    release(editor, point)
+
+## A press at `from`, a drag to `to` in two moves, and the release.
+func drag(editor: Luce3D, start: list[float], end: list[float], meta: bool = false) -> unit!:
+    move(editor, start, meta)
+    press(editor, start, meta)
+    move(editor, [(start[0] + end[0]) * 0.5, (start[1] + end[1]) * 0.5], meta)
+    move(editor, end, meta)
+    release(editor, end, meta)
+
+func key(editor: Luce3D, pressed: Key) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = pressed))
+    editor.panels.refresh()
+
+func type_text(editor: Luce3D, text: str) -> unit!:
+    for character in text:
+        editor.app.dispatch(Event(kind = EventKind.text_input, codepoint = characters.code_of(character)))
+    editor.panels.refresh()
+
+func wheel(editor: Luce3D, point: list[float], lines: float) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.scroll, x = point[0], y = point[1], scroll_y = lines, scroll_unit = ScrollUnit.lines))
+    editor.panels.refresh()
+
+## The edited node's last step's numbers.
+func last(editor: Luce3D) -> list[float]!:
+    let node = editor.workspace.selected() else trap("no node")
+    return node.edits[-1].numbers
+
+## Select `expression` on `domain` (0 points, 4 edges, 2 faces) at `level`.
+func choose(editor: Luce3D, level: int, expression: str, domain: int) -> unit!:
+    let w = editor.workspace
+    selection_commands.set_mode(w, level)
+    w.selection = Selection.of(w.geometry else trap("grid"), expression, domain)
+    editor.panels.refresh()
+
+func near(value: float, expected: float, tolerance: float = 0.000001) -> unit:
+    if math.abs(value - expected) > tolerance:
+        print(f"expected {expected}, got {value}")
+        assert(false)
+
+## The grid's point `index`.
+func grid_point(index: int) -> Vector3:
+    return Vector3(-1.0 + 0.5 * float(index % 5), 0.0, -1.0 + 0.5 * float(index // 5))
+
+func bevel_drag() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    choose(editor, edge_level, "p11-12", 4)
+    let before = w.history.cursor
+    modeling_commands.model(w, "Bevel")
+    let s = w.drag_session else trap("Bevel took no drag")
+    assert(s.step and not s.following and w.history.cursor == before + 1)
+    near(last(editor)[0], 0.1)
+    # 100 points out from 60 points right of the edge's middle, Cmd held.
+    let middle = at(editor, s.frame.center_point())
+    let start = [middle[0] + 60.0, middle[1]]
+    drag(editor, start, [start[0] + 100.0, start[1]], meta = true)
+    let expected = 0.1 + 100.0 * pixel(editor, s.frame.center_point())
+    near(last(editor)[0], expected)
+    assert(w.history.cursor == before + 1 and w.drag_session != none)
+    # Without Cmd it lands on the grid's tenth.
+    drag(editor, start, [start[0] + 37.0, start[1]])
+    let step = grid_step(w.view.distance) / 10.0
+    near(math.round(last(editor)[0] / step) * step, last(editor)[0])
+    # Escape: the tool's 0.1 again, still one undo step.
+    key(editor, Key.escape)
+    assert(w.drag_session == none and w.history.cursor == before + 1)
+    near(last(editor)[0], 0.1)
+    w.undo()
+    assert((w.selected() else trap("edit")).edits.length == 0)
+    # A click keeps what the drag set; Escape in the middle of a drag goes
+    # back to it.
+    choose(editor, edge_level, "p11-12", 4)
+    modeling_commands.model(w, "Bevel")
+    drag(editor, start, [start[0] + 50.0, start[1]], meta = true)
+    let dragged = last(editor)[0]
+    move(editor, start)
+    press(editor, start)
+    move(editor, [start[0] + 80.0, start[1]], meta = true)
+    assert(last(editor)[0] > dragged)
+    key(editor, Key.escape)
+    near(last(editor)[0], 0.1)
+    release(editor, [start[0] + 80.0, start[1]])
+    w.undo()
+    choose(editor, edge_level, "p11-12", 4)
+    modeling_commands.model(w, "Bevel")
+    assert(w.drag_session != none)
+    drag(editor, start, [start[0] + 50.0, start[1]], meta = true)
+    let kept = last(editor)[0]
+    click(editor, start)
+    assert(w.drag_session == none)
+    near(last(editor)[0], kept)
+
+## Bevel as a node after a plain Grid: the drag sets the node's Offset.
+func node_drag() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6), edit = false)
+    let w = editor.workspace
+    choose(editor, edge_level, "p11-12", 4)
+    let before = w.history.cursor
+    modeling_commands.model(w, "Bevel")
+    let s = w.drag_session else trap("the Bevel node took no drag")
+    assert(not s.step)
+    let middle = at(editor, s.frame.center_point())
+    let start = [middle[0] + 60.0, middle[1]]
+    drag(editor, start, [start[0] + 100.0, start[1]], meta = true)
+    let node = w.selected() else trap("no node")
+    assert(node.kind == "PolyBevel")
+    near(node.values[0], 0.1 + 100.0 * pixel(editor, s.frame.center_point()))
+    assert(w.history.cursor == before + 1)
+    click(editor, start)
+    assert(w.drag_session == none)
+    w.undo()
+    assert(w.network.require(w.network.display).kind == "Grid")
+
+func extrude_follows() -> unit!:
+    let editor = editor_on(Vector3(4.0, 3.0, 4.0))
+    let w = editor.workspace
+    choose(editor, face_level, "5", 2)
+    let before = w.history.cursor
+    modeling_commands.model(w, "Extrude")
+    let s = w.drag_session else trap("Extrude took no drag")
+    assert(s.following)
+    # The first move anchors; then the pointer on the normal half a unit up
+    # extrudes half a unit more.
+    let center = s.frame.center_point()
+    move(editor, at(editor, center))
+    move(editor, at(editor, center.add(Vector3(0.0, 0.5, 0.0))), meta = true)
+    near(last(editor)[0], 0.7, 0.00001)
+    # The wheel steps Divisions.
+    wheel(editor, at(editor, center), 1.0)
+    near(last(editor)[2], 2.0)
+    # Typed: the value box's 1.25, Enter keeps it.
+    type_text(editor, "1.25")
+    near(last(editor)[0], 1.25)
+    key(editor, Key.enter)
+    assert(w.drag_session == none and w.history.cursor == before + 1)
+    near(last(editor)[0], 1.25)
+    let front = (w.geometry else trap("mesh")).face_center(5)
+    near(front.y, 1.25)
+    # Y locks the extrusion to the Y axis: Direction becomes Vector (0, 1, 0).
+    choose(editor, face_level, "6", 2)
+    modeling_commands.model(w, "Extrude")
+    let z = w.drag_session else trap("no drag")
+    let middle = z.frame.center_point()
+    move(editor, at(editor, middle))
+    key(editor, Key.y)
+    type_text(editor, "y")
+    let pulled = at(editor, middle.add(Vector3(0.0, 0.5, 0.0)))
+    move(editor, pulled, meta = true)
+    let numbers = last(editor)
+    near(numbers[5], 2.0)
+    near(numbers[6], 0.0)
+    near(numbers[7], 1.0)
+    near(numbers[0], 0.7, 0.00001)
+    click_here(editor, pulled)
+    assert(w.drag_session == none)
+    near(last(editor)[0], 0.7, 0.00001)
+    near((w.geometry else trap("mesh")).face_center(6).y, 0.7, 0.00001)
+    # Escape: the tool's own numbers back.
+    choose(editor, face_level, "9", 2)
+    let ran = w.history.cursor
+    modeling_commands.model(w, "Extrude")
+    let third = w.drag_session else trap("no drag")
+    let start = third.start
+    move(editor, at(editor, third.frame.center_point()))
+    move(editor, at(editor, third.frame.center_point().add(Vector3(0.0, 0.3, 0.0))))
+    assert(last(editor) != start)
+    key(editor, Key.escape)
+    assert(last(editor) == start and w.drag_session == none and w.history.cursor == ran + 1)
+
+func loop_cut_hover() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    choose(editor, face_level, "", 2)
+    let before = w.history.cursor
+    modeling_commands.model(w, "Loop Cut")
+    assert(w.edit_tool == "Loop Cut" and w.level_index() == edge_level)
+    # Hovering an edge shows the loop across its ring.
+    let mesh = w.geometry else trap("grid")
+    let edge = mesh.find_edge(6, 7)
+    let over = at(editor, grid_point(6).add(grid_point(7)).multiply_scalar(0.5))
+    move(editor, over)
+    let hovering = editor.panels.view.tools.hovering
+    assert(hovering.edge == edge)
+    let shown = hovering.preview else trap("no preview")
+    assert(shown.count() == 4)
+    # Two wheel steps: three cuts.
+    wheel(editor, over, 1.0)
+    wheel(editor, over, 1.0)
+    assert(hovering.count == 3)
+    let three = hovering.preview else trap("no preview")
+    assert(three.count() == 12)
+    # A click cuts; the cut then slides along the ring with the pointer.
+    click(editor, over)
+    assert(w.edit_tool == "Select" and w.history.cursor == before + 1)
+    near(last(editor)[0], 3.0)
+    let s = w.drag_session else trap("Loop Cut took no slide")
+    assert(s.following and s.tool.drag_mode == "slide")
+    let origin = s.frame.rail_origin(0)
+    let end = s.frame.rail_end(0)
+    move(editor, at(editor, origin))
+    let halfway = at(editor, origin.add(end.subtract(origin).multiply_scalar(0.5)))
+    move(editor, halfway, meta = true)
+    near(math.abs(last(editor)[1]), 0.5, 0.0001)
+    click_here(editor, halfway)
+    assert(w.drag_session == none and w.history.cursor == before + 1)
+    near(math.abs(last(editor)[1]), 0.5, 0.0001)
+    assert((w.geometry else trap("cut")).point_count() == 40)
+    # Escape while hovering leaves the tool.
+    modeling_commands.model(w, "Loop Cut")
+    key(editor, Key.escape)
+    assert(w.edit_tool == "Select")
+
+func slides() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    # Edge Slide on the middle row: point 12 half way along a rail.
+    choose(editor, edge_level, "p10-11-12-13-14", 4)
+    modeling_commands.model(w, "Edge Slide")
+    let s = w.drag_session else trap("Edge Slide took no drag")
+    assert(s.following)
+    var rail = -1
+    for at_rail in 0..<s.frame.rail_count():
+        if s.frame.rail_owner(at_rail) == 12 and rail < 0:
+            rail = at_rail
+    let origin = s.frame.rail_origin(rail)
+    let end = s.frame.rail_end(rail)
+    move(editor, at(editor, origin))
+    let along = at(editor, origin.add(end.subtract(origin).multiply_scalar(0.5)))
+    move(editor, along, meta = true)
+    near(math.abs(last(editor)[0]), 0.5, 0.0001)
+    click_here(editor, along)
+    let slid = (w.geometry else trap("slid")).point(12)
+    near(slid.x, 0.0)
+    near(math.abs(slid.z), 0.25, 0.0001)
+    # Vertex Slide on a fresh grid: the first move toward point 13 picks
+    # that edge (Direction along +X), half way along it.
+    let fresh = editor_on(Vector3(0.0, 5.0, 0.6))
+    let g = fresh.workspace
+    choose(fresh, point_level, "12", 0)
+    modeling_commands.model(g, "Vertex Slide")
+    let v = g.drag_session else trap("Vertex Slide took no drag")
+    assert(v.following)
+    move(fresh, at(fresh, grid_point(12)))
+    let toward = at(fresh, grid_point(12).add(grid_point(13)).multiply_scalar(0.5))
+    move(fresh, toward, meta = true)
+    let numbers = last(fresh)
+    near(numbers[0], 0.5, 0.0001)
+    near(numbers[1], 1.0, 0.0001)
+    click_here(fresh, toward)
+    let point = (g.geometry else trap("mesh")).point(12)
+    near(point.x, 0.25, 0.0001)

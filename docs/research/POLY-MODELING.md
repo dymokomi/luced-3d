@@ -967,7 +967,7 @@ built" below).
   it), a face loop's partial run, Side of Active, lasso and paint selection, soft selection by
   surface distance.
 
-**Stage 3: drag and the interactive core.**
+**Stage 3: drag and the interactive core.** **Done 2026-10-13** (see "Stage 3 as built" below).
 - The generic drag driver (haul, wheel for counts, Shift snaps).
 - Extrude: twist, taper, manifold mode, individual as a row.
 - Inset: outset, even, relative, edge rail, boundary.
@@ -981,6 +981,77 @@ built" below).
   - Loop Cut hovering a cube's side previews its ring, and a click cuts it;
   - Extrude Manifold pushed into a box cuts a pocket with no inner walls (face count checked);
   - Inset Even keeps width at a 30° corner.
+
+**Stage 3 as built.**
+- The drag driver (owner answer 7). luce-geocore's `Verb` gained `drag_mode`, `follows`, `wheel`,
+  `axis`, `axis_choice` and `rails`, and `ParmSpec` gained `more`; `Verbs.frame` measures, on the
+  input a tool ran on, its group's center and average normal and, for a slide, its rails
+  (`verbs/drag.lucb`: each moving element's origin, where value 1 puts it, and its side).
+  luced-3d's `tool_drag.luc` (events, typing, the box), `tool_drag_measure.luc` (pointer to
+  value) and `drag_session.luc` (the session on the workspace) are the whole driver; no tool is
+  named in them. After any tool with a drag row runs (S, the right-click menu, Modify, Repeat,
+  a node or a step), a drag anywhere in the viewport sets that row and a click keeps it. A tool
+  that `follows` (Extrude as Blender's E, Edge Slide, Vertex Slide, Offset Edge Loops, Loop
+  Cut's slide) takes the value from the pointer with no button until the click. The modes:
+  `length` hauls away from the group's center on screen, a point worth what it covers there
+  (Bevel, Inset, Fuse, Noise, Snap); `normal` runs along the average normal as an arrow handle
+  does, exact under the pointer in any perspective (Extrude, Duplicate, Peak); `amount` takes
+  the row's range over 300 points (Smooth, Crease, Connect); `angle` turns about the center
+  (Spin); `slide` runs along the rails of the element nearest the pointer, where the rail
+  passes nearest the pointer's ray. While the value moves: the value box by the pointer shows
+  it and takes typing (units and arithmetic, as the CAD boxes; Enter keeps), the wheel steps
+  the count row (Bevel's Segments, Extrude's Divisions, Loop Cut's Cuts, Smooth's Iterations,
+  Spin's Steps), X, Y and Z lock Extrude to a world axis (Direction set to Vector, the guide
+  line in the axis color; the same key unlocks), Escape or a right click puts back the numbers
+  the tool ran with. Values snap as the CAD handles do, unless Cmd/Ctrl is held: a tenth of
+  the grid's step for distances, whole degrees, twentieths of a rail, hundredths of a range.
+  Every drag folds into the tool's own undo step (`History.merge_last`). Another tool, a chosen
+  tool or a marking menu keeps the value first (`tool_drag.settle`); an undo ends the drag.
+- Extrude: Direction (Region normal, Blender's region extrude and now the default; Point
+  normals, the old behavior; Vector), Vector, Twist and Taper about each region's center with
+  the wall rows following, and Manifold (a wall that would lie in the plane of the face beside
+  it merges into that face, and boundary points left on a straight side go: a box's top pushed
+  in gives a shorter box of 6 faces). Edges move along the Vector too; points grow spikes
+  (Maya's vertex extrude: a ring Inset along each edge, a quarter of it at 0, and a tip). The
+  kernel is four files: `extrude.lucb` (settings, regions, edges), `extrude_fronts.lucb`,
+  `extrude_walls.lucb` (Manifold) and `extrude_spikes.lucb`.
+- Inset: Outset (the faces around inset away from the group, which keeps its size and stays
+  selected), Even (the old miter; off, the bisector), Relative, Edge rail (a two-face sector's
+  point slides along their shared edge) and Boundary (off, the rim slides along the mesh's open
+  edges and no wall rises there).
+- Loop Cut: the `hover` gesture (`hover_gesture.luc`, any tool with that gesture): chosen from
+  any component level it switches to Edges, the edge under the pointer shows in amber the loops
+  the verb would make (the verb run on that edge, its output selection drawn), the wheel sets
+  the cuts, a click cuts and the cut slides with the pointer until a click; with edges selected it cuts their rings. Rings run through
+  quads only, as Blender's (`BMW_DELIMIT_EDGE_RING_NGONS`); a triangle on a ring edge now fans
+  from its far corner to the new points (a UV sphere's pole caps), an n-gon takes them into
+  its boundary. Even slides every cut the same distance (the mean spacing's share), Flip keeps
+  it as far short of the next loop.
+- Edge Slide (Even, Flip, Clamp; Amount 0 at the start, past -1..1 without Clamp) and the new
+  Vertex Slide (Direction picks each point's edge; a drag's first move picks it from the
+  edges' screen directions; X/Y/Z lock it), both the `slide` drag. Offset Edge Loops: two loops
+  either side of the group's loops and runs (Cap ends takes them round open ends), the faces
+  beside cut into strips; its Amount slides along the edges the new points sit on.
+- More options: a verb's `more` rows sit under a "More options" folder, shut at first, on the
+  tool bar and in the node's pane (Extrude's Clamp, Vector, Twist, Taper and Manifold; Inset's
+  Clamp, Relative, Edge rail and Boundary; Loop Cut's Whole ring). Extrude's ten rows had
+  covered the viewport.
+- Not in Stage 3 (as §8 places them): Poly Pen (Stage 6), Bevel's drag beyond Offset (Stage 4),
+  a drag on the hovered ring's own handle, Extrude Manifold for individual faces, twist and
+  taper on edges and points.
+- Tests: luce-geocore `extrude_inset_checks` (volumes of an extruded, tapered and slanted
+  box top; twisted fronts' corners; the region normal of a box's top and front; Manifold in
+  and out with face counts and volumes; spikes; inset areas; Even at a 30° corner within
+  1e-6, Outset, Relative, Edge rail on a sheared strip, Boundary off) and `cut_slide_checks`
+  (Loop Cut counts on a grid, a cylinder round and across, a torus and a sphere's fanned
+  poles; slide positions; Even and Flip on rings of edges 1, 2 and 3 long; Edge Slide on its
+  rails, Even exact, Flip, unclamped; Vertex Slide; Offset Edge Loops open, capped and on a
+  torus; drag frames and rails), both under the allocation-failure sweep; luced-3d
+  `tool_drag_tests` (real viewport events: Bevel's 100-point drag equals 100 times the point's
+  world size at the edge, one undo step, snapped without Cmd, Escape, a click keeps, as a node;
+  Extrude following its normal, the wheel, typed 1.25 and Enter, the Y lock, Escape; Loop Cut's
+  hover preview, three cuts by the wheel, the click and the slide; Edge Slide; Vertex Slide's
+  picked edge), and `tool_parity_tests` over every tool (a hover tool runs on the selection).
 
 **Stage 4: Bevel in full.**
 - Offset types; vertex bevel; profile superellipse and custom ramp; miters outer
@@ -1056,7 +1127,7 @@ The owner's answers (2026-10-13), and how they were applied:
 5. **Double-click a face or point selects its island.**
 6. **Shift+Cmd/Ctrl+click selects the shortest path.**
 7. **Dragging right after a tool runs sets its main value; a click keeps it.** Every tool
-   declares its `drag` row now (docs/TOOLS.md lists it); the driver is Stage 3.
+   declares its `drag` row (docs/TOOLS.md lists it); Stage 3 built the driver (`tool_drag.luc`).
 8. **Selection (Stage 2) comes before the interactive tools (Stage 3).**
 
 The questions as asked:
