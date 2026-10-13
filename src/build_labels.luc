@@ -7,9 +7,10 @@
 ## from the cook's state lines (build_ops.labels_of), so the worker's
 ## results serve and the viewport never cooks. While the builder waits for
 ## more picks, those it has are lit along their length. A Fill's conflicts
-## (fill_ops.conflicts_of: where the boundaries' demands disagree) are drawn
-## in the failure color, a run along its boundary and a corner as a ring,
-## each with its amount, as xNURBS 7 marks them.
+## (fill_ops.marks_of: where the boundaries' demands disagree, one mark a
+## corner or a boundary's runs) are drawn in the failure color, a run along
+## its boundary and a corner as a ring, each mark with one plate kept clear
+## of the others, as xNURBS 7 marks them.
 from luce_ui.ui import Painter, Rect, Point
 from workspace import Workspace
 from node import Node
@@ -139,28 +140,44 @@ pub class BuildLabels:
                     painter.line(Point(before[0], before[1]), Point(s[0], s[1]), 3.0, theme.accent())
                 previous = s
 
-    ## A Fill's conflicts: each run a thick red line (a corner a ring) and
-    ## a plate with what disagrees and by how much.
+    ## A Fill's conflicts gathered into marks (fill_ops.marks_of: one a
+    ## corner, one a boundary's runs of an order): each run a thick red
+    ## line, a corner a ring, and one plate a mark with its worst amount,
+    ## placed at the first spot round its anchor clear of the boundary
+    ## labels and the plates placed before it (else the least crowded), a
+    ## leader back to the anchor.
     func draw_conflicts(self, painter: Painter, width: float, height: float) -> unit!:
         let found = self.target() else return
         let (node, _) = found
-        for c in fill_ops.conflicts_of(node.sketch_state):
-            let a = gm.project(self.w, c.start, width, height)
-            let b = gm.project(self.w, c.finish, width, height)
-            if a[2] <= 0.0 or b[2] <= 0.0:
+        let taken: list[Rect] = []
+        for label in self.labels():
+            if let box = self.plate(label, width, height):
+                taken.append(box)
+        for m in fill_ops.marks_of(fill_ops.conflicts_of(node.sketch_state)):
+            for (start, finish) in m.runs:
+                let a = gm.project(self.w, start, width, height)
+                let b = gm.project(self.w, finish, width, height)
+                if a[2] <= 0.0 or b[2] <= 0.0:
+                    continue
+                if math.hypot(a[0] - b[0], a[1] - b[1]) < 2.0:
+                    painter.rounded_rectangle(Rect(a[0] - 5.0, a[1] - 5.0, 10.0, 10.0), theme.failure(), 5.0)
+                else:
+                    painter.line(Point(a[0], a[1]), Point(b[0], b[1]), 4.0, theme.failure())
+            let at = gm.project(self.w, m.anchor, width, height)
+            if at[2] <= 0.0:
                 continue
-            if c.corner or math.hypot(a[0] - b[0], a[1] - b[1]) < 2.0:
-                painter.rounded_rectangle(Rect(a[0] - 7.0, a[1] - 7.0, 14.0, 14.0), theme.failure(), 7.0)
-                painter.rounded_rectangle(Rect(a[0] - 4.0, a[1] - 4.0, 8.0, 8.0), theme.grey(24.0), 4.0)
-            else:
-                painter.line(Point(a[0], a[1]), Point(b[0], b[1]), 4.0, theme.failure())
-            if not c.labelled:
-                continue
-            let w = float(c.text.length) * 7.5 + 14.0
-            let box = Rect((a[0] + b[0]) * 0.5 + 12.0, (a[1] + b[1]) * 0.5 + 8.0, w, 22.0)
+            if m.corner:
+                painter.rounded_rectangle(Rect(at[0] - 7.0, at[1] - 7.0, 14.0, 14.0), theme.failure(), 7.0)
+                painter.rounded_rectangle(Rect(at[0] - 4.0, at[1] - 4.0, 8.0, 8.0), theme.grey(24.0), 4.0)
+            let text = m.text()
+            let box = clear_spot(at[0], at[1], float(text.length) * 7.5 + 14.0, 22.0, taken)
+            taken.append(box)
+            let near_x = box.x if box.x > at[0] else box.x + box.width
+            let near_y = box.y if box.y > at[1] else box.y + box.height
+            painter.line(Point(at[0], at[1]), Point(near_x, near_y), 1.0, theme.failure())
             painter.rounded_rectangle(Rect(box.x - 1.0, box.y - 1.0, box.width + 2.0, box.height + 2.0), theme.failure(), 4.0)
             painter.rounded_rectangle(box, theme.grey(24.0), 3.0)
-            painter.text(c.text, box.x + 7.0, box.y + 3.0, theme.text())
+            painter.text(text, box.x + 7.0, box.y + 3.0, theme.text())
 
     ## The labels: a dark plate with the continuity, the hovered one lit.
     pub func draw(self, painter: Painter, width: float, height: float) -> unit!:
@@ -176,3 +193,26 @@ pub class BuildLabels:
             painter.rounded_rectangle(Rect(box.x - 1.0, box.y - 1.0, box.width + 2.0, box.height + 2.0), theme.accent() if lit else theme.grey(70.0), 4.0)
             painter.rounded_rectangle(box, theme.grey(24.0), 3.0)
             painter.text(shown[k].text, box.x + 7.0, box.y + 3.0, theme.accent() if lit else theme.text())
+
+## A `w` by `h` plate near (`x`, `y`): the first of the spots round it
+## (right and left, below and above, stepping out) that overlaps none of
+## `taken`, else the one overlapping least.
+pub func clear_spot(x: float, y: float, w: float, h: float, taken: list[Rect]) -> Rect:
+    var best = Rect(x + 14.0, y + 10.0, w, h)
+    var best_overlap = -1.0
+    for ring in 0..<4:
+        let out = float(ring) * (h + 8.0)
+        for (dx, dy) in [(14.0, 10.0 + out), (-w - 14.0, 10.0 + out), (14.0, -h - 10.0 - out), (-w - 14.0, -h - 10.0 - out)]:
+            let spot = Rect(x + dx, y + dy, w, h)
+            var overlap = 0.0
+            for other in taken:
+                let ox = math.min(spot.x + spot.width, other.x + other.width) - math.max(spot.x, other.x)
+                let oy = math.min(spot.y + spot.height, other.y + other.height) - math.max(spot.y, other.y)
+                if ox > -4.0 and oy > -4.0:
+                    overlap += (ox + 4.0) * (oy + 4.0)
+            if overlap == 0.0:
+                return spot
+            if best_overlap < 0.0 or overlap < best_overlap:
+                best = spot
+                best_overlap = overlap
+    return best

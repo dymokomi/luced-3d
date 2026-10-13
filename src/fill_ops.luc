@@ -28,7 +28,7 @@ pub let boundaries_text = 0
 pub let guides_text = 1
 
 ## The conflicts' state lines: from, to (x y z each), the order, the
-## amount, 1 at a corner, the boundary, then the label's text.
+## amount, 1 at a corner, the boundary.
 pub let conflict_head = "build_conflict "
 
 # -- Slots.
@@ -57,6 +57,8 @@ pub let conflicts_slot = 18
 ## Continuity row's; 1 to 4: Free, G0, G1, G2), set by its label.
 pub let boundary_slot = 20
 pub let boundary_count = 16
+## N-sided's domain (after the boundaries' slots): Auto, Projected, Molded.
+pub let domain_slot = 36
 
 pub let continuity_cycle = "Free|G0|G1|G2"
 
@@ -67,6 +69,9 @@ pub func rows() -> list[Parameter]:
                   toggle("Quad", quad_slot, 0.0, "xNURBS's Quad sided: four boundaries make an untrimmed four-sided face (else one trimmed face over any number)."),
                   number("Tension", tension_slot, 0.0, 0.0, 1.0, 0.05, "Plasticity's Tension: 0 the smoothest bend, toward 1 tighter (shorter between the boundaries)."),
                   number("Flatness", flatness_slot, 0.0, 0.0, 1.0, 0.05, "xNURBS's Flatness: a pull toward the boundaries' best plane.")]
+    let domain = menu("Domain", domain_slot, "Auto|Projected|Molded", 0.0, "Alias's N-sided domain: the boundaries projected onto their best plane (Projected), or laid round a polygon (Molded), for holes whose neighbors stand square to that plane (a lid on walls); Auto projects unless a neighbor stands square.")
+    domain.hide_when = "{ quad != 0 }"
+    result.append(domain)
     let flow = menu("Boundary flow", flow_slot, "Natural|Normal|Next|Adjacent", 0.0, "Plasticity's Boundary (Quad): the isoparms leaving each side as they fall (Natural), square to it (Normal), along the next sides (Next) or along the neighbor's own (Adjacent).")
     flow.hide_when = "{ quad == 0 }"
     result.append(flow)
@@ -134,18 +139,44 @@ pub func build(data: GeometryData, v: list[float], t: list[str], name: str) -> G
     let made = CadSurfaceFill.fill(data.geometry, words.join(";"), codes, points, guides = guides.join(";"), guide_order = int(v[guide_slot]), quad = v[quad_slot] != 0.0,
                                    tension = v[tension_slot], flatness = v[flatness_slot], flow = int(v[flow_slot]), explicit = v[explicit_slot] != 0.0,
                                    degree_u = int(v[degree_u_slot]), spans_u = int(v[spans_u_slot]), degree_v = int(v[degree_v_slot]), spans_v = int(v[spans_v_slot]),
-                                   refine = v[refine_slot] != 0.0, most_spans = int(v[most_slot]), position = v[position_slot], angle = v[angle_slot], curvature = v[curvature_slot], name = name)
+                                   refine = v[refine_slot] != 0.0, most_spans = int(v[most_slot]), position = v[position_slot], angle = v[angle_slot], curvature = v[curvature_slot], name = name,
+                                   domain = int(v[domain_slot]) if domain_slot < v.length else 0)
     let result = GeometryData(geometry = made.geometry())
     var worst = 0
     for code in codes:
         if code > worst:
             worst = code
-    let kind = "Quad" if v[quad_slot] != 0.0 else f"{words.length}-sided"
-    result.report = f"{kind} {continuity_cycle.split("|")[worst]}, {made.spans_u} by {made.spans_v} spans of degree {made.degree_u}" + (f", {made.conflict_count()} conflicts" if made.conflict_count() > 0 else "")
-    if made.conflict_count() > 0:
-        result.warning = f"Fill: {made.conflict_count()} places where the boundaries' demands disagree (drawn red)"
+    # Auto molds a four-sided hole whose neighbors stand square onto the
+    # square: Quad, untrimmed.
+    let kind = ("Quad" if v[quad_slot] != 0.0 else "Quad (molded)") if not made.trimmed else f"{words.length}-sided" + (" molded" if made.molded else "")
+    let found: list[FillConflictLine] = []
+    for k in 0..<made.conflict_count():
+        let c = made.conflict(k)
+        found.append(FillConflictLine(c.start, c.finish, c.corner, c.boundary, c.order, c.amount))
+    let marks = marks_of(found)
+    # The boundaries that hold what they ask away from the conflicting
+    # corners (the fill's own measures at its stations).
+    var met = 0
+    var asked = 0
+    for k in 0..<words.length:
+        let code = codes[k]
+        if code < 2:
+            continue
+        asked += 1
+        if made.angle(k) <= v[angle_slot] and (code < 3 or made.curvature(k) <= v[curvature_slot]):
+            met += 1
+    result.report = f"{kind} {continuity_cycle.split("|")[worst]}, {made.spans_u} by {made.spans_v} spans of degree {made.degree_u}" + (f", {met} of {asked} boundaries met" if asked > 0 else "") + (f", {marks.length} conflicts" if marks.length > 0 else "")
+    if marks.length > 0:
+        result.warning = conflict_warning(marks)
     if v[check_slot] != 0.0 and worst >= 1:
-        build_ops.checked(result, name, words, worst - 1 if worst >= 2 else 0)
+        let eased: list[Vector3] = []
+        let reach: list[float] = []
+        for k in 0..<made.conflict_count():
+            let c = made.conflict(k)
+            if c.corner:
+                eased.append(c.start)
+                reach.append(c.reach)
+        build_ops.checked(result, name, words, worst - 1 if worst >= 2 else 0, eased = eased, reach = reach)
     return labelled(result, data, v, words, guide_items, made)
 
 ## `result` with each boundary's label (when Boundary labels is on), the
@@ -165,17 +196,14 @@ func labelled(result: GeometryData, data: GeometryData, v: list[float], boundari
         if v[conflicts_slot] != 0.0:
             for k in 0..<fill.conflict_count():
                 let c = fill.conflict(k)
-                let orders = ["G0", "G1", "G2"]
-                let what = f"{orders[c.order]} {"corner" if c.corner else "conflict"} {c.amount:.3g}"
-                lines.append(f"{conflict_head}{c.start.x} {c.start.y} {c.start.z} {c.finish.x} {c.finish.y} {c.finish.z} {c.order} {c.amount} {1 if c.corner else 0} {c.boundary} {what}")
+                lines.append(f"{conflict_head}{c.start.x} {c.start.y} {c.start.z} {c.finish.x} {c.finish.y} {c.finish.z} {c.order} {c.amount} {1 if c.corner else 0} {c.boundary}")
     lines.extend(build_ops.pick_lines(data, boundaries + guides))
     if lines.length > 0:
         result.sketch_state = (result.sketch_state + "\n" if result.sketch_state != "" else "") + lines.join("\n")
     return result
 
 ## A conflict read back: from, to, whether a corner, its boundary and
-## order, its amount and text, and whether its plate shows (corners, and
-## the worst run of each boundary and order: runs come many to an edge).
+## order, its amount.
 pub class FillConflictLine:
     pub let start: Vector3
     pub let finish: Vector3
@@ -183,17 +211,14 @@ pub class FillConflictLine:
     pub let boundary: int
     pub let order: int
     pub let amount: float
-    pub let text: str
-    pub var labelled: bool = true
 
-    pub func init(self, start: Vector3, finish: Vector3, corner: bool, boundary: int, order: int, amount: float, text: str):
+    pub func init(self, start: Vector3, finish: Vector3, corner: bool, boundary: int, order: int, amount: float):
         self.start = start
         self.finish = finish
         self.corner = corner
         self.boundary = boundary
         self.order = order
         self.amount = amount
-        self.text = text
 
 ## The conflicts a cook's state holds.
 pub func conflicts_of(state: str) -> list[FillConflictLine]:
@@ -202,7 +227,7 @@ pub func conflicts_of(state: str) -> list[FillConflictLine]:
         if not line.starts_with(conflict_head):
             continue
         let words = line[conflict_head.length..].split(" ")
-        if words.length < 11:
+        if words.length < 10:
             continue
         let numbers: list[float] = []
         for k in 0..<10:
@@ -210,14 +235,83 @@ pub func conflicts_of(state: str) -> list[FillConflictLine]:
                 recover 0.0
             numbers.append(value)
         found.append(FillConflictLine(Vector3(numbers[0], numbers[1], numbers[2]), Vector3(numbers[3], numbers[4], numbers[5]), numbers[8] != 0.0, int(numbers[9]), int(numbers[6]),
-                                      numbers[7], words[10..].join(" ")))
-    # One plate a boundary and order for runs: the worst.
-    for k in 0..<found.length:
-        let c = found[k]
-        if c.corner:
-            continue
-        for l in 0..<found.length:
-            let other = found[l]
-            if l != k and not other.corner and other.boundary == c.boundary and other.order == c.order and (other.amount > c.amount or other.amount == c.amount and l < k):
-                c.labelled = false
+                                      numbers[7]))
     return found
+
+## Conflicts gathered as xNURBS 7 marks them, one mark a place: a corner
+## (every conflict there, its worst amount), or a boundary's runs of one
+## order (each run drawn, one label with the worst and how many). `anchor`
+## is where its label points: the corner, or the worst run's middle.
+pub class FillConflictMark:
+    pub var anchor: Vector3
+    pub let corner: bool
+    pub let order: int
+    pub var amount: float
+    pub let runs: list[(Vector3, Vector3)] = []
+
+    pub func init(self, anchor: Vector3, corner: bool, order: int, amount: float):
+        self.anchor = anchor
+        self.corner = corner
+        self.order = order
+        self.amount = amount
+
+    ## The label: the order, what disagrees (a corner, or how many runs) and
+    ## the worst amount in its unit (a gap in the document's units is
+    ## left to the caller: model units here).
+    pub func text(self) -> str:
+        let orders = ["G0", "G1", "G2"]
+        let sign = "°" if self.order == 1 else ("%" if self.order == 2 else "")
+        let what = "corner" if self.corner else (f"{self.runs.length} runs" if self.runs.length > 1 else "run")
+        return f"{orders[self.order]} {what} {self.amount:.3g}{sign}"
+
+## `conflicts` gathered into marks: corners at one point merged, each
+## boundary's runs of one order merged.
+pub func marks_of(conflicts: list[FillConflictLine]) -> list[FillConflictMark]:
+    let marks: list[FillConflictMark] = []
+    let keys: list[str] = []
+    for c in conflicts:
+        if c.corner:
+            var merged = false
+            for m in marks:
+                if m.corner and m.anchor.subtract(c.start).length() < 1e-9:
+                    if c.order > m.order or c.order == m.order and c.amount > m.amount:
+                        m.amount = c.amount
+                    merged = true
+            if not merged:
+                marks.append(FillConflictMark(c.start, true, c.order, c.amount))
+                keys.append("")
+            continue
+        let key = f"{c.boundary} {c.order}"
+        var mark: FillConflictMark? = none
+        for k in 0..<marks.length:
+            if keys[k] == key:
+                mark = marks[k]
+        let middle = c.start.add(c.finish).multiply_scalar(0.5)
+        if let m = mark:
+            m.runs.append((c.start, c.finish))
+            if c.amount > m.amount:
+                # The label points at the worst run.
+                m.amount = c.amount
+                m.anchor = middle
+        else:
+            let made = FillConflictMark(middle, false, c.order, c.amount)
+            made.runs.append((c.start, c.finish))
+            marks.append(made)
+            keys.append(key)
+    return marks
+
+## The warning for `marks`: how many corners and boundaries disagree.
+pub func conflict_warning(marks: list[FillConflictMark]) -> str:
+    var corners = 0
+    var runs = 0
+    for m in marks:
+        if m.corner:
+            corners += 1
+        else:
+            runs += 1
+    let parts: list[str] = []
+    if corners > 0:
+        parts.append(f"{corners} corner" + ("s" if corners > 1 else ""))
+    if runs > 0:
+        parts.append(f"{runs} stretch" + ("es" if runs > 1 else "") + " of the boundaries")
+    return "Fill: the boundaries' demands disagree at " + parts.join(" and ") + " (drawn red)"

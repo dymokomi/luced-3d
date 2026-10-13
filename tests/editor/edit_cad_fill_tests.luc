@@ -3,10 +3,13 @@
 ## CAD box unstitched into six squares with its top removed, the
 ## right-click on one of the hole's edges offers Fill Surface; Fill from that one
 ## edge takes the whole hole, cooks at once and waits for more boundaries,
-## then (Enter) for guides, then (Enter) finishes; N-sided cannot rise
-## square to the walls and says to use Quad; Quad at G1 to the box's
+## then (Enter) for guides, then (Enter) finishes; N-sided on Auto molds
+## the four walls' hole onto the square (Quad), Projected cannot rise
+## square to the walls and says to use Molded or Quad; Quad at G1 to the box's
 ## perpendicular walls reports the four corners as conflicts (their
-## normals disagree), drawn as state lines, with a label on each boundary;
+## normals disagree; the fill turns onto the walls' top plane there, and
+## the Continuity Check measures G1 everywhere else), one mark each,
+## drawn as state lines, with a label on each boundary;
 ## at G0 it is the flat top again, conflict free, and a click on a label
 ## sets that boundary's own continuity. The Fill node over the box's top edges
 ## follows the box when it grows upstream.
@@ -117,12 +120,17 @@ func fill_step() -> unit!:
     assert(blend_ops.fill_verb in menu_entries(editor), "the right-click on an edge offers Fill Surface")
     edit_cad_commands.tool(w, blend_ops.fill_verb)
     let prompt = w.prompt else trap("Fill waits for more boundaries")
-    assert(prompt.label == edit_cad_build.first_label, prompt.label)
+    assert(prompt.label == edit_cad_build.fill_boundaries_label, prompt.label)
     # It cooks at once on the whole hole. N-sided cannot rise square to
     # the walls, and says so; Quad can, and G1 to perpendicular walls has
     # no answer at the four corners, which are conflicts.
+    let auto = data_of(w, node)
+    assert(auto.report.starts_with("Quad (molded)"), f"N-sided G1 on the walls, Auto domain: {auto.report}")
+    # Projected cannot rise square to the walls, and says so.
+    set_value(w, node, fill_ops.domain_slot, 1.0)
     _ = data_of(w, node)
-    assert(node.warning.contains("use Quad"), f"N-sided G1 on the walls: {node.warning}")
+    assert(node.warning.contains("use Molded or Quad"), f"N-sided G1 on the walls, Projected: {node.warning}")
+    set_value(w, node, fill_ops.domain_slot, 0.0)
     set_value(w, node, fill_ops.quad_slot, 1.0)
     let first = data_of(w, node)
     assert(first.models().length == 6, f"{first.models().length} bodies: {node.warning}")
@@ -144,13 +152,17 @@ func fill_step() -> unit!:
             peak = math.max(peak, p.y)
             out = math.max(out, math.max(math.abs(p.x), math.abs(p.z)) - 1.0)
     assert(peak > 1.2 and out < 1e-6, f"the Quad lid rises to {peak}, {out} outside the walls")
-    assert(first.report.contains("4 of 4 edges G1"), f"the continuity check: {first.report}")
+    # G1 on all four walls away from the corners, which turn onto the
+    # walls' top plane (the corners' own conflicts).
+    assert(first.report.contains("4 of 4 boundaries met") and first.report.contains("4 of 4 edges G1"), f"the fill's measures and its check: {first.report}")
+    let marks = fill_ops.marks_of(conflicts)
+    assert(marks.length == 4 and marks[0].text().starts_with("G1 corner 9"), f"{marks.length} marks: {marks[0].text()}")
     let labels = build_ops.labels_of(node.sketch_state)
     assert(labels.length == 4 and labels[0].text == "G1 (all)", f"{labels.length} labels: {node.sketch_state}")
     # Enter: on to the guides; Enter again: done.
     edit_cad_picks.accept_pick(w, node)
     let guides = w.prompt else trap("Fill asks for guides")
-    assert(guides.label == edit_cad_build.second_label, guides.label)
+    assert(guides.label == edit_cad_build.fill_guides_label, guides.label)
     edit_cad_picks.accept_pick(w, node)
     assert(w.prompt == none, "Enter finishes the fill's picks")
     # G0: the flat top again.

@@ -2123,12 +2123,23 @@ Answers from the reference tools (the doc's questions that Stage 7 met):
   ranges are narrower slices of the same pulls).
 - **Boundary flow** applies to Quad, as xNURBS's notes it for quads; N-sided's isoparms are its chart's.
 
-Left for later: a Molded domain (an N-sided boundary whose neighbor stands square to its plane is
-refused, Quad is the way round); natural extensions of B-spline neighbors beyond their domain as the
-reference (now their tangent planes); G2 at corners whose neighbors' curvature rates disagree (a G2
-fillet's end meeting a wall at an angle) found before the solve rather than as runs; G2 Quad lids on
-vertical walls (the corners make most of each side a conflict); a fill's speed on large corner
-configurations (tens of spans: seconds).
+Left for later, and what became of it (2026-10-12, with Stage 8; luce-cad MODELING.md, Fill,
+Follow-ups):
+
+- ~~A Molded domain~~ Done: Auto molds a hole whose neighbors stand square to its plane (a polygon
+  inscribed in the circle, a corner where each side starts); four such sides mold onto the square,
+  Quad. Projected still refuses them, naming Molded and Quad. Its trimmed face can be hard to mesh where
+  it rises square off its boundaries.
+- ~~Natural extensions of B-spline neighbors~~ Done: the end spans' polynomials carried on, half the
+  domain, before the tangent plane.
+- ~~G2 at corners whose curvature rates disagree~~ Found before the solve: a G2 fillet's end at a wall
+  is a G2 corner conflict, a G3 fillet's is not. The five-sided G3 corner still fills G1, not G2.
+- ~~G2 Quad lids on vertical walls~~ Done: G1 and G2 lids turn onto the walls' plane at their corners
+  (no pinch), four corner conflicts and every wall met elsewhere, at 4 by 4 spans.
+- ~~Speed~~ Better: the multipliers by conjugate gradients, ribbons that give up early; the G1 corner
+  7.5 s to 3.9 s, G2 22 s to 10 s. Its band factor (n h²) is what is left.
+- In luced-3d: conflicts gathered one mark a corner or a boundary's runs, their plates kept apart and
+  off the boundary labels; Fill's own prompts ("Pick fill boundaries", "Pick fill guides"); a Domain row.
 
 **Stage 8: Parasolid's blend options on solids** (S13, S14).
 
