@@ -18,6 +18,26 @@
 ##     top opened (the study's S2): the strips' offsets fitted B-splines.
 ##   kernel_overflow: a plate 4 thick, its top edge filleted 5 (the study's
 ##     F6): the fillet runs off the side face and the bottom trims it.
+##   kernel_cliff: a plate 4 thick on a ledge, its top edge filleted 5: the
+##     fillet runs off the side face over the cliff, the ledge covering its
+##     end.
+##   kernel_rounded_shell: a 20 cube rounded 1 on every edge, shelled 2
+##     with its top open: the rounds vanish from the hollow (its inside
+##     sharp).
+##   kernel_apex: a rectangular pyramid rounded 1 on every edge, G2: an
+##     eight-quad setback patch closes its apex, built directly.
+##   kernel_apex_g1: the same pyramid's four apex edges alone rounded 1,
+##     G1: the patch's quads rational, the strips cylinders.
+##   kernel_moved_top: a box rounded G2 at its uprights (5), its top moved
+##     up 5: the strips extended naturally to meet it.
+##   kernel_healed_corner: a pipe of 10 with a box boss on its side, the
+##     boss's inside uprights rounded 1 and the rounds deleted: healed to
+##     the sharp corner on the curved wall.
+##   kernel_thin_stitch: a plate 0.002 thin, unstitched and stitched within
+##     0.003: one closed body, no side glued to its own other side.
+##   kernel_g2_shell: a 20 cube rounded 3 G2 on every edge, shelled 1
+##     closed (a void) and cut in half to show the wall: its corners'
+##     offsets meet as tolerant vertices.
 import preview_support
 from luce_3d.graphics import Vector3
 from app import Luce3D
@@ -25,12 +45,16 @@ from workspace import Workspace
 import node_commands
 import edit_cad_faces
 import cad_blends
+import cad_surface_nodes
+import edit_cad_surfaces
+from luce_cad.model import CadModel
 from luce_cad.cad_geometry import CadGeometry
 from luce_cad.modeling import CadModeling
 from luce_std import math
 
 pub func scenes() -> list[str]:
-    return ["kernel_holed_ball", "kernel_tee", "kernel_coincident", "kernel_six_holes", "kernel_crossed_pipes", "kernel_shell", "kernel_overflow"]
+    return ["kernel_holed_ball", "kernel_tee", "kernel_coincident", "kernel_six_holes", "kernel_crossed_pipes", "kernel_shell", "kernel_overflow",
+            "kernel_cliff", "kernel_rounded_shell", "kernel_apex", "kernel_apex_g1", "kernel_moved_top", "kernel_healed_corner", "kernel_thin_stitch", "kernel_g2_shell"]
 
 pub func setup(editor: Luce3D, scene: str) -> unit!:
     let w = editor.workspace
@@ -173,7 +197,182 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
         node_commands.set_text(w, 0, CadModeling.edge_references(model, top_edge))
         node_commands.set_parameter(w, cad_blends.size_slot, 5.0)
         look(w, 0.9, 0.25, 45.0, Vector3(5.0, 0.0, 0.0))
+    elif scene == "kernel_cliff":
+        node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+        node_commands.set_parameter(w, 1, 4.0)
+        let plate = w.network.selected
+        node_commands.add_node(w, "Solid Box", 240.0, 40.0)
+        node_commands.set_parameter(w, 0, 10.0)
+        node_commands.set_parameter(w, 1, 4.0)
+        node_commands.add_node(w, "Transform", 240.0, 140.0)
+        node_commands.set_parameter(w, 1, 10.0)
+        node_commands.set_parameter(w, 2, -4.0)
+        let ledge = w.network.selected
+        node_commands.select_node(w, plate)
+        node_commands.add_node(w, "Combine", 40.0, 240.0)
+        node_commands.connect(w, ledge, w.network.selected, 1)
+        let body = w.network.selected
+        let model = CadGeometry.model(preview_support.cooked(w, body).geometry, 0)
+        node_commands.add_node(w, "Fillet", 40.0, 340.0)
+        node_commands.set_text(w, 0, CadModeling.edge_references(model, edges_along(model, func (a: Vector3, b: Vector3) -> bool:
+            return math.abs(a.x - 10.0) < 1e-9 and math.abs(b.x - 10.0) < 1e-9 and math.abs(a.y - 2.0) < 1e-9 and math.abs(b.y - 2.0) < 1e-9)))
+        node_commands.set_parameter(w, cad_blends.size_slot, 5.0)
+        look(w, 0.9, 0.3, 55.0, Vector3(8.0, -2.0, 0.0))
+    elif scene == "kernel_rounded_shell":
+        node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+        let box = w.network.selected
+        let model = CadGeometry.model(preview_support.cooked(w, box).geometry, 0)
+        node_commands.add_node(w, "Fillet", 40.0, 140.0)
+        node_commands.set_text(w, 0, CadModeling.edge_references(model, edges_along(model, func (a: Vector3, b: Vector3) -> bool:
+            return true)))
+        node_commands.set_parameter(w, cad_blends.size_slot, 1.0)
+        let rounded = CadGeometry.model(preview_support.cooked(w, w.network.selected).geometry, 0)
+        node_commands.add_node(w, "Shell", 40.0, 240.0)
+        node_commands.set_text(w, 0, top_face(rounded, 9.0))
+        node_commands.set_parameter(w, edit_cad_faces.thickness_slot, 2.0)
+        # Smooth all over, the body is one tangent chain: the top alone.
+        node_commands.set_parameter(w, edit_cad_faces.shell_chain_slot, 0.0)
+        look(w, 0.6, 0.75, 60.0, Vector3(0.0, 2.0, 0.0))
+    elif scene == "kernel_apex" or scene == "kernel_apex_g1":
+        let pyramid = oblong_pyramid(w)
+        let model = CadGeometry.model(preview_support.cooked(w, pyramid).geometry, 0)
+        let every = scene == "kernel_apex"
+        node_commands.add_node(w, "Fillet", 40.0, 640.0)
+        node_commands.set_text(w, 0, CadModeling.edge_references(model, edges_along(model, func (a: Vector3, b: Vector3) -> bool:
+            return every or a.y > 14.99 or b.y > 14.99)))
+        node_commands.set_parameter(w, cad_blends.size_slot, 1.0)
+        node_commands.set_parameter(w, cad_blends.continuity_slot, 1.0 if every else 0.0)
+        look(w, 0.7, 0.35, 9.0, Vector3(0.0, 12.5, 0.0))
+    elif scene == "kernel_moved_top":
+        node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+        let box = w.network.selected
+        let model = CadGeometry.model(preview_support.cooked(w, box).geometry, 0)
+        node_commands.add_node(w, "Fillet", 40.0, 140.0)
+        node_commands.set_text(w, 0, CadModeling.edge_references(model, edges_along(model, func (a: Vector3, b: Vector3) -> bool:
+            return math.abs(a.x - b.x) < 1e-9 and math.abs(a.z - b.z) < 1e-9)))
+        node_commands.set_parameter(w, cad_blends.size_slot, 5.0)
+        node_commands.set_parameter(w, cad_blends.continuity_slot, 1.0)
+        let rounded = CadGeometry.model(preview_support.cooked(w, w.network.selected).geometry, 0)
+        node_commands.add_node(w, "Offset Face", 40.0, 240.0)
+        node_commands.set_text(w, 0, top_face(rounded, 9.0))
+        node_commands.set_parameter(w, 0, 5.0)
+        look(w, 0.6, 0.35, 75.0, Vector3(0.0, 3.0, 0.0))
+    elif scene == "kernel_healed_corner":
+        node_commands.add_node(w, "Solid Cylinder", 40.0, 40.0)
+        node_commands.set_parameter(w, 0, 10.0)
+        node_commands.set_parameter(w, 1, 20.0)
+        let pipe = w.network.selected
+        node_commands.add_node(w, "Solid Box", 240.0, 40.0)
+        node_commands.set_parameter(w, 0, 10.0)
+        node_commands.set_parameter(w, 1, 8.0)
+        node_commands.set_parameter(w, 2, 8.0)
+        node_commands.add_node(w, "Transform", 240.0, 140.0)
+        node_commands.set_parameter(w, 1, 12.0)
+        let boss = w.network.selected
+        node_commands.select_node(w, pipe)
+        node_commands.add_node(w, "Combine", 40.0, 240.0)
+        node_commands.connect(w, boss, w.network.selected, 1)
+        let body = CadGeometry.model(preview_support.cooked(w, w.network.selected).geometry, 0)
+        node_commands.add_node(w, "Fillet", 40.0, 340.0)
+        node_commands.set_text(w, 0, CadModeling.edge_references(body, edges_along(body, func (a: Vector3, b: Vector3) -> bool:
+            return math.abs(a.x - b.x) < 1e-9 and math.abs(a.z - b.z) < 1e-9 and math.abs(a.y - b.y) > 1e-6 and a.x < 10.0 and a.x > 9.0)))
+        node_commands.set_parameter(w, cad_blends.size_slot, 1.0)
+        let rounded = CadGeometry.model(preview_support.cooked(w, w.network.selected).geometry, 0)
+        # The rounds: the faces the fillet made.
+        let before: list[str] = []
+        for face in 0..<body.face_count(): before.append(CadModeling.face_name_of(body, face))
+        var rounds = ""
+        for face in 0..<rounded.face_count():
+            let name = CadModeling.face_name_of(rounded, face)
+            if not (name in before): rounds = name if rounds == "" else rounds + ";" + name
+        node_commands.add_node(w, "Delete Face", 40.0, 440.0)
+        node_commands.set_text(w, 0, rounds)
+        look(w, 0.35, 0.45, 48.0, Vector3(9.0, 0.0, 0.0))
+    elif scene == "kernel_thin_stitch":
+        node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+        node_commands.set_parameter(w, 1, 0.002)
+        let plate = CadGeometry.model(preview_support.cooked(w, w.network.selected).geometry, 0)
+        node_commands.add_node(w, cad_surface_nodes.unstitch_kind, 40.0, 140.0)
+        node_commands.set_text(w, 0, CadModeling.face_name_of(plate, 0))
+        node_commands.add_node(w, cad_surface_nodes.stitch_kind, 40.0, 240.0)
+        node_commands.set_parameter(w, edit_cad_surfaces.gap_slot, 0.003)
+        look(w, 0.6, 0.45, 40.0, Vector3())
+    elif scene == "kernel_g2_shell":
+        node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+        let box = w.network.selected
+        let model = CadGeometry.model(preview_support.cooked(w, box).geometry, 0)
+        node_commands.add_node(w, "Fillet", 40.0, 140.0)
+        node_commands.set_text(w, 0, CadModeling.edge_references(model, edges_along(model, func (a: Vector3, b: Vector3) -> bool:
+            return true)))
+        node_commands.set_parameter(w, cad_blends.size_slot, 3.0)
+        node_commands.set_parameter(w, cad_blends.continuity_slot, 1.0)
+        let rounded = CadGeometry.model(preview_support.cooked(w, w.network.selected).geometry, 0)
+        node_commands.add_node(w, "Shell", 40.0, 240.0)
+        node_commands.set_text(w, 1, CadModeling.face_name_of(rounded, 0))
+        let shell = w.network.selected
+        node_commands.add_node(w, "Solid Box", 240.0, 140.0)
+        for slot in 0..<3: node_commands.set_parameter(w, slot, 40.0)
+        node_commands.add_node(w, "Transform", 240.0, 240.0)
+        node_commands.set_parameter(w, 3, 20.0)
+        let cutter = w.network.selected
+        node_commands.select_node(w, shell)
+        node_commands.add_node(w, "Combine", 40.0, 340.0)
+        node_commands.set_parameter(w, edit_cad_faces.combine_slot, 1.0)
+        node_commands.connect(w, cutter, w.network.selected, 1)
+        look(w, 0.5, 0.45, 55.0, Vector3())
     node_commands.display_selected(w)
+
+## The edges of `model` from `a` to `b` that `keep` takes, each once.
+func edges_along(model: CadModel, keep: func(Vector3, Vector3) -> bool) -> list[int]!:
+    let found: list[int] = []
+    for face in 0..<model.face_count():
+        for use in 0..<model.face_edge_count(face):
+            let edge = model.face_edge_id(face, use)
+            if keep(model.face_edge_point(face, use, 0.0), model.face_edge_point(face, use, 1.0)) and not (edge in found):
+                found.append(edge)
+    return found
+
+## The name of `model`'s face facing up above `height`.
+func top_face(model: CadModel, height: float) -> str!:
+    for face in 0..<model.face_count():
+        let name = CadModeling.face_name_of(model, face)
+        let at = CadModeling.face_point(model, name)
+        if at.found and at.normal.y > 0.999 and at.point.y > height: return name
+    return ""
+
+## A pyramid over a 20 by 12 base at y = 0, its apex at y = 15 (the
+## study's F8b): a box less four blocks beyond its sides; the last Combine.
+func oblong_pyramid(w: Workspace) -> int!:
+    node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+    node_commands.set_parameter(w, 1, 15.0)
+    node_commands.set_parameter(w, 2, 12.0)
+    node_commands.add_node(w, "Transform", 40.0, 140.0)
+    node_commands.set_parameter(w, 2, 7.5)
+    var body = w.network.selected
+    let alpha = math.atan2(10.0, 15.0)
+    let beta = math.atan2(6.0, 15.0)
+    let cuts = [(Vector3(10.0, 0.0, 0.0), Vector3(math.cos(alpha), math.sin(alpha), 0.0), Vector3(0.0, 0.0, alpha)),
+                (Vector3(-10.0, 0.0, 0.0), Vector3(-math.cos(alpha), math.sin(alpha), 0.0), Vector3(0.0, 0.0, -alpha)),
+                (Vector3(0.0, 0.0, 6.0), Vector3(0.0, math.sin(beta), math.cos(beta)), Vector3(-beta, 0.0, 0.0)),
+                (Vector3(0.0, 0.0, -6.0), Vector3(0.0, math.sin(beta), -math.cos(beta)), Vector3(beta, 0.0, 0.0))]
+    var k = 0
+    for (at, out, turn) in cuts:
+        let x = 240.0 + float(k) * 120.0
+        node_commands.add_node(w, "Solid Box", x, 40.0)
+        for slot in 0..<3: node_commands.set_parameter(w, slot, 60.0)
+        node_commands.add_node(w, "Transform", x, 140.0)
+        let centre = at.add(out.multiply_scalar(30.0))
+        let degrees = turn.multiply_scalar(180.0 / math.pi)
+        for (slot, value) in [(1, centre.x), (2, centre.y), (3, centre.z), (4, degrees.x), (5, degrees.y), (6, degrees.z)]:
+            node_commands.set_parameter(w, slot, value)
+        let tool = w.network.selected
+        node_commands.select_node(w, body)
+        node_commands.add_node(w, "Combine", 40.0, 240.0 + float(k) * 100.0)
+        node_commands.set_parameter(w, edit_cad_faces.combine_slot, 1.0)
+        node_commands.connect(w, tool, w.network.selected, 1)
+        body = w.network.selected
+        k += 1
+    return body
 
 pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
     _ = editor
