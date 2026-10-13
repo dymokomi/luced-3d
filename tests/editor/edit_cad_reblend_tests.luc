@@ -1,0 +1,56 @@
+## Identify blends and Reblend in Edit CAD (luce-cad's identified_blends
+## and reblended): an Edit CAD box's top edge filleted 0.3 as a step, the
+## model's blends selected by Select blends (the one strip), Press Pull on
+## them a Reblend step starting at their radius; at 0.5 the strip is the
+## edge filleted 0.5. A face that is no blend keeps Press Pull an Offset
+## Face.
+from workspace import Workspace
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+from luce_std import math
+import node_commands
+import selection_commands
+import modeling_commands
+import edit_cad_commands
+import edit_cad_faces
+import cad_blends
+
+pub func edit_cad_reblend_tests() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    let node = w.selected() else trap("Edit CAD")
+    modeling_commands.create(w, "Box")
+    selection_commands.set_mode(w, 2)
+    let mesh = w.geometry else trap("pick mesh")
+    let tag = mesh.find_attribute("cad_edge", 4)
+    var edge = -1
+    for at in 0..<mesh.edge_count():
+        if edge < 0 and mesh.attribute_value(tag, at) >= 0.0:
+            edge = at
+    selection_commands.choose_component(w, edge, false)
+    edit_cad_commands.valued_step(w, "Fillet")
+    modeling_commands.set_last_step(w, cad_blends.size_slot, 0.3, 0.0001, 100000.0)
+    let filleted = model_of(w, node.id)
+    # Select blends: the strip alone, at the Faces level.
+    edit_cad_commands.select_blends(w)
+    assert(w.selected_count() > 0)
+    assert(edit_cad_commands.blends_selected(w))
+    # Press Pull on it: a Reblend step at its radius.
+    edit_cad_commands.press_pull(w)
+    let current = w.network.require(node.id)
+    assert(current.edits[-1].verb == edit_cad_faces.reblend_verb, current.edits[-1].verb)
+    assert(math.abs(current.edits[-1].numbers[0] - 0.3) < 1e-9, f"Reblend starts at {current.edits[-1].numbers[0]}")
+    modeling_commands.set_last_step(w, 0, 0.5, 0.0001, 100000.0)
+    let made = model_of(w, node.id)
+    assert(current.failure == "", current.failure)
+    let blends = CadModeling.identified_blends(made).split(";")
+    assert(blends.length == 1 and math.abs(CadModeling.blend_radius(made, blends[0]) - 0.5) < 1e-9, f"reblended: {blends.length} blends")
+    assert(made.face_count() == filleted.face_count())
+    print("PASS Edit CAD reblend: Select blends picks a box's fillet strip, Press Pull on it is a Reblend step starting at its radius (0.3), at 0.5 the strip is filleted 0.5")
+
+func model_of(w: Workspace, id: int) -> CadModel!:
+    return CadGeometry.model(w.network.evaluate_data(id).geometry, 0)

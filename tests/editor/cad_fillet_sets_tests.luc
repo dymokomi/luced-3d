@@ -1,0 +1,178 @@
+## Fusion's selection sets in the Fillet node and the Edit CAD Fillet step
+## (luce-cad's filleted_sets and variable_filleted_edges): a 20 box's
+## corner whose three edges are three sets of 2, 3 and 4 is luce-cad's own
+## setback corner, an arrow on each set's edge dragging its radius; with
+## Variable radius, the upright running 2 → 4 into the corner where the
+## top's two edges are set 2 at 4; as Edit CAD steps, the right-click's Add
+## as fillet set makes the selected edges the last Fillet's next set.
+from workspace import Workspace
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+from luce_geocore.geocore import Vector3
+from luce_std import math
+import node_commands
+import selection_commands
+import modeling_commands
+import edit_cad_commands
+import cad_blends
+import handle_lines
+
+pub func cad_fillet_sets_tests() -> unit!:
+    node_sets()
+    variable_into_corner()
+    step_sets()
+    print("PASS fillet selection sets: three sets of 2, 3 and 4 at a box corner by the Fillet node (luce-cad's setback corner, an arrow per set), a variable upright into a corner of 4 (set 2), and Add as fillet set on Edit CAD's Fillet step")
+
+func edges_where(model: CadModel, keep: func(Vector3, Vector3) -> bool) -> list[int]!:
+    let found: list[int] = []
+    for face in 0..<model.face_count():
+        for use in 0..<model.face_edge_count(face):
+            let id = model.face_edge_id(face, use)
+            if keep(model.face_edge_point(face, use, 0.0), model.face_edge_point(face, use, 0.5)) and not (id in found):
+                found.append(id)
+    return found
+
+func model_of(w: Workspace, id: int) -> CadModel!:
+    return CadGeometry.model(w.network.evaluate_data(id).geometry, 0)
+
+## The box's corner edges at (10, 10, 10): along x, along y, along z.
+func corner_edge(model: CadModel, axis: int) -> str!:
+    return CadModeling.edge_references(model, edges_where(model, func (a: Vector3, m: Vector3) -> bool:
+        let d = m.subtract(a)
+        let along = [math.abs(d.x), math.abs(d.y), math.abs(d.z)]
+        let at = [m.x, m.y, m.z]
+        var keep = along[axis] > 1e-6
+        for other in 0..<3:
+            if other != axis:
+                keep = keep and math.abs(at[other] - 10.0) < 1e-9
+        return keep))
+
+func box(w: Workspace) -> (int, CadModel)!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    for axis in 0..<3:
+        node_commands.set_parameter(w, axis, 20.0)
+    let id = w.network.selected
+    return (id, model_of(w, id))
+
+func volume_of(model: CadModel) -> float!:
+    let mesh = model.tessellate(16)
+    var total = 0.0
+    for triangle in 0..<mesh.index_count() // 3:
+        let a = mesh.vertex(mesh.index(triangle * 3)).position
+        let b = mesh.vertex(mesh.index(triangle * 3 + 1)).position
+        let c = mesh.vertex(mesh.index(triangle * 3 + 2)).position
+        total += a.dot(b.cross(c)) / 6.0
+    return total
+
+func node_sets() -> unit!:
+    let w = Workspace()
+    let (_, body) = box(w)
+    node_commands.add_node(w, "Fillet", 0.0, 100.0)
+    let fillet = w.network.selected
+    node_commands.set_text(w, 0, corner_edge(body, 0))
+    node_commands.set_parameter(w, cad_blends.size_slot, 2.0)
+    node_commands.set_parameter(w, cad_blends.sets_slot, 3.0)
+    node_commands.set_parameter(w, cad_blends.set_radius_slot, 3.0)
+    node_commands.set_parameter(w, cad_blends.set_radius_slot + 1, 4.0)
+    # Set 3 not picked yet: said on the node.
+    node_commands.set_text(w, cad_blends.sets_text, corner_edge(body, 1))
+    let waiting = w.network.evaluate_data(fillet) catch failure:
+        assert(failure.message.contains("set 3"), failure.message)
+        recover w.network.evaluate_data(fillet - 1)
+    _ = waiting
+    node_commands.set_text(w, cad_blends.sets_text, corner_edge(body, 1) + "|" + corner_edge(body, 2))
+    let data = w.network.evaluate_data(fillet)
+    let made = CadGeometry.model(data.geometry, 0)
+    let expected = CadModeling.filleted_sets(body, corner_edge(body, 0) + "|" + corner_edge(body, 1) + "|" + corner_edge(body, 2), [2.0, 3.0, 4.0], "f")
+    assert(made.face_count() == expected.face_count(), f"{made.face_count()} faces against {expected.face_count()}")
+    assert(math.abs(volume_of(made) - volume_of(expected)) < 1e-9)
+    # An arrow per set, each dragging its own radius.
+    let arrows = handle_lines.parse(data.handles)
+    assert(arrows.length == 3, f"{arrows.length} arrows")
+    assert(arrows[0].slot == cad_blends.size_slot and arrows[1].slot == cad_blends.set_radius_slot and arrows[2].slot == cad_blends.set_radius_slot + 1)
+
+func variable_into_corner() -> unit!:
+    let w = Workspace()
+    let (_, body) = box(w)
+    node_commands.add_node(w, "Fillet", 0.0, 100.0)
+    let fillet = w.network.selected
+    node_commands.set_text(w, 0, corner_edge(body, 1))
+    node_commands.set_parameter(w, cad_blends.radius_type_slot, 2.0)
+    node_commands.set_parameter(w, cad_blends.size_slot, 2.0)
+    node_commands.set_parameter(w, cad_blends.end_radius_slot, 4.0)
+    node_commands.set_parameter(w, cad_blends.sets_slot, 2.0)
+    node_commands.set_parameter(w, cad_blends.set_radius_slot, 4.0)
+    node_commands.set_text(w, cad_blends.sets_text, corner_edge(body, 0) + ";" + corner_edge(body, 2))
+    let made = model_of(w, fillet)
+    let expected = CadModeling.variable_filleted_edges(body, corner_edge(body, 0) + ";" + corner_edge(body, 2), 4.0, corner_edge(body, 1), [0.0, 1.0], [2.0, 4.0], [2], "f")
+    assert(made.face_count() == expected.face_count(), f"{made.face_count()} faces against {expected.face_count()}")
+    assert(math.abs(volume_of(made) - volume_of(expected)) < 1e-9)
+
+func step_sets() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    let node = w.selected() else trap("Edit CAD")
+    modeling_commands.create(w, "Box")
+    selection_commands.set_mode(w, 2)
+    # A corner of the 2 box: its x edge filleted 0.3, its y and z edges
+    # added as the Fillet's second set (0.5): a setback corner of two radii.
+    selection_commands.choose_component(w, pick_edge(w, 0), false)
+    edit_cad_commands.valued_step(w, "Fillet")
+    assert(node.edits[-1].verb == "Fillet")
+    let small = node.edits[-1].numbers.copy()
+    small[cad_blends.size_slot] = 0.3
+    w.perform("radius", func () -> unit!:
+        node.edits[-1] = node.edits[-1].with_numbers(small)
+        w.network.invalidate(node.id)
+        w.rebuild())
+    let before = CadGeometry.model(w.network.evaluate_data(node.id).geometry, 0).face_count()
+    selection_commands.set_mode(w, 2)
+    selection_commands.choose_component(w, pick_edge(w, 1), false)
+    selection_commands.choose_component(w, pick_edge(w, 2), true)
+    assert(edit_cad_commands.fillet_set_open(w))
+    edit_cad_commands.add_fillet_set(w)
+    # One undo takes the set away, redo brings it back (the network's
+    # nodes as they are after each).
+    w.undo()
+    assert(cad_blends.set_count(w.network.require(node.id).edits[-1].numbers) == 1)
+    w.redo()
+    let current = w.network.require(node.id)
+    let step = current.edits[-1]
+    assert(cad_blends.set_count(step.numbers) == 2 and step.text(cad_blends.sets_text) != "")
+    let numbers = step.numbers.copy()
+    numbers[cad_blends.set_radius_slot] = 0.5
+    w.perform("radius", func () -> unit!:
+        current.edits[-1] = current.edits[-1].with_numbers(numbers)
+        w.network.invalidate(current.id)
+        w.rebuild())
+    let made = CadGeometry.model(w.network.evaluate_data(current.id).geometry, 0)
+    assert(current.warning == "" and current.failure == "", current.failure)
+    assert(made.face_count() > before, f"{made.face_count()} faces, {before} with one set")
+
+## The pick mesh's edge (at the Edges level) of the box's corner at its
+## largest x, y and z: along x (`axis` 0), y (1) or z (2).
+func pick_edge(w: Workspace, axis: int) -> int!:
+    let mesh = w.geometry else trap("pick mesh")
+    let tag = mesh.find_attribute("cad_edge", 4)
+    for at in 0..<mesh.edge_count():
+        if mesh.attribute_value(tag, at) < 0.0:
+            continue
+        let a = mesh.point(mesh.edge_point(at, 0))
+        let b = mesh.point(mesh.edge_point(at, 1))
+        let m = a.add(b).multiply_scalar(0.5)
+        let d = b.subtract(a)
+        var ok = math.abs(d.z) > 1e-6 and m.x > 0.99 and m.y > 0.99
+        if axis == 0:
+            ok = math.abs(d.x) > 1e-6 and m.y > 0.99 and m.z > 0.99
+        elif axis == 1:
+            ok = math.abs(d.y) > 1e-6 and m.x > 0.99 and m.z > 0.99
+        if ok:
+            return at
+    trap("no such edge")

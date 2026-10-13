@@ -2221,12 +2221,50 @@ surface's (`surf8_corner` now shows the pole the ball itself shows). Captures: `
 step's rows regrouped, the section's first and Limits, Setback and Overflow behind More options
 (closed), Tangent chain beside Radius.
 
-Not done (left for later): Y-blends of two edges of different convexity at a vertex, vertex blends
-(rolling past sharp edges of the other convexity), round order at mixed corners, a choice among the overflow behaviours
-(and rolling on onto curved tangent faces, cliff-edge blends along the cliff), limits where blends
-start to overlap, caps by faces or sheets, identify blends; Alias's Ball Corner shape controls
-(Pivot Curve Length Ratio, Center Adjust) and Corner Blend's Edge Shape sliders; G2 Corner fills
-(their G2 rows do not settle at these corners).
+**Stage 8, second round** (2026-10-12; luce-cad MODELING.md, Parasolid's sections, limits and
+setbacks, Identify blends and reblend, Shell, Stitch; luced-3d MODELING.md):
+
+- **Overflow behaviours chosen** (`BlendLimits.overflow`, a set of Parasolid's tried in order):
+  smooth (rolling on over a split face, and now onto a curved face tangent to the face beyond it:
+  the SMLib study's item 8, curved case), cliff (a true cliff-edge blend: tangent to the other face
+  and through the edge where the face ends, G1; an inside corner's wall lower than the fillet too)
+  and notch. The Fillet node's and step's Overflow
+  gains Smooth, Cliff and Notch rows. Closed forms: F6 and the ledge plate with Cliff (1501.45 and
+  2301.45), the plate's bottom edge rounded 3 then its top 1.5 rolling onto it (G2 fuller).
+- **Caps by faces or sheets** (`CadModeling.capped_fillet`): blends stopping at a face's surface
+  (of the body or another), the cut their cap; half the spandrel prism at x = 0, the prism cut at
+  its centroid by a plane at 45°, G2 half the whole edge's.
+- **Identify blends** (`identified_blends`, `blend_radius`) and **reblend** (`CadDirect.reblended`):
+  cylinders, tori and corner balls met tangentially by their walls, found from the geometry alone;
+  reblend deletes the chain with healing and fillets it again as edge sets, the picked at the new
+  radius, the others at theirs. A cube rounded 2 reblended to 3 is Steiner's volume. In Edit CAD:
+  Select blends (right-click) and Reblend (Press Pull on fillet faces, as Fusion's), `cad_reblend`.
+- **Selection sets and variable edges into a corner in the UI**: the Fillet node's Selection sets
+  (sets 2 to 9, Pick set k edges, Set k radius, an arrow per set) on `filleted_sets`; Variable radius
+  with set 2 the constant edges its law runs into (`variable_filleted_edges`); Edit CAD's Add as
+  fillet set on the last Fillet step. Captures `cad_fillet_sets`, `cad_variable_corner`,
+  `cad_fillet_step_sets` (and `--background`).
+- **Kernel leftovers**: Stitch's sliver and short-edge removal that keeps a thin plate's sides (the
+  faces across a thin face's long edges decide); a body rounded on every edge shelled open at its
+  top with a wall thinner than the rounds (the closed shell opened square to the top); G2 and G3
+  strips, G2 setback corners and small chamfers swallowed by a shell's wall (healed, or the convex
+  cell of the flat faces' planes): luce-cad's SMLib study, items 11 and 12.
+- **Fusion's overflow default** (probe 12): F6 and the ledge plate rounded 5 and 4.5 are Fusion's
+  cliff-edge blends to 1e-10 (not the notch), so the default takes all three behaviours, cliff
+  before notch; Fusion's rolled-on plate matches ours to 1e-4.
+- **Corner's Center adjust** (Alias's Ball Corner): the patch's middle moved along its normal by a
+  share of the hole's size, through Fill's interior point (`surf8_corner_center`, G1 kept).
+
+Captures (`tools/preview.py --scene`): `kernel_cliff_edge`, `kernel_rolled_on` (also `--mode 7`),
+`cad_fillet_sets`, `cad_variable_corner`, `cad_fillet_step_sets`, `cad_reblend`, `surf8_corner_center`.
+
+Not done (left for later): Y-blends of two edges of different convexity at a vertex and vertex
+blends (they need a mixed-convexity corner patch: two blends in one pass leave flat facets where
+they meet, and in turn the second blend's end has no face to stop at), round order at mixed corners
+beyond the lone kind first, cliff-end overflow and concave edges' rolled overflow, limits
+where blends start to overlap, Alias's Pivot Curve Length Ratio and Corner Blend's Edge Shape sliders, G2 Corner fills of G2 fillets (their rate conflicts
+at the walls), laws on chains round faces and loops between curved faces at corners, and the face
+soup's arrangement for bodies that are not convex.
 
 ## 9. Notes for the build
 

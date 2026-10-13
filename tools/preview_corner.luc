@@ -14,10 +14,23 @@
 ##     consumed.
 ##   surf8_corner: Corner (Ball corner) on a rounded box corner's three
 ##     fillets, its ball taken away (try --mode 7): the ball again.
+##   surf8_corner_center: surf8_corner with Center adjust 0.3 (Alias's): the
+##     patch's middle moved out along its normal.
 ##   surf8_corner_g2: the same corner of three G3 fillets, the setback
 ##     patch taken away, Corner at G2: six quads round a center.
 ##   cad_fillet_step: an Edit CAD box's edge filleted G2 by depth and
 ##     skew: the step's rows along the bottom.
+##   cad_fillet_sets: a CAD network's box corner of three selection sets,
+##     0.3, 0.5 and 0.7 (Fusion's per-set radius): a setback corner, an
+##     arrow on each set, the sets' rows in the pane.
+##   cad_variable_corner: the box's upright running 0.2 → 0.5 into a corner
+##     whose top edges are set 2 at 0.5 (Variable radius into corners).
+##   cad_fillet_step_sets: an Edit CAD box's x edge filleted 0.3, its y and
+##     z edges added as the step's second set (Add as fillet set) at 0.5:
+##     the step's Selection sets and Set 2 radius rows.
+##   cad_reblend: an Edit CAD box's corner filleted 0.3 on its three edges
+##     (a ball), Select blends picking its four blends, Press Pull on them a
+##     Reblend step, at 0.6: the corner rounded 0.6, the step's Radius row.
 import preview_support
 import preview_blend
 from luce_3d.graphics import Vector3
@@ -34,9 +47,10 @@ import modeling_commands
 from luce_cad.cad_geometry import CadGeometry
 from luce_cad.model import CadModel
 from luce_cad.modeling import CadModeling
+from luce_std import math
 
 pub func scenes() -> list[str]:
-    return ["surf8_conic", "surf8_g2_depth", "surf8_limits", "surf8_setback", "surf8_bridge", "surf8_corner", "surf8_corner_g2", "cad_fillet_step"]
+    return ["surf8_conic", "surf8_g2_depth", "surf8_limits", "surf8_setback", "surf8_bridge", "surf8_corner", "surf8_corner_center", "surf8_corner_g2", "cad_fillet_step", "cad_fillet_sets", "cad_variable_corner", "cad_fillet_step_sets", "cad_reblend"]
 
 ## A CAD network's 2-box and a Fillet node on edges `keep` takes (their
 ## ends), radius `radius`; the Fillet node selected and displayed.
@@ -106,7 +120,7 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
         edit_cad_picks.accept_pick(w, node)
         preview_support.settle(w)
         preview_blend.look(editor, 0.6, 0.45, 7.0, Vector3(0.0, 0.3, 0.0))
-    elif scene == "surf8_corner" or scene == "surf8_corner_g2":
+    elif scene == "surf8_corner" or scene == "surf8_corner_g2" or scene == "surf8_corner_center":
         let source = box_fillet(editor, 0.5, at_corner)
         _ = source
         if scene == "surf8_corner_g2":
@@ -132,6 +146,8 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
             node_commands.set_parameter(w, blend_ops.corner_continuity_slot, 3.0)
             node_commands.set_parameter(w, blend_ops.corner_check_slot, 0.0)
             node_commands.set_parameter(w, blend_ops.corner_conflicts_slot, 0.0)
+        if scene == "surf8_corner_center":
+            node_commands.set_parameter(w, blend_ops.corner_center_slot, 0.3)
         node_commands.display_selected(w)
         preview_support.settle(w)
         preview_blend.look(editor, 0.75, 0.6, 4.5, Vector3(0.6, 0.6, 0.6))
@@ -159,7 +175,113 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
         modeling_commands.set_last_step(w, cad_blends.g2_shape_slot, 1.0, 0.0, 2.0)
         preview_support.settle(w)
         preview_blend.look(editor, 0.75, 0.5, 6.0, Vector3(0.0, 0.0, 0.0))
+    elif scene == "cad_fillet_sets" or scene == "cad_variable_corner":
+        let sets = scene == "cad_fillet_sets"
+        let source = box_fillet(editor, 0.3 if sets else 0.2, func (a: Vector3, b: Vector3) -> bool: return corner_along(a, b, 0 if sets else 1))
+        if sets:
+            node_commands.set_parameter(w, cad_blends.sets_slot, 3.0)
+            node_commands.set_parameter(w, cad_blends.set_radius_slot, 0.5)
+            node_commands.set_parameter(w, cad_blends.set_radius_slot + 1, 0.7)
+            node_commands.set_text(w, cad_blends.sets_text, corner_references(source, 1) + "|" + corner_references(source, 2))
+        else:
+            node_commands.set_parameter(w, cad_blends.radius_type_slot, 2.0)
+            node_commands.set_parameter(w, cad_blends.end_radius_slot, 0.5)
+            node_commands.set_parameter(w, cad_blends.sets_slot, 2.0)
+            node_commands.set_parameter(w, cad_blends.set_radius_slot, 0.5)
+            node_commands.set_text(w, cad_blends.sets_text, corner_references(source, 0) + ";" + corner_references(source, 2))
+        preview_support.settle(w)
+        preview_blend.look(editor, 0.75, 0.5, 5.0, Vector3(0.5, 0.5, 0.5))
+    elif scene == "cad_fillet_step_sets":
+        node_commands.delete_selected(w)
+        node_commands.add_node(w, "CAD", 40.0, 40.0)
+        node_commands.enter_group(w, w.network.selected)
+        node_commands.add_node(w, "Edit CAD", 40.0, 40.0)
+        preview_support.settle(w)
+        modeling_commands.create(w, "Box")
+        preview_support.settle(w)
+        selection_commands.set_mode(w, 2)
+        preview_support.settle(w)
+        choose_corner_edge(w, 0, false)
+        modeling_commands.model(w, "Fillet")
+        preview_support.settle(w)
+        modeling_commands.set_last_step(w, cad_blends.size_slot, 0.3, 0.0001, 100000.0)
+        preview_support.settle(w)
+        selection_commands.set_mode(w, 2)
+        preview_support.settle(w)
+        choose_corner_edge(w, 1, false)
+        choose_corner_edge(w, 2, true)
+        edit_cad_commands.add_fillet_set(w)
+        preview_support.settle(w)
+        modeling_commands.set_last_step(w, cad_blends.set_radius_slot, 0.5, 0.0001, 100000.0)
+        preview_support.settle(w)
+        preview_blend.look(editor, 0.75, 0.5, 5.0, Vector3(0.5, 0.5, 0.5))
+    elif scene == "cad_reblend":
+        node_commands.delete_selected(w)
+        node_commands.add_node(w, "CAD", 40.0, 40.0)
+        node_commands.enter_group(w, w.network.selected)
+        node_commands.add_node(w, "Edit CAD", 40.0, 40.0)
+        preview_support.settle(w)
+        modeling_commands.create(w, "Box")
+        preview_support.settle(w)
+        selection_commands.set_mode(w, 2)
+        preview_support.settle(w)
+        choose_corner_edge(w, 0, false)
+        choose_corner_edge(w, 1, true)
+        choose_corner_edge(w, 2, true)
+        modeling_commands.model(w, "Fillet")
+        preview_support.settle(w)
+        modeling_commands.set_last_step(w, cad_blends.size_slot, 0.3, 0.0001, 100000.0)
+        preview_support.settle(w)
+        edit_cad_commands.select_blends(w)
+        preview_support.settle(w)
+        edit_cad_commands.press_pull(w)
+        preview_support.settle(w)
+        modeling_commands.set_last_step(w, 0, 0.6, 0.0001, 100000.0)
+        preview_support.settle(w)
+        preview_blend.look(editor, 0.75, 0.5, 5.0, Vector3(0.5, 0.5, 0.5))
     editor.panels.refresh()
+
+## Whether the edge from `a` to `b` runs along `axis` (0 x, 1 y, 2 z) into
+## the box's corner at its largest x, y and z.
+func corner_along(a: Vector3, b: Vector3, axis: int) -> bool:
+    let d = b.subtract(a)
+    let lengths = [math.abs(d.x), math.abs(d.y), math.abs(d.z)]
+    return lengths[axis] > 1e-6 and at_corner(a, b)
+
+## References to `source`'s corner edge along `axis`.
+func corner_references(source: CadModel, axis: int) -> str!:
+    let found: list[int] = []
+    for face in 0..<source.face_count():
+        for use in 0..<source.face_edge_count(face):
+            let id = source.face_edge_id(face, use)
+            if corner_along(source.face_edge_point(face, use, 0.0), source.face_edge_point(face, use, 1.0), axis) and not (id in found):
+                found.append(id)
+    return CadModeling.edge_references(source, found)
+
+## At the Edges level, the pick mesh's edge of the box's corner at its
+## largest x, y and z along `axis` (0 x, 1 y, 2 z) chosen (`adding` keeps
+## the selection).
+func choose_corner_edge(w: Workspace, axis: int, adding: bool) -> unit!:
+    let mesh = preview_support.shown(w) else trap("no pick mesh")
+    let tag = mesh.find_attribute("cad_edge", 4)
+    for at in 0..<mesh.edge_count():
+        if mesh.attribute_value(tag, at) < 0.0:
+            continue
+        let a = mesh.point(mesh.edge_point(at, 0))
+        let b = mesh.point(mesh.edge_point(at, 1))
+        let m = a.add(b).multiply_scalar(0.5)
+        let d = b.subtract(a)
+        let lengths = [math.abs(d.x), math.abs(d.y), math.abs(d.z)]
+        let at_middle = [m.x, m.y, m.z]
+        var keep = lengths[axis] > 1e-6
+        for other in 0..<3:
+            if other != axis:
+                keep = keep and at_middle[other] > 0.99
+        if keep:
+            selection_commands.choose_component(w, at, adding)
+            preview_support.settle(w)
+            return
+    trap("no such edge")
 
 ## At the Faces level, the pick mesh's polygon whose middle and normal
 ## `keep` takes clicked.

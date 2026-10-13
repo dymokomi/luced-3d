@@ -20,7 +20,11 @@
 ##     must fit its faces) and the behaviours it may take, Smooth (rolling
 ##     on over a line splitting its face, or onto a round beyond it), Cliff
 ##     (a cliff-edge blend: tangent to one face, through the edge where the
-##     other ends) and Notch (the next face trims it); Tangent chain.
+##     other ends) and Notch (the next face trims it); Tangent chain;
+##     Selection sets (Fusion's: the edges picked are set 1 at Radius, sets
+##     2 to 9 each its own edges and radius, meeting at setback corners;
+##     with Variable radius a second set is the constant edges the law runs
+##     into at corners).
 ##   Chamfer: Type Equal distance, Two distances (Distance along the first
 ##     face, the one more of the picked edges lie on, Distance 2 along the
 ##     other; Flip swaps them) or Distance and angle (the chamfer leaving
@@ -35,6 +39,7 @@ from geometry_data import GeometryData
 from handle_lines import HandleLine
 import handle_lines
 from luce_ui import ui
+from luce_std import math
 
 # -- Fillet's and Chamfer's value slots (node_catalog.cad_fields).
 pub let size_slot = 0
@@ -82,6 +87,17 @@ pub let more_slot = 25
 ## Variable radius's points between its ends: "position radius" pairs
 ## apart by `;` (positions 0 to 1 along the edge), text 3.
 pub let points_text = 3
+## Selection sets (Fusion's: one Fillet's edge sets, each its own radius,
+## luce-cad's filleted_sets): how many (1, the picked edges alone), the
+## radii of sets 2 to 9 in slots 30 to 37, and their edges in text 4
+## (references apart by `;`, set from set by `|`). Variable radius with a
+## second set: its picked edges each follow the law, the second set's
+## edges constant at Set 2 radius, meeting at corners (luce-cad's
+## variable_filleted_edges).
+pub let sets_slot = 29
+pub let set_radius_slot = 30
+pub let most_sets = 9
+pub let sets_text = 4
 ## Fillet's Type entries: Fillet, Rule fillet, Full round.
 pub let full_round_type = 2
 ## Chamfer's: its type, second distance, angle and flip.
@@ -134,6 +150,8 @@ pub func blended(kind: str, v: list[float], texts: list[str], body: CadModel, ta
             error(ui.invalid, "Full round: pick the center face (Pick center face)")
         return GeometryData(geometry = CadGeometry.of_model(CadModeling.full_round(body, center, tag, continuity)))
     let edges = edges_of(v, texts, body)
+    if int(v[type_slot]) == 0 and set_count(v) > 1:
+        return sets_filleted(v, texts, body, tag, continuity, chain, edges)
     if int(v[radius_type_slot]) == 2:
         let (positions, radii) = variable_points(v, texts)
         if edges.split(";")[0].trim() == "":
@@ -150,7 +168,7 @@ pub func blended(kind: str, v: list[float], texts: list[str], body: CadModel, ta
     let limited = limits_slot < v.length and v[limits_slot] != 0.0
     let ratio = v[setback_ratio_slot] if setback_ratio_slot < v.length and (setback or continuity > 1) else 0.0
     let overflow = overflow_behaviours(v)
-    if setback or limited or ratio > 0.0 or overflow != 5:
+    if setback or limited or ratio > 0.0 or overflow != 7:
         let from_at = v[limit_from_slot] if limited else 0.0
         let to_at = v[limit_to_slot] if limited else 1.0
         return with_arrow(CadModeling.filleted(body, edges, radius, tag, continuity, chain, setback, tangency, conic, rho, depth, skew, softness, from_at, to_at, ratio, overflow), body, edges, int(v[radius_type_slot]) == 0)
@@ -166,16 +184,94 @@ pub func blended(kind: str, v: list[float], texts: list[str], body: CadModel, ta
     return with_arrow(current.filleted(radius), body, edges, int(v[radius_type_slot]) == 0)
 
 ## The overflow behaviours values `v` allow, as luce-cad's filleted takes
-## them: Smooth 1, Cliff 2, Notch 4 added up (5, smooth and notch, by
-## default); 0 with Overflow off.
+## them: Smooth 1, Cliff 2, Notch 4 added up (7, all three, by default,
+## Fusion's cliff included); 0 with Overflow off.
 func overflow_behaviours(v: list[float]) -> int:
     if overflow_slot >= v.length:
-        return 5
+        return 7
     if v[overflow_slot] == 0.0:
         return 0
     if notch_overflow_slot >= v.length:
-        return 5
+        return 7
     return (1 if v[smooth_overflow_slot] != 0.0 else 0) + (2 if v[cliff_overflow_slot] != 0.0 else 0) + (4 if v[notch_overflow_slot] != 0.0 else 0)
+
+## How many selection sets values `v` hold (1: the picked edges alone).
+pub func set_count(v: list[float]) -> int:
+    if sets_slot >= v.length:
+        return 1
+    return int(math.max(1.0, math.min(float(most_sets), v[sets_slot])))
+
+## Set `k`'s edge references (k from 2) in texts `texts` ("" when none
+## picked yet).
+pub func set_edges(texts: list[str], k: int) -> str:
+    if sets_text >= texts.length:
+        return ""
+    let parts = texts[sets_text].split("|")
+    return parts[k - 2].trim() if k - 2 < parts.length else ""
+
+## Texts `text` (text 4) with set `k`'s references `references`.
+pub func with_set_edges(text: str, k: int, references: str) -> str:
+    let parts = text.split("|") if text != "" else []
+    while parts.length < k - 1:
+        parts.append("")
+    parts[k - 2] = references
+    return parts.join("|")
+
+## A Fillet of selection sets: Constant, each set at its radius
+## (filleted_sets); Variable, the picked edges along the law into the
+## second set's edges at its radius (variable_filleted_edges). Each set's
+## radius arrow on its first edge.
+func sets_filleted(v: list[float], texts: list[str], body: CadModel, tag: str, continuity: int, chain: bool, edges: str) -> GeometryData!:
+    let count = set_count(v)
+    let arrows: list[(str, int)] = [(edges, size_slot)]
+    for k in 2..<count + 1:
+        if set_edges(texts, k) == "":
+            error(ui.invalid, f"Selection sets: pick set {k}'s edges (Pick set {k} edges)")
+        arrows.append((set_edges(texts, k), set_radius_slot + k - 2))
+    if edges.split(";")[0].trim() == "":
+        error(ui.invalid, "Selection sets: pick the first set's edges (Pick edges)")
+    if int(v[radius_type_slot]) == 2:
+        if count != 2:
+            error(ui.invalid, "Variable radius into corners takes one more set: its constant edges (Selection sets 2)")
+        let (positions, radii) = variable_points(v, texts)
+        let picked: list[str] = []
+        for part in edges.split(";"):
+            if part.trim() != "":
+                picked.append(part.trim())
+        let all_positions: list[float] = []
+        let all_radii: list[float] = []
+        let counts: list[int] = []
+        for _ in picked:
+            all_positions.extend(positions)
+            all_radii.extend(radii)
+            counts.append(positions.length)
+        let made = CadModeling.variable_filleted_edges(body, set_edges(texts, 2), v[set_radius_slot], picked.join(";"), all_positions, all_radii, counts, tag, continuity, v[smooth_slot] != 0.0, v[tangency_slot])
+        return with_arrows(made, body, arrows[1..])
+    if int(v[radius_type_slot]) != 0:
+        error(ui.invalid, "Selection sets take a Constant radius each, or Variable into one set of corners")
+    var sets = edges
+    let radii = [v[size_slot]]
+    for k in 2..<count + 1:
+        sets = sets + "|" + set_edges(texts, k)
+        radii.append(v[set_radius_slot + k - 2])
+    return with_arrows(CadModeling.filleted_sets(body, sets, radii, tag, continuity, chain), body, arrows)
+
+## `made` as a result with a radius arrow for each of `arrows` (edges and
+## the slot their arrow drags), on the first of the edges.
+func with_arrows(made: CadModel, body: CadModel, arrows: list[(str, int)]) -> GeometryData!:
+    let result = GeometryData(geometry = CadGeometry.of_model(made))
+    let lines: list[HandleLine] = []
+    for (edges, slot) in arrows:
+        let first = edges.split(";")[0].trim()
+        if first == "":
+            continue
+        let frame = CadModeling.edge_frame(body, first) catch failure:
+            continue
+        if frame.found:
+            lines.append(HandleLine("arrow", slot, 1.0, frame.point, frame.outward, -1, Vector3()))
+    if lines.length > 0:
+        result.handles = handle_lines.encode(lines)
+    return result
 
 ## The section's shape by values `v` at `continuity` (luce-cad's
 ## filleted): the conic's kind and rho (G1), the G2 depth, skew and
@@ -191,7 +287,7 @@ func section_shape(v: list[float], continuity: int) -> (int, float, float, float
 ## between (sorted), End radius at 1.
 func variable_points(v: list[float], texts: list[str]) -> (list[float], list[float])!:
     let between: list[(float, float)] = []
-    for pair in texts[points_text].split(";"):
+    for pair in (texts[points_text] if points_text < texts.length else "").split(";"):
         let t = pair.trim()
         if t == "":
             continue

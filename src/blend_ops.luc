@@ -98,6 +98,9 @@ pub let corner_type_slot = 0
 pub let corner_continuity_slot = 1
 pub let corner_check_slot = 2
 pub let corner_conflicts_slot = 3
+## Corner's Center adjust (Alias's Ball Corner): the patch's middle moved
+## along its normal by this share of the hole's size (0: as Fill makes it).
+pub let corner_center_slot = 4
 
 ## Tube: the radius, the normal and tangent offsets, Flip.
 pub let radius_slot = 0
@@ -193,7 +196,8 @@ pub func rows(verb: str) -> list[Parameter]:
         return [menu("Type", corner_type_slot, "Ball corner|Corner blend", 0.0, "Alias's Ball Corner (one trimmed patch over the corner's hole) or Corner Blend (four sides as one untrimmed patch, Quad), each G1 to the blends meeting there."),
                 menu("Continuity", corner_continuity_slot, "Type's|G0|G1|G2", 0.0, "The patch's continuity to every blend (Type's: G1)."),
                 toggle("Continuity check", corner_check_slot, 1.0, "The patch's edges against the blends, drawn as the Check node's."),
-                toggle("Show conflicts", corner_conflicts_slot, 1.0, "Where the blends' demands disagree, drawn red (Fill's).")]
+                toggle("Show conflicts", corner_conflicts_slot, 1.0, "Where the blends' demands disagree, drawn red (Fill's)."),
+                number("Center adjust", corner_center_slot, 0.0, -1.0, 1.0, 0.05, "Alias's Center Adjust: the patch's middle moved out (more) or in (less) along its normal, a share of the hole's size; 0 as the fill makes it.", slider = true)]
     let none_shown: list[Parameter] = []
     return none_shown
 
@@ -333,7 +337,8 @@ pub func build(verb: str, data: GeometryData, v: list[float], t: list[str], name
 ## Corner on `data` by values `v` from the blends `picked` (face words):
 ## the hole whose open edges those faces bound the most of (each open edge
 ## of a picked face tried as Fill's one edge of a hole), filled by Fill
-## at the continuity asked (G1 by default) on every side.
+## at the continuity asked (G1 by default) on every side; Center adjust
+## moves its middle along its normal (Alias's Ball Corner).
 func corner(data: GeometryData, v: list[float], picked: list[str], name: str) -> GeometryData!:
     let names = face_names(picked).split(";")
     var best = ""
@@ -365,7 +370,23 @@ func corner(data: GeometryData, v: list[float], picked: list[str], name: str) ->
     values[fill_ops.check_slot] = v[corner_check_slot]
     values[fill_ops.conflicts_slot] = v[corner_conflicts_slot]
     values[fill_ops.labels_slot] = 0.0
-    let made = fill_ops.build(data, values, [best, ""], name)
+    var made = fill_ops.build(data, values, [best, ""], name)
+    let adjust = v[corner_center_slot] if corner_center_slot < v.length else 0.0
+    if adjust != 0.0:
+        # Center adjust: the fill made again through its middle moved along
+        # its normal (an interior point, Fill's), a share of the hole's size
+        # (its boundary points' mean distance from that middle).
+        let models = made.models()
+        let sheet = models[models.length - 1]
+        let at = CadModeling.face_point(sheet, sheet.face_name(0))
+        var reach = 0.0
+        for word in loop_words:
+            let parts = word.trim().split(" ")
+            if parts.length >= 5:
+                reach += Vector3(float(parts[parts.length - 3]), float(parts[parts.length - 2]), float(parts[parts.length - 1])).subtract(at.point).length()
+        reach = reach / float(loop_words.length)
+        let moved = at.point.add(at.normal.multiply_scalar(adjust * reach))
+        made = fill_ops.build(data, values, [best, f"isoparm_at {moved.x} {moved.y} {moved.z}"], name)
     made.report = ("Ball corner" if ball else "Corner blend") + f" of {loop_words.length} sides; " + made.report
     return made
 

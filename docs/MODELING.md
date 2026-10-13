@@ -642,13 +642,27 @@ model back exactly.
   Rho), a G2 shape (Fusion, Depth and skew, Softness), Limits (Limit from and
   Limit to along one straight edge, capped by planes square to it), Setback
   (radii a corner's fillets stop at least from it) and Overflow (off: a
-  fillet must fit its faces); **Bridge
+  fillet must fit its faces; on, the behaviours its **Smooth**, **Cliff** and
+  **Notch** rows allow, tried in that order: rolling on over a split face or
+  onto a round beyond it, a cliff-edge blend through the edge where the face
+  ends, the next face trimming it); **Selection sets** (Fusion's: the edges
+  picked are set 1 at Radius, sets 2 to 9 their own edges, Pick set k edges,
+  and Set k radius, an arrow on each set's first edge; with Variable radius,
+  set 2 is the constant edges its law runs into at corners); in Edit CAD,
+  edges selected while a Fillet is the last step, the right-click's **Add as
+  fillet set** makes them its next set; **Select blends** (right-click, on
+  faces or with nothing selected: Parasolid's identify blends, the models'
+  constant radius fillets selected at the Faces level) and **Reblend**
+  (Press Pull on fillet faces, or Modify: the picked blends given another
+  radius, the step's Radius starting at theirs; the blends meeting them
+  keep their own); **Bridge
   Fillet** (Edit CAD step and node, right-click on faces: the first side
   set, the second, then after Enter the center set, "Pick center set"),
   tangent to all three, the sides trimmed and the center consumed;
   **Corner** (right-click on faces: the blends meeting at a rounded corner,
   Ball corner or Corner blend), the hole they bound found and filled by
-  Fill, G1.
+  Fill, G1; Center adjust (Alias's) moves the patch's middle along its
+  normal.
 - **Stage 3 follow-up**: Trim's 3D Trimming draws the curves as they are cast
   onto the face (white) while it waits for its region clicks.
 - Primitives are luce-cad's analytic solids: Box, Cylinder, Cone, Sphere and
@@ -972,7 +986,13 @@ fillet, constant or variable radius): more hugs the faces longer and turns
 tighter in the middle, less is flatter; a G1 fillet with a weight is a conic
 (Fusion's), its corners setbacks. Parasolid's sections (Stage 8): **Conic**
 (G1) by Rho, Rho relative (0.5 the circle) or Middle radius; **G2 shape** by
-Depth and Skew or by Softness; **Limits**; **Setback** (radii). A dome's rim fillets too (Fusion's torus at
+Depth and Skew or by Softness; **Limits**; **Setback** (radii); **Overflow**
+with its Smooth, Cliff and Notch behaviours. **Selection sets** (Fusion's
+"+" in its Fillet dialog): Selection sets 2 to 9, each further set its own
+edges (Set k edges, Pick set k edges) and Set k radius, an arrow on each
+set's first edge; where radii differ at a corner, a setback corner. With
+Variable radius, set 2 is the constant edges the picked edges' law runs into
+at corners (its End radius must be theirs there). A dome's rim fillets too (Fusion's torus at
 G1), and a plane meeting a cylinder along it (a D-shaft's flat) at G1, G2 and
 G3 under any weight (G3 too heavily weighted there is refused: its section
 would cross the cylinder). G2 and G3 follow a curved face's curvature at their
@@ -990,7 +1010,9 @@ run on to a point) or Blend (the chamfers set back and one flat face closes the
 corner, as Fusion's). A chamfer's distance on a curved face is straight from the
 edge (a chord), as Fusion's; a dome's rim chamfers too (every type checked
 against Fusion, domes cut at and off their middle, and a D-shaft's flat). In Edit CAD a
-Fillet step blends the edges picked; the rule is the node's.
+Fillet step blends the edges picked; the rule is the node's. Edges selected
+while the Fillet is the last step become its next selection set by the
+right-click's Add as fillet set (their own Set k radius row in its tool bar).
 
 **Curve** and **Blend Curve** (`cad_curve_nodes.luc`; Curves in the CAD
 menus): Alias's construction history for curves. Each passes its input on

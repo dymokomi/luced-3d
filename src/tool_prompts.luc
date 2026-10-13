@@ -6,7 +6,7 @@ from luce_geocore.geocore import Mesh, Domain, Selection
 from workspace import Workspace
 from edit_types import edge_level, object_level
 from tools import ToolRun
-from tool_prompt import ToolPrompt
+from tool_prompt import ToolPrompt, set_of
 from node import Node
 from edit_steps import insert_after_display, show
 import node_catalog
@@ -60,13 +60,15 @@ pub func reselect(w: Workspace, id: int) -> unit!:
 
 ## Pick edges: pick on the input body of Fillet, Chamfer or Check node `id` (the
 ## Edges level) while its result shows; each pick rewrites the node's
-## Edges as references to the picked edges.
-pub func pick_edges(w: Workspace, id: int) -> unit!:
+## Edges as references to the picked edges, or a Fillet's selection set
+## `set_number`'s (2 and on: "Pick set k edges").
+pub func pick_edges(w: Workspace, id: int, set_number: int = 1) -> unit!:
     let node = w.network.require(id)
     if not (node.kind in ["Fillet", "Chamfer", cad_check.kind_name]) or node.inputs[0] < 0 or w.in_transaction():
         return
-    w.begin("Pick edges")
-    w.prompt = ToolPrompt(node.id, node.inputs[0], "Pick edges", true)
+    let label = "Pick edges" if set_number <= 1 else f"Pick set {set_number} edges"
+    w.begin(label)
+    w.prompt = ToolPrompt(node.id, node.inputs[0], label, true)
     w.network.selected = node.inputs[0]
     show_prompt(w)
     w.adopt_level(edge_level)
@@ -314,12 +316,19 @@ pub func follow_prompt(w: Workspace) -> unit!:
         w.rebuild()
         return
     if chosen.count() == 0:
-        node.texts[0] = ""
+        if node.kind == "Fillet" and set_of(prompt.label) > 1:
+            node.texts[cad_blends.sets_text] = cad_blends.with_set_edges(node.texts[cad_blends.sets_text], set_of(prompt.label), "")
+        else:
+            node.texts[0] = ""
         w.network.invalidate(node.id)
         show_prompt(w)
         w.rebuild()
         return
-    if node.kind in ["Fillet", "Chamfer"]:
+    if node.kind == "Fillet" and set_of(prompt.label) > 1:
+        # A selection set's edges.
+        let references = edge_references(w, mesh) else return
+        node.texts[cad_blends.sets_text] = cad_blends.with_set_edges(node.texts[cad_blends.sets_text], set_of(prompt.label), references)
+    elif node.kind in ["Fillet", "Chamfer"]:
         let references = edge_references(w, mesh) else return
         node.texts[0] = references
     else:

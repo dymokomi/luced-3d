@@ -19,7 +19,7 @@
 ##     the splitting face (or an origin plane from the tool bar).
 ##   Move/Copy: the Move tool on the selection; its tool bar holds the
 ##     distances, the angles and Create copy.
-from luce_geocore.geocore import Domain
+from luce_geocore.geocore import Domain, Selection
 from luce_3d.graphics import Vector3
 from luce_std import math
 from workspace import Workspace
@@ -43,6 +43,9 @@ import edit_cad_picks
 import modify_picks
 import modeling_commands
 import node_catalog
+import cad_blends
+import edit_cad_faces
+import selection_commands
 
 ## The Edit CAD node being edited in the viewport (its model, or one of
 ## its sketches), or none.
@@ -183,7 +186,9 @@ pub func extrude_face(w: Workspace) -> unit!:
 ## Edit CAD's tool `name` on the selection (the Modify commands): those
 ## with a value open its box, those that need a second pick wait for it.
 pub func tool(w: Workspace, name: str) -> unit!:
-    if name in ["Offset Face", "Fillet", "Chamfer", "Shell"]:
+    if name == edit_cad_faces.reblend_verb:
+        reblend_step(w)
+    elif name in ["Offset Face", "Fillet", "Chamfer", "Shell"]:
         valued_step(w, name)
     elif name in ["Replace Face", "Combine", "Split Body", "Split Face"]:
         waiting_step(w, name)
@@ -400,6 +405,10 @@ pub func press_pull(w: Workspace) -> unit!:
         feature_from_sketch(w, "Extrude")
         return
     if selected_faces(w).length > 0:
+        # Fusion's Press Pull on fillet faces changes their radius.
+        if blends_selected(w):
+            reblend_step(w)
+            return
         valued_step(w, "Offset Face")
         return
     if selected_edges(w):
@@ -466,6 +475,129 @@ pub func selected_faces(w: Workspace) -> list[str]!:
 ## Whether edges of the edited model are selected (not curves).
 pub func selected_edges(w: Workspace) -> bool:
     return active(w) and not sketching(w) and w.selecting() and w.on_domain(Domain.edge) and w.level_index() != curve_level and w.selected_count() > 0
+
+## Whether the selected edges can be the last Fillet step's next selection
+## set: the step is the recipe's last, a Fillet of Constant or Variable
+## radius with room for another set.
+pub func fillet_set_open(w: Workspace) -> bool:
+    if not selected_edges(w):
+        return false
+    let node = model_node(w) else return false
+    if node.edits.length == 0 or node.edits[-1].verb != "Fillet":
+        return false
+    let step = node.edits[-1]
+    let kind = int(step.numbers[cad_blends.radius_type_slot]) if cad_blends.radius_type_slot < step.numbers.length else 0
+    return kind != 1 and cad_blends.set_count(step.numbers) < cad_blends.most_sets
+
+## Add as fillet set (Fusion's "+" in its Fillet dialog): the selected
+## edges, by reference, the last Fillet step's next selection set, at the
+## first set's radius to start with (its own row in the step's tool bar).
+pub func add_fillet_set(w: Workspace) -> unit!:
+    if not fillet_set_open(w):
+        say(w, "Add as fillet set: select edges while a Fillet is the last step")
+        return
+    let node = model_node(w) else return
+    let mesh = w.geometry else return
+    let chosen = w.current_selection() else return
+    let column = mesh.find_attribute("cad_edge_reference", 4)
+    if column < 0:
+        say(w, "These edges have no names to keep")
+        return
+    let references: list[str] = []
+    var at = chosen.next(-1)
+    while at >= 0:
+        let reference = mesh.attribute_text(column, at)
+        if reference != "" and not (reference in references):
+            references.append(reference)
+        at = chosen.next(at)
+    if references.length == 0:
+        say(w, "Add as fillet set: select edges of the model")
+        return
+    let step = node.edits[-1]
+    let numbers = step.numbers.copy()
+    let start = node_catalog.starting_values("Fillet")
+    while numbers.length < start.length:
+        numbers.append(start[numbers.length])
+    let count = cad_blends.set_count(numbers) + 1
+    numbers[cad_blends.sets_slot] = float(count)
+    numbers[cad_blends.set_radius_slot + count - 2] = numbers[cad_blends.size_slot]
+    let texts: list[str] = []
+    for k in 0..<cad_blends.sets_text + 1:
+        texts.append(step.text(k))
+    texts[cad_blends.sets_text] = cad_blends.with_set_edges(texts[cad_blends.sets_text], count, references.join(";"))
+    w.perform("Add as fillet set", func () -> unit!:
+        node.edits[-1] = EditStep(step.verb, step.group, step.group_type, numbers, step.topology, step.symmetry, step.keep, texts)
+        w.network.invalidate(node.id)
+        w.selection = none
+        w.rebuild())
+
+## The selected faces' blend radii (the pick mesh's `cad_blend_radius`,
+## luce-cad's identify blends: 0 for a face that is no blend), one a face.
+func selected_blend_radii(w: Workspace) -> list[float]!:
+    let found: list[float] = []
+    if not active(w) or sketching(w) or not w.selecting() or not w.on_domain(Domain.face) or w.level_index() == object_level:
+        return found
+    let mesh = w.geometry else return found
+    let radii = mesh.find_attribute("cad_blend_radius", 2)
+    let faces = mesh.find_attribute("cad_face", 2)
+    let models = mesh.find_attribute("cad_model", 2)
+    let chosen = w.current_selection() else return found
+    if radii < 0 or faces < 0 or models < 0:
+        return found
+    let seen: list[(int, int)] = []
+    var at = chosen.next(-1)
+    while at >= 0:
+        let key = (int(mesh.attribute_value(models, at)), int(mesh.attribute_value(faces, at)))
+        if not (key in seen):
+            seen.append(key)
+            found.append(mesh.attribute_value(radii, at))
+        at = chosen.next(at)
+    return found
+
+## Whether every selected face is a blend luce-cad identifies (a constant
+## rolling-ball fillet).
+pub func blends_selected(w: Workspace) -> bool!:
+    let radii = selected_blend_radii(w)
+    if radii.length == 0:
+        return false
+    for r in radii:
+        if r <= 0.0:
+            return false
+    return true
+
+## Reblend on the selected blends, its radius starting at the first one's.
+pub func reblend_step(w: Workspace) -> unit!:
+    if not blends_selected(w):
+        say(w, "Reblend: select fillet faces (constant radius blends) at the Faces level")
+        return
+    let radius = selected_blend_radii(w)[0]
+    let node = model_node(w) else return
+    let count = node.edits.length
+    modeling_commands.model(w, edit_cad_faces.reblend_verb)
+    if node.edits.length > count:
+        modeling_commands.set_last_step(w, 0, radius, 0.0001, 100000.0)
+        w.selection = none
+        w.ask_value = true
+        w.rebuild()
+
+## Select blends (Parasolid's identify blends): every face of the edited
+## models that is a constant rolling-ball blend (the pick mesh's
+## `cad_blend_radius`), selected at the Faces level, so an imported body's
+## fillets can be deleted or reblended.
+pub func select_blends(w: Workspace) -> unit!:
+    if not active(w) or sketching(w):
+        return
+    if w.level_index() != face_level:
+        selection_commands.set_mode(w, face_level)
+    let mesh = w.geometry else return
+    if mesh.find_attribute("cad_blend_radius", 2) < 0:
+        return
+    let made = Selection.of(mesh, "@cad_blend_radius>0", w.domain())
+    if made.count() == 0:
+        say(w, "Select blends: these models have no constant radius blends")
+        return
+    w.perform("Select blends", func () -> unit!:
+        w.selection = made)
 
 ## Whether curves of the edited model are selected (the Curves level).
 pub func selected_curves(w: Workspace) -> bool:
