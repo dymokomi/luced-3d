@@ -12,7 +12,12 @@
 ##     G2 and G3 corners are setbacks); Continuity G1 (Fusion's Tangent),
 ##     G2 (Curvature) or G3; Tangency weight (Fusion's, 0.1 to 2, constant
 ##     or variable radius: how far the continuity reaches into the blend; a
-##     G1 fillet then a conic); Tangent chain.
+##     G1 fillet then a conic); Parasolid's sections: G1 Conic by rho (its
+##     own, relative to the circle's, or its middle's radius), G2 by Depth
+##     and Skew or by Softness; Limits (the fillet from and to fractions
+##     of one straight edge, capped by planes square to it); Setback (radii
+##     a corner's fillets stop at least from it); Overflow (off: a fillet
+##     must fit its faces); Tangent chain.
 ##   Chamfer: Type Equal distance, Two distances (Distance along the first
 ##     face, the one more of the picked edges lie on, Distance 2 along the
 ##     other; Flip swaps them) or Distance and angle (the chamfer leaving
@@ -45,6 +50,25 @@ pub let smooth_slot = 10
 pub let fillet_corner_slot = 11
 ## Fillet's Tangency weight (0.1 to 2, 1 the plain fillet).
 pub let tangency_slot = 12
+## Parasolid's sections (luce-cad blend_shape.lucb): G1's conic (Off, Rho,
+## Rho relative, Middle radius) and its value; G2's shape (Fusion's, Depth
+## and skew, Softness) and its values. (Slot 15 is a node's Group Type.)
+pub let conic_slot = 13
+pub let rho_slot = 14
+pub let g2_shape_slot = 16
+pub let depth_slot = 17
+pub let skew_slot = 18
+pub let softness_slot = 19
+## Limits: the fillet from and to fractions of its edge, capped there.
+pub let limits_slot = 20
+pub let limit_from_slot = 21
+pub let limit_to_slot = 22
+## Setbacks: where fillets meet at a corner, each stops at least this many
+## radii from it (0: as far as the corner needs).
+pub let setback_ratio_slot = 23
+## Overflow (Parasolid's): on, a fillet runs off its face by the default
+## rules (smooth, notch, cliff); off, it must fit its faces.
+pub let overflow_slot = 24
 ## Variable radius's points between its ends: "position radius" pairs
 ## apart by `;` (positions 0 to 1 along the edge), text 3.
 pub let points_text = 3
@@ -91,6 +115,8 @@ pub func blended(kind: str, v: list[float], texts: list[str], body: CadModel, ta
         let second = v[second_slot] if shape == 1 else 0.0
         return with_arrow(CadModeling.chamfered_sides(body, edges, v[size_slot], second, radians(v[angle_slot]), tag, chain, v[flip_slot] != 0.0, corner), body, edges)
     let continuity = int(v[continuity_slot]) + 1
+    let shape = section_shape(v, continuity)
+    let (conic, rho, depth, skew, softness) = shape
     if int(v[type_slot]) == full_round_type:
         # Full round: the center face picked, its sides found.
         let center = texts[faces_text].split(";")[0].trim()
@@ -104,24 +130,40 @@ pub func blended(kind: str, v: list[float], texts: list[str], body: CadModel, ta
             error(ui.invalid, "Variable radius: pick the edge (Pick edges)")
         # One tangent chain: the edges picked (and, with Tangent chain, the
         # edges going on from them), the radii along it from its start.
-        return with_arrow(CadModeling.variable_filleted(body, edges, positions, radii, tag, v[smooth_slot] != 0.0, continuity, chain, v[tangency_slot]), body, edges)
+        return with_arrow(CadModeling.variable_filleted(body, edges, positions, radii, tag, v[smooth_slot] != 0.0, continuity, chain, v[tangency_slot], conic, rho, depth, skew, softness), body, edges)
     # Chord length: the radius that leaves the faces that far apart.
     let radius = CadModeling.chord_radius(body, edges, v[chord_slot], chain) if int(v[radius_type_slot]) == 1 else v[size_slot]
     let tangency = v[tangency_slot]
     # G1 Setback corners: the booleans' patch, no plan kept.
     let setback = continuity == 1 and int(v[fillet_corner_slot]) == 1
-    if setback:
-        return with_arrow(CadModeling.filleted(body, edges, radius, tag, continuity, chain, true, tangency), body, edges, int(v[radius_type_slot]) == 0)
-    let kept = memo else return with_arrow(CadModeling.filleted(body, edges, radius, tag, continuity, chain, tangency = tangency), body, edges, int(v[radius_type_slot]) == 0)
+    # Limits: the fillet between them on its one edge, capped (no plan).
+    let limited = limits_slot < v.length and v[limits_slot] != 0.0
+    let ratio = v[setback_ratio_slot] if setback_ratio_slot < v.length and (setback or continuity > 1) else 0.0
+    let overflow = overflow_slot >= v.length or v[overflow_slot] != 0.0
+    if setback or limited or ratio > 0.0 or not overflow:
+        let from_at = v[limit_from_slot] if limited else 0.0
+        let to_at = v[limit_to_slot] if limited else 1.0
+        return with_arrow(CadModeling.filleted(body, edges, radius, tag, continuity, chain, setback, tangency, conic, rho, depth, skew, softness, from_at, to_at, ratio, overflow), body, edges, int(v[radius_type_slot]) == 0)
+    let kept = memo else return with_arrow(CadModeling.filleted(body, edges, radius, tag, continuity, chain, false, tangency, conic, rho, depth, skew, softness), body, edges, int(v[radius_type_slot]) == 0)
     var plan = kept.plan
     if let held = plan:
-        if not held.made_for(body, edges, continuity, tag, chain, tangency):
+        if not held.made_for(body, edges, continuity, tag, chain, tangency, conic, rho, depth, skew, softness):
             plan = none
     if plan == none:
         kept.made += 1
-    let current = plan else CadModeling.fillet_plan(body, edges, continuity, tag, chain, tangency)
+    let current = plan else CadModeling.fillet_plan(body, edges, continuity, tag, chain, tangency, conic, rho, depth, skew, softness)
     kept.plan = current
     return with_arrow(current.filleted(radius), body, edges, int(v[radius_type_slot]) == 0)
+
+## The section's shape by values `v` at `continuity` (luce-cad's
+## filleted): the conic's kind and rho (G1), the G2 depth, skew and
+## softness (-1 unused).
+func section_shape(v: list[float], continuity: int) -> (int, float, float, float, float):
+    if softness_slot >= v.length:
+        return (0, 0.5, -1.0, 0.5, -1.0)
+    let conic = int(v[conic_slot]) if continuity == 1 else 0
+    let g2 = int(v[g2_shape_slot]) if continuity == 2 else 0
+    return (conic, v[rho_slot], v[depth_slot] if g2 == 1 else -1.0, v[skew_slot] if g2 == 1 else 0.5, v[softness_slot] if g2 == 2 else -1.0)
 
 ## A Variable radius's positions and radii: Radius at 0, the points
 ## between (sorted), End radius at 1.

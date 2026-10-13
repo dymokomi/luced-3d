@@ -98,7 +98,7 @@ remaining blend options on solids come last.
 | 5 | Surfaces from curves: Square, Skin, Rail, Profile, Set Planar, Extend. **Done** (§8) |
 | 6 | Blends between surfaces: Freeform Blend, Profile Blend, Surface Fillet between face sets. **Done** (§8) |
 | 7 | Fill: N-sided and four-sided variational patches (xNURBS parity). **Done** (§8) |
-| 8 | Parasolid's blend options on solids: conic, overflow, limits, caps, Y-blends, corners |
+| 8 | Parasolid's blend options on solids: conic, overflow, limits, caps, Y-blends, corners. **Done** in part (§8) |
 
 ## 2. Shared ideas across the references
 
@@ -2156,6 +2156,58 @@ Follow-ups):
   - an overflow that Parasolid's table says is a cliff becomes one;
   - a four-edge corner with setbacks measures G1 on every patch edge;
   - conic ρ 0.5 relative with equal sizes is the circle.
+
+**Stage 8: done in part** (2026-10-12). What was built:
+
+- **luce-cad** (`modeling/blend_shape.lucb`, `blend.lucb`; `surfacing/bridge_fillet.lucb`; luce-cad
+  MODELING.md, Parasolid's sections, limits and setbacks; Blends between surfaces, Bridge Fillet):
+  - **sections**: a `BlendShape` (Fusion's weight, Parasolid's conic and G2 shapes) travels every
+    fillet path the Tangency weight did; conic by rho, rho relative (0.5 the circle) and middle
+    radius; G2 by depth and skew or softness, laid out as Fusion's G2 so setback corners and
+    loops take it; chamfers' distances were already apex ranges;
+  - **limits and caps**: a fillet between two fractions of one straight edge, its ends planes
+    square to the edge that cap it (`<tag>/cap`);
+  - **setbacks**: corners' fillets set back at least a number of radii, the setback patch filling the
+    gap;
+  - **overflow** on (the default rules: smooth, notch, cliff) or off (the fillet must fit its
+    faces);
+  - **corners of four or more edges** are the kernel's (SMLib study item 7, landed beside this:
+    2N-sided setback corners), and overflow's smooth, notch and cliff its default rules (item 8);
+  - **Bridge Fillet**: a circular blend tangent to three face sets (seven-unknown Newton on the
+    contacts and radius), the center set consumed;
+  - **Corner** (Ball Corner, Corner Blend) is Fill on the corner's hole; Fill now drops a
+    reference of disagreeing neighbors (a ball corner fills within 2.7% of the ball, was 22%).
+- **luced-3d**: the Fillet node's and step's Conic, Rho, G2 shape, Depth, Skew, Softness, Limits,
+  Setback and Overflow rows; the Bridge Fillet and Corner steps and nodes (`blend_ops.luc`), offered on the
+  right-click on faces and the S and Modify menus, Bridge Fillet's third prompt "Pick center set".
+
+Captures (`tools/preview.py --scene`, preview_corner.luc): `surf8_conic`, `surf8_g2_depth`,
+`surf8_limits`, `surf8_setback`, `surf8_bridge`, `surf8_corner` (also `--mode 7` and
+`--background`); Stage 7's follow-ups `surf_fill_lid`, `surf_fill_lid_g2`, `surf_fill_molded`.
+
+Tests, against closed forms (luce-cad `blend_shape_tests.luc`, `blend_build_tests.luc`,
+`fill_tests.luc`; luced-3d `edit_cad_corner_tests.luc`):
+
+- conic ρ 0.5 relative with equal sizes is the circle (its volume, its middle (√2 − 1) r in);
+  ρ 0.5 absolute the parabola (r² / 6 taken per length, its middle halfway); a middle radius of the
+  circle's own the circle;
+- G2 depth d puts the section's middle d of the way from the chord to the corner, G2 at both faces;
+  skews mirror; softness deepens;
+- a fillet limited to the middle half of a box's edge takes half its section's area, two caps square
+  to it (G1 and G2);
+- setbacks of three radii stop a corner's three G2 fillets 1.5 from it (0.75 by default);
+- Bridge Fillet over a rib is the half cylinder to 1e-15, its walls trimmed, its top consumed;
+- a four-edge corner with setbacks measures G1 on every patch edge, and an overflow over a concave
+  edge becomes a cliff: the kernel's `apex_tests` and `overflow_tests`;
+- in the editor: the Fillet node's conic, depth and limits; Bridge Fillet's three prompts and its
+  half cylinder; Corner on a rounded corner's three fillets.
+
+Not done (left for later): Y-blends of two edges of different convexity at a vertex, vertex blends
+(rolling past sharp edges of the other convexity), round order at mixed corners, a choice among the overflow behaviours
+(and rolling on onto curved tangent faces, cliff-edge blends along the cliff), limits where blends
+start to overlap, caps by faces or sheets, identify blends; Alias's Ball Corner shape controls
+(Pivot Curve Length Ratio, Center Adjust) and Corner Blend's Edge Shape sliders; G2 Corner fills
+(their G2 rows do not settle at these corners).
 
 ## 9. Notes for the build
 

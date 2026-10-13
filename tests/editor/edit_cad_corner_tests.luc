@@ -1,0 +1,221 @@
+## Surfacing Stage 8 in luced-3d (cad_blends.luc's sections and limits,
+## blend_ops.luc's Bridge Fillet and Corner): a Fillet node on a box's edge
+## with a conic of rho 0.5 relative is the circle, G2 by depth puts the
+## section's middle that far toward the corner, and Limits stop it partway
+## with two caps; on an Edit CAD box unstitched into six squares, Bridge
+## Fillet between two opposite sides over the top (first set, second set,
+## then the center set after Enter) is the half cylinder, the sides trimmed
+## to it and the top consumed; the right-click on faces offers Bridge
+## Fillet and Corner; Corner on the three blends of a rounded corner finds
+## their hole and fills it.
+from workspace import Workspace
+from node import Node
+from app import Luce3D
+from geometry_data import GeometryData
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+from luce_cad.nurbs import CadNurbs
+from luce_geocore.geocore import Vector3
+from luce_std import math
+import blend_ops
+import cad_blends
+import edit_cad_build
+import edit_cad_commands
+import edit_cad_picks
+import edit_cad_surfaces
+import modeling_commands
+import node_commands
+import selection_commands
+
+pub func edit_cad_corner_tests() -> unit!:
+    fillet_sections()
+    bridge_step()
+    corner_step()
+    print("PASS Edit CAD corners: a Fillet node's conic rho 0.5 relative is the circle, its G2 depth puts the middle that far in, its Limits cap it partway; Bridge Fillet over a box's top is the half cylinder, the sides trimmed and the top consumed; the right-click on faces offers Bridge Fillet and Corner; Corner fills the hole of a rounded corner's three blends")
+
+func data_of(w: Workspace, node: Node) -> GeometryData!:
+    return w.network.evaluate_data(node.id)
+
+func model_of(w: Workspace, id: int) -> CadModel!:
+    return CadGeometry.model(w.network.evaluate_data(id).geometry, 0)
+
+## The box's front top edge (y = z = 1).
+func front_top(model: CadModel) -> str!:
+    let found: list[int] = []
+    for face in 0..<model.face_count():
+        for use in 0..<model.face_edge_count(face):
+            let a = model.face_edge_point(face, use, 0.0)
+            let b = model.face_edge_point(face, use, 1.0)
+            let id = model.face_edge_id(face, use)
+            if a.y > 0.99 and b.y > 0.99 and a.z > 0.99 and b.z > 0.99 and not (id in found):
+                found.append(id)
+    return CadModeling.edge_references(model, found)
+
+## How far in from the edge's corner the blend crosses the diagonal at the
+## edge's middle.
+func depth_in(model: CadModel) -> float!:
+    var low = 0.0
+    var high = 0.5
+    for _ in 0..<50:
+        let mid = (low + high) * 0.5
+        if CadModeling.inside(model, Vector3(0.0, 1.0 - mid / math.sqrt(2.0), 1.0 - mid / math.sqrt(2.0))):
+            high = mid
+        else:
+            low = mid
+    return (low + high) * 0.5
+
+func fillet_sections() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    for axis in 0..<3:
+        node_commands.set_parameter(w, axis, 2.0)
+    let source = model_of(w, w.network.selected)
+    node_commands.add_node(w, "Fillet", 0.0, 120.0)
+    let fillet = w.network.selected
+    node_commands.set_parameter(w, cad_blends.size_slot, 0.5)
+    node_commands.set_text(w, 0, front_top(source))
+    # G1, rho 0.5 relative: the circle, its middle (√2 - 1) r in.
+    node_commands.set_parameter(w, cad_blends.conic_slot, 2.0)
+    node_commands.set_parameter(w, cad_blends.rho_slot, 0.5)
+    let circle = depth_in(model_of(w, fillet))
+    assert(math.abs(circle - (math.sqrt(2.0) - 1.0) * 0.5) < 1e-6, f"rho 0.5 relative's middle {circle} in")
+    # G2 by depth 0.6: the middle 0.4 of the way from the corner to the
+    # chord (r / √2 in).
+    node_commands.set_parameter(w, cad_blends.continuity_slot, 1.0)
+    node_commands.set_parameter(w, cad_blends.g2_shape_slot, 1.0)
+    node_commands.set_parameter(w, cad_blends.depth_slot, 0.6)
+    let deep = depth_in(model_of(w, fillet))
+    assert(math.abs(deep - 0.5 / math.sqrt(2.0) * 0.4) < 1e-4, f"G2 depth 0.6's middle {deep} in")
+    # Limits: from a quarter to three quarters, two caps square to the edge.
+    node_commands.set_parameter(w, cad_blends.limits_slot, 1.0)
+    node_commands.set_parameter(w, cad_blends.limit_from_slot, 0.25)
+    node_commands.set_parameter(w, cad_blends.limit_to_slot, 0.75)
+    let limited = model_of(w, fillet)
+    assert(w.network.require(fillet).failure == "", w.network.require(fillet).failure)
+    var caps = 0
+    for f in 0..<limited.face_count():
+        if limited.face_name(f).ends_with("/cap"):
+            caps += 1
+    assert(caps == 2, f"{caps} caps")
+    assert(depth_in(limited) > 0.0, "the limited fillet has gone from the edge's middle")
+
+## The six squares of a 2-box as bodies of an Edit CAD node.
+func unstitched_box(w: Workspace) -> Node!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    let node = w.selected() else trap("Edit CAD")
+    modeling_commands.create(w, "Box")
+    selection_commands.set_mode(w, 0)
+    selection_commands.choose_component(w, 0, false)
+    edit_cad_commands.tool(w, edit_cad_surfaces.unstitch_verb)
+    assert(data_of(w, node).models().length == 6, node.warning)
+    return node
+
+## The pick mesh's polygon whose middle and normal `keep` takes.
+func face_where(w: Workspace, keep: func(Vector3, Vector3) -> bool) -> int!:
+    let mesh = w.geometry else trap("pick geometry")
+    for polygon in 0..<mesh.face_count():
+        var middle = Vector3()
+        for k in 0..<mesh.face_size(polygon):
+            middle = middle.add(mesh.point(mesh.face_point(polygon, k)))
+        middle = middle.multiply_scalar(1.0 / float(mesh.face_size(polygon)))
+        if keep(middle, mesh.face_normal(polygon)):
+            return polygon
+    return -1
+
+## The entries of the viewport's right-click menu now.
+func menu_entries(editor: Luce3D) -> list[str]!:
+    editor.panels.refresh()
+    let offered: list[str] = []
+    for command in editor.panels.viewport_menu.entries():
+        offered.append(command.text())
+    return offered
+
+func bridge_step() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let node = unstitched_box(w)
+    selection_commands.set_mode(w, 3)
+    let right = face_where(w, func (c: Vector3, n: Vector3) -> bool: return c.x > 0.99 and n.x > 0.99)
+    selection_commands.choose_component(w, right, false)
+    let offered = menu_entries(editor)
+    assert(blend_ops.bridge_verb in offered and blend_ops.corner_verb in offered, f"the right-click on a face offers {offered}")
+    edit_cad_commands.tool(w, blend_ops.bridge_verb)
+    let second = w.prompt else trap("Bridge Fillet waits for its second set")
+    assert(second.label == edit_cad_build.second_label, second.label)
+    let left = face_where(w, func (c: Vector3, n: Vector3) -> bool: return c.x < -0.99 and n.x < -0.99)
+    selection_commands.choose_component(w, left, false)
+    edit_cad_picks.accept_pick(w, node)
+    let center = w.prompt else trap("Bridge Fillet waits for its center set")
+    assert(center.label == edit_cad_build.center_label, center.label)
+    let top = face_where(w, func (c: Vector3, n: Vector3) -> bool: return c.y > 0.99 and n.y > 0.99)
+    selection_commands.choose_component(w, top, false)
+    edit_cad_picks.accept_pick(w, node)
+    assert(w.prompt == none, "Enter finishes the bridge's picks")
+    let made = data_of(w, node)
+    assert(node.warning == "", node.warning)
+    # Five squares left (the top consumed) and the bridge.
+    assert(made.models().length == 6, f"{made.models().length} bodies")
+    let sheet = made.models()[5]
+    let s = CadNurbs.surface_of_face(sheet, sheet.face_name(0))
+    for i in 0..<5:
+        for j in 0..<5:
+            let p = CadNurbs.point_at(sheet, s, float(i) / 4.0, float(j) / 4.0)
+            assert(math.abs(math.hypot(p.x, p.y) - 1.0) < 1e-9 and p.y > -1e-9, f"a bridge point {p}")
+
+func corner_step() -> unit!:
+    # A box's corner rounded by three G1 fillets (a Fillet node), then
+    # unstitched and its ball removed; Corner on the three fillets' faces
+    # finds the corner's hole and fills it.
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    for axis in 0..<3:
+        node_commands.set_parameter(w, axis, 2.0)
+    let source = model_of(w, w.network.selected)
+    let found: list[int] = []
+    for face in 0..<source.face_count():
+        for use in 0..<source.face_edge_count(face):
+            let a = source.face_edge_point(face, use, 0.0)
+            let b = source.face_edge_point(face, use, 1.0)
+            let id = source.face_edge_id(face, use)
+            let near = func (p: Vector3) -> bool: return p.x > 0.99 and p.y > 0.99 and p.z > 0.99
+            if (near(a) or near(b)) and not (id in found):
+                found.append(id)
+    node_commands.add_node(w, "Fillet", 0.0, 120.0)
+    node_commands.set_parameter(w, cad_blends.size_slot, 0.4)
+    node_commands.set_text(w, 0, CadModeling.edge_references(source, found))
+    let rounded = w.network.selected
+    let model = model_of(w, rounded)
+    # The three blends' names (the ball is the corner's own).
+    let blends: list[str] = []
+    for f in 0..<model.face_count():
+        let name = model.face_name(f)
+        if name.contains("blend[") and not (name in blends):
+            blends.append(name)
+    assert(blends.length == 3, f"blends {blends}")
+    node_commands.add_node(w, edit_cad_surfaces.unstitch_verb, 0.0, 240.0)
+    node_commands.set_text(w, 0, blends[0])
+    node_commands.add_node(w, "Remove", 0.0, 300.0)
+    # The corner's own faces taken away: their names are the corner's.
+    let corner_faces: list[str] = []
+    for f in 0..<model.face_count():
+        let name = model.face_name(f)
+        if name.contains("corner") and not (name in corner_faces):
+            corner_faces.append(name)
+    node_commands.set_text(w, 0, corner_faces.join(";"))
+    node_commands.add_node(w, blend_ops.corner_verb, 0.0, 360.0)
+    node_commands.set_text(w, blend_ops.first_text, blends.join(";"))
+    let corner = w.network.selected
+    let filled = w.network.evaluate_data(corner)
+    assert(w.network.require(corner).failure == "", w.network.require(corner).failure)
+    assert(filled.report.starts_with("Ball corner of"), filled.report)

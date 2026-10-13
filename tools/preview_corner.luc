@@ -1,0 +1,139 @@
+## The captures of the surfacing plan's Stage 8, Parasolid's blend options
+## on solids and the corner tools (preview_build.luc hands these here):
+##   surf8_conic: a CAD network's box, its front top edge filleted with a
+##     conic of rho 0.7 (a hyperbola, hugging the corner), the Fillet
+##     node's rows.
+##   surf8_g2_depth: the same edge G2 by depth 0.7 and skew 0.3 (try
+##     --mode 7 for zebra across its contacts).
+##   surf8_limits: the same edge filleted from a quarter to three quarters
+##     of the way, capped by planes square to it.
+##   surf8_setback: a box's corner of three G2 fillets set back three
+##     radii, the corner's patch filling the gap (try --mode 7).
+##   surf8_bridge: Bridge Fillet over an Edit CAD box's top between two
+##     opposite sides: the half cylinder, the sides trimmed to it, the top
+##     consumed.
+##   surf8_corner: Corner (Ball corner) on a rounded box corner's three
+##     fillets, its ball taken away (try --mode 7).
+import preview_support
+import preview_blend
+from luce_3d.graphics import Vector3
+from app import Luce3D
+import node_commands
+import edit_cad_surfaces
+from workspace import Workspace
+import selection_commands
+import edit_cad_commands
+import edit_cad_picks
+import blend_ops
+import cad_blends
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+
+pub func scenes() -> list[str]:
+    return ["surf8_conic", "surf8_g2_depth", "surf8_limits", "surf8_setback", "surf8_bridge", "surf8_corner"]
+
+## A CAD network's 2-box and a Fillet node on edges `keep` takes (their
+## ends), radius `radius`; the Fillet node selected and displayed.
+func box_fillet(editor: Luce3D, radius: float, keep: func(Vector3, Vector3) -> bool) -> CadModel!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 40.0, 40.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+    for axis in 0..<3:
+        node_commands.set_parameter(w, axis, 2.0)
+    let source = CadGeometry.model(preview_support.cooked(w, w.network.selected).geometry, 0)
+    let found: list[int] = []
+    for face in 0..<source.face_count():
+        for use in 0..<source.face_edge_count(face):
+            let id = source.face_edge_id(face, use)
+            if keep(source.face_edge_point(face, use, 0.0), source.face_edge_point(face, use, 1.0)) and not (id in found):
+                found.append(id)
+    node_commands.add_node(w, "Fillet", 40.0, 120.0)
+    node_commands.set_parameter(w, cad_blends.size_slot, radius)
+    node_commands.set_text(w, 0, CadModeling.edge_references(source, found))
+    node_commands.display_selected(w)
+    return source
+
+func front_top(a: Vector3, b: Vector3) -> bool:
+    return a.y > 0.99 and b.y > 0.99 and a.z > 0.99 and b.z > 0.99
+
+func at_corner(a: Vector3, b: Vector3) -> bool:
+    let near = func (p: Vector3) -> bool: return p.x > 0.99 and p.y > 0.99 and p.z > 0.99
+    return near(a) or near(b)
+
+## Scene `scene` before its first frame.
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    let w = editor.workspace
+    if scene == "surf8_conic" or scene == "surf8_g2_depth" or scene == "surf8_limits":
+        _ = box_fillet(editor, 0.6, front_top)
+        if scene == "surf8_conic":
+            node_commands.set_parameter(w, cad_blends.conic_slot, 1.0)
+            node_commands.set_parameter(w, cad_blends.rho_slot, 0.7)
+        elif scene == "surf8_g2_depth":
+            node_commands.set_parameter(w, cad_blends.continuity_slot, 1.0)
+            node_commands.set_parameter(w, cad_blends.g2_shape_slot, 1.0)
+            node_commands.set_parameter(w, cad_blends.depth_slot, 0.7)
+            node_commands.set_parameter(w, cad_blends.skew_slot, 0.3)
+        else:
+            node_commands.set_parameter(w, cad_blends.limits_slot, 1.0)
+            node_commands.set_parameter(w, cad_blends.limit_from_slot, 0.25)
+            node_commands.set_parameter(w, cad_blends.limit_to_slot, 0.75)
+        preview_support.settle(w)
+        preview_blend.look(editor, 0.45, 0.45, 6.5, Vector3(0.0, 0.6, 0.6))
+    elif scene == "surf8_setback":
+        _ = box_fillet(editor, 0.4, at_corner)
+        node_commands.set_parameter(w, cad_blends.continuity_slot, 1.0)
+        node_commands.set_parameter(w, cad_blends.setback_ratio_slot, 3.0)
+        preview_support.settle(w)
+        preview_blend.look(editor, 0.75, 0.6, 5.0, Vector3(0.6, 0.6, 0.6))
+    elif scene == "surf8_bridge":
+        preview_blend.squares(editor)
+        click_face(w, func (c: Vector3, n: Vector3) -> bool: return c.x > 0.99 and n.x > 0.99)
+        edit_cad_commands.tool(w, blend_ops.bridge_verb)
+        preview_support.settle(w)
+        let node = w.selected() else trap("no node")
+        click_face(w, func (c: Vector3, n: Vector3) -> bool: return c.x < -0.99 and n.x < -0.99)
+        edit_cad_picks.accept_pick(w, node)
+        preview_support.settle(w)
+        click_face(w, func (c: Vector3, n: Vector3) -> bool: return c.y > 0.99 and n.y > 0.99)
+        edit_cad_picks.accept_pick(w, node)
+        preview_support.settle(w)
+        preview_blend.look(editor, 0.6, 0.45, 7.0, Vector3(0.0, 0.3, 0.0))
+    elif scene == "surf8_corner":
+        let source = box_fillet(editor, 0.5, at_corner)
+        _ = source
+        preview_support.settle(w)
+        let model = CadGeometry.model(preview_support.cooked(w, w.network.selected).geometry, 0)
+        let blends: list[str] = []
+        let corner_faces: list[str] = []
+        for f in 0..<model.face_count():
+            let name = model.face_name(f)
+            if name.contains("blend[") and not (name in blends):
+                blends.append(name)
+            if name.contains("corner") and not (name in corner_faces):
+                corner_faces.append(name)
+        node_commands.add_node(w, edit_cad_surfaces.unstitch_verb, 40.0, 200.0)
+        node_commands.set_text(w, 0, blends[0])
+        node_commands.add_node(w, "Remove", 40.0, 260.0)
+        node_commands.set_text(w, 0, corner_faces.join(";"))
+        node_commands.add_node(w, blend_ops.corner_verb, 40.0, 320.0)
+        node_commands.set_text(w, blend_ops.first_text, blends.join(";"))
+        node_commands.display_selected(w)
+        preview_support.settle(w)
+        preview_blend.look(editor, 0.75, 0.6, 4.5, Vector3(0.6, 0.6, 0.6))
+    editor.panels.refresh()
+
+## At the Faces level, the pick mesh's polygon whose middle and normal
+## `keep` takes clicked.
+func click_face(w: Workspace, keep: func(Vector3, Vector3) -> bool) -> unit!:
+    selection_commands.set_mode(w, 3)
+    preview_support.settle(w)
+    let mesh = preview_support.shown(w) else trap("no pick mesh")
+    for polygon in 0..<mesh.face_count():
+        if keep(mesh.face_center(polygon), mesh.face_normal(polygon)):
+            selection_commands.choose_component(w, polygon, false)
+            preview_support.settle(w)
+            return
+    trap("no such face")

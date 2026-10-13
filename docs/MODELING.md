@@ -628,8 +628,27 @@ model back exactly.
   conflicts: where the boundaries' demands disagree (a corner whose
   neighbors' normals or twists differ, a stretch no surface meets) the
   model shows a red ring or line with what disagrees by how much, and the
-  node a warning. An N-sided fill whose neighbor stands square to the
-  hole's plane (a box's top on its walls) is refused with "use Quad".
+  node a warning. Conflicts are gathered one mark a corner or a boundary's
+  runs, their plates kept clear of each other and the boundary labels; the
+  Continuity Check leaves the conflicting corners' zones out, and the report
+  counts the boundaries met away from them. Domain (N-sided): Auto projects
+  onto the loop's best plane unless a neighbor stands square to it, then
+  molds (four sides onto the square, Quad); Projected refuses such a hole
+  with "use Molded or Quad". Fill waits in its own prompts, "Pick fill
+  boundaries" and "Pick fill guides".
+- **Surfacing Stage 8** (`cad_blends.luc`, `blend_ops.luc`; luce-cad's
+  `blend_shape.lucb`, `bridge_fillet.lucb`): the Fillet node's and step's
+  Parasolid rows, a Conic for G1 (Rho, Rho relative, Middle radius, with its
+  Rho), a G2 shape (Fusion, Depth and skew, Softness), Limits (Limit from and
+  Limit to along one straight edge, capped by planes square to it), Setback
+  (radii a corner's fillets stop at least from it) and Overflow (off: a
+  fillet must fit its faces); **Bridge
+  Fillet** (Edit CAD step and node, right-click on faces: the first side
+  set, the second, then after Enter the center set, "Pick center set"),
+  tangent to all three, the sides trimmed and the center consumed;
+  **Corner** (right-click on faces: the blends meeting at a rounded corner,
+  Ball corner or Corner blend), the hole they bound found and filled by
+  Fill, G1.
 - **Stage 3 follow-up**: Trim's 3D Trimming draws the curves as they are cast
   onto the face (white) while it waits for its region clicks.
 - Primitives are luce-cad's analytic solids: Box, Cylinder, Cone, Sphere and
@@ -949,7 +968,9 @@ corner and a patch blends them, as G2 and G3 corners always are). Continuity is 
 data matched) or G3; **Tangency weight** (Fusion's, 0.1 to 2, 1 the plain
 fillet, constant or variable radius): more hugs the faces longer and turns
 tighter in the middle, less is flatter; a G1 fillet with a weight is a conic
-(Fusion's), its corners setbacks. A dome's rim fillets too (Fusion's torus at
+(Fusion's), its corners setbacks. Parasolid's sections (Stage 8): **Conic**
+(G1) by Rho, Rho relative (0.5 the circle) or Middle radius; **G2 shape** by
+Depth and Skew or by Softness; **Limits**; **Setback** (radii). A dome's rim fillets too (Fusion's torus at
 G1), and a plane meeting a cylinder along it (a D-shaft's flat) at G1, G2 and
 G3 under any weight (G3 too heavily weighted there is refused: its section
 would cross the cylinder). G2 and G3 follow a curved face's curvature at their

@@ -14,11 +14,18 @@
 ##   Tube (Alias's Tubular Offset): a circular tube along a curve, its
 ##     axis moved off it along the face's normal and across.
 ##   Fill (Stage 7, fill_ops.luc): the variational fill of a hole.
+##   Bridge Fillet (Stage 8; Alias's, Parasolid's three-face blend): a
+##     circular blend tangent to two side sets and a center set, its radius
+##     whatever touches all three, the sides trimmed back and the center
+##     consumed (Automatic);
+##   Corner (Stage 8; Alias's Ball Corner and Corner Blend): the hole where
+##     three or four blends meet, found from the blends picked, filled as
+##     Fill fills it, G1 (Corner blend: four sides as one untrimmed patch).
 ## They take picks as the builders do (build_ops.luc's words, temporary
 ## isoparms by a double-click; the fillet's sets as faces), wait while they
 ## need more, publish their picks' lines and Blend Surface's side labels,
 ## and Blend Surface and Surface Fillet run Alias's Continuity Check.
-from luce_cad.surfacing import CadSurfaceBlend, CadSurfaceEdit
+from luce_cad.surfacing import CadSurfaceBlend, CadSurfaceEdit, CadSurfaceFill
 from luce_cad.modeling import CadModeling
 from luce_3d.graphics import Vector3
 from geometry_data import GeometryData
@@ -32,9 +39,11 @@ pub let fillet_verb = "Surface Fillet"
 pub let tube_verb = "Tube"
 
 pub let fill_verb = "Fill Surface"
+pub let bridge_verb = "Bridge Fillet"
+pub let corner_verb = "Corner"
 
 pub func verbs() -> list[str]:
-    return [blend_verb, fillet_verb, tube_verb, fill_verb]
+    return [blend_verb, fillet_verb, tube_verb, fill_verb, bridge_verb, corner_verb]
 
 ## The texts (build_ops.luc's curves and rails, then one more): the first
 ## side (Blend Surface), the first set (Surface Fillet) or the curve
@@ -76,6 +85,19 @@ pub let bias_slot = 8
 pub let knee_slot = 9
 pub let curvature_slot = 10
 pub let variable_slot = 11
+
+## Bridge Fillet: the first radius tried, each side set flipped, the trim
+## and the check.
+pub let bridge_size_slot = 0
+pub let bridge_flip_slot = 1
+pub let bridge_trim_slot = 3
+pub let bridge_check_slot = 4
+## Corner: its type (Ball corner, Corner blend), the continuity, the check
+## and the conflicts shown.
+pub let corner_type_slot = 0
+pub let corner_continuity_slot = 1
+pub let corner_check_slot = 2
+pub let corner_conflicts_slot = 3
 
 ## Tube: the radius, the normal and tangent offsets, Flip.
 pub let radius_slot = 0
@@ -159,6 +181,19 @@ pub func rows(verb: str) -> list[Parameter]:
         return [radius, normal, across, toggle("Flip", tube_flip_slot, 0.0, "Alias's Flip: the normal offset the other way (a groove for a bump)."),
                 toggle("Variable", tube_variable_slot, 0.0, "Alias's variable radius: from the radius at the start through a middle radius to an end radius, eased between."), middle, last,
                 menu("Trim", tube_trim_slot, "Off|Curves on surface|Inside", 0.0, "Alias's Tubular Offset trims (a curve on a face): where the tube meets the face as curves on it, or the face's strip under the tube taken away.")]
+    if verb == bridge_verb:
+        let size = number("Radius estimate", bridge_size_slot, 0.5, 0.000001, 100000.0, 0.1, "Where the ball starts: the bridge's radius is the one touching all three sets, found from this.", soft = 20.0)
+        size.length = true
+        return [size,
+                toggle("Flip set 1", bridge_flip_slot, 0.0, "The ball rolls on the other side of the first set's faces."),
+                toggle("Flip set 2", bridge_flip_slot + 1, 0.0, "The other side of the second set's faces."),
+                menu("Trim", bridge_trim_slot, "Automatic|Curves on surface|Off", 0.0, "Automatic: the side sets trimmed back to the contacts and the center set consumed (Parasolid's three-face blend); Curves on surface: the contacts left as curves; Off: the faces as they are."),
+                toggle("Continuity check", bridge_check_slot, 1.0, "The bridge's edges against the side sets, drawn as the Check node's.")]
+    if verb == corner_verb:
+        return [menu("Type", corner_type_slot, "Ball corner|Corner blend", 0.0, "Alias's Ball Corner (one trimmed patch over the corner's hole) or Corner Blend (four sides as one untrimmed patch, Quad), each G1 to the blends meeting there."),
+                menu("Continuity", corner_continuity_slot, "Type's|G0|G1|G2", 0.0, "The patch's continuity to every blend (Type's: G1)."),
+                toggle("Continuity check", corner_check_slot, 1.0, "The patch's edges against the blends, drawn as the Check node's."),
+                toggle("Show conflicts", corner_conflicts_slot, 1.0, "Where the blends' demands disagree, drawn red (Fill's).")]
     let none_shown: list[Parameter] = []
     return none_shown
 
@@ -180,6 +215,16 @@ pub func waits_for(verb: str, t: list[str]) -> str:
         if second == 0:
             return "Pick the second set's faces, then Enter"
         return ""
+    if verb == bridge_verb:
+        if first == 0:
+            return "Pick the first side set's faces, then Enter"
+        if second == 0:
+            return "Pick the second side set's faces, then Enter"
+        if build_ops.items(t[profiles_text] if t.length > profiles_text else "").length == 0:
+            return "Pick the center set's faces (the wall the bridge consumes), then Enter"
+        return ""
+    if verb == corner_verb and first == 0:
+        return "Pick the blends (faces) meeting at the corner, three or four, then Enter"
     if verb == tube_verb and first == 0:
         return "Pick the curve the tube runs along (a curve, an edge, or double-click a surface for an isoparm)"
     return ""
@@ -191,11 +236,11 @@ pub func starting(verb: str) -> list[float]:
 ## Whether `verb` takes a second list (its prompt goes on to it at Enter;
 ## Fill's guides may be none).
 pub func two_lists(verb: str) -> bool:
-    return verb == blend_verb or verb == fillet_verb or verb == fill_verb
+    return verb == blend_verb or verb == fillet_verb or verb == fill_verb or verb == bridge_verb
 
 ## Whether `verb` takes faces (the Faces level) rather than curves.
 pub func takes_faces(verb: str) -> bool:
-    return verb == fillet_verb
+    return verb == fillet_verb or verb == bridge_verb or verb == corner_verb
 
 ## Picks as face words ("face <name>": a node keeps names alone).
 func face_words(picks: list[str]) -> list[str]:
@@ -262,6 +307,13 @@ pub func build(verb: str, data: GeometryData, v: list[float], t: list[str], name
         made = CadSurfaceBlend.tube(data.geometry, along[0], v[radius_slot], tangent_offset = v[tangent_slot], normal_offset = v[normal_slot], flip = v[tube_flip_slot] != 0.0, name = name,
                                     variable = law(v, radius_slot, tube_variable_slot), trim = int(v[tube_trim_slot]))
         report = f"radius {v[radius_slot]}"
+    elif verb == bridge_verb:
+        let center = build_ops.items(texts[profiles_text])
+        made = CadSurfaceBlend.bridge(data.geometry, face_names(first), face_names(second), face_names(center), v[bridge_size_slot],
+                                      flips = [v[bridge_flip_slot] != 0.0, v[bridge_flip_slot + 1] != 0.0], trim = int(v[bridge_trim_slot]), name = name)
+        report = f"bridge of {first.length + second.length + center.length} faces"
+    elif verb == corner_verb:
+        return corner(data, v, first, name)
     let edit = made else error(ui.invalid, f"{verb} is not a blend")
     let result = GeometryData(geometry = edit.geometry())
     result.report = report
@@ -271,10 +323,51 @@ pub func build(verb: str, data: GeometryData, v: list[float], t: list[str], name
             if int(v[side_slot + k]) > level:
                 level = int(v[side_slot + k])
         build_ops.checked(result, name, first + second, level if level > 0 else 1)
+    if verb == bridge_verb and v[bridge_check_slot] != 0.0 and int(v[bridge_trim_slot]) == 0:
+        build_ops.checked(result, name, first + second, 1)
     if verb == fillet_verb and v[fillet_check_slot] != 0.0 and int(v[trim_slot]) == 0:
         let orders = [0, 1, 2, 3, 3, 1]
         build_ops.checked(result, name, first + second, orders[int(v[section_slot])] if int(v[section_slot]) > 0 else 1)
     return labelled(result, data, verb, v, first, second)
+
+## Corner on `data` by values `v` from the blends `picked` (face words):
+## the hole whose open edges those faces bound the most of (each open edge
+## of a picked face tried as Fill's one edge of a hole), filled by Fill
+## at the continuity asked (G1 by default) on every side.
+func corner(data: GeometryData, v: list[float], picked: list[str], name: str) -> GeometryData!:
+    let names = face_names(picked).split(";")
+    var best = ""
+    var best_count = 0
+    for model in data.models():
+        for f in 0..<model.face_count():
+            if not (model.face_name(f) in names):
+                continue
+            for use in 0..<model.face_edge_count(f):
+                let p = model.face_edge_point(f, use, 0.5)
+                let loop = CadSurfaceFill.hole(data.geometry, f"edge {model.face_name(f)} {p.x} {p.y} {p.z}") catch failure:
+                    continue
+                var count = 0
+                for n in names:
+                    if loop.contains(f"edge {n} "):
+                        count += 1
+                if count > best_count:
+                    best = loop
+                    best_count = count
+    if best_count < 2:
+        error(ui.invalid, "Corner: the blends picked bound no hole together (pick the faces round the corner's gap)")
+    let loop_words = best.split(";")
+    let code = int(v[corner_continuity_slot])
+    let ball = int(v[corner_type_slot]) == 0
+    let continuity = 2 if code == 0 else code
+    let values = fill_ops.starting_values()
+    values[fill_ops.continuity_slot] = float(continuity)
+    values[fill_ops.quad_slot] = 1.0 if not ball and loop_words.length == 4 else 0.0
+    values[fill_ops.check_slot] = v[corner_check_slot]
+    values[fill_ops.conflicts_slot] = v[corner_conflicts_slot]
+    values[fill_ops.labels_slot] = 0.0
+    let made = fill_ops.build(data, values, [best, ""], name)
+    made.report = ("Ball corner" if ball else "Corner blend") + f" of {loop_words.length} sides; " + made.report
+    return made
 
 ## A variable size's law from values `v`: (fraction, size) pairs, the
 ## start the row at `size`, the middle (when more than 0) and end the rows
