@@ -1,0 +1,92 @@
+## Node and step parity (POLY-MODELING.md §3.6, M0): every Edit Mesh tool
+## run on the same selection of the same grid gives the same mesh as a step
+## of an Edit Mesh node and as a verb node after a plain node, and starts
+## from the node's own starting values.
+from workspace import Workspace
+from luce_geocore.geocore import Selection
+from view_projection import project
+import modeling_commands
+import node_commands
+import node_catalog
+import selection_commands
+from tools import tool_run
+import edit_mesh
+
+## Tools whose starting numbers are not yet their node's starting values:
+## M1 makes the verb's initial values the only ones and empties this.
+func differs_today() -> list[str]:
+    return ["Extrude", "Inset", "Duplicate", "Fuse", "Peak", "Snap", "Noise", "Bevel", "Knife", "Crease"]
+
+## The level each tool is checked at and the selection there, on the 4 by
+## 4 grid over -1..1 (point z*5+x, face z*4+x): two interior faces, a row
+## of interior edges from boundary to boundary, or four points of face 5.
+func pick_of(tool: str) -> (int, str, int):
+    if tool in ["Bevel", "Loop Cut", "Bridge", "Fill", "Dissolve", "Edge Slide", "Spin", "Crease"]:
+        return (2, "p5-6-7-8-9", 4)
+    if tool in ["Fuse", "Merge Points", "Smooth", "Peak", "Flatten", "Snap", "Noise", "Connect", "PolyDraw"]:
+        return (1, "6 7 12 11", 0)
+    return (3, "5 6", 2)
+
+## A workspace showing the grid, with an Edit Mesh after it when `edit`,
+## and the selection of `tool`'s check made.
+func picked(tool: str, edit: bool) -> Workspace!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Grid", 0.0, 0.0)
+    if edit:
+        node_commands.add_node(w, "Edit Mesh", 0.0, 100.0)
+    let (level, expression, domain) = pick_of(tool)
+    selection_commands.set_mode(w, level)
+    w.selection = Selection.of(w.geometry else trap("grid"), expression, domain)
+    return w
+
+## A knife stroke down the screen through face 5's middle.
+func stroke(w: Workspace) -> unit!:
+    let middle = project(w, (w.geometry else trap("grid")).face_center(5), 800.0, 600.0)
+    modeling_commands.knife(w, middle[0] + 1.0, middle[1] - 40.0, middle[0] - 1.0, middle[1] + 40.0, 800.0, 600.0)
+
+## Tool `tool` on its selection: as a step (`edit`) or a node.
+func ran(tool: str, edit: bool) -> Workspace!:
+    let w = picked(tool, edit)
+    if tool == "Knife":
+        stroke(w)
+    else:
+        modeling_commands.model(w, tool)
+    return w
+
+## Whether two results agree: counts, bounds and the output selection.
+func same(a: Workspace, b: Workspace) -> bool!:
+    let x = a.geometry else return false
+    let y = b.geometry else return false
+    if x.point_count() != y.point_count() or x.face_count() != y.face_count():
+        return false
+    let p = x.bounds()
+    let q = y.bounds()
+    for (u, v) in [(p.minimum.x, q.minimum.x), (p.minimum.y, q.minimum.y), (p.minimum.z, q.minimum.z), (p.maximum.x, q.maximum.x), (p.maximum.y, q.maximum.y), (p.maximum.z, q.maximum.z)]:
+        if u - v > 0.000001 or v - u > 0.000001:
+            return false
+    return a.selected_count() == b.selected_count()
+
+pub func tool_parity_tests() -> unit!:
+    let differing: list[str] = []
+    for tool in edit_mesh.tool_names():
+        let step = ran(tool, true)
+        let node = ran(tool, false)
+        assert((step.selected() else trap("edit")).edits.length == 1)
+        assert(node.network.require(node.network.display).kind != "Grid")
+        if not same(step, node):
+            print(f"FAIL {tool}: the step and the node differ")
+            assert(false)
+        # The tool's starting numbers against its node's.
+        let run = tool_run(tool) else trap(tool)
+        let starting = node_catalog.starting_values(run.verb)
+        var equal = true
+        for at in 0..<starting.length:
+            if at < run.numbers.length and run.numbers[at] != starting[at]:
+                equal = false
+        if not equal:
+            differing.append(tool)
+    if differing != differs_today():
+        print(f"FAIL starting numbers differ for {differing}")
+        assert(false)
+    print("PASS tool parity: every Edit Mesh tool gives the same mesh as a step and as a node; known starting-number differences recorded")
