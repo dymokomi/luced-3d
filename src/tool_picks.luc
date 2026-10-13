@@ -1,0 +1,535 @@
+## A CAD tool's picks asked for in order (docs/research/POLY-MODELING.md
+## Stage 1), as the selection fields of Fusion 360's dialogs: one prompt
+## chain for a node and for an Edit CAD step, read from the tool's
+## declaration (tool_record.Pick). While a pick waits the viewport shows
+## what it is picked on (a node's input; the Edit node's model as the steps
+## before the last left it), at the level its kind takes, and what is
+## clicked goes where the pick is kept, by name: a node's text or values, or
+## the last step's text, numbers or group. A single pick (a face, a body,
+## an edge, a point) finishes at once and the others at Enter; a curve list
+## at its most. Then the next pick the tool still wants waits, as Fusion's
+## dialog moves to its next field: a node's each its own undo step, a
+## step's all one with the step. Esc undoes the picking.
+from luce_geocore.geocore import Mesh, Selection, Domain
+from luce_3d.graphics import Vector3
+from workspace import Workspace
+from node import Node
+from tool_prompt import ToolPrompt
+from tool_record import Tool, Pick
+from edit_types import object_level, edge_level, face_level, curve_level
+from edit_steps import show
+from luce_cad.cad_curves import CadCurves
+import pick_kinds
+import tool_registry
+import cad_names
+import cad_features
+import edit_cad_align
+import edit_cad_build
+import build_ops
+import align_ops
+
+# -- Where a pick is kept.
+
+## The text pick `pick` holds on `node` (its last step's when `step`).
+pub func held(node: Node, pick: Pick, step: bool) -> str!:
+    if step:
+        if node.edits.length == 0:
+            return ""
+        let last = node.edits[-1]
+        # A selection the step started on is what a grouped pick holds.
+        if pick.grouped and last.group != "":
+            return last.group
+        return pick.held(last.text(pick.step)) if pick.step >= 0 else ""
+    if pick.slot < 0 or pick.slot >= node.texts.length:
+        return ""
+    return pick.held(node.texts[pick.slot])
+
+## `node` (its last step: `step`) with `picked` as what pick `pick` holds.
+func put(node: Node, pick: Pick, step: bool, picked: str) -> unit!:
+    if step:
+        let last = node.edits[-1]
+        let texts = last.texts.copy()
+        while texts.length <= pick.step:
+            texts.append("")
+        texts[pick.step] = pick.holding(texts[pick.step], picked)
+        node.edits[-1] = last.with_texts(texts)
+        return
+    node.texts[pick.slot] = pick.holding(node.texts[pick.slot], picked)
+
+## The values pick conditions read: the node's, or its last step's.
+func values_of(node: Node, step: bool) -> list[float]:
+    return node.edits[-1].numbers if step else node.values
+
+## The texts pick conditions read, by the places the picks are kept.
+func texts_of(node: Node, step: bool) -> list[str]:
+    if not step:
+        return node.texts
+    let result: list[str] = []
+    for k in 0..<5:
+        result.append(node.edits[-1].text(k))
+    return result
+
+## `pick`'s taken hook run on the node's values or the last step's numbers.
+func take(node: Node, pick: Pick, step: bool, picked: str) -> unit!:
+    let hook = pick.taken else return
+    if not step:
+        hook(node.values, picked)
+        return
+    let numbers = node.edits[-1].numbers.copy()
+    hook(numbers, picked)
+    node.edits[-1] = node.edits[-1].with_numbers(numbers)
+
+## A point picked: its three numbers at the pick's place.
+func put_point(node: Node, pick: Pick, step: bool, at: Vector3) -> unit!:
+    if not step:
+        node.values[pick.slot] = at.x
+        node.values[pick.slot + 1] = at.y
+        node.values[pick.slot + 2] = at.z
+        return
+    let numbers = node.edits[-1].numbers.copy()
+    while numbers.length < pick.step + 3:
+        numbers.append(0.0)
+    numbers[pick.step] = at.x
+    numbers[pick.step + 1] = at.y
+    numbers[pick.step + 2] = at.z
+    node.edits[-1] = node.edits[-1].with_numbers(numbers)
+
+## What a click on pick `pick` gives: its kind, a step's curves as words
+## and its bodies in a text as a group (what the step's group would be), a
+## Move's objects as Move object says.
+func kind_of(pick: Pick, node: Node, step: bool) -> int!:
+    if step and pick.step >= 0 and pick.kind == pick_kinds.curves:
+        return pick_kinds.words
+    if step and pick.step >= 0 and pick.kind == pick_kinds.bodies:
+        return pick_kinds.body_group
+    if pick.kind == pick_kinds.faces and pick.bodies(values_of(node, step)):
+        return pick_kinds.bodies
+    return pick.kind
+
+# -- Which pick waits next.
+
+## The next pick of `tool` node `node` waits for: the first a node has that
+## is empty and wanted, while the tool waits at all (its waits says so);
+## -1 none. A point is asked for from its row (tool bar, inspector).
+pub func node_next(tool: Tool, node: Node) -> int!:
+    let wired = node.inputs.length > 1 and node.inputs[1] >= 0
+    if let says = tool.waits:
+        if says(node.values, node.texts, wired) == "":
+            return -1
+    for at in tool.picks_of(false):
+        let pick = tool.picks[at]
+        if pick.kind != pick_kinds.point and pick.kind != pick_kinds.profiles and held(node, pick, false).trim() == "" and pick.wanted(node.values, node.texts, wired):
+            return at
+    return -1
+
+## The pick of `tool` an Edit step it just made waits for: the first kept
+## in a text that is empty and wanted, else its first when the tool still
+## waits for more of it (Skin's second section) or keeps asking (Fill's
+## boundaries); -1 none.
+pub func step_first(tool: Tool, node: Node) -> int!:
+    let values = values_of(node, true)
+    let texts = texts_of(node, true)
+    let placed = step_picks(tool)
+    for at in placed:
+        let pick = tool.picks[at]
+        if held(node, pick, true).trim() == "" and pick.wanted(values, texts, false):
+            return at
+    if placed.length == 0:
+        return -1
+    let first = tool.picks[placed[0]]
+    if first.grouped and node.edits[-1].group != "":
+        return -1
+    if first.stays:
+        return placed[0]
+    if first.most > 0 and build_ops.items(held(node, first, true)).length < first.most:
+        return placed[0]
+    # A tool whose step keeps its picks as its node does waits as it does.
+    if let says = tool.waits:
+        if first.step == first.slot and says(values, texts, false) != "":
+            return placed[0]
+    return -1
+
+## The pick after pick `after` a step waits for: the next empty and wanted,
+## or asked for (Enter on the one before goes on to it); -1 none.
+func step_after(tool: Tool, node: Node, after: int) -> int!:
+    let values = values_of(node, true)
+    let texts = texts_of(node, true)
+    for at in step_picks(tool):
+        if at <= after:
+            continue
+        let pick = tool.picks[at]
+        let empty = pick.kind == pick_kinds.point or held(node, pick, true).trim() == ""
+        if pick.asked or (empty and pick.wanted(values, texts, false)):
+            return at
+    return -1
+
+## The picks a step keeps in a text or its numbers (a point), in order.
+func step_picks(tool: Tool) -> list[int]:
+    let result: list[int] = []
+    for at in tool.picks_of(true):
+        if tool.picks[at].step >= 0:
+            result.append(at)
+    return result
+
+# -- Waiting.
+
+## The level pick `pick` is picked at: its kind's (a curve list at the
+## Curves level when its input has curves; Align's master at the Faces
+## level for Project and U/V).
+func level_for(w: Workspace, node: Node, pick: Pick, step: bool) -> int!:
+    let kind = kind_of(pick, node, step)
+    if pick_kinds.whole_bodies(kind):
+        return object_level
+    if kind in [pick_kinds.edge, pick_kinds.edges, pick_kinds.point, pick_kinds.axis, pick_kinds.align_input]:
+        return edge_level
+    if kind in [pick_kinds.face, pick_kinds.faces]:
+        return face_level
+    if kind == pick_kinds.curves:
+        return curve_level
+    if kind == pick_kinds.align_master:
+        if step:
+            return w.level_index()
+        return face_level if int(node.values[align_ops.type_slot]) in [1, 2] else edge_level
+    # Curve words and a blend's end.
+    if face_level in pick.levels:
+        return face_level
+    if pick.levels.length == 1 and pick.levels[0] == curve_level:
+        return curve_level
+    if step:
+        let first = build_ops.items(node.edits[-1].text(0))
+        if first.length > 0:
+            return curve_level if first[0].starts_with("curve") else edge_level
+        return w.level_index()
+    return curve_level if input_has_curves(w, node) else edge_level
+
+## Whether node `node`'s input holds CAD curves.
+func input_has_curves(w: Workspace, node: Node) -> bool!:
+    let input = w.network.find(node.inputs[0]) else return false
+    let data = input.cache else return CadCurves.count(w.network.evaluate_data(input.id).geometry) > 0
+    return data.has_curves()
+
+## What the viewport says while pick `pick` waits.
+func told(pick: Pick, kind: int) -> str:
+    if pick.prompt != "":
+        return pick.prompt
+    let asking = pick.asking()
+    if kind == pick_kinds.align_master:
+        return f"{asking}: click an edge, a curve (Curves level) or a face (Project, U/V); double-click a surface for an isoparm; Esc cancels"
+    if kind == pick_kinds.words:
+        if face_level in pick.levels:
+            return f"{asking}: a click adds a face (again: takes it out), then Enter; Esc cancels"
+        return f"{asking}: click curves or edges in order (again: takes one out), double-click a surface for an isoparm, then Enter; Esc cancels"
+    if kind == pick_kinds.point:
+        return f"{asking}: click near a corner or an edge's end (a round edge: its middle); Esc cancels"
+    if pick_kinds.many(kind) and not pick.single():
+        return f"{asking}: click them (Shift adds), then Enter; Esc cancels"
+    return f"{asking}: click one; Esc cancels"
+
+## The prompt for pick `at` of `tool` on `node` (its last step: `step`).
+func prompt_for(w: Workspace, node: Node, tool: Tool, at: int, step: bool) -> ToolPrompt!:
+    let pick = tool.picks[at]
+    let kind = kind_of(pick, node, step)
+    var domain = pick_kinds.domain(kind)
+    # Curve words and a blend's ends take what the level takes.
+    if kind in [pick_kinds.words, pick_kinds.curve_or_edge, pick_kinds.align_input, pick_kinds.align_master, pick_kinds.curves]:
+        domain = -1
+    return ToolPrompt(node.id, node.id if step else node.inputs[0], pick.asking(), true, tool = tool.name, pick = at, step = step, filter = domain, told = told(pick, kind))
+
+## Node `node` of `tool` waits for its pick `at`, one undo step: its input
+## shows, picked at the level the pick takes.
+pub func start(w: Workspace, node: Node, tool: Tool, at: int) -> unit!:
+    if node.inputs[0] < 0 or w.in_transaction():
+        return
+    let prompt = prompt_for(w, node, tool, at, false)
+    w.begin(prompt.label)
+    w.prompt = prompt
+    w.network.selected = node.inputs[0]
+    shown(w, node, tool.picks[at])
+    begin(w, node, tool.picks[at], false, prompt)
+
+## While a node's edges are picked its result shows, picked on its input
+## (Shift or Cmd peeks at the input: tool_prompts.set_peek); its other
+## picks show the input.
+func shown(w: Workspace, node: Node, pick: Pick) -> unit!:
+    let live = pick.kind == pick_kinds.edges and held(node, pick, false).trim() != ""
+    show(w, node.id if live and not w.peeking else node.inputs[0])
+
+## The Edit node `node`'s last step (of `tool`) waits for its pick `at`, in
+## the undo step that made it (one is opened when none is): the model as
+## the steps before it left it shows to pick on.
+pub func ask(w: Workspace, node: Node, tool: Tool, at: int) -> unit!:
+    let prompt = prompt_for(w, node, tool, at, true)
+    if not w.in_transaction():
+        w.begin(prompt.label)
+    let pick = tool.picks[at]
+    # While a point is picked a move stands still, so the model is picked
+    # on where it was.
+    if pick.kind == pick_kinds.point and pick.still >= 0:
+        let numbers = node.edits[-1].numbers.copy()
+        while numbers.length < pick.step + 3 or numbers.length < pick.still + 3:
+            numbers.append(0.0)
+        for k in 0..<3:
+            numbers[pick.step + k] = numbers[pick.still + k]
+        node.edits[-1] = node.edits[-1].with_numbers(numbers)
+        w.network.invalidate(node.id)
+    w.prompt = prompt
+    begin(w, node, pick, true, prompt)
+
+func begin(w: Workspace, node: Node, pick: Pick, step: bool, prompt: ToolPrompt) -> unit!:
+    w.adopt_level(level_for(w, node, pick, step))
+    w.selection = none
+    w.pending_changed = true
+    say(w, prompt.told)
+    w.rebuild()
+
+## Pick `label` of node `id`'s tool waits (its inspector button; in an
+## edited Edit node, its last step's tool's pick, as a tool bar row starts
+## it).
+pub func start_named(w: Workspace, id: int, label: str) -> unit!:
+    let node = w.network.require(id)
+    let step = node.edits.length > 0 and node.kind == "Edit CAD"
+    let tool = (tool_registry.cad_step(node.edits[-1].verb) if step else tool_registry.cad_node(node.kind)) else return
+    for at in 0..<tool.picks.length:
+        if tool.picks[at].label == label:
+            if step:
+                ask(w, node, tool, at)
+            else:
+                start(w, node, tool, at)
+            return
+
+# -- Picking.
+
+## The tool, its node and the pick a prompt waits for, when it is a tool's.
+func waiting(w: Workspace) -> (Tool, Node, Pick, ToolPrompt)?!:
+    let prompt = w.prompt else return none
+    if not prompt.picking():
+        return none
+    let tool = tool_registry.cad(prompt.tool) else return none
+    let node = w.network.find(prompt.node) else return none
+    if prompt.step and node.edits.length == 0:
+        return none
+    return (tool, node, tool.picks[prompt.pick], prompt)
+
+## Whether a tool's pick waits.
+pub func picking(w: Workspace) -> bool:
+    let prompt = w.prompt else return false
+    return prompt.picking()
+
+## The kind of what the waiting pick takes (-1: none waits).
+pub func waiting_kind(w: Workspace) -> int!:
+    let found = waiting(w) else return -1
+    let (tool, node, pick, prompt) = found
+    return kind_of(pick, node, prompt.step)
+
+## The selection changed while a pick waits: what is picked goes where the
+## pick is kept; a single pick finishes at once, a list at its most.
+pub func follow(w: Workspace, mesh: Mesh, chosen: Selection) -> unit!:
+    let found = waiting(w) else return
+    let (tool, node, pick, prompt) = found
+    let step = prompt.step
+    let kind = kind_of(pick, node, step)
+    let first = chosen.next(-1)
+    let level = w.level_index()
+    if kind in [pick_kinds.align_input, pick_kinds.align_master]:
+        let words = edit_cad_align.pick_words(mesh, first, level, kind == pick_kinds.align_master) if first >= 0 else ""
+        if words == "":
+            if first >= 0 and step:
+                say(w, "Align's master is an edge, a curve, or a face for Project and U/V")
+            return
+        put(node, pick, step, words)
+        take(node, pick, step, words)
+        done(w, tool, node, prompt)
+        return
+    if kind == pick_kinds.words:
+        let faces = face_level in pick.levels
+        if first < 0 or not (level == curve_level or level == edge_level or (faces and level >= face_level)):
+            return
+        let words = edit_cad_align.pick_words(mesh, first, level, true)
+        if words == "":
+            return
+        add_words(w, tool, node, prompt, words)
+        return
+    if kind == pick_kinds.curves:
+        let names = mesh.find_attribute("cad_curve_name", 4)
+        if names < 0 or level != curve_level:
+            return
+        let picked: list[str] = []
+        var at = first
+        while at >= 0:
+            let name = mesh.attribute_text(names, at)
+            if name != "" and not (name in picked):
+                picked.append(name)
+            at = chosen.next(at)
+        put(node, pick, step, picked.join(";"))
+        changed(w, node)
+        return
+    if kind == pick_kinds.curve_or_edge and first >= 0 and level == curve_level:
+        let names = mesh.find_attribute("cad_curve_name", 4)
+        let name = mesh.attribute_text(names, first) if names >= 0 else ""
+        if name == "":
+            return
+        put(node, pick, step, f"curve {name}")
+        done(w, tool, node, prompt)
+        return
+    if kind in [pick_kinds.point, pick_kinds.edge, pick_kinds.axis, pick_kinds.curve_or_edge]:
+        if first < 0 or not w.on_domain(Domain.edge):
+            return
+        if kind == pick_kinds.point:
+            put_point(node, pick, step, cad_names.edge_point(mesh, first))
+            done(w, tool, node, prompt)
+            return
+        let references = mesh.find_attribute("cad_edge_reference", 4)
+        let reference = mesh.attribute_text(references, first) if references >= 0 else ""
+        if reference == "":
+            say(w, "This edge has no name to keep: pick one of a body made inside a CAD node")
+            return
+        let picked = cad_features.edge_axis(reference) if kind == pick_kinds.axis else (f"edge {reference}" if kind == pick_kinds.curve_or_edge else reference)
+        put(node, pick, step, picked)
+        take(node, pick, step, picked)
+        if kind == pick_kinds.axis:
+            w.ask_value = false
+        done(w, tool, node, prompt)
+        return
+    if kind == pick_kinds.edges:
+        if not w.on_domain(Domain.edge):
+            say(w, "Pick edges of the body (the Edges level)")
+            return
+        put(node, pick, step, attribute_texts(mesh, chosen, "cad_edge_reference", 4))
+        if not step:
+            shown(w, node, pick)
+        changed(w, node)
+        return
+    if kind == pick_kinds.body_group:
+        if not w.on_domain(Domain.face):
+            return
+        put(node, pick, step, chosen.expression(mesh) if chosen.count() > 0 else "")
+        changed(w, node)
+        return
+    if not w.on_domain(Domain.face):
+        return
+    let bodies = pick_kinds.whole_bodies(kind)
+    var names = cad_names.model_names(mesh, chosen.expression(mesh) if chosen.count() > 0 else "!*") if bodies else attribute_texts(mesh, chosen, "cad_face_name", 2)
+    let single = kind in [pick_kinds.face, pick_kinds.body]
+    if single:
+        if names == "":
+            if first >= 0:
+                say(w, "This face has no name to keep: pick one of a body made inside a CAD node")
+            return
+        names = names.split(";")[0]
+    put(node, pick, step, names)
+    if single:
+        take(node, pick, step, names)
+        done(w, tool, node, prompt)
+        return
+    changed(w, node)
+
+## The texts of attribute `name` (on `domain`) of what `chosen` picks of
+## `mesh`, each once, apart by `;`.
+func attribute_texts(mesh: Mesh, chosen: Selection, name: str, domain: int) -> str!:
+    let column = mesh.find_attribute(name, domain)
+    let found: list[str] = []
+    if column < 0:
+        return ""
+    var at = chosen.next(-1)
+    while at >= 0:
+        let text = mesh.attribute_text(column, at)
+        if text != "" and not (text in found):
+            found.append(text)
+        at = chosen.next(at)
+    return found.join(";")
+
+## A list pick took a click: the node or step cooks with it, the prompt
+## waits on.
+func changed(w: Workspace, node: Node) -> unit!:
+    w.network.invalidate(node.id)
+    w.pending_changed = true
+    w.notice = ""
+    w.rebuild()
+
+## `words` (a curve, an edge, a face, a temporary isoparm) added to the
+## waiting curve list, or taken out when in it; at its most it finishes.
+func add_words(w: Workspace, tool: Tool, node: Node, prompt: ToolPrompt, words: str) -> unit!:
+    let pick = tool.picks[prompt.pick]
+    let step = prompt.step
+    let now = held(node, pick, step)
+    let made = words if pick.kind == pick_kinds.curve_or_edge else edit_cad_build.toggled(now, words)
+    put(node, pick, step, made)
+    let count = build_ops.items(made).length
+    if pick.single() or (pick.most > 0 and count >= pick.most):
+        done(w, tool, node, prompt)
+        return
+    w.network.invalidate(node.id)
+    w.selection = none
+    w.pending_changed = true
+    say(w, prompt.told)
+    w.rebuild()
+
+## A double-click on a surface at (`p`) while a curve list or Align's master
+## waits: Alias's temporary isoparm through the point, picked. Whether it
+## took it.
+pub func isoparm(w: Workspace, p: Vector3) -> bool!:
+    let found = waiting(w) else return false
+    let (tool, node, pick, prompt) = found
+    let kind = kind_of(pick, node, prompt.step)
+    let words = edit_cad_build.isoparm_words(p)
+    if kind == pick_kinds.align_master:
+        put(node, pick, prompt.step, words)
+        take(node, pick, prompt.step, words)
+        done(w, tool, node, prompt)
+        return true
+    if kind == pick_kinds.words or kind == pick_kinds.curve_or_edge:
+        add_words(w, tool, node, prompt, words)
+        return true
+    return false
+
+## A pick made apart from the selection (a sketch line clicked as a
+## Revolve's axis): `picked` is what the waiting pick holds.
+pub func give(w: Workspace, picked: str) -> unit!:
+    let found = waiting(w) else return
+    let (tool, node, pick, prompt) = found
+    put(node, pick, prompt.step, picked)
+    take(node, pick, prompt.step, picked)
+    w.ask_value = false
+    done(w, tool, node, prompt)
+
+## Enter: the pick stands as it is; the next one waits.
+pub func accept(w: Workspace) -> unit!:
+    let found = waiting(w) else return
+    let (tool, node, pick, prompt) = found
+    done(w, tool, node, prompt)
+
+## The waiting pick is made. A node's is one undo step, and then the next
+## pick it waits for starts (its own), else its value box opens when it
+## has one to ask; a step's goes on to its next pick in the same undo step,
+## else that step is done.
+func done(w: Workspace, tool: Tool, node: Node, prompt: ToolPrompt) -> unit!:
+    w.network.invalidate(node.id)
+    if prompt.step:
+        let next = step_after(tool, node, prompt.pick)
+        if next >= 0:
+            ask(w, node, tool, next)
+            return
+        close(w)
+        return
+    w.network.selected = node.id
+    show(w, node.id)
+    close(w)
+    let next = node_next(tool, node)
+    if next >= 0 and next != prompt.pick:
+        start(w, node, tool, next)
+    elif next < 0 and tool.waits != none:
+        w.ask_value = tool.asks and tool.drag >= 0
+
+## The prompt ends: one undo step.
+func close(w: Workspace) -> unit!:
+    w.prompt = none
+    w.peeking = false
+    w.selection = none
+    w.notice = ""
+    w.pending_changed = true
+    w.commit()
+    w.rebuild()
+
+func say(w: Workspace, text: str):
+    w.notice = text
+    w.revision += 1

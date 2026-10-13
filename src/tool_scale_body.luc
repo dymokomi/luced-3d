@@ -1,0 +1,57 @@
+## Scale Body (Fusion 360's Scale on bodies): bodies made larger or
+## smaller by one factor, about the origin or about each body's middle. A
+## node in a CAD network keeps its bodies by name (none picked: every body
+## down the chain); an Edit CAD step scales the bodies picked.
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadModel
+from luce_3d.graphics import Vector3
+from tool_record import Tool, ToolEntry, Pick, Invocation
+from geometry_data import GeometryData
+from parameter_rows import Parameter, number, menu
+from edit_types import object_level
+from edit_cad_sketches import with_models
+import pick_kinds
+import edit_cad_surfaces
+import cad_cook
+
+pub func entry() -> ToolEntry:
+    return ToolEntry("Scale Body", "Scale Body", "scale-tool", "Modify", [cad_cook.context], [cad_cook.edit_kind], made)
+
+func made() -> Tool:
+    return entry().tool("Modify", "Bodies", "Scale bodies by one factor, about the origin or about each body's middle", picks(), rows(), cook, drag = 0)
+
+func picks() -> list[Pick]:
+    return [Pick("Bodies", [object_level], kind = pick_kinds.bodies, slot = 0, needed = optional, doc = "The bodies scaled, kept by their faces' names (none picked: every body).")]
+
+func optional(values: list[float], texts: list[str], wired: bool) -> bool:
+    return false
+
+func rows() -> list[Parameter]:
+    return [number("Scale", 0, 2.0, 0.001, 1000.0, 0.1, "How much larger the bodies become (less than 1: smaller).", soft = 10.0),
+            menu("About", 1, "Origin|Body middle", 0.0, "Origin: every body scaled about the origin. Body middle: each about the middle of its bounds.")]
+
+## A node: the bodies its names find (none: all); a step: those picked.
+func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    var chosen: list[int] = []
+    if call.node:
+        cad_cook.needs_models(data)
+        chosen = edit_cad_surfaces.named_bodies(data, call.text(0))
+        if chosen.length == 0:
+            for index in 0..<CadGeometry.model_count(data.geometry):
+                chosen.append(index)
+    else:
+        chosen = edit_cad_surfaces.step_bodies(call, data)
+    let result: list[CadModel] = []
+    let models = data.models()
+    for index in 0..<models.length:
+        result.append(scaled(models[index], call) if index in chosen else models[index])
+    return with_models(data, result)
+
+## `model` scaled by the call's factor, about the origin or its middle.
+func scaled(model: CadModel, call: Invocation) -> CadModel!:
+    let factor = call.number(0, 1.0)
+    var middle = Vector3()
+    if int(call.number(1)) == 1:
+        let bounds = model.tessellate(8).bounds()
+        middle = bounds.minimum.add(bounds.maximum).multiply_scalar(0.5)
+    return model.transformed(middle.multiply_scalar(1.0 - factor), Vector3(), Vector3(factor, factor, factor))

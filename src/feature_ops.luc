@@ -1,0 +1,121 @@
+## Extrude's and Revolve's features as Fusion 360 makes them: the new
+## solid combined with the bodies flowing down the chain (or the second
+## input's, when wired) by its Operation, Auto choosing as Fusion does, and
+## the handles where its distance or angle stands (cad_features.luc makes
+## the solid; extrude_inputs.luc its profiles). Their declarations are
+## tool_extrude.luc and tool_revolve.luc.
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.modeling import CadModeling
+from luce_cad.model import CadModel
+from luce_3d.graphics import Vector3
+from geometry_data import GeometryData
+from handle_lines import HandleLine
+import handle_lines
+import sketch_node
+import cad_features
+import extrude_inputs
+from luce_ui import ui
+
+## The bodies flowing down the chain in `data` (a Sketch passes its input's
+## on beside its curves), without the curves; none without a body.
+pub func bodies_in(data: GeometryData) -> GeometryData?!:
+    if CadGeometry.model_count(data.geometry) == 0:
+        return none
+    return GeometryData(geometry = data.geometry.without("curves"))
+
+## The operation Extrude's and Revolve's Operation menu means: 0 Auto, then
+## New body, Join, Cut, Intersect.
+pub func operation_names() -> str:
+    return "Auto|New body|Join|Cut|Intersect"
+
+## The Operation menu as shown: Auto with what it chose at the last cook
+## ("Auto (Cut)"), when it chose.
+pub func operation_items(chosen: str) -> str:
+    return operation_names() if chosen == "" else f"Auto ({chosen})|New body|Join|Cut|Intersect"
+
+## Auto's choice, Fusion's: inside a body at `probe` (a point halfway along
+## the new solid) it cuts, else it joins when there are bodies, else it is
+## a new body (0 new, 1 join, 2 cut).
+func automatic(target: GeometryData?, probe: Vector3) -> int!:
+    let bodies = target else return 0
+    for at in 0..<CadGeometry.model_count(bodies.geometry):
+        if CadModeling.inside(CadGeometry.model(bodies.geometry, at), probe):
+            return 2
+    return 1
+
+## `made` as a new body beside the bodies of `target`.
+func beside(made: CadModel, target: GeometryData?) -> GeometryData!:
+    let other = target else return GeometryData(geometry = CadGeometry.of_model(made))
+    return other.merged(GeometryData(geometry = CadGeometry.of_model(made)))
+
+## What an Extrude's or Revolve's Profiles text (profile keys apart by
+## `;`) shows.
+pub func profiles_summary(text: str) -> str:
+    if text.trim() == "":
+        return "Islands (the sketch's closed shapes)"
+    if extrude_inputs.profile_face(text) != "":
+        return "A face of the body"
+    let count = text.split(";").length
+    return "1 profile" if count == 1 else f"{count} profiles"
+
+## Extrude or Revolve (cad_features.luc) from the nearest sketch upstream's
+## profiles (the first text's keys; none: islands alternating from the
+## outside in), combined with the bodies flowing down the chain (or the
+## second input's, when wired) by its Operation.
+pub func featured(kind: str, v: list[float], texts: list[str], data: GeometryData, tag: str, second: GeometryData?, sketch: str) -> GeometryData!:
+    let chain = bodies_in(data)
+    let target = second if second != none else chain
+    var handles: list[HandleLine] = []
+    var probe: Vector3? = none
+    var solid: CadModel? = none
+    if kind == "Extrude":
+        # The profiles: the sketch's, a face of the body, or Thin's bands
+        # (extrude_inputs.luc).
+        var curves = data.geometry
+        var profiles = texts[0]
+        let face = extrude_inputs.profile_face(texts[0])
+        if face != "":
+            let bodies = chain else error(ui.invalid, "The face to extrude is on the body flowing down the chain: there is none")
+            curves = extrude_inputs.face_curves(bodies, face)
+            profiles = ""
+        if int(v[cad_features.type_slot]) == 1:
+            if face != "":
+                error(ui.invalid, "Thin Extrude follows a sketch's curves: pick the sketch's profiles, not a face")
+            curves = extrude_inputs.thin_curves(sketch, sketch_node.plane_of(data.geometry), profiles, v[cad_features.thickness_slot], int(v[cad_features.wall_slot]))
+            profiles = ""
+        let anchor = CadModeling.profile_anchor(curves, profiles)
+        solid = cad_features.extruded(v, texts, curves, profiles, tag, target)
+        if anchor.found:
+            let start = cad_features.start_height(v, texts, anchor, target)
+            probe = cad_features.extrude_probe(v, texts, anchor, start)
+            handles = cad_features.extrude_handles(v, texts, anchor, start)
+    else:
+        let (revolved, middle) = cad_features.revolved(v, texts, data, tag, sketch, target)
+        solid = revolved
+        probe = middle
+        handles = cad_features.revolve_handles(v, texts, data, sketch)
+    let body = solid else error(ui.invalid, f"{kind} made nothing")
+    var operation = int(v[1]) - 1
+    if int(v[1]) == 0:
+        operation = 0
+        if let at = probe:
+            operation = automatic(target, at)
+    if operation != 0 and target == none:
+        error(ui.invalid, "Join, Cut and Intersect need a body: the sketch's input body, or one wired to the second input")
+    # Objects To Cut: the bodies acted on (none named: every body); Cut
+    # and Intersect act on each apart.
+    let chosen = texts[cad_features.bodies_text] if kind == "Extrude" else ""
+    var result = beside(body, target) if operation == 0 else extrude_inputs.combined_with(body, target else trap("target"), operation, chosen)
+    # An explicit target leaves the chain's bodies as they were.
+    if second != none:
+        if let bodies = chain:
+            result = bodies.merged(result)
+    # What Auto chose, for the Operation row.
+    if int(v[1]) == 0:
+        result.automatic = ["New body", "Join", "Cut", "Intersect"][operation]
+    return handled(result, handles)
+
+## `data` with its handles.
+func handled(data: GeometryData, handles: list[HandleLine]) -> GeometryData:
+    data.handles = handle_lines.encode(handles)
+    return data

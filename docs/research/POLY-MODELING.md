@@ -870,13 +870,78 @@ built" below).
 - Not yet: the drag driver (Stage 3; `drag` is declared and documented), More options, multiple
   picks, the stroke and place gesture modules (M4).
 
-**Stage 1: CAD tools onto the definition** (M3–M5).
+**Stage 1: CAD tools onto the definition** (M3–M5). **Done 2026-10-13** (see "Stage 1 as
+built" below).
 - Family by family, in §3.6's order; `modify_picks` and `edit_cad_picks` become one prompt
   module; docs/TOOLS.md generated.
 - Tests:
   - the parity check (node = step) for every CAD tool;
   - the existing CAD test files pass unchanged in what they assert;
   - the wiring-layer line count is reported in the commit.
+
+**Stage 1 as built.**
+- One declaration per CAD tool: `src/tool_<name>.luc`, 69 of them (Fusion's features, Modify
+  features, blends, the surfacing tools, the builders and blends between surfaces, Align, the
+  curves, the NURBS structure steps, the solids, Check, Sketch), each listed by one line in
+  `src/cad_tools.luc`. A declaration is a `ToolEntry` (name, label, icon, node menu category,
+  contexts, Edit kinds, step verb: what menus and icons read without building it) and the
+  `Tool` it makes: section and family, doc, picks, rows, cook, drag row, gesture, inputs,
+  starting numbers, handles, whether its value box opens, and what its node waits for.
+- `Pick` grew what CAD needs: what a click gives (`pick_kinds.luc`: faces, a face, bodies, a
+  body, edges, an edge, a point, curves, curve words, a blend's end, Align's input and master,
+  an axis, profiles), where a node keeps it (a text or values) and where a step keeps it (its
+  group, a text or numbers), when it is wanted, what taking it sets, its part of a shared text
+  (a Fillet's set k), its summary and the inspector's buttons. `Invocation` carries a node's
+  second input, memo and sketch, so one cook serves a node and a step (`cad_cook.luc` has what
+  cooks share: names found on the pick geometry, a step's pick geometry, edges model by model).
+- Generated from the declarations, the hand wiring deleted:
+  - the CAD node catalog (kinds, categories, rows, inputs, descriptions) and node evaluation;
+    `cad_nodes.evaluate_cad` is the registry's lookup, `cad_modify.luc` and
+    `cad_surface_nodes.luc` are gone;
+  - Edit CAD's tools and its step executor: `edit_cad.ran` keeps the kind's own steps
+    (primitives, sketches, CV moves) and hands the rest to the step's tool; the eight-family
+    chain, the families' `tools()` and `verbs()` lists and `edit_cad_surfaces.run` are gone;
+  - one pick chain (`tool_picks.luc`) for nodes and steps, replacing `modify_picks.luc`,
+    `edit_cad_picks.luc`, the CAD prompts of `tool_prompts.luc` and the builders' prompt
+    labels; the prompt carries its tool and pick, which give its level, selection filter and
+    hint; the inspector's pick rows come from the picks (its six CAD special cases are gone),
+    and a tool bar row that makes a pick wanted (To object, Point to point) asks for it;
+  - one command per tool (`tool_run.luc` runs it as a step in Edit CAD, a node in a CAD network,
+    a mesh tool elsewhere), replacing `modify_commands.luc`, `surface_commands.luc` and the
+    Fillet, Chamfer, Offset Face and Check commands; Press Pull dispatches to the tools;
+  - the A, S and right-click menus and Modify › CAD tools by family at the selection's level
+    (no `modify[n]` indexing), Repeat for every context (`last_cad_tool` and its map are gone),
+    the handles (`Tool.handles`, no kind lists), the icons (the chain lost 60 CAD names) and
+    docs/TOOLS.md, which now has a CAD part.
+- The drag driver (Stage 3) takes a CAD step's drag row: luce-geocore's `Verbs.frame_at` gives a
+  frame from the middle of what the step picked, so after Fillet, Offset Face, Shell, Reblend or
+  Scale Body a drag anywhere sets the main row as it does for Bevel.
+- Measured against `5546775` (src files naming the tool by its label or the constant holding
+  it): Fillet 14 files and 36 lines before, 6 and 12 after (its declaration, Press Pull, the
+  fillet-set command, and the sketch's own Fillet); Align 9 and 20, 7 and 10 (its ops and
+  constants); Shell 9 and 17, 2 and 3 (its declaration and its kernel's branch); Fill Surface 6
+  and 12, 3 and 11 (its declaration and ops). The wiring layer (the 21 files counted then:
+  commands, picks, prompts, menus, marking menus, handles, icons, tool bar, Edit CAD's kind and
+  the CAD node wrappers) was 5,717 lines; the 15 left are 3,173, and with the new
+  `tool_picks`, `tool_run`, `cad_tools`, `cad_cook` and `pick_kinds` 4,331 (-24%). The
+  declarations hold 2,416 lines, most of them rows and cooks moved out of `node_catalog`
+  (1,029 to 816 lines) and the families' modules. `kind == "…"` and `in […]` tests went from
+  459 to 361.
+- Added by a declaration alone: **Scale Body** (`tool_scale_body.luc` and its line in
+  `cad_tools.luc`): a node, an Edit CAD step, its rows and drag, a Bodies entry in S, the
+  right-click menu and Modify, a docs/TOOLS.md section and a parity check, with no other file
+  changed.
+- Tests: `cad_tool_parity_tests` (node = step for every CAD tool that runs on a box's face,
+  edge or body with nothing more to pick: Offset Face, Shell, Delete, Remove, Scale Body,
+  Fillet, Chamfer, Trim, Untrim, Trim Convert, Shrink, Stitch, Unstitch; Move/Copy recorded as
+  differing: its node starts from its rows, whose scale slots are 0); `tool_registry_tests`
+  covers every CAD tool's declaration and the CAD network's and Edit CAD's menus; the CAD test
+  files pass with only their wiring calls renamed (`tool_run.run`, `tool_picks.accept`, the
+  prompts' labels, which are now "Pick " and the pick's label: "Pick sections", "Pick axis").
+- Disabled tools draw pale (luce-ui's `Theme.disabled`): marking menu entries, the tool column,
+  the level switchers; the icon shelf's buttons keep their tooltips.
+- Not yet: the CAD declarations live in luced-3d (question 2: luce-cad later); a CAD node does
+  not take the drag driver (its handles and value box do); the Move node's starting values.
 
 **Stage 2: selection.** **Done 2026-10-13** (see "Stage 2 as built" below).
 - In luce-geocore:

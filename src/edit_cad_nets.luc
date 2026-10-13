@@ -19,7 +19,9 @@ from luce_geocore.geocore import Mesh, Selection
 from luce_3d.graphics import Vector3
 from geometry_data import GeometryData
 from edit_operations import EditStep
-from edit_types import EditTool, soft_radius_slot, symmetry_slot
+from tool_record import Invocation
+import cad_cook
+from edit_types import soft_radius_slot, symmetry_slot
 from edit_types import falloff_slot as curve_slot
 from parameter_rows import Parameter, number, whole, toggle, menu
 from luce_ui import ui
@@ -161,30 +163,26 @@ pub let keep_v_slot = 7
 pub let rebuild_tolerance_slot = 8
 pub let most_slot = 9
 
-## The structure tools, at the CVs level (`cv`) and the Faces and Patch
-## levels.
-pub func tools(cv: int, faces: int, patch: int) -> list[EditTool]:
-    let both = [cv, faces, patch]
+## Insert Knot's rows: the direction, where, how many times.
+pub func insert_rows() -> list[Parameter]:
     let direction = menu("Direction", direction_slot, "U|V", 0.0, "Across U (a new row of CVs along V) or across V.")
     let fraction = number("Parameter", fraction_slot, 0.5, 0.001, 0.999, 0.01, "Where along the surface, from 0 at its start to 1 at its end.", slider = true)
-    let insert_rows = [direction, fraction, whole("Times", times_slot, 1.0, 1.0, 11.0, "How many times: up to the degree.")]
-    let remove_rows = [menu("Direction", direction_slot, "U|V", 0.0, "Across U or across V."),
-                       number("Parameter", fraction_slot, 0.5, 0.0, 1.0, 0.01, "The inner knot nearest this parameter goes.", slider = true),
-                       whole("Times", times_slot, 1.0, 1.0, 11.0, "How many times, as far as the tolerance allows."),
-                       number("Tolerance", tolerance_slot, 0.01, 0.0, 1000.0, 0.001, "How far the surface may move.", soft = 1.0)]
-    let raise_rows = [whole("Raise U", 0, 1.0, 0.0, 10.0, "Degrees added along U (to 11 at most)."), whole("Raise V", 1, 1.0, 0.0, 10.0, "Degrees added along V.")]
-    return [EditTool(insert_verb, insert_verb, both, [0.0, 0.5, 1.0], insert_rows),
-            EditTool(remove_verb, remove_verb, both, [0.0, 0.5, 1.0, 0.01], remove_rows),
-            EditTool(raise_verb, raise_verb, both, [1.0, 1.0], raise_rows),
-            EditTool(rebuild_verb, rebuild_verb, both, [0.0, 0.0, 5.0, 5.0, 4.0, 4.0, 2.0, 2.0, 0.01, 32.0], rebuild_rows()),
-            EditTool(convert_verb, convert_verb, [faces, patch], [0.0], none_shown())]
+    return [direction, fraction, whole("Times", times_slot, 1.0, 1.0, 11.0, "How many times: up to the degree.")]
 
-func none_shown() -> list[Parameter]:
-    let rows: list[Parameter] = []
-    return rows
+## Remove Knot's rows: the direction, the knot, how many times, how far
+## the surface may move.
+pub func remove_rows() -> list[Parameter]:
+    return [menu("Direction", direction_slot, "U|V", 0.0, "Across U or across V."),
+            number("Parameter", fraction_slot, 0.5, 0.0, 1.0, 0.01, "The inner knot nearest this parameter goes.", slider = true),
+            whole("Times", times_slot, 1.0, 1.0, 11.0, "How many times, as far as the tolerance allows."),
+            number("Tolerance", tolerance_slot, 0.01, 0.0, 1000.0, 0.001, "How far the surface may move.", soft = 1.0)]
+
+## Raise Degree's rows.
+pub func raise_rows() -> list[Parameter]:
+    return [whole("Raise U", 0, 1.0, 0.0, 10.0, "Degrees added along U (to 11 at most)."), whole("Raise V", 1, 1.0, 0.0, 10.0, "Degrees added along V.")]
 
 ## Rebuild's rows: Alias's types, Explicit Control, the edges' continuity.
-func rebuild_rows() -> list[Parameter]:
+pub func rebuild_rows() -> list[Parameter]:
     let preset = menu("Explicit Control", preset_slot, "Multi-span quintic|Single span degree 7|Custom", 0.0, "The structure: quintic spans (the default), one span of degree 7 (a Bezier patch, G3 at both edges), or degrees and spans of one's own.")
     preset.hide_when = "{ kind != 0 }"
     let degree_u = whole("Degree U", degree_u_slot, 5.0, 1.0, 11.0, "The degree along U.")
@@ -230,8 +228,15 @@ func target(step: EditStep, data: GeometryData, faces: Mesh?) -> (int, int)!:
         error(ui.invalid, f"{step.verb}: pick a face of the surface")
     return (int(mesh.attribute_value(mesh.find_attribute("cad_model", 2), first)), int(mesh.attribute_value(mesh.find_attribute("cad_surface", 2), first)))
 
+## A structure step's cook: its surface is its first picked CV's, or its
+## first picked face's (on the pick geometry it was selected on).
+pub func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    cad_cook.needs_models(data)
+    let step = cad_cook.step_of(call)
+    return run_structure(step, data, none if call.group_type == 1 else cad_cook.shown(call, data))
+
 ## A structure step on `data` (`faces`: the pick mesh of a face step).
-pub func run_structure(step: EditStep, data: GeometryData, faces: Mesh?) -> GeometryData!:
+func run_structure(step: EditStep, data: GeometryData, faces: Mesh?) -> GeometryData!:
     let (index, surface) = target(step, data, faces)
     let model = CadGeometry.model(data.geometry, index)
     var report = ""

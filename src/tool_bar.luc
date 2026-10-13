@@ -13,11 +13,8 @@ from luce_gpu.gpu import Rect
 from interop import Connection
 from workspace import Workspace
 from parameter_rows import Parameter, ramp_numbers, padded
-import cad_features
-import cad_moves
-import edit_cad_picks
-from edit_operations import EditStep
-import edit_cad_commands
+import tool_picks
+import pick_kinds
 import edit_types
 import edit_cad_nets
 import node_catalog
@@ -41,12 +38,15 @@ pub class ToolBar:
     var shown: str = ""
     ## Where it was last put.
     var placed: list[float]
+    ## The step's numbers as the row change began (picks_after).
+    var before: list[float]
     let connections: list[Connection]
 
     pub func init(self, w: Workspace, font: Font) -> unit!:
         self.w = w
         self.rows = []
         self.placed = []
+        self.before = []
         self.title = Text("", font = font, muted = true)
         self.panel = ParameterPanel([], font = font)
         self.problem = Text("", font = font)
@@ -56,7 +56,7 @@ pub class ToolBar:
         self.body.layout().set_popup(true)
         self.body.layout().set_modal(false)
         self.body.layout().set_visible(false)
-        self.connections = [self.panel.on_begin(func (index: int) -> unit!: w.begin("Change " + self.title.text())),
+        self.connections = [self.panel.on_begin(self.began),
                             self.panel.on_change(self.changed),
                             self.panel.on_commit(self.committed)]
 
@@ -175,7 +175,7 @@ pub class ToolBar:
             return (tool.name, rows) if rows.length > 0 else none
         # A command's feature step (a sketch's step has no rows here: its
         # plane is set when it is made).
-        if verb in kind.steps and verb in ["Extrude", "Revolve", "Sketch Plane"]:
+        if verb in kind.steps and verb == "Sketch Plane":
             let rows = node_catalog.tool_rows(verb)
             return (verb, rows) if rows.length > 0 else none
         return none
@@ -183,36 +183,39 @@ pub class ToolBar:
     ## Row `index`'s change is one undo step; then what it may start.
     func committed(self, index: int) -> unit!:
         self.w.commit()
-        self.picks_after(index)
+        self.picks_after()
 
-    ## After row `index` was set: an Edit CAD Extrude's extent turned To
-    ## object waits for the face to run to (Fusion's selection field).
-    func picks_after(self, index: int) -> unit!:
-        if index < 0 or index >= self.rows.length:
-            return
+    ## The step's numbers as a change began.
+    func began(self, index: int) -> unit!:
+        self.w.begin("Change " + self.title.text())
+        self.before = []
+        if let node = self.w.selected():
+            if node.edits.length > 0:
+                self.before = node.edits[-1].numbers.copy()
+
+    ## After a row was set: a pick of the step's tool the change made
+    ## wanted waits for it (Fusion's selection fields: an Extrude's extent
+    ## turned To object waits for its face, a Move turned Point to point for
+    ## its From point).
+    func picks_after(self) -> unit!:
         let node = self.w.selected() else return
-        if node.edits.length == 0:
+        if node.edits.length == 0 or self.before.length == 0:
             return
         let step = node.edits[-1]
-        if step.verb == "Transform Components":
-            self.move_picks(self.rows[index].slot, step)
-            return
-        if self.rows[index].slot != cad_features.extent_slot:
-            return
-        if step.verb == "Extrude" and int(step.numbers[cad_features.extent_slot]) == 1 and step.text(cad_features.face_text) == "":
-            edit_cad_commands.pick_extent_face(self.w)
-
-    ## Move/Copy's row on `slot` set: Point to point and Point to position
-    ## wait for the From point, Rotate about a picked edge for the edge, a
-    ## Point pivot for the point (Fusion's selection fields).
-    func move_picks(self, slot: int, step: EditStep) -> unit!:
-        let kind = int(step.numbers[cad_moves.type_slot]) if step.numbers.length > cad_moves.type_slot else 0
-        if slot == cad_moves.type_slot and kind >= 3:
-            edit_cad_picks.pick_move(self.w, edit_cad_picks.from_label)
-        elif (slot == cad_moves.axis_slot or slot == cad_moves.type_slot) and kind == 2 and int(step.numbers[cad_moves.axis_slot]) == 3:
-            edit_cad_picks.pick_move(self.w, edit_cad_picks.rotate_label)
-        elif slot == cad_moves.pivot_slot and int(step.numbers[cad_moves.pivot_slot]) == 2:
-            edit_cad_picks.pick_move(self.w, edit_cad_picks.pivot_label)
+        let kind = self.w.active_kind() else return
+        let edit = kind.tool(self.title.text()) else return
+        let tool = edit.tool else return
+        let texts: list[str] = []
+        for k in 0..<5:
+            texts.append(step.text(k))
+        for at in tool.picks_of(true):
+            let pick = tool.picks[at]
+            if pick.step < 0:
+                continue
+            let empty = pick.kind == pick_kinds.point or step.text(pick.step).trim() == ""
+            if empty and pick.wanted(step.numbers, texts, false) and not pick.wanted(self.before, texts, false):
+                tool_picks.ask(self.w, node, tool, at)
+                return
 
     func changed(self, index: int) -> unit!:
         let row = self.rows[index]

@@ -22,18 +22,13 @@ import sketch_node
 from parameter_rows import Parameter, number, whole, vector, toggle, menu, entry, heading, node_path
 from cad_nodes import solid_kinds, cad_only_kinds, is_cad_only, cad_categories, cad_category
 import cad_nodes
-import cad_modify
-import cad_moves
-import edit_cad_faces
 import edit_cad_nets
-import cad_features
-import cad_blends
 import cad_check
-import cad_curve_nodes
-import cad_surface_nodes
 import code_cook
 import verb_rows
 import script_cook
+import tool_registry
+import tool_sketch
 
 ## Value slots a node has, and the one verb nodes keep their Group Type in
 ## (verb_rows.luc keeps the same number: a verb with more skips it).
@@ -72,7 +67,9 @@ pub func requires_second(kind: str) -> bool:
     let index = VerbCatalog.index_of(kind)
     if index >= 0:
         return VerbCatalog.second_required(index)
-    return not (kind in ["Switch", "Null", "Output", "Extrude", "Revolve", "Combine", cad_check.kind_name, code_cook.kind_name, script_cook.kind_name])
+    if let tool = tool_registry.cad_node(kind):
+        return false
+    return not (kind in ["Switch", "Null", "Output", code_cook.kind_name, script_cook.kind_name])
 
 pub func sources() -> list[str]:
     return ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus", "File", "Input"] + context_kinds() + generators() + solid_kinds()
@@ -771,12 +768,10 @@ pub func description(kind: str) -> str:
         return "Solid bodies from sketches and features / double-click to model"
     if kind == sketch_node.kind_name:
         return "CAD sketch / curves on a plane, constrained and dimensioned"
+    if let tool = tool_registry.cad_node(kind):
+        return f"CAD {tool.family.lower()} / {tool.doc}"
     if kind == cad_check.kind_name:
         return "CAD inspection / continuity, curvature combs and deviation drawn on the body"
-    if kind in cad_curve_nodes.kinds():
-        return "CAD curve / a free curve, a curve on a face or a blend, added to the input"
-    if kind in cad_surface_nodes.kinds():
-        return "CAD surfacing / edges aligned G0-G3, curves projected and intersected onto faces, faces trimmed and converted, bodies stitched"
     if is_cad_only(kind):
         return "CAD feature / makes a solid body"
     if is_edit(kind):
@@ -817,227 +812,12 @@ pub func description(kind: str) -> str:
         return "Names faces: Group fields elsewhere pick them by @name=…"
     return "Geometry operator"
 
-## A CAD feature's parameters.
+## A CAD feature's parameters: a CAD tool's are its declaration's.
 func cad_fields(kind: str) -> list[Parameter]:
-    if kind == sketch_node.kind_name or kind == "Sketch Plane":
-        return [menu("Plane", 0, sketch_node.plane_names(), 1.0, "The plane the sketch is drawn on: XY (front), XZ (the ground), YZ (side), or a flat face of the input body (Pick face)."),
-                number("Offset", 1, 0.0, -100000.0, 100000.0, 1.0, "How far the plane is moved along its normal.", soft = 100.0)]
-    if kind == "Solid Box":
-        return [vector("Size", 0, [20.0, 20.0, 20.0], "Width (X), height (Y) and depth (Z), centered on the origin.", 0.001, 100000.0)]
-    if kind in ["Solid Cylinder", "Solid Cone"]:
-        let rows = [number("Radius", 0, 10.0, 0.001, 100000.0, 0.5, "The base's radius.", soft = 50.0), number("Height", 1, 20.0, 0.001, 100000.0, 0.5, "Along +Y, centered on the origin.", soft = 100.0)]
-        if kind == "Solid Cone":
-            rows.append(number("Top radius", 2, 0.0, 0.0, 100000.0, 0.5, "0 is a pointed cone; otherwise a frustum.", soft = 50.0))
-        return rows
-    if kind == "Solid Sphere":
-        return [number("Radius", 0, 10.0, 0.001, 100000.0, 0.5, "Centered on the origin.", soft = 50.0)]
-    if kind == "Solid Torus":
-        return [number("Radius", 0, 10.0, 0.001, 100000.0, 0.5, "The ring's radius, about +Y.", soft = 50.0), number("Tube", 1, 2.5, 0.001, 100000.0, 0.5, "The tube's radius; less than the ring's.", soft = 20.0)]
-    if kind == "Extrude":
-        return extrude_fields()
-    if kind == "Revolve":
-        return revolve_fields()
-    if kind == "Offset Face":
-        return [number("Distance", 0, 1.0, -100000.0, 100000.0, 0.5, "How far the faces move along their outward normals (negative: in); the faces around stretch or shrink to meet them, tangent ones following.", soft = 50.0)]
-    if kind == cad_check.kind_name:
-        return cad_check.fields()
-    if kind in cad_curve_nodes.kinds():
-        return cad_curve_nodes.fields(kind)
-    if kind in cad_surface_nodes.kinds():
-        return cad_surface_nodes.fields(kind)
-    if kind == "Mirror Body":
-        return [menu("Plane", 0, "YZ (across X)|ZX (across Y)|XY (across Z)", 0.0, "The plane through the origin the body is mirrored across."),
-                toggle("Separate bodies", 1, 0.0, "Keep the mirror image a body of its own instead of joining it.")]
-    if kind == "Pattern":
-        let count = whole("Count", 1, 3.0, 1.0, 1000.0, "How many bodies, the original among them.")
-        return [menu("Type", 0, "Linear|Circular", 0.0, "Linear: copies along an axis, Spacing apart. Circular: copies around an axis through the origin, over Angle."),
-                count,
-                menu("Axis", 2, "X|Y|Z", 0.0, "The axis the copies go along or around."),
-                number("Spacing", 3, 20.0, -100000.0, 100000.0, 1.0, "Linear: the distance between copies.", soft = 100.0),
-                number("Angle", 4, 360.0, -360.0, 360.0, 5.0, "Circular: the angle the copies spread over (360: evenly around).", suffix = "°"),
-                toggle("Separate bodies", 5, 0.0, "Keep the copies bodies of their own instead of joining them.")]
-    if kind in ["Fillet", "Chamfer"]:
-        return blend_fields(kind)
-    if kind == "Shell":
-        let inside = number("Inside thickness", edit_cad_faces.thickness_slot, 1.0, 0.0001, 100000.0, 0.1, "The wall's thickness inside the body's faces.", soft = 10.0)
-        inside.length = true
-        inside.hide_when = "{ direction == 1 }"
-        let outside = number("Outside thickness", edit_cad_faces.outside_slot, 1.0, 0.0001, 100000.0, 0.1, "The wall's thickness outside the body's faces.", soft = 10.0)
-        outside.length = true
-        outside.hide_when = "{ direction == 0 }"
-        return [toggle("Tangent chain", edit_cad_faces.shell_chain_slot, 1.0, "Each face removed brings the faces meeting it smoothly: a rounded rim opens whole."),
-                inside, outside,
-                menu("Direction", edit_cad_faces.shell_side_slot, "Inside|Outside|Both", 0.0, "Inside: the wall inside the body's faces. Outside: outside them. Both: Inside thickness in, Outside thickness out.")]
-    if kind == "Move":
-        let object = menu("Move object", cad_modify.object_slot, "Bodies|Faces", 0.0, "Bodies: whole bodies move. Faces: the faces move, the faces round them following.")
-        object.in_steps = false
-        return [object] + cad_moves.rows()
-    if kind == "Combine":
-        return [menu("Operation", edit_cad_faces.combine_slot, "Join|Cut|Intersect", 0.0, "Join: the tool bodies added to the target. Cut: taken out of it. Intersect: only what the target shares with them."),
-                toggle("Keep tools", edit_cad_faces.keep_tools_slot, 0.0, "Keep the tool bodies after combining.")]
-    if kind in ["Split Body", "Split Face"]:
-        let offset = number("Offset", edit_cad_faces.split_offset_slot, 0.0, -100000.0, 100000.0, 0.5, "An origin plane moved along its normal.", soft = 100.0)
-        offset.hide_when = "{ splitting_tool == 0 }"
-        let tool = menu("Splitting tool", edit_cad_faces.split_tool_slot, "Picked face|XY plane|XZ plane|YZ plane", 0.0, "The face picked (its surface extended), or an origin plane.")
-        let what = "the faces" if kind == "Split Face" else "the body"
-        let reach = "must cut right across each face it meets" if kind == "Split Face" else "must cut a piece off"
-        let extend = toggle("Extend splitting tool", edit_cad_faces.split_extend_slot, 1.0, f"On: the picked face's surface, extended past the face, splits {what}. Off: the face cuts only where it reaches, and {reach}.")
-        extend.hide_when = "{ splitting_tool != 0 }"
-        return [tool, extend, offset]
-    if kind == "Replace Face":
-        return [toggle("Tangent chain", edit_cad_faces.replace_chain_slot, 1.0, "Each face replaced brings the faces meeting it smoothly.")]
+    if let tool = tool_registry.cad_node(kind):
+        return tool.rows
+    # Edit CAD's Redefine Sketch Plane step has a Sketch's plane rows.
+    if kind == "Sketch Plane":
+        return tool_sketch.rows()
     return []
 
-## Extrude's rows, Fusion 360's dialog (cad_features.luc reads the slots).
-func extrude_fields() -> list[Parameter]:
-    let operation = menu("Operation", cad_features.operation_slot, cad_nodes.operation_names(), 0.0, "Auto: cuts where it goes into the body, else joins it (a new body without one), as Fusion does. Join, Cut, Intersect: combined with the body flowing down the chain, or the second input's when one is wired.")
-    let kind_row = menu("Type", cad_features.type_slot, "Extrude|Thin extrude", 0.0, "Extrude: the whole area inside the profiles. Thin extrude: a wall along the profiles' curves (open ones too), Wall thickness wide.")
-    let thickness = number("Wall thickness", cad_features.thickness_slot, 1.0, 0.0001, 100000.0, 0.1, "Thin extrude: how thick the wall is.", soft = 10.0)
-    thickness.hide_when = "{ type == 0 }"
-    thickness.length = true
-    let wall = menu("Wall location", cad_features.wall_slot, "Side 1|Side 2|Center", 0.0, "Thin extrude: Side 1 inside a closed profile (left of an open curve as it was drawn), Side 2 outside it (right), Center half each way.")
-    wall.hide_when = "{ type == 0 }"
-    let start = menu("Start", cad_features.start_slot, "Profile plane|Offset|Object", 0.0, "Where the extrusion starts: on the sketch's plane; that plane moved Start offset along its normal; or a face of the body (Pick start object), Start offset further on.")
-    let start_offset = number("Start offset", cad_features.start_offset_slot, 0.0, -100000.0, 100000.0, 0.5, "Offset: how far along the normal the extrusion starts (negative: the other way). Object: how far past the face.", soft = 100.0)
-    start_offset.hide_when = "{ start == 0 }"
-    let direction = menu("Direction", cad_features.direction_slot, cad_features.direction_names(), 0.0, "One side: along the normal (a negative distance goes the other way). Two sides: an extent and taper each way. Symmetric: the same each way.")
-    let measurement = menu("Measurement", cad_features.measurement_slot, "Half length|Whole length", 0.0, "Symmetric: Half length extrudes the distance to each side, Whole length half of it to each side.")
-    measurement.hide_when = "{ direction != 2 }"
-    let extent = menu("Extent", cad_features.extent_slot, cad_features.extent_names(), 0.0, "Distance: as far as Distance says. To object: until the face picked (Pick object), Offset further. All: through the whole body.")
-    let distance = number("Distance", cad_features.distance_slot, 10.0, -100000.0, 100000.0, 0.5, "How far the profiles sweep along the sketch plane's normal; negative goes the other way.", soft = 100.0)
-    distance.hide_when = "{ extent != 0 }"
-    let extend = menu("Extend", cad_features.extend_slot, cad_features.extend_names(), 0.0, "To object, as Fusion's: To selected face, its surface extended past the face; To adjacent faces, the face and the faces next to it; To body, the body the face is on; Through body, out of its far side.")
-    extend.hide_when = "{ extent != 1 }"
-    let offset = number("Offset", cad_features.offset_slot, 0.0, -100000.0, 100000.0, 0.5, "To object: how far past the face the extrusion stops (negative: short of it).", soft = 100.0)
-    offset.hide_when = "{ extent != 1 } { extend != 0 }"
-    let flip = toggle("Flip", cad_features.flip_slot, 0.0, "All, one side: through the body against the normal instead.")
-    flip.hide_when = "{ extent != 2 } { direction != 0 }"
-    let taper = number("Taper angle", cad_features.taper_slot, 0.0, -89.0, 89.0, 1.0, "Leans the sides: positive out, the profile growing along the extrusion; negative in. Fusion's sign.", suffix = "°")
-    let extent_two = menu("Side 2 extent", cad_features.extent_two_slot, cad_features.extent_names(), 0.0, "Two sides: the second side's extent, against the normal.")
-    extent_two.hide_when = "{ direction != 1 }"
-    let distance_two = number("Side 2 distance", cad_features.distance_two_slot, 10.0, 0.0, 100000.0, 0.5, "Two sides: how far the second side goes against the normal.", soft = 100.0)
-    distance_two.hide_when = "{ direction != 1 } { side_2_extent != 0 }"
-    distance_two.length = true
-    let extend_two = menu("Side 2 extend", cad_features.extend_two_slot, cad_features.extend_names(), 0.0, "To object, second side: as Extend.")
-    extend_two.hide_when = "{ direction != 1 } { side_2_extent != 1 }"
-    let offset_two = number("Side 2 offset", cad_features.offset_two_slot, 0.0, -100000.0, 100000.0, 0.5, "To object, second side: how far past its face it stops.", soft = 100.0)
-    offset_two.hide_when = "{ direction != 1 } { side_2_extent != 1 } { side_2_extend != 0 }"
-    offset_two.length = true
-    let taper_two = number("Side 2 taper", cad_features.taper_two_slot, 0.0, -89.0, 89.0, 1.0, "Two sides: the second side's taper, positive out.", suffix = "°")
-    taper_two.hide_when = "{ direction != 1 }"
-    start_offset.length = true
-    return [kind_row, start, start_offset, direction, measurement, extent, distance, extend, offset, flip, taper, extent_two, distance_two, extend_two, offset_two, taper_two, thickness, wall, operation]
-
-## Revolve's rows, Fusion 360's dialog.
-func revolve_fields() -> list[Parameter]:
-    let axis = menu("Axis", cad_features.axis_slot, cad_features.axis_names(), 0.0, "Picked: the sketch line or body edge picked (Pick axis), projected onto the sketch's plane. X, Y, Z: an origin axis.")
-    let kind_row = menu("Type", cad_features.revolve_type_slot, "Angle|Full|To", 0.0, "Angle: as far as Angle says. Full: all the way round. To: until the face picked (Pick object), its surface extended past it.")
-    let direction = menu("Direction", cad_features.revolve_direction_slot, cad_features.direction_names(), 0.0, "One side: from the sketch's plane toward its normal (a negative angle the other way). Two sides: an angle each way. Symmetric: Angle each way.")
-    direction.hide_when = "{ type != 0 }"
-    let angle = number("Angle", cad_features.angle_slot, 360.0, -360.0, 360.0, 5.0, "How far the profiles turn about the axis.", suffix = "°")
-    angle.hide_when = "{ type != 0 }"
-    let angle_two = number("Side 2 angle", cad_features.angle_two_slot, 90.0, 0.0, 360.0, 5.0, "Two sides: how far the second side turns, the other way.", suffix = "°")
-    angle_two.hide_when = "{ type != 0 } { direction != 1 }"
-    let flip = toggle("Flip", cad_features.revolve_flip_slot, 0.0, "To: turn against the sketch plane's normal instead.")
-    flip.hide_when = "{ type != 2 }"
-    let operation = menu("Operation", cad_features.operation_slot, cad_nodes.operation_names(), 0.0, "Auto: cuts where it turns into the body, else joins it (a new body without one). Join, Cut, Intersect: combined with the body flowing down the chain, or the second input's when one is wired.")
-    return [axis, kind_row, direction, angle, angle_two, flip, operation]
-
-## Fillet's and Chamfer's rows, Fusion 360's dialogs (cad_blends.luc reads
-## the slots).
-func blend_fields(kind: str) -> list[Parameter]:
-    let size = number("Radius" if kind == "Fillet" else "Distance", cad_blends.size_slot, 1.0, 0.0001, 100000.0, 0.1, "The rolling ball's radius." if kind == "Fillet" else "How far the chamfer reaches along each face.", soft = 10.0)
-    let chain = toggle("Tangent chain", cad_blends.chain_slot, 1.0, "Each picked edge brings the edges continuing it smoothly: a rounded slot's rim, the edges around an earlier fillet.")
-    if kind == "Chamfer":
-        let shape = menu("Type", cad_blends.chamfer_type_slot, "Equal distance|Two distances|Distance and angle", 0.0, "Equal distance: as far along each face. Two distances: Distance along the first face (the one more of the picked edges lie on), Distance 2 along the other. Distance and angle: Distance along the first face, leaving it at Angle.")
-        let second = number("Distance 2", cad_blends.second_slot, 1.0, 0.0001, 100000.0, 0.1, "Two distances: how far the chamfer reaches along the other face.", soft = 10.0)
-        second.hide_when = "{ type != 1 }"
-        second.length = true
-        let angle = number("Angle", cad_blends.angle_slot, 45.0, 0.1, 179.9, 1.0, "Distance and angle: the angle the chamfer leaves the first face at.", suffix = "°")
-        angle.hide_when = "{ type != 2 }"
-        let flip = toggle("Flip", cad_blends.flip_slot, 0.0, "Measure the first distance on the other face.")
-        flip.hide_when = "{ type == 0 }"
-        let corner = menu("Corner type", cad_blends.corner_slot, "Chamfer|Miter|Blend", 0.0, "Where three chamfers meet at a corner: Chamfer joins them with a flat face; Miter runs them on to a point; Blend sets them back and closes the corner with one flat face, as Fusion's.")
-        return [shape, size, second, angle, flip, corner, chain]
-    let kind_row = menu("Type", cad_blends.type_slot, "Fillet|Rule fillet|Full round", 0.0, "Fillet: the edges picked. Rule fillet: the edges a rule takes (All edges, or Between faces), found again as the body changes. Full round: a center face (Pick center face) rounded away whole, tangent to it and to the faces on each side.")
-    let rule = menu("Rule", cad_blends.rule_slot, "All edges|Between faces", 0.0, "All edges: every edge of the kinds below. Between faces: those between the faces picked (Pick faces) and, when picked, the other faces (Pick other faces).")
-    rule.hide_when = "{ type != 1 }"
-    let rounds = toggle("Rounds", cad_blends.rounds_slot, 1.0, "Rule fillet: outside edges (convex), material taken away.")
-    rounds.hide_when = "{ type != 1 }"
-    let fillets = toggle("Fillets", cad_blends.fillets_slot, 1.0, "Rule fillet: inside edges (concave), material added.")
-    fillets.hide_when = "{ type != 1 }"
-    let radius_type = menu("Radius type", cad_blends.radius_type_slot, "Constant|Chord length|Variable", 0.0, "Constant: the fillet's radius. Chord length: the distance between where the fillet leaves the two faces. Variable: Radius at the start of the edge (or its tangent chain), End radius at its end and points between, G1, G2 or G3.")
-    radius_type.hide_when = "{ type == 2 }"
-    let chord = number("Chord length", cad_blends.chord_slot, 1.0, 0.0001, 100000.0, 0.1, "Chord length: how far apart the fillet's edges on the two faces are.", soft = 10.0)
-    chord.hide_when = "{ type == 2 } { radius_type != 1 }"
-    chord.length = true
-    let end_radius = number("End radius", cad_blends.end_radius_slot, 2.0, 0.0001, 100000.0, 0.1, "Variable: the radius at the end of the edge or chain (Radius is at its start).", soft = 10.0)
-    end_radius.hide_when = "{ type == 2 } { radius_type != 2 }"
-    end_radius.length = true
-    let points = entry("Points", cad_blends.points_text, "Variable: radii between the ends, as \"position radius\" pairs apart by ; (positions 0 to 1 along the edge or chain, fractions of its length), e.g. 0.5 1.0; 0.75 1.5.")
-    points.hide_when = "{ type == 2 } { radius_type != 2 }"
-    let smooth = toggle("Smooth transition", cad_blends.smooth_slot, 0.0, "Variable: the radius held a moment at each point and eased between them; off (Fusion's): straight between two radii, a smooth spline through more.")
-    smooth.hide_when = "{ type == 2 } { radius_type != 2 }"
-    let continuity = menu("Continuity", cad_blends.continuity_slot, "G1|G2|G3", 0.0, "G1: a circular fillet (Fusion's Tangent). G2: curvature flows into the faces (Fusion's Curvature; no jump in reflections). G3: its change too, smoother still. Where three meet at a corner they stop short of it, and a patch as smooth as they are rounds it.")
-    let tangency = number("Tangency weight", cad_blends.tangency_slot, 1.0, 0.1, 2.0, 0.1, "How far the continuity reaches into the fillet (Fusion's Tangency weight): 1 the plain fillet; more hugs the faces longer and turns tighter in the middle, less is flatter. A G1 fillet with a weight is a conic, its corners setbacks.", slider = true)
-    tangency.hide_when = "{ type == 2 } { continuity == 0 conic != 0 } { continuity == 1 g2_shape != 0 }"
-    # Parasolid's sections (luce-cad blend_shape.lucb).
-    let conic = menu("Conic", cad_blends.conic_slot, "Off|Rho|Rho relative|Middle radius", 0.0, "G1 (Parasolid's conic section): Rho, the conic's own (0.5 a parabola, less an ellipse, more a hyperbola); Rho relative, against the circle's (0.5 the circle); Middle radius, the radius of curvature at the section's middle as a share of the fillet's radius (1 the circle).")
-    conic.hide_when = "{ type == 2 } { continuity != 0 }"
-    let rho = number("Rho", cad_blends.rho_slot, 0.5, 0.01, 10.0, 0.05, "The conic's rho (0 to 1), or Middle radius's share of the radius.", slider = true)
-    rho.hide_when = "{ type == 2 } { continuity != 0 } { conic == 0 }"
-    let g2_shape = menu("G2 shape", cad_blends.g2_shape_slot, "Fusion|Depth and skew|Softness", 0.0, "G2 (Parasolid's G2 section): Fusion's own; by Depth (0 at the chord between the contacts to 1 at the faces' corner) and Skew (0 toward the first face to 1 toward the second, 0.5 even); or by Softness (more is flatter and deeper, less like a chamfer with rounded edges).")
-    g2_shape.hide_when = "{ type == 2 } { continuity != 1 }"
-    let depth = number("Depth", cad_blends.depth_slot, 0.5, 0.01, 0.99, 0.05, "How far the section's middle lies from the chord toward the corner.", slider = true)
-    depth.hide_when = "{ type == 2 } { continuity != 1 } { g2_shape != 1 }"
-    let skew = number("Skew", cad_blends.skew_slot, 0.5, 0.01, 0.99, 0.05, "Where the section leans: toward the first face below 0.5, the second above.", slider = true)
-    skew.hide_when = "{ type == 2 } { continuity != 1 } { g2_shape != 1 }"
-    let softness = number("Softness", cad_blends.softness_slot, 0.5, 0.01, 1.0, 0.05, "The section's arms along the faces: more is flatter and deeper.", slider = true)
-    softness.hide_when = "{ type == 2 } { continuity != 1 } { g2_shape != 2 }"
-    let limits = toggle("Limits", cad_blends.limits_slot, 0.0, "Parasolid's limits: the fillet runs only from Limit from to Limit to along its one straight edge (fractions of its length), capped by planes square to the edge.")
-    limits.hide_when = "{ type == 2 } { more_options == 0 }"
-    let limit_from = number("Limit from", cad_blends.limit_from_slot, 0.0, 0.0, 1.0, 0.05, "Where along the edge the fillet starts (0 its start).", slider = true)
-    limit_from.hide_when = "{ type == 2 } { limits == 0 } { more_options == 0 }"
-    let limit_to = number("Limit to", cad_blends.limit_to_slot, 1.0, 0.0, 1.0, 0.05, "Where along the edge the fillet ends (1 its end).", slider = true)
-    limit_to.hide_when = "{ type == 2 } { limits == 0 } { more_options == 0 }"
-    let at_overlap = toggle("At overlap", cad_blends.limit_overlap_slot, 0.0, "Parasolid's overlap limit: within Limit from and Limit to, the fillet runs only along the longest stretch where it fits its faces, capped square there, rather than overflowing.")
-    at_overlap.hide_when = "{ type == 2 } { limits == 0 } { more_options == 0 }"
-    size.hide_when = "{ type == 2 } { radius_type == 1 }"
-    chain.hide_when = "{ type == 2 }"
-    # An Edit CAD step fillets the edges picked: the rule is the node's.
-    let corner = menu("Corner type", cad_blends.fillet_corner_slot, "Rolling ball|Setback", 0.0, "Where three fillets meet at a corner: Rolling ball, a ball rounds it (G2 and G3: they stop where the ball's would and a three-sided patch joins their ends; where inside and outside fillets meet, the pair's section rolls round the lone one), Fusion's; Setback, the fillets stop short of the corner (2 radii, Fusion's) and a patch blends them into the faces, a vertex blend where both kinds meet.")
-    corner.hide_when = "{ type == 2 }"
-    let setback_ratio = number("Setback", cad_blends.setback_ratio_slot, 0.0, 0.0, 10.0, 0.1, "Parasolid's setbacks: where fillets meet at a Setback corner, each stops at least this many radii from it, the corner's patch filling the gap; 0 as far as the corner needs (Fusion's).", slider = true)
-    setback_ratio.hide_when = "{ type == 2 } { corner_type == 0 } { more_options == 0 }"
-    let edge_shape = number("Corner edge shape", cad_blends.corner_shape_slot, 0.5, 0.05, 0.95, 0.05, "Alias's Corner Blend Edge Shape: a G1 Setback corner's curves on the faces, as conics (0.5 the circle, Fusion's; more runs nearer the faces' corner, keeping more of it; less is flatter).", slider = true)
-    edge_shape.hide_when = "{ type == 2 } { continuity != 0 } { corner_type == 0 } { more_options == 0 }"
-    let fullness = number("Corner fullness", cad_blends.corner_fullness_slot, 0.0, 0.0, 3.0, 0.05, "Alias's Pivot Curve Length Ratio: a Setback or G2 corner's patch bulges this much from its edges against the fairest fill (1); 0, the default, as Fusion's corners (Setback 1.27 at G1 and 1.1 at G2 and G3, three-sided 1.143).", slider = true)
-    fullness.hide_when = "{ type == 2 } { continuity == 0 corner_type == 0 } { more_options == 0 }"
-    let overflow = toggle("Overflow", cad_blends.overflow_slot, 1.0, "Parasolid's overflow: a fillet running off its face does what Smooth, Cliff and Notch allow, tried in that order; off, it must fit its faces.")
-    overflow.hide_when = "{ type == 2 } { more_options == 0 }"
-    let smooth_overflow = toggle("Smooth", cad_blends.smooth_overflow_slot, 1.0, "Overflow: the ball rolls on over a line splitting the face, or onto a round tangent to it beyond.")
-    let cliff_overflow = toggle("Cliff", cad_blends.cliff_overflow_slot, 1.0, "Overflow: a cliff-edge blend, tangent to the other face and running along the edge where the face ends (G1).")
-    let notch_overflow = toggle("Notch", cad_blends.notch_overflow_slot, 1.0, "Overflow: the fillet unchanged, the next face trimming it, or a ledge's plane covering its end.")
-    for row in [smooth_overflow, cliff_overflow, notch_overflow]:
-        row.hide_when = "{ type == 2 } { more_options == 0 } { overflow == 0 }"
-    # The section's rows first; what bounds the fillet (its limits, a
-    # corner's setback, its overflow) behind More options, closed at first.
-    let more = toggle("More options", cad_blends.more_slot, 0.0, "Show the rows that bound the fillet: Limits along its edge, a corner's Setback and shape, and what it does when it runs off its faces (Overflow: Smooth, Cliff, Notch).")
-    more.hide_when = "{ type == 2 }"
-    # Fusion's selection sets: the edges picked are the first, at Radius;
-    # each further set its own edges (Pick set k edges) and radius. With
-    # Variable radius, a second set is the constant edges its law runs
-    # into at corners.
-    let sets = whole("Selection sets", cad_blends.sets_slot, 1.0, 1.0, float(cad_blends.most_sets), "Fusion's selection sets: the edges picked are set 1 at Radius; sets 2 and on each take their own edges (Pick set 2 edges…) and radius, meeting at setback corners where radii differ. With Variable radius, set 2 is the constant edges the law runs into at corners (a straight law runs in as Fusion's, a cone; any other must end at their radius).")
-    sets.hide_when = "{ type != 0 } { radius_type == 1 }"
-    let set_rows: list[Parameter] = []
-    for k in 2..<cad_blends.most_sets + 1:
-        let row = number(f"Set {k} radius", cad_blends.set_radius_slot + k - 2, 2.0, 0.0001, 100000.0, 0.1, f"Selection set {k}'s radius.", soft = 10.0)
-        row.length = true
-        # Set 2 shows with Variable radius too; the others with Constant.
-        let kind_clause = "{ radius_type == 1 }" if k == 2 else "{ radius_type != 0 }"
-        row.hide_when = "{ type != 0 } " + kind_clause + " { selection_sets < " + f"{k}" + " }"
-        set_rows.append(row)
-    for row in [kind_row, rule, rounds, fillets, radius_type, chord, end_radius, points, smooth, corner]:
-        row.in_steps = false
-    return [kind_row, rule, rounds, fillets, radius_type, size, chord, end_radius, points, smooth, sets] + set_rows + [chain, continuity, tangency, conic, rho, g2_shape, depth, skew, softness, corner, more, limits, limit_from, limit_to, at_overlap, setback_ratio, edge_shape, fullness, overflow, smooth_overflow, cliff_overflow, notch_overflow]

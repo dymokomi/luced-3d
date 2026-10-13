@@ -1,0 +1,76 @@
+## Move/Copy (Fusion 360's): bodies placed, or faces moved and turned with
+## the faces around following, by Free move, Translate, Rotate, Point to
+## point or Point to position, Create copy leaving the originals
+## (cad_moves.luc). The Move node keeps what moves by name; in Edit CAD it
+## is the gizmo's step (Transform Components), its tool bar Fusion's
+## dialog.
+from tool_record import Tool, ToolEntry, Pick, Invocation
+from geometry_data import GeometryData
+from parameter_rows import Parameter, menu
+from edit_types import object_level, face_level, edge_level, patch_level
+import pick_kinds
+import cad_moves
+import cad_cook
+
+## Move object (0 bodies, 1 faces), after Move/Copy's numbers.
+pub let object_slot = 25
+
+pub func entry() -> ToolEntry:
+    return ToolEntry("Move", "Move/Copy", "move-tool", "Modify", [cad_cook.context], [cad_cook.edit_kind], made, verb = "Transform Components")
+
+func made() -> Tool:
+    return entry().tool("Modify", "Bodies", "Move or copy bodies, or faces with the faces around following: free, along a direction, turned, or point to point",
+                        picks(), rows(), cook, numbers = cad_moves.starting(), gesture = "move", handles = true, asks = true, waits = waits)
+
+## What moves (faces or bodies, as Move object says), the edge it turns
+## about, and its points.
+func picks() -> list[Pick]:
+    return [Pick("Objects", [object_level, face_level, patch_level], kind = pick_kinds.faces, slot = 0, bodies_when = moves_bodies, doc = "What moves: bodies or faces, as Move object says."),
+            Pick("Rotate axis", [edge_level], kind = pick_kinds.edge, slot = cad_moves.axis_text, step = cad_moves.axis_text, hide_when = "{ move_type != 2 } { axis != 3 }",
+                 needed = turns_about_edge, doc = "Rotate: the edge whose line it turns about."),
+            Pick("From point", [edge_level], kind = pick_kinds.point, slot = cad_moves.from_slot, step = cad_moves.from_slot, hide_when = "{ move_type < 3 }", still = cad_moves.to_slot, needed = by_points,
+                 doc = "The point that moves: a corner or an edge's end, a round edge's middle."),
+            Pick("To point", [edge_level], kind = pick_kinds.point, slot = cad_moves.to_slot, step = cad_moves.to_slot, hide_when = "{ move_type != 3 }", still = cad_moves.from_slot, needed = to_point,
+                 doc = "Point to point: where it goes."),
+            Pick("Pivot", [edge_level], kind = pick_kinds.point, slot = cad_moves.pivot_point_slot, step = cad_moves.pivot_point_slot, hide_when = "{ move_type == 1 } { move_type > 2 } { pivot != 2 }", needed = pivot_point,
+                 button = "Set pivot", doc = "Set pivot: the point Free move and Rotate turn about.")]
+
+func moves_bodies(values: list[float]) -> bool:
+    return int(values[object_slot]) == 0
+
+func turns_about_edge(values: list[float], texts: list[str], wired: bool) -> bool:
+    return int(values[cad_moves.type_slot]) == 2 and int(values[cad_moves.axis_slot]) == 3
+
+## Point to point and Point to position move from a point; Point to point
+## to another.
+func by_points(values: list[float], texts: list[str], wired: bool) -> bool:
+    return int(values[cad_moves.type_slot]) >= 3
+
+func to_point(values: list[float], texts: list[str], wired: bool) -> bool:
+    return int(values[cad_moves.type_slot]) == 3
+
+## Set pivot: a point of one's own to turn about.
+func pivot_point(values: list[float], texts: list[str], wired: bool) -> bool:
+    return int(values[cad_moves.pivot_slot]) == 2 and int(values[cad_moves.type_slot]) in [0, 2]
+
+func waits(values: list[float], texts: list[str], wired: bool) -> str:
+    if texts[0].trim() == "":
+        return "Pick the bodies or faces to move"
+    if turns_about_edge(values, texts, wired) and texts[1].trim() == "":
+        return "Pick the edge to rotate about"
+    return ""
+
+func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    if not call.node:
+        return cad_cook.face_step(call, data, tag)
+    let waiting = waits(call.numbers, call.texts, false)
+    if waiting != "":
+        return data.passed(waiting)
+    let mesh = cad_cook.node_mesh(data, call.verb)
+    let group = cad_cook.picked(call, mesh, 0, moves_bodies(call.numbers))
+    return cad_cook.node_face_step(call, "Transform Components", data, mesh, group, ["", call.text(cad_moves.axis_text)], cad_moves.move_count, tag)
+
+func rows() -> list[Parameter]:
+    let object = menu("Move object", object_slot, "Bodies|Faces", 0.0, "Bodies: whole bodies move. Faces: the faces move, the faces round them following.")
+    object.in_steps = false
+    return [object] + cad_moves.rows()

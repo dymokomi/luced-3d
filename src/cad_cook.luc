@@ -1,0 +1,145 @@
+## What CAD tools' cooks share (docs/research/POLY-MODELING.md Stage 1): a
+## cook takes an Invocation from a node (its picks by name in its texts) or
+## from an Edit CAD step (its group picked on the model's pick geometry,
+## later picks in its texts) and hands it to the CAD op as that op takes
+## it. The op is one code for both: a node's names become groups on its
+## input's pick geometry (cad_names.lucb) and run the step's code, or a
+## step's group becomes the references the node's code takes.
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.cad_edits import CadEdits
+from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+from luce_geocore.geocore import Mesh, Groups
+from geometry_data import GeometryData
+from edit_operations import EditStep
+from tool_record import Invocation
+import cad_names
+import edit_cad_faces
+from luce_ui import ui
+
+## The Edit kind CAD tools are steps of, and the network context they are
+## nodes in.
+pub let edit_kind = "Edit CAD"
+pub let context = "cad"
+
+## The bodies of `data` as one: each CAD model of its set, unioned; `role`
+## names the input in the error ("first").
+pub func body_of(data: GeometryData, role: str) -> CadModel!:
+    let count = CadGeometry.model_count(data.geometry)
+    if count == 0:
+        error(ui.invalid, f"The {role} input has no solid body")
+    var body = CadGeometry.model(data.geometry, 0)
+    for at in 1..<count:
+        body = CadModeling.combined(body, CadGeometry.model(data.geometry, at), 0)
+    return body
+
+## The tagged tessellations Edit CAD's Object, Faces and Edges levels pick
+## on (luce-cad's CadEdits.pick_mesh), made once per result, with what the
+## last step created as `.selection` (a group may name it, so steps read
+## their groups on this same mesh).
+pub func pick_mesh(data: GeometryData) -> Mesh!:
+    if let known = data.pick_cache:
+        return known
+    var made = CadEdits.pick_mesh(data.geometry)
+    if data.created != "":
+        made = Groups.with_group(made, ".selection", 2, data.created)
+    data.pick_cache = made
+    return made
+
+## The pick geometry a step's group was selected on: `data`'s, when the
+## models are as they were then.
+pub func shown(call: Invocation, data: GeometryData) -> Mesh!:
+    let mesh = pick_mesh(data)
+    if call.topology != 0 and call.topology != mesh.topology_hash():
+        error(ui.invalid, "The CAD input changed. Undo the upstream change or clear this node's edits.")
+    return mesh
+
+## Edit CAD's steps on models need one.
+pub func needs_models(data: GeometryData) -> unit!:
+    if not data.has_cad():
+        error(ui.invalid, "Edit CAD has no models to edit yet: create one, sketch and extrude, or connect CAD")
+
+## The Edit step `call` is, for the step code (edit_cad_*.luc take steps).
+pub func step_of(call: Invocation) -> EditStep:
+    return EditStep(call.verb, call.group(), call.group_type, call.numbers, call.topology, call.symmetry, call.keep, call.texts)
+
+## A node's call as the step its names make on the pick geometry of what
+## it works on: its group `group`, its texts `texts`, its first
+## `count` numbers.
+pub func as_step(call: Invocation, verb: str, group: str, texts: list[str], count: int) -> EditStep:
+    let numbers = call.numbers[..<count] if call.numbers.length > count else call.numbers
+    return EditStep(verb, group, 3, numbers, 0, texts = texts)
+
+## The group of what `names` (faces, or with `bodies` whole bodies, apart
+## by `;`) find on `mesh`: "" for none; an error when names were given and
+## none is found upstream any more.
+pub func found(mesh: Mesh, names: str, bodies: bool) -> str!:
+    if names.trim() == "":
+        return ""
+    let group = cad_names.named_group(mesh, names, bodies)
+    if group == "!*":
+        error(ui.invalid, "The faces or bodies this feature refers to are gone upstream: pick them again")
+    return group
+
+## Groups united (Houdini's syntax: apart by spaces); empty ones left out.
+pub func joined(groups: list[str]) -> str:
+    let kept: list[str] = []
+    for group in groups:
+        if group != "":
+            kept.append(group)
+    return kept.join(" ")
+
+## A step on picked edges run model by model, as the node runs on its one
+## body: each model with picked edges replaced by `run`'s result on it
+## (given it alone, its edges' references and a tag `<tag>.<model>`); the
+## first one's handles are the step's.
+pub func on_edges(call: Invocation, data: GeometryData, tag: str, run: func(GeometryData, str, str) -> GeometryData!) -> GeometryData!:
+    needs_models(data)
+    let mesh = shown(call, data)
+    var geometry = data.geometry
+    var any = false
+    var handles = ""
+    for index in 0..<CadGeometry.model_count(data.geometry):
+        let edges = CadEdits.model_edges(mesh, call.group(), index)
+        if edges == "":
+            continue
+        let body = GeometryData(geometry = CadGeometry.of_model(CadGeometry.model(data.geometry, index)))
+        let made = run(body, edges, f"{tag}.{index}")
+        geometry = CadEdits.replaced(geometry, index, CadGeometry.model(made.geometry, 0))
+        if handles == "":
+            handles = made.handles
+        any = true
+    if not any:
+        error(ui.invalid, f"{call.verb} needs edges of a model: pick them at the Edges level")
+    let result = GeometryData(geometry = geometry)
+    result.handles = handles
+    return result
+
+## A face tool's Edit step (edit_cad_faces.run_face_step) on what it
+## picked of the models.
+pub func face_step(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    needs_models(data)
+    let mesh = shown(call, data)
+    if call.group_type == 2:
+        error(ui.invalid, f"{call.verb} does not apply to CAD edges")
+    return edit_cad_faces.run_face_step(step_of(call), tag, data, mesh)
+
+## The pick geometry of a face tool node's input `input`: its bodies'.
+pub func node_mesh(input: GeometryData, kind: str) -> Mesh!:
+    if CadGeometry.model_count(input.geometry) == 0:
+        error(ui.invalid, f"{kind} works on bodies: the chain brings none here")
+    return CadEdits.pick_mesh(input.geometry)
+
+## A face tool node run as Edit CAD's step `verb` on its input `input`: its
+## names found on `mesh` as `group`, its other picks as the step's
+## `texts`, its first `count` values the step's numbers. It created nothing
+## to select.
+pub func node_face_step(call: Invocation, verb: str, input: GeometryData, mesh: Mesh, group: str, texts: list[str], count: int, tag: str) -> GeometryData!:
+    let result = edit_cad_faces.run_face_step(as_step(call, verb, group, texts, count), tag, input, mesh)
+    result.created = ""
+    return result
+
+## The bodies a node picked, or faces of them (`bodies` off): the group of
+## the names in its text `slot` on `mesh`.
+pub func picked(call: Invocation, mesh: Mesh, slot: int, bodies: bool) -> str!:
+    return found(mesh, call.text(slot), bodies)

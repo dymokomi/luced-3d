@@ -1,30 +1,18 @@
-## Edit CAD's surfacing Stage 3 steps (docs/research/
-## SURFACING-ALIAS-PLASTICITY.md §7.1), each one step and one undo, on what
-## the level picks (surface_ops.luc does the work, CadSurfacing):
-##   Project, at Curves: the picked curves cast onto a face clicked next
-##     (edit_cad_picks.luc's Pick projection face), along a vector, the view
-##     (its direction kept from when the step was made) or the normals;
-##   Intersect, at Faces and Patch: two picked faces, or one and a plane;
-##   Trim, at Faces and Patch: the picked face cut by its curves; region
-##     markers show on it, a click on one keeps or discards it (Keep,
-##     Discard), Divide makes every region a face (trim_regions.luc);
-##   Untrim (Last or All), Trim Convert, Shrink, at Faces and Patch;
-##   Stitch and Unstitch, at Object: the picked bodies joined within a gap,
-##     or a body's faces each a body.
-## The CAD network's nodes of the same names do the same with history
-## (cad_surface_nodes.luc).
+## Surfacing Stage 3's tools (docs/research/SURFACING-ALIAS-PLASTICITY.md
+## §7.1), each declared in its tool_<name>.luc (tool_project, tool_intersect,
+## tool_trim, tool_untrim, tool_trim_convert, tool_shrink, tool_stitch,
+## tool_unstitch): their verbs, the slots their numbers keep, and what their
+## Edit CAD steps share (the faces or bodies a step picked, Trim's picks).
+## surface_ops.luc does the work.
 from luce_cad.cad_geometry import CadGeometry
-from luce_cad.cad_curves import CadCurves
 from luce_cad.cad_edits import CadEdits
 from luce_geocore.geocore import Mesh
 from luce_3d.graphics import Vector3
 from geometry_data import GeometryData
 from edit_operations import EditStep
-from edit_types import EditTool
-from parameter_rows import Parameter, number, whole, toggle, menu, vector
-import edit_cad_curves
+from tool_record import Invocation
+import cad_cook
 import surface_ops
-import build_ops
 from luce_ui import ui
 
 pub let project_verb = "Project"
@@ -35,18 +23,6 @@ pub let convert_verb = "Trim Convert"
 pub let shrink_verb = "Shrink"
 pub let stitch_verb = "Stitch"
 pub let unstitch_verb = "Unstitch"
-
-## Steps on picked faces (the Faces and Patch levels).
-pub func face_verbs() -> list[str]:
-    return [intersect_verb, trim_verb, untrim_verb, convert_verb, shrink_verb]
-
-## Steps on picked bodies (the Object level).
-pub func body_verbs() -> list[str]:
-    return [stitch_verb, unstitch_verb]
-
-## Every Stage 3 step.
-pub func verbs() -> list[str]:
-    return [project_verb] + face_verbs() + body_verbs()
 
 # -- The steps' numbers.
 
@@ -86,75 +62,12 @@ pub let gap_slot = 0
 pub let periodic_slot = 1
 pub let single_slot = 2
 
-## Project's rows (also the node's).
-pub func project_rows() -> list[Parameter]:
-    let along = vector("Vector", direction_slot, [0.0, -1.0, 0.0], "The direction the curves are cast along (View: the view's direction when the step was made).")
-    along.hide_when = "{ along == 2 }"
-    return [menu("Along", along_slot, "Vector|View|Normal", 0.0, "Alias's Project options: along a vector, along the view, or along the face's normals (Rhino's Pull)."),
-            along,
-            toggle("Both ways", both_slot, 1.0, "Cast both ways along the direction (Plasticity's Bidirectional), the nearest hit winning; off: only ahead along it."),
-            toggle("Match original", original_slot, 0.0, "Alias's Match original: keep each curve's degree and spans; off: degree 5 on as many spans as the tolerance needs.")]
-
-## Intersect's rows.
-pub func intersect_rows() -> list[Parameter]:
-    let origin = vector("Plane origin", origin_slot, [0.0, 0.0, 0.0], "With a plane: a point of the plane.")
-    origin.hide_when = "{ with == 0 }"
-    let normal = vector("Plane normal", normal_slot, [0.0, 1.0, 0.0], "With a plane: its normal.")
-    normal.hide_when = "{ with == 0 }"
-    let both = toggle("Curves on both", both_faces_slot, 0.0, "Alias's Create curves on both surfaces: the meeting curve on the second face too.")
-    both.hide_when = "{ with == 1 }"
-    return [menu("With", with_slot, "Faces|Plane", 0.0, "Intersect two faces, or a face with a plane."), origin, normal, both]
-
-## Trim's rows.
-pub func trim_rows() -> list[Parameter]:
-    let direction = vector("Cast direction", cast_direction_slot, [0.0, -1.0, 0.0], "3D Trimming along a vector: the direction curves off the face are cast along.")
-    direction.hide_when = "{ curves != 1 }"
-    return [menu("Mode", mode_slot, "Keep|Discard|Divide", 0.0, "Alias's Trim: keep the regions clicked (their markers), discard them, or make every region a face of its own."),
-            toggle("Show intersections", show_slot, 1.0, "Mark where the curves cross the face's edges and each other (green) and the ends of curves that cut nothing (red), as Alias's Show Intersections."),
-            menu("Curves", cast_slot, "On face|Cast along vector|Cast along normals", 0.0, "Alias's 3D Trimming: only the curves on the face, or every curve of the model cast onto it as the trim runs (along a vector, or along its normals)."),
-            direction,
-            toggle("Intersect faces", cutters_slot, 0.0, "3D Trimming by Intersect: the faces picked after the first (the node's Cutting faces) cut it where they meet it."),
-            toggle("Extend curves", extend_slot, 0.0, "Carry curve ends that stop short of the face's edge on along the face, to its edge or the next curve (Alias's Extend).")]
-
-## Untrim's rows.
-pub func untrim_rows() -> list[Parameter]:
-    return [menu("Stages", all_slot, "Last|All", 0.0, "Alias's Untrim Stages: undo the last trim, or every one (a face with none goes back to its natural surface).")]
-
-## Trim Convert's rows.
-pub func convert_rows() -> list[Parameter]:
-    return [whole("Degree U", degree_u_slot, 5.0, 1.0, 11.0, "The new surface's degree across its first pair of sides."),
-            whole("Degree V", degree_v_slot, 5.0, 1.0, 11.0, "Its degree across the other pair."),
-            whole("Spans U", spans_u_slot, 4.0, 1.0, 64.0, "Its spans along u."),
-            whole("Spans V", spans_v_slot, 4.0, 1.0, 64.0, "Its spans along v."),
-            toggle("Switch U/V", swap_slot, 0.0, "Exchange the new surface's u and v."),
-            toggle("Keep originals", keep_slot, 0.0, "Keep the trimmed face as a body of its own beside the converted one.")]
-
-## Stitch's rows.
-pub func stitch_rows() -> list[Parameter]:
-    let gap = number("Gap", gap_slot, 0.001, 0.0000001, 1.0, 0.0005, "Edges whose ends and middles lie this close join (Alias's Stitch tolerance, 0.0001 to 1); the joined edges keep the gap as their precision.", soft = 0.1)
-    gap.length = true
-    return [gap,
-            toggle("Detach periodic", periodic_slot, 0.0, "Alias's Detach periodic surfaces (for export): a face wrapping round its surface split in two, each meeting its seam once."),
-            toggle("Detach single-curve boundaries", single_slot, 0.0, "Alias's Detach single curve boundaries (for export): a loop of one closed edge split into two edges.")]
-
 pub func trim_numbers() -> list[float]:
     return [0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0]
 
 ## Project's starting numbers.
 pub func project_numbers() -> list[float]:
     return [0.0, 0.0, -1.0, 0.0, 1.0, 0.0]
-
-## The tools, at the Curves, Faces, Patch and Object levels.
-pub func tools(curves: int, faces: int, patch: int, objects: int) -> list[EditTool]:
-    let none_shown: list[Parameter] = []
-    return [EditTool(project_verb, project_verb, [curves], project_numbers(), project_rows()),
-            EditTool(intersect_verb, intersect_verb, [faces, patch], [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0], intersect_rows()),
-            EditTool(trim_verb, trim_verb, [faces, patch], trim_numbers(), trim_rows()),
-            EditTool(untrim_verb, untrim_verb, [faces, patch], [0.0], untrim_rows()),
-            EditTool(convert_verb, convert_verb, [faces, patch], [5.0, 5.0, 4.0, 4.0, 0.0, 0.0], convert_rows()),
-            EditTool(shrink_verb, shrink_verb, [faces, patch], [0.0], none_shown),
-            EditTool(stitch_verb, stitch_verb, [objects], [0.001, 0.0, 0.0], stitch_rows()),
-            EditTool(unstitch_verb, unstitch_verb, [objects], [0.0], none_shown)]
 
 ## Trim's 3D Trimming and Extend options from its numbers.
 pub func trim_options(v: list[float]) -> surface_ops.TrimOptions:
@@ -186,71 +99,41 @@ pub func with_picks(numbers: list[float], picks: list[Vector3]) -> list[float]:
         made = made + [p.x, p.y, p.z]
     return made
 
-## Step `step` on `data`; `shown` the pick mesh a Faces, Patch or Object
-## level step was selected on.
-pub func run(step: EditStep, name: str, data: GeometryData, shown: Mesh?) -> GeometryData!:
-    let v = step.numbers
-    if step.verb == project_verb:
-        let names: list[str] = []
-        for index in edit_cad_curves.picked_curves(step, data):
-            names.append(CadCurves.name(data.geometry, index))
-        # Curves clicked while it waited ("curve <name>"), and temporary
-        # isoparms (a double-click on a surface: "isoparm_at x y z").
-        for words in build_ops.items(step.text(1)):
-            names.append(words[6..] if words.starts_with("curve ") else words)
-        let direction = Vector3(v[direction_slot], v[direction_slot + 1], v[direction_slot + 2])
-        return surface_ops.project(data, names, step.text(0).trim(), int(v[along_slot]), direction, v[both_slot] != 0.0, v[original_slot] != 0.0)
-    let mesh = shown else error(ui.invalid, f"{step.verb}: pick {"bodies" if step.verb in body_verbs() else "a face"} first")
-    if step.verb in body_verbs():
-        let bodies: list[int] = []
-        for index in 0..<CadGeometry.model_count(data.geometry):
-            if CadEdits.model_share(mesh, step.group, index) > 0:
-                bodies.append(index)
-        if bodies.length == 0:
-            error(ui.invalid, f"{step.verb}: pick bodies at the Object level")
-        if step.verb == unstitch_verb:
-            var result = data
-            # Later bodies first, so earlier indices stay.
-            var k = bodies.length - 1
-            while k >= 0:
-                result = surface_ops.unstitch(result, bodies[k])
-                k -= 1
-            return result
-        return surface_ops.stitch(data, bodies, v[gap_slot], v[periodic_slot] != 0.0 if v.length > periodic_slot else false, v[single_slot] != 0.0 if v.length > single_slot else false)
-    let faces = picked_faces(step, data, mesh)
+## The faces a step picked (`call`, an Edit CAD step), in the models'
+## order: one at least.
+pub func step_faces(call: Invocation, data: GeometryData) -> list[str]!:
+    cad_cook.needs_models(data)
+    let faces = picked_faces(cad_cook.step_of(call), data, cad_cook.shown(call, data))
     if faces.length == 0:
-        error(ui.invalid, f"{step.verb}: pick a face at the Faces or Patch level")
-    if step.verb == intersect_verb:
-        let plane = int(v[with_slot]) == 1
-        if not plane and faces.length < 2:
-            error(ui.invalid, "Intersect: pick two faces (Shift adds), or choose With: Plane")
-        return surface_ops.intersect(data, faces[0], faces[1] if faces.length > 1 else "", plane, Vector3(v[origin_slot], v[origin_slot + 1], v[origin_slot + 2]),
-                                     Vector3(v[normal_slot], v[normal_slot + 1], v[normal_slot + 2]), v[both_faces_slot] != 0.0)
-    let face = faces[0]
-    if step.verb == trim_verb:
-        # 3D Trimming by Intersect: the faces after the first cut it.
-        let cutting: list[str] = []
-        if v.length > cutters_slot and v[cutters_slot] != 0.0:
-            for k in 1..<faces.length:
-                cutting.append(faces[k])
-        if faces.length > 1 and cutting.length == 0:
-            error(ui.invalid, "Trim works on one face: pick one (or turn on Intersect faces to cut it by the others)")
-        return surface_ops.trim(data, face, picks_of(v), int(v[mode_slot]), v[show_slot] != 0.0, [], name, trim_options(v), cutting)
-    if faces.length > 1 and step.verb != untrim_verb:
-        error(ui.invalid, f"{step.verb} works on one face: pick one")
-    if step.verb == untrim_verb:
-        var result = data
-        for each in faces:
-            result = surface_ops.untrim(result, each, v[all_slot] != 0.0)
-        return result
-    if step.verb == convert_verb:
-        return surface_ops.convert(data, face, int(v[degree_u_slot]), int(v[degree_v_slot]), int(v[spans_u_slot]), int(v[spans_v_slot]), v[swap_slot] != 0.0, v[keep_slot] != 0.0)
-    if step.verb == shrink_verb:
-        return surface_ops.shrink(data, face)
-    error(ui.invalid, f"{step.verb} is not a surfacing step")
+        error(ui.invalid, f"{call.verb}: pick a face at the Faces or Patch level")
+    return faces
+
+## The bodies a step picked (`call`, at the Object level), by index: one at
+## least.
+pub func step_bodies(call: Invocation, data: GeometryData) -> list[int]!:
+    cad_cook.needs_models(data)
+    let mesh = cad_cook.shown(call, data)
+    let bodies: list[int] = []
+    for index in 0..<CadGeometry.model_count(data.geometry):
+        if CadEdits.model_share(mesh, call.group(), index) > 0:
+            bodies.append(index)
+    if bodies.length == 0:
+        error(ui.invalid, f"{call.verb}: pick bodies at the Object level")
+    return bodies
+
+## The bodies a node names (one face's name each, apart by `;`), by index,
+## each once.
+pub func named_bodies(data: GeometryData, names: str) -> list[int]!:
+    let bodies: list[int] = []
+    for name in names.split(";"):
+        if name.trim() != "":
+            let body = surface_ops.body_with(data, name.trim())
+            if not (body in bodies):
+                bodies.append(body)
+    return bodies
 
 ## The names of the faces a step's group picked, in the models' order.
-func picked_faces(step: EditStep, data: GeometryData, mesh: Mesh) -> list[str]!:
+pub func picked_faces(step: EditStep, data: GeometryData, mesh: Mesh) -> list[str]!:
     let found: list[str] = []
     for index in 0..<CadGeometry.model_count(data.geometry):
         let names = CadEdits.model_faces(mesh, step.group, index)

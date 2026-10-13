@@ -11,11 +11,6 @@
 ##   Revolve (in a sketch): a Revolve after the sketch taking its picked
 ##     profiles, waiting for its axis (Pick axis: a sketch line or a body
 ##     edge clicked).
-##   Fillet, Chamfer: the blend after the displayed node, on the selected
-##     edges, its radius box open by its arrow.
-##   Press Pull, as Fusion's dispatches on the selection: profiles (in a
-##     sketch) make an Extrude, faces an Offset Face node, edges a Fillet;
-##     each with its value box open by its arrow.
 ##   Extrude face: a Sketch on the selected flat face (its loops projected)
 ##     and an Extrude of it after, as Fusion extrudes a face as a profile.
 ##   Slice: while a sketch is edited, the body in front of its plane is cut
@@ -28,11 +23,11 @@ from tools import ToolRun
 from edit_steps import insert_after_display
 import node_commands
 import sketch_node
-import tool_prompts
+import tool_picks
+import tool_registry
 import edit_cad_commands
 import extrude_inputs
 import cad_features
-import cad_check
 from luce_cad.sketch import CadSketch
 from sketch_kinds import line_kind
 
@@ -80,7 +75,8 @@ pub func redefine_plane(w: Workspace) -> unit!:
     if not w.sketching():
         return
     let node = w.selected() else return
-    tool_prompts.pick_face(w, node.id)
+    let tool = tool_registry.cad(sketch_node.kind_name) else return
+    tool_picks.start(w, node, tool, 0)
 
 ## Extrude from the edited sketch: after it, with its picked profiles.
 pub func extrude_profiles(w: Workspace) -> unit!:
@@ -104,7 +100,7 @@ pub func extrude_profiles(w: Workspace) -> unit!:
         w.rebuild())
 
 ## Revolve from the edited sketch: after it, with its picked profiles,
-## then the axis picked (tool_prompts.pick_axis).
+## then the axis picked (tool_picks.luc).
 pub func revolve_profiles(w: Workspace) -> unit!:
     if edit_cad_commands.sketching(w):
         edit_cad_commands.feature_from_sketch(w, "Revolve")
@@ -137,43 +133,8 @@ pub func revolve_profiles(w: Workspace) -> unit!:
     if axis >= 0:
         node_commands.set_text(w, cad_features.axis_text, cad_features.line_axis(axis))
         return
-    tool_prompts.pick_axis(w, made.id)
-
-## Press Pull: what the selection is decides the feature, as Fusion's
-## does (profiles, then faces, then edges).
-pub func press_pull(w: Workspace) -> unit!:
-    if edit_cad_commands.active(w):
-        edit_cad_commands.press_pull(w)
-        return
-    if w.sketching():
-        extrude_profiles(w)
-        return
-    if selected_faces(w).length > 0:
-        offset_faces(w)
-        return
-    if selected_edges(w).length > 0:
-        blend_edges(w, "Fillet")
-        return
-    w.notice = "Press Pull: select a face or edges of the body, or edit a sketch and pick its profiles"
-    w.revision += 1
-
-## Offset Face of the selected faces, after the displayed node.
-pub func offset_faces(w: Workspace) -> unit!:
-    if edit_cad_commands.active(w):
-        edit_cad_commands.valued_step(w, "Offset Face")
-        return
-    let faces = selected_faces(w)
-    if faces.length == 0:
-        w.notice = "Offset Face: select faces of the body (the Faces level) first"
-        w.revision += 1
-        return
-    w.perform("Press Pull", func () -> unit!:
-        let node = insert_after_display(w, ToolRun("Offset Face", []))
-        node.texts[0] = faces.join(";")
-        w.network.picked = [node.id]
-        w.selection = none
-        w.ask_value = true
-        w.rebuild())
+    let tool = tool_registry.cad("Revolve") else return
+    tool_picks.start(w, made, tool, tool.picks.length - 1)
 
 ## Extrude face: an Extrude of the first selected face itself, its loops
 ## the profile (Fusion takes a planar face as a profile); one undo step.
@@ -240,38 +201,4 @@ pub func sketch_on_face(w: Workspace) -> unit!:
         node.texts[1] = name
         w.network.picked = [node.id]
         w.selection = none
-        w.rebuild())
-
-## Fillet or Chamfer (`kind`) of the selected edges, after the displayed
-## node.
-## A Check node (cad_check.luc) after the displayed node, checking the
-## selected edges.
-pub func check_edges(w: Workspace) -> unit!:
-    let edges = selected_edges(w)
-    if edges.length == 0:
-        w.notice = "Check continuity: select edges of the body (the Edges level) first"
-        w.revision += 1
-        return
-    w.perform("Check continuity", func () -> unit!:
-        let node = insert_after_display(w, ToolRun(cad_check.kind_name, []))
-        node.texts[0] = edges.join(";")
-        w.network.picked = [node.id]
-        w.selection = none
-        w.rebuild())
-
-pub func blend_edges(w: Workspace, kind: str) -> unit!:
-    if edit_cad_commands.active(w):
-        edit_cad_commands.valued_step(w, kind)
-        return
-    let edges = selected_edges(w)
-    if edges.length == 0:
-        w.notice = f"{kind}: select edges of the body (the Edges level) first"
-        w.revision += 1
-        return
-    w.perform(kind, func () -> unit!:
-        let node = insert_after_display(w, ToolRun(kind, []))
-        node.texts[0] = edges.join(";")
-        w.network.picked = [node.id]
-        w.selection = none
-        w.ask_value = true
         w.rebuild())

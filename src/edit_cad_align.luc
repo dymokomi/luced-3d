@@ -2,7 +2,7 @@
 ## Object Edit › Align and Symmetry Plane Align; align_ops.luc does the
 ## work). Align starts on a picked edge (the Edges level) or a curve's end
 ## (the Curves level): the step takes it as its input, then waits for its
-## master (edit_cad_picks.luc): an edge, a curve, a face for Project and
+## master (tool_picks.luc): an edge, a curve, a face for Project and
 ## U/V, or a double-click on a surface for a temporary isoparm. A second
 ## master is picked from the step's tool bar. Each align is one step and
 ## one undo, Alias's Accept chaining them: the next Align starts from
@@ -17,8 +17,8 @@ from luce_cad.nurbs import CadNurbs
 from luce_geocore.geocore import Mesh
 from luce_3d.graphics import Vector3
 from geometry_data import GeometryData
-from edit_operations import EditStep
-from edit_types import EditTool, edge_level, face_level, patch_level, curve_level
+from tool_record import Invocation
+from edit_types import edge_level, face_level, patch_level, curve_level
 import align_ops
 from luce_ui import ui
 
@@ -28,23 +28,30 @@ pub let symmetry_verb = "Symmetry Align"
 pub func verbs() -> list[str]:
     return [align_verb, symmetry_verb]
 
-## The tools, at the Edges and Curves levels (the input edge or curve end).
-pub func tools(edges: int, curves: int) -> list[EditTool]:
-    return [EditTool(align_verb, align_verb, [edges, curves], align_ops.starting(), align_ops.rows()),
-            EditTool(symmetry_verb, symmetry_verb, [edges, curves], align_ops.symmetry_starting(), align_ops.symmetry_rows())]
-
-## Step `step` on `data`: its texts the input, master and second master.
-pub func run(step: EditStep, data: GeometryData) -> GeometryData!:
-    let texts = [step.text(0), step.text(1), step.text(2)]
-    let numbers = filled(step)
-    let made = align_ops.symmetry(data, numbers, texts) if step.verb == symmetry_verb else align_ops.align(data, numbers, texts)
-    made.aligns = data.aligns + [constraint(step.verb, numbers, texts, made)]
+## Align's or Symmetry Align's cook: a node's (waiting for its input and
+## master) and a step's, whose record a later CV drag on its rows reads
+## (realigned); its texts the input, master and second master.
+pub func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    let symmetric = call.verb == symmetry_verb
+    if call.node:
+        let waiting = (symmetry_waits(call.numbers, call.texts, false) if symmetric else align_ops.waits_for(call.texts))
+        if waiting != "":
+            return data.passed(waiting)
+        return align_ops.symmetry(data, call.numbers, call.texts) if symmetric else align_ops.align(data, call.numbers, call.texts)
+    let texts = [call.text(0), call.text(1), call.text(2)]
+    let numbers = filled(call)
+    let made = align_ops.symmetry(data, numbers, texts) if symmetric else align_ops.align(data, numbers, texts)
+    made.aligns = data.aligns + [constraint(call.verb, numbers, texts, made)]
     return made
 
+## What Symmetry Align waits for.
+pub func symmetry_waits(values: list[float], texts: list[str], wired: bool) -> str:
+    return "Pick the input edge" if texts[align_ops.input_text].trim() == "" else ""
+
 ## A step's numbers, the ones added since it was made at their start.
-func filled(step: EditStep) -> list[float]:
-    let start = align_ops.symmetry_starting() if step.verb == symmetry_verb else align_ops.starting()
-    let numbers = step.numbers.copy()
+func filled(call: Invocation) -> list[float]:
+    let start = align_ops.symmetry_starting() if call.verb == symmetry_verb else align_ops.starting()
+    let numbers = call.numbers.copy()
     while numbers.length < start.length:
         numbers.append(start[numbers.length])
     return numbers

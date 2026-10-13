@@ -22,6 +22,7 @@ import node_commands
 import selection_commands
 import tool_registry
 import tool_docs
+import tool_run
 
 pub func tool_registry_tests() -> unit!:
     declarations()
@@ -29,24 +30,30 @@ pub func tool_registry_tests() -> unit!:
     surfaces()
     repeat_checks()
     select_checks()
+    cad_surfaces()
     print("PASS tool registry: every tool a node and an Edit Mesh step with docs, starting values, icons and docs/TOOLS.md; S, D, A, the right-click menu and Modify reach each at its levels only; Repeat with the last numbers; Select Checker; D in the viewport and the network")
 
-## What each declaration gives: a node in Geo, a step of Edit Mesh, rows
-## with docs and starting values in range, a known icon.
+## What each declaration gives: a node in each of its contexts (Geo, CAD),
+## a step of each of its Edit kinds (Edit Mesh, Edit CAD), rows with docs
+## and starting values in range, a known icon.
 func declarations() -> unit!:
-    let edit = Workspace().kind_of("Edit Mesh") else trap("Edit Mesh")
+    let w = Workspace()
     let kinds = node_catalog.kinds()
     for tool in tool_registry.all():
-        assert(tool.name in kinds and node_catalog.allowed(tool.name, "geometry"), tool.name)
-        let step = edit.tool(tool.label) else trap(tool.label)
-        assert(step.verb == tool.name and step.tool != none)
+        for context in tool.contexts:
+            assert(tool.name in kinds and node_catalog.allowed(tool.name, context), tool.name)
+        for kind_name in tool.kinds:
+            let edit = w.kind_of(kind_name) else trap(kind_name)
+            let step = edit.tool_at(tool.label, tool.first_pick().levels[0] if tool.first_pick().levels.length > 0 else 0) else trap(tool.label)
+            assert(step.verb == tool.verb and step.tool != none, tool.label)
         assert(ui.icon_known(tool.icon) and asset_name(tool.label) == tool.icon, tool.label)
         assert(tool.doc != "" and tool.family != "" and tool.section in ["Create", "Modify", "Select"])
         for row in tool.rows:
             if row.valued():
                 assert(row.doc != "" and row.initial >= row.minimum and row.initial <= row.maximum, f"{tool.label} {row.name}")
         # The step starts where the node does.
-        assert(tool.starting() == node_catalog.starting_values(tool.name)[..<tool.starting().length], tool.label)
+        if "geometry" in tool.contexts:
+            assert(tool.starting() == node_catalog.starting_values(tool.name)[..<tool.starting().length], tool.label)
 
 ## docs/TOOLS.md is what tool_docs makes now (tools/tool_docs.py rewrites it).
 func docs_current() -> unit!:
@@ -112,7 +119,7 @@ func surfaces() -> unit!:
             let d = names(marking_items.select_items(w, actions))
             let a = names(marking_items.create_items(w, actions, no_add, sketch))
             let right = texts(editor.panels.viewport_menu.entries())
-            for tool in tool_registry.all():
+            for tool in tool_registry.of_kind("Edit Mesh"):
                 let offered = tool.offered(level)
                 if tool.section == "Modify":
                     assert((tool.label in s) == offered and (tool.label in right) == offered, f"{tool.label} at level {level}")
@@ -123,7 +130,7 @@ func surfaces() -> unit!:
                     assert(tool.label in a, tool.label)
             # Modify › Edit Mesh tools holds every Modify tool, by family.
             let modify = texts([editor.panels.menus.modeling])
-            for tool in tool_registry.all():
+            for tool in tool_registry.of_kind("Edit Mesh"):
                 assert((tool.label in modify) == (tool.section == "Modify"), tool.label)
         # The plan's checks: S at Edges has Bevel, not Inset; the
         # right-click menu with faces selected has Extrude.
@@ -207,3 +214,61 @@ func select_checks() -> unit!:
     # Not at the Object level.
     selection_commands.set_mode(w, object_level)
     assert(not w.tool_available("Checker"))
+
+## The CAD tools reach the CAD network's and Edit CAD's surfaces from
+## their declarations: with a box's top face picked, the right-click menu
+## offers the face tools and the body tools (on the face's body), not the
+## edge tools; with an edge picked, S offers Fillet and Chamfer, not Shell;
+## nothing picked, the right-click menu's Create has the solids and its
+## Modify every tool; in Edit CAD at the Object level S has the body tools
+## (Scale Body: one declaration file and its registry line).
+func cad_surfaces() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let actions = editor.panels.actions
+    let sketch = editor.panels.view.sketch.editor
+    editor.app.layout(1400.0, 900.0)
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    w.selection = none
+    actions.refresh()
+    let plain = texts(editor.panels.viewport_menu.entries())
+    assert("Solid Sphere" in plain and "Scale Body" in plain and "Fillet" in plain and "Trim" in plain, f"{plain}")
+    selection_commands.set_mode(w, face_level)
+    let mesh = w.geometry else trap("box")
+    var top = -1
+    for face in 0..<mesh.face_count():
+        if top < 0 and mesh.face_normal(face).y > 0.999:
+            top = face
+    selection_commands.choose_component(w, top, false)
+    actions.refresh()
+    let on_face = texts(editor.panels.viewport_menu.entries())
+    for label in ["Shell", "Offset Face", "Split Face", "Combine", "Scale Body", "Trim"]:
+        assert(label in on_face, f"{label} on a face: {on_face}")
+    assert(not ("Fillet" in on_face) and not ("Square" in on_face), f"{on_face}")
+    selection_commands.set_mode(w, edge_level)
+    let edges = w.geometry else trap("box edges")
+    w.selection = Selection.of(edges, "@cad_edge>=0", 4)
+    actions.refresh()
+    let s = names(marking_items.modify_items(w, actions, no_add, sketch))
+    assert("Fillet" in s and "Chamfer" in s and not ("Shell" in s), f"{s}")
+    # Edit CAD after the box: its steps at the Object level.
+    node_commands.add_node(w, "Edit CAD", 0.0, 120.0)
+    selection_commands.set_mode(w, object_level)
+    let model = w.geometry else trap("model")
+    selection_commands.choose_component(w, 0, false)
+    _ = model
+    actions.refresh()
+    let steps = names(marking_items.modify_items(w, actions, no_add, sketch))
+    assert("Scale Body" in steps and "Combine" in steps and not ("Fillet" in steps), f"{steps}")
+    # A CAD step with a drag row takes the viewport's drag (tool_drag.luc),
+    # measured from what it picked: Fillet's radius.
+    selection_commands.set_mode(w, edge_level)
+    let model_edges = w.geometry else trap("model edges")
+    w.selection = Selection.of(model_edges, "@cad_edge>=0", 4)
+    tool_run.run(w, "Fillet")
+    let session = w.drag_session else trap("Fillet takes the drag")
+    assert(session.tool.label == "Fillet" and session.step)
+    editor.close()

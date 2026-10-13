@@ -11,20 +11,16 @@
 ##     next edge clicked) and Break link; while Project is the tool,
 ##     Project body (the input body's outline, Fusion's Bodies filter);
 ##     Slice (the body in front of the plane cut away from view).
-##   In a CAD node: on selected faces Sketch on face, Extrude face, Press
-##     Pull (an Offset Face), then the Modify features on them (Shell,
-##     Move/Copy, Split Face, Replace Face, Delete) and on their bodies
-##     (Combine, Split Body, Remove); on selected edges Press Pull (a
-##     Fillet), Fillet and Chamfer; Alias's surface tools on faces (Trim,
-##     Untrim, Trim Convert, Shrink, Intersect); otherwise the CAD Create
-##     nodes, the Modify features and the Surfaces nodes, each waiting for
-##     its picks.
-##   In an edited Edit CAD model: its direct modeling steps on what is
-##     selected (curves: Blend Curve, Attach, Detach, Close, Stretch,
-##     Reverse, Delete; edges: Duplicate Curve and Blend Curve too, and Add
-##     as fillet set while a Fillet is the last step; faces: Select blends
-##     and Reblend, Press Pull on fillet faces their radius), or
-##     its sketches, curve drawing tools and primitives (model_entries).
+##   In a CAD node: on selected faces Sketch on face, Extrude face and
+##     Press Pull (an Offset Face), on selected edges Press Pull (a Fillet),
+##     then the CAD tools the selection's level takes, by family (Faces,
+##     Bodies, Blends, the surfacing tools…: tool_menus.luc); with nothing
+##     selected, the Create tools and a Modify submenu holding every other,
+##     each waiting for its picks.
+##   In an edited Edit CAD model: its steps the selection's level takes, by
+##     family (Add as fillet set while a Fillet is the last step; Select
+##     blends on faces), or its sketches, curve drawing tools and primitives
+##     (model_entries).
 ##   In Geo and an edited Edit Mesh, with components selected: Repeat, the
 ##     registry's Modify tools the level takes, by family, and Select (the
 ##     Select tools and selection commands: tool_menus.luc); with nothing
@@ -44,10 +40,7 @@ import sketch_picking
 import cad_commands
 import edit_cad_commands
 import component_moves
-import cad_nodes
-import sketch_node
 import tool_menus
-from network import kinds
 
 pub class ViewportMenu:
     let w: Workspace
@@ -151,21 +144,13 @@ pub class ViewportMenu:
             return self.model_entries()
         if self.w.network.context() == "cad":
             let a = self.actions
-            let modify = a.cad_modify.commands
-            if cad_commands.selected_faces(self.w).length > 0:
-                # Fusion's Modify features on faces, then on their bodies;
-                # then Alias's surface tools on the faces.
-                return [a.sketch_on_face, a.extrude_face, a.press_pull, Command("", divider = true)] + [modify[0], modify[1], modify[4], modify[5], modify[6], Command("", divider = true), modify[2], modify[3], modify[7], Command("", divider = true)] + a.surfaces.on_faces()
-            if cad_commands.selected_edges(self.w).length > 0:
-                return [a.press_pull, a.fillet_edges, a.chamfer_edges, Command("", divider = true), a.check_edges, Command("", divider = true)] + a.surfaces.on_edges()
-            for kind in [sketch_node.kind_name, "Extrude", "Revolve"] + cad_nodes.solid_kinds():
-                if let index = kinds().index_of(kind):
-                    result.append(a.add[index])
-            result.append(Command("", divider = true))
-            self.modify.set_items(modify)
-            result.append(self.modify)
-            result.append(a.surfaces.menu)
-            return result
+            if self.w.selecting() and self.w.selected_count() > 0:
+                if cad_commands.selected_faces(self.w).length > 0:
+                    result.extend([a.sketch_on_face, a.extrude_face])
+                result.append(a.press_pull)
+                return result + divided(tool_menus.families(self.w, a, "Modify", self.w.level_index()), true)
+            self.modify.set_items(divided(tool_menus.families(self.w, a, "Modify"), false))
+            return divided(tool_menus.families(self.w, a, "Create"), false) + [Command("", divider = true), self.modify]
         if tool_menus.from_registry(self.w) and self.w.selecting():
             if self.w.selected_count() > 0:
                 return self.tool_entries()
@@ -227,17 +212,8 @@ pub class ViewportMenu:
         # CVs picked: the structure tools on their surface.
         let cvs = component_moves.at_cvs(self.w) and self.w.selected_count() > 0
         if faces or cvs or edit_cad_commands.selected_edges(self.w) or edit_cad_commands.selected_models(self.w) or edit_cad_commands.selected_curves(self.w):
-            # The model's tools that apply at the level, in the kind's order.
-            let kind = self.w.strip_kind()
-            let offered = a.modify_commands()
-            let level = self.w.level_index()
-            let named: list[str] = []
-            for tool in kind.tools:
-                for command in offered:
-                    if command.text() == tool.name and command.is_enabled() and tool.offered(level) and not (tool.name in named):
-                        named.append(tool.name)
-                        result.append(command)
-            return result
+            # The model's tools the level takes, by family.
+            return result + divided(tool_menus.families(self.w, a, "Modify", self.w.level_index()), result.length > 0)
         let model = a.model
         result.append(model.create_sketch)
         result.append(model.select_blends)
@@ -270,3 +246,13 @@ pub class ViewportMenu:
         for connection in self.connections:
             connection.disconnect()
         self.connections.clear()
+
+## Families' commands in one list, a divider before each family (before
+## the first too when `lead`: entries come before them).
+func divided(families: list[tool_menus.Family], lead: bool) -> list[Command]!:
+    let result: list[Command] = []
+    for family in families:
+        if result.length > 0 or lead:
+            result.append(Command("", divider = true))
+        result.extend(family.commands)
+    return result

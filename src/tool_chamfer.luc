@@ -1,0 +1,48 @@
+## Chamfer (Fusion 360's): edges cut flat, by one distance, two, or a
+## distance and an angle, its corners chamfered, mitered or blended
+## (cad_blends.luc). A node in a CAD network keeps its edges by reference;
+## an Edit CAD step chamfers the edges picked, model by model, by the
+## node's own code.
+from tool_record import Tool, ToolEntry, Pick, Invocation
+from geometry_data import GeometryData
+from parameter_rows import Parameter, number, toggle, menu
+from edit_types import edge_level
+import pick_kinds
+import cad_blends
+import cad_cook
+
+pub func entry() -> ToolEntry:
+    return ToolEntry("Chamfer", "Chamfer", "bevel", "Modify", [cad_cook.context], [cad_cook.edit_kind], made)
+
+func made() -> Tool:
+    return entry().tool("Modify", "Blends", "Cut edges flat: an equal distance, two distances, or a distance and an angle", picks(), rows(), cook, drag = 0, handles = true, asks = true)
+
+func picks() -> list[Pick]:
+    return [Pick("Edges", [edge_level], kind = pick_kinds.edges, slot = 0, summary = cad_blends.edges_summary, clear = "All edges", needed = optional,
+                 doc = "The edges to blend, remembered by the faces they lie between, so they stay the same edges when anything upstream changes. None picked: every straight convex edge between flat faces.")]
+
+func optional(values: list[float], texts: list[str], wired: bool) -> bool:
+    return false
+
+## A node: its body's edges by reference; a step: the edges picked on each
+## model.
+func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    if call.node:
+        return cad_blends.blended(call.verb, call.numbers, call.texts, cad_cook.body_of(data, "first"), tag, call.memo)
+    return cad_cook.on_edges(call, data, tag, func (body: GeometryData, edges: str, name: str) -> GeometryData!:
+        return cad_blends.blended(call.verb, call.numbers, [edges, "", "", call.text(cad_blends.points_text), call.text(cad_blends.sets_text)], cad_cook.body_of(body, "first"), name, none))
+
+## Fusion 360's Chamfer dialog (cad_blends.luc reads the slots).
+func rows() -> list[Parameter]:
+    let size = number("Distance", cad_blends.size_slot, 1.0, 0.0001, 100000.0, 0.1, "How far the chamfer reaches along each face.", soft = 10.0)
+    let chain = toggle("Tangent chain", cad_blends.chain_slot, 1.0, "Each picked edge brings the edges continuing it smoothly: a rounded slot's rim, the edges around an earlier fillet.")
+    let shape = menu("Type", cad_blends.chamfer_type_slot, "Equal distance|Two distances|Distance and angle", 0.0, "Equal distance: as far along each face. Two distances: Distance along the first face (the one more of the picked edges lie on), Distance 2 along the other. Distance and angle: Distance along the first face, leaving it at Angle.")
+    let second = number("Distance 2", cad_blends.second_slot, 1.0, 0.0001, 100000.0, 0.1, "Two distances: how far the chamfer reaches along the other face.", soft = 10.0)
+    second.hide_when = "{ type != 1 }"
+    second.length = true
+    let angle = number("Angle", cad_blends.angle_slot, 45.0, 0.1, 179.9, 1.0, "Distance and angle: the angle the chamfer leaves the first face at.", suffix = "°")
+    angle.hide_when = "{ type != 2 }"
+    let flip = toggle("Flip", cad_blends.flip_slot, 0.0, "Measure the first distance on the other face.")
+    flip.hide_when = "{ type == 0 }"
+    let corner = menu("Corner type", cad_blends.corner_slot, "Chamfer|Miter|Blend", 0.0, "Where three chamfers meet at a corner: Chamfer joins them with a flat face; Miter runs them on to a point; Blend sets them back and closes the corner with one flat face, as Fusion's.")
+    return [shape, size, second, angle, flip, corner, chain]

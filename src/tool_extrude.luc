@@ -1,0 +1,107 @@
+## Extrude (Fusion 360's): a sketch's profiles (none picked: its closed
+## shapes), or a face of the body, swept along the sketch plane's normal,
+## one side, two or symmetric, by a distance, to a face or through All,
+## tapered, as a Thin wall; joined, cut or intersected with the bodies down
+## the chain by Auto as Fusion does (feature_ops.luc, cad_features.luc).
+## The node keeps its profiles and faces by name; in Edit CAD it is a step
+## of a sketch's picked profiles (edit_cad_sketches.luc), made from the
+## sketch (its gesture).
+from tool_record import Tool, ToolEntry, Pick, Invocation
+from geometry_data import GeometryData
+from parameter_rows import Parameter, number, toggle, menu
+from edit_types import object_level, face_level
+import pick_kinds
+import cad_features
+import feature_ops
+import edit_cad_sketches
+import cad_cook
+
+pub func entry() -> ToolEntry:
+    return ToolEntry("Extrude", "Extrude", "extrude", "Create", [cad_cook.context], [cad_cook.edit_kind], made)
+
+func made() -> Tool:
+    return entry().tool("Create", "Features", "Sweep a sketch's profiles or a face along the sketch plane's normal into a body, joined, cut or intersected by Auto",
+                        picks(), rows(), cook, inputs = 2, gesture = "profiles", handles = true, asks = true)
+
+## The profiles; To object's faces each side, Start: Object's face, and the
+## bodies Join, Cut and Intersect act on.
+func picks() -> list[Pick]:
+    return [Pick("Profiles", [-1], kind = pick_kinds.profiles, slot = 0, step = 0, needed = optional, summary = feature_ops.profiles_summary, clear = "Closed shapes",
+                 doc = "The sketch's regions to take, remembered by the curves round them so they hold as dimensions change. None picked: its closed shapes, holes left empty."),
+            Pick("Object", [face_level], kind = pick_kinds.face, slot = cad_features.face_text, step = cad_features.face_text, hide_when = "{ extent != 1 }", needed = to_object, taken = to_face,
+                 prompt = "Click the face to extrude to; Esc cancels", doc = "The face the extrusion runs to (To object), kept by its name so it stays that face as the body changes."),
+            Pick("Side 2 object", [face_level], kind = pick_kinds.face, slot = cad_features.face_two_text, step = pick_kinds.nowhere, hide_when = "{ direction != 1 } { side_2_extent != 1 }",
+                 needed = optional, taken = to_face_two, prompt = "Click the face to extrude to; Esc cancels", doc = "The face the second side runs to (To object)."),
+            Pick("Start object", [face_level], kind = pick_kinds.face, slot = cad_features.start_face_text, step = pick_kinds.nowhere, hide_when = "{ start != 2 }", needed = optional,
+                 taken = from_face, prompt = "Click the face to start the extrusion from; Esc cancels", doc = "The face the extrusion starts from (Start: Object), kept by its name."),
+            Pick("Objects To Cut", [object_level], kind = pick_kinds.bodies, slot = cad_features.bodies_text, step = pick_kinds.nowhere, hide_when = "{ operation == 1 }", needed = optional,
+                 summary = bodies_summary, clear = "Auto-select", button = "Pick bodies",
+                 doc = "The bodies Join, Cut and Intersect act on, kept by their faces' names. Auto-select: every body, as it is when the node cooks.")]
+
+func optional(values: list[float], texts: list[str], wired: bool) -> bool:
+    return false
+
+## To object waits for its face.
+func to_object(values: list[float], texts: list[str], wired: bool) -> bool:
+    return int(values[cad_features.extent_slot]) == 1
+
+func to_face(values: list[float], picked: str):
+    values[cad_features.extent_slot] = 1.0
+
+func to_face_two(values: list[float], picked: str):
+    values[cad_features.extent_two_slot] = 1.0
+
+func from_face(values: list[float], picked: str):
+    values[cad_features.start_slot] = float(cad_features.start_object)
+
+func bodies_summary(text: str) -> str:
+    let count = text.split(";").length
+    return "Auto-select (every body)" if text.trim() == "" else ("1 body" if count == 1 else f"{count} bodies")
+
+## A node: from the nearest sketch upstream; a step: from its sketch in the
+## model.
+func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    if call.node:
+        return feature_ops.featured(call.verb, call.numbers, call.texts, data, tag, call.second, call.sketch)
+    return edit_cad_sketches.featured(cad_cook.step_of(call), tag, data)
+
+## Extrude's rows, Fusion 360's dialog (cad_features.luc reads the slots).
+func rows() -> list[Parameter]:
+    let operation = menu("Operation", cad_features.operation_slot, feature_ops.operation_names(), 0.0, "Auto: cuts where it goes into the body, else joins it (a new body without one), as Fusion does. Join, Cut, Intersect: combined with the body flowing down the chain, or the second input's when one is wired.")
+    let kind_row = menu("Type", cad_features.type_slot, "Extrude|Thin extrude", 0.0, "Extrude: the whole area inside the profiles. Thin extrude: a wall along the profiles' curves (open ones too), Wall thickness wide.")
+    let thickness = number("Wall thickness", cad_features.thickness_slot, 1.0, 0.0001, 100000.0, 0.1, "Thin extrude: how thick the wall is.", soft = 10.0)
+    thickness.hide_when = "{ type == 0 }"
+    thickness.length = true
+    let wall = menu("Wall location", cad_features.wall_slot, "Side 1|Side 2|Center", 0.0, "Thin extrude: Side 1 inside a closed profile (left of an open curve as it was drawn), Side 2 outside it (right), Center half each way.")
+    wall.hide_when = "{ type == 0 }"
+    let start = menu("Start", cad_features.start_slot, "Profile plane|Offset|Object", 0.0, "Where the extrusion starts: on the sketch's plane; that plane moved Start offset along its normal; or a face of the body (Pick start object), Start offset further on.")
+    let start_offset = number("Start offset", cad_features.start_offset_slot, 0.0, -100000.0, 100000.0, 0.5, "Offset: how far along the normal the extrusion starts (negative: the other way). Object: how far past the face.", soft = 100.0)
+    start_offset.hide_when = "{ start == 0 }"
+    let direction = menu("Direction", cad_features.direction_slot, cad_features.direction_names(), 0.0, "One side: along the normal (a negative distance goes the other way). Two sides: an extent and taper each way. Symmetric: the same each way.")
+    let measurement = menu("Measurement", cad_features.measurement_slot, "Half length|Whole length", 0.0, "Symmetric: Half length extrudes the distance to each side, Whole length half of it to each side.")
+    measurement.hide_when = "{ direction != 2 }"
+    let extent = menu("Extent", cad_features.extent_slot, cad_features.extent_names(), 0.0, "Distance: as far as Distance says. To object: until the face picked (Pick object), Offset further. All: through the whole body.")
+    let distance = number("Distance", cad_features.distance_slot, 10.0, -100000.0, 100000.0, 0.5, "How far the profiles sweep along the sketch plane's normal; negative goes the other way.", soft = 100.0)
+    distance.hide_when = "{ extent != 0 }"
+    let extend = menu("Extend", cad_features.extend_slot, cad_features.extend_names(), 0.0, "To object, as Fusion's: To selected face, its surface extended past the face; To adjacent faces, the face and the faces next to it; To body, the body the face is on; Through body, out of its far side.")
+    extend.hide_when = "{ extent != 1 }"
+    let offset = number("Offset", cad_features.offset_slot, 0.0, -100000.0, 100000.0, 0.5, "To object: how far past the face the extrusion stops (negative: short of it).", soft = 100.0)
+    offset.hide_when = "{ extent != 1 } { extend != 0 }"
+    let flip = toggle("Flip", cad_features.flip_slot, 0.0, "All, one side: through the body against the normal instead.")
+    flip.hide_when = "{ extent != 2 } { direction != 0 }"
+    let taper = number("Taper angle", cad_features.taper_slot, 0.0, -89.0, 89.0, 1.0, "Leans the sides: positive out, the profile growing along the extrusion; negative in. Fusion's sign.", suffix = "°")
+    let extent_two = menu("Side 2 extent", cad_features.extent_two_slot, cad_features.extent_names(), 0.0, "Two sides: the second side's extent, against the normal.")
+    extent_two.hide_when = "{ direction != 1 }"
+    let distance_two = number("Side 2 distance", cad_features.distance_two_slot, 10.0, 0.0, 100000.0, 0.5, "Two sides: how far the second side goes against the normal.", soft = 100.0)
+    distance_two.hide_when = "{ direction != 1 } { side_2_extent != 0 }"
+    distance_two.length = true
+    let extend_two = menu("Side 2 extend", cad_features.extend_two_slot, cad_features.extend_names(), 0.0, "To object, second side: as Extend.")
+    extend_two.hide_when = "{ direction != 1 } { side_2_extent != 1 }"
+    let offset_two = number("Side 2 offset", cad_features.offset_two_slot, 0.0, -100000.0, 100000.0, 0.5, "To object, second side: how far past its face it stops.", soft = 100.0)
+    offset_two.hide_when = "{ direction != 1 } { side_2_extent != 1 } { side_2_extend != 0 }"
+    offset_two.length = true
+    let taper_two = number("Side 2 taper", cad_features.taper_two_slot, 0.0, -89.0, 89.0, 1.0, "Two sides: the second side's taper, positive out.", suffix = "°")
+    taper_two.hide_when = "{ direction != 1 }"
+    start_offset.length = true
+    return [kind_row, start, start_offset, direction, measurement, extent, distance, extend, offset, flip, taper, extent_two, distance_two, extend_two, offset_two, taper_two, thickness, wall, operation]
+

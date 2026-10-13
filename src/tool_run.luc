@@ -1,0 +1,312 @@
+## A tool run from its command (a menu, a marking menu, the right-click
+## menu, Repeat): in an edited Edit CAD model a step of its on the
+## selection, in a CAD network a node of its after the displayed one,
+## elsewhere a mesh tool (modeling_commands.model). What a CAD tool takes
+## of the selection, what it asks for after and whether its value box
+## opens come from its declaration (tool_record.Tool, tool_picks.luc); a
+## gesture of its own starts it otherwise (a sketch's profiles, the Move
+## tool, a blend's radius, the view's direction). Press Pull, Fusion's
+## dispatching command, is here too.
+from luce_geocore.geocore import Domain, Selection, Mesh
+from luce_3d.graphics import Vector3
+from luce_std import math
+from workspace import Workspace
+from node import Node
+from tool_record import Tool, Pick
+from tools import ToolRun
+from edit_operations import EditStep
+from edit_types import curve_level, edge_level, face_level, patch_level
+from edit_steps import insert_after_display
+import pick_kinds
+import tool_registry
+import tool_picks
+import modeling_commands
+import cad_commands
+import edit_cad_commands
+import edit_cad_align
+import edit_cad_build
+import edit_cad_surfaces
+import cad_names
+import node_catalog
+import node_commands
+import node_room
+
+## Run tool `label` (Repeat's `numbers` in place of its starting ones).
+pub func run(w: Workspace, label: str, numbers: list[float]? = none) -> unit!:
+    if edit_cad_commands.active(w):
+        let tool = w.strip_kind().tool_at(label, w.level_index()) else return
+        let registered = tool.tool else return modeling_commands.model(w, label, numbers)
+        remember(w, label)
+        in_model(w, registered, numbers)
+        return
+    if w.network.context() == "cad":
+        let tool = cad_node_tool(label) else return
+        if w.sketching() and tool.gesture != "profiles":
+            say(w, f"{label}: finish the sketch first")
+            return
+        remember(w, label)
+        as_node(w, tool, numbers)
+        return
+    modeling_commands.model(w, label, numbers)
+
+## The CAD node tool labeled or named `label`.
+pub func cad_node_tool(label: str) -> Tool?:
+    for entry in tool_registry.cad_nodes():
+        if entry.label == label or entry.name == label:
+            return entry.make()
+    return none
+
+## Keep CAD tool `label` for Repeat (it runs again on what is selected
+## then, with its starting numbers).
+pub func remember(w: Workspace, label: str):
+    w.last_tool = label
+    w.last_tool_numbers = []
+    w.last_tool_node = -1
+
+## Repeat: the tool run last, on what is selected now.
+pub func repeat(w: Workspace) -> unit!:
+    if w.last_tool == "":
+        return
+    if w.network.context() == "cad" or edit_cad_commands.active(w):
+        run(w, w.last_tool)
+        return
+    modeling_commands.repeat(w)
+
+# -- A node in a CAD network.
+
+## Tool `tool`'s node after the displayed one, taking what is selected for
+## its picks, then waiting for the first it still needs; or its value box.
+func as_node(w: Workspace, tool: Tool, numbers: list[float]?) -> unit!:
+    if tool.gesture == "profiles":
+        if w.sketching() or cad_commands.shown_profiles(w):
+            if tool.name == "Revolve":
+                cad_commands.revolve_profiles(w)
+            else:
+                cad_commands.extrude_profiles(w)
+            return
+    if tool.gesture == "sketch" and cad_commands.selected_faces(w).length > 0:
+        cad_commands.sketch_on_face(w)
+        return
+    # A node of no input (a solid) is added beside, not after.
+    if node_catalog.input_count(tool.name) == 0:
+        var x = 0.0
+        var y = 0.0
+        if let near = w.selected():
+            x = near.x
+            y = near.y + node_room.row
+        node_commands.add_node(w, tool.name, x, y)
+        return
+    let taken = from_selection(w, tool, false)
+    let values = numbers else tool.node_values()
+    w.perform(tool.label, func () -> unit!:
+        let made = insert_after_display(w, ToolRun(tool.name, values))
+        for at in 0..<taken.length:
+            let pick = tool.picks[at]
+            if taken[at] != "" and pick.slot >= 0:
+                made.texts[pick.slot] = pick.holding(made.texts[pick.slot], taken[at])
+        # A Move takes faces as faces (Move object: Faces), else bodies.
+        if tool.gesture == "move":
+            made.values[move_object_slot] = 1.0 if cad_commands.selected_faces(w).length > 0 else 0.0
+        w.network.picked = [made.id]
+        w.selection = none
+        w.rebuild())
+    let made = w.selected() else return
+    if made.kind != tool.name:
+        return
+    let next = tool_picks.node_next(tool, made)
+    if next >= 0:
+        tool_picks.start(w, made, tool, next)
+    elif tool.asks:
+        w.ask_value = true
+
+## The Move node's Move object (tool_move.luc).
+let move_object_slot = 25
+
+## What the selection gives tool `tool`'s picks, one text each ("" none):
+## its first pick what the selection is of its kind, and each pick after
+## that takes the rest (`rest`) the rest of it; a single pick one.
+## `step`: as an Edit step keeps them (curve words; curves at their ends).
+func from_selection(w: Workspace, tool: Tool, step: bool) -> list[str]!:
+    let result: list[str] = []
+    for pick in tool.picks:
+        result.append("")
+    if tool.picks.length == 0:
+        return result
+    var items = selected(w, tool.picks[0], step)
+    for at in 0..<tool.picks.length:
+        let pick = tool.picks[at]
+        if at > 0 and not pick.rest:
+            break
+        if items.length == 0:
+            break
+        if pick.single():
+            result[at] = items[0]
+            items = items[1..]
+        else:
+            result[at] = items.join(";")
+            items = []
+    return result
+
+## What is selected, as items of pick `pick`'s kind.
+func selected(w: Workspace, pick: Pick, step: bool) -> list[str]!:
+    if w.sketching() or not w.selecting():
+        return []
+    let mesh = w.geometry else return []
+    let chosen = w.current_selection() else return []
+    if chosen.count() == 0:
+        return []
+    let level = w.level_index()
+    let kind = pick.kind
+    if pick_kinds.whole_bodies(kind) or (kind == pick_kinds.faces and pick.bodies_when != none and cad_commands.selected_faces(w).length == 0):
+        if not w.on_domain(Domain.face):
+            return []
+        let names = cad_names.model_names(mesh, chosen.expression(mesh))
+        return names.split(";") if names != "" else []
+    if kind in [pick_kinds.face, pick_kinds.faces]:
+        return cad_commands.selected_faces(w)
+    if kind in [pick_kinds.edge, pick_kinds.edges]:
+        return cad_commands.selected_edges(w)
+    if kind == pick_kinds.curves:
+        if level != curve_level:
+            return []
+        return texts_of(mesh, chosen, "cad_curve_name", 4)
+    if kind == pick_kinds.align_input:
+        let words = edit_cad_align.pick_words(mesh, chosen.next(-1), level, false) catch failure:
+            recover ""
+        return [words] if words != "" else []
+    if kind == pick_kinds.words:
+        let faces = face_level in pick.levels
+        if not (level == curve_level or level == edge_level or (faces and (level == face_level or level == patch_level))):
+            return []
+        let words = edit_cad_build.picked_words(mesh, chosen, level, false) catch failure:
+            recover []
+        return words
+    return []
+
+## The texts of attribute `name` (on `domain`) of the selection, each once.
+func texts_of(mesh: Mesh, chosen: Selection, name: str, domain: int) -> list[str]!:
+    let column = mesh.find_attribute(name, domain)
+    let found: list[str] = []
+    if column < 0:
+        return found
+    var at = chosen.next(-1)
+    while at >= 0:
+        let text = mesh.attribute_text(column, at)
+        if text != "" and not (text in found):
+            found.append(text)
+        at = chosen.next(at)
+    return found
+
+# -- A step of an edited Edit CAD model.
+
+## Tool `tool`'s step on the selection, then the first pick it still waits
+## for (one undo step with it), or its value box.
+func in_model(w: Workspace, tool: Tool, numbers: list[float]?) -> unit!:
+    let model = edit_cad_commands.model_node(w) else return
+    if tool.gesture == "profiles":
+        edit_cad_commands.feature_from_sketch(w, tool.name)
+        return
+    if tool.gesture == "move":
+        let count = model.edits.length
+        modeling_commands.model(w, tool.label, numbers)
+        if model.edits.length > count:
+            modeling_commands.choose_tool(w, "Move")
+        return
+    var start = numbers else tool.starting()
+    if tool.gesture == "reblend":
+        # Fusion's Press Pull on a fillet: its radius to start with.
+        if not edit_cad_commands.blends_selected(w):
+            say(w, "Reblend: select fillet faces (constant radius blends) at the Faces level")
+            return
+        start = [edit_cad_commands.selected_blend_radii(w)[0]]
+    if w.in_transaction():
+        return
+    let first = tool.first_pick()
+    let count = model.edits.length
+    w.begin(tool.label)
+    if first.step == pick_kinds.group or (first.grouped and grouped_start(w, first)):
+        modeling_commands.model(w, tool.label, start)
+    else:
+        let taken = from_selection(w, tool, true)
+        if first.prompt != "" and taken[0] == "":
+            w.cancel()
+            say(w, first.prompt)
+            return
+        let texts: list[str] = []
+        for at in 0..<tool.picks.length:
+            let pick = tool.picks[at]
+            if pick.step >= 0 and pick.kind != pick_kinds.point:
+                while texts.length <= pick.step:
+                    texts.append("")
+                texts[pick.step] = taken[at]
+        model.edits.append(EditStep(tool.verb, "", 0, start, 0, texts = texts))
+        w.network.invalidate(model.id)
+    if model.edits.length == count:
+        w.cancel()
+        return
+    if tool.gesture == "view":
+        looking(w, model)
+    let next = tool_picks.step_first(tool, model)
+    if next >= 0:
+        tool_picks.ask(w, model, tool, next)
+        return
+    w.selection = none
+    w.pending_changed = true
+    w.commit()
+    if tool.asks:
+        w.ask_value = true
+    w.rebuild()
+
+## Whether a grouped first pick starts on the selection as the step's
+## group: as much as it takes is selected at its level.
+func grouped_start(w: Workspace, first: Pick) -> bool:
+    if not w.selecting() or not first.takes(w.level_index()):
+        return false
+    return w.selected_count() >= (first.most if first.most > 0 else 1)
+
+## Project along the view: the step keeps the view's direction, so it
+## replays as made (view_state.luc's orbit: from the eye to the target).
+func looking(w: Workspace, model: Node) -> unit!:
+    let step = model.edits[-1]
+    let numbers = step.numbers.copy()
+    if numbers.length <= edit_cad_surfaces.along_slot or int(numbers[edit_cad_surfaces.along_slot]) != 1:
+        return
+    let v = w.view
+    let look = Vector3(-math.sin(v.yaw) * math.cos(v.pitch), -math.sin(v.pitch), -math.cos(v.yaw) * math.cos(v.pitch))
+    numbers[edit_cad_surfaces.direction_slot] = look.x
+    numbers[edit_cad_surfaces.direction_slot + 1] = look.y
+    numbers[edit_cad_surfaces.direction_slot + 2] = look.z
+    model.edits[-1] = step.with_numbers(numbers)
+
+# -- Press Pull.
+
+## Press Pull, Fusion's: what is selected decides the tool. Profiles of a
+## sketch make an Extrude, faces an Offset Face (fillet faces in Edit CAD a
+## Reblend), edges a Fillet.
+pub func press_pull(w: Workspace) -> unit!:
+    if edit_cad_commands.active(w):
+        if edit_cad_commands.sketching(w):
+            edit_cad_commands.feature_from_sketch(w, "Extrude")
+            return
+        if edit_cad_commands.selected_faces(w).length > 0:
+            run(w, "Reblend" if edit_cad_commands.blends_selected(w) else "Offset Face")
+            return
+        if edit_cad_commands.selected_edges(w):
+            run(w, "Fillet")
+            return
+        say(w, "Press Pull: select faces or edges of the model, or edit a sketch and pick its profiles")
+        return
+    if w.sketching():
+        cad_commands.extrude_profiles(w)
+        return
+    if cad_commands.selected_faces(w).length > 0:
+        run(w, "Offset Face")
+        return
+    if cad_commands.selected_edges(w).length > 0:
+        run(w, "Fillet")
+        return
+    say(w, "Press Pull: select a face or edges of the body, or edit a sketch and pick its profiles")
+
+func say(w: Workspace, text: str):
+    w.notice = text
+    w.revision += 1

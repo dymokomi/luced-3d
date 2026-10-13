@@ -2,12 +2,18 @@
 ## its kind, the Edit step of its verb, and every menu, marking menu,
 ## right-click entry, prompt, icon and docs line that reaches it, all from
 ## this one record. tool_registry.luc lists the tools; mesh tools are built
-## from their luce-geocore verbs (verb_tools.luc).
+## from their luce-geocore verbs (verb_tools.luc), CAD tools each declared
+## in a tool_<name>.luc of their own (cad_tools.luc lists them).
 from geometry_data import GeometryData
 from parameter_rows import Parameter
+from cad_blends import BlendMemo
+import pick_kinds
 
 ## One selection a tool works on: its first pick is the selection it runs
-## on (a node's Group, a step's group).
+## on (a node's Group, a step's group); a CAD tool's later picks are what
+## it asks for after (Combine's tool bodies, Align's master), each kept by
+## name where a node keeps it and where an Edit step keeps it, and asked
+## for in order by one prompt chain (tool_picks.luc).
 pub class Pick:
     pub let label: str
     ## The selection levels it is picked at (edit_types' object_level,
@@ -16,14 +22,116 @@ pub class Pick:
     ## What the editor says while it waits for this pick ("" for the
     ## generated "Select edges first").
     pub let prompt: str
+    ## What a click gives (pick_kinds.luc): components (a mesh group), or
+    ## for CAD faces, bodies, edges, a point, curves, curve words, ….
+    pub let kind: int
+    ## Where a node keeps it: its text `slot` (a point: its three values
+    ## from `slot`); pick_kinds.nowhere: a node has no such pick.
+    pub let slot: int
+    ## Where an Edit step keeps it: its group (pick_kinds.group), its text
+    ## `step` (a point: its numbers from `step`), or pick_kinds.nowhere.
+    pub let step: int
+    ## The parameter panel's condition hiding its rows, and their tooltip.
+    pub let hide_when: str
+    pub let doc: str
+    ## Whether it takes what the pick before it left of the selection a
+    ## tool started on (Combine's tool bodies after its target body).
+    pub let rest: bool
+    ## How many it takes before it finishes by itself (0: until Enter; a
+    ## single face, body, edge or point always one).
+    pub let most: int
+    ## Whether Enter on the pick before goes on to it though the tool can
+    ## do without it (Fill's guides, a Profile Blend's profiles), and
+    ## whether a step's prompt starts on it though it has what it needs
+    ## (Fill's boundaries take more until Enter).
+    pub let asked: bool
+    pub let stays: bool
+    ## Whether a step started on enough of a selection (`most`, else any)
+    ## keeps it as its group, else the words of what was picked in its
+    ## text (Blend Curve's two curves; Project's curves).
+    pub let grouped: bool
+    ## A point's: the slot of the point its step holds it at while it is
+    ## picked (Move's From and To: the move stands still meanwhile; -1
+    ## none).
+    pub let still: int
+    ## Whether, empty, the tool waits for it as `values` and `texts` stand
+    ## (`wired`: a second input is wired); none: always.
+    pub let needed: func(list[float], list[str], bool) -> bool!?
+    ## What taking it sets among the values (Pick object: Extent To
+    ## object; Align's second master: the side beside it), `values` changed
+    ## in place, given what was picked.
+    pub let taken: func(list[float], str) -> unit!?
+    ## Whether it takes whole bodies as the values stand (Move's Move
+    ## object); none: as its kind says.
+    pub let bodies_when: func(list[float]) -> bool!?
+    ## Its part of the text it lives in (a Fillet's set k among its sets):
+    ## read from that text, and that text with `picked` written in.
+    pub let part_of: func(str) -> str!?
+    pub let with_part: func(str, str) -> str!?
+    ## What the parameter panel says it holds; none: by kind ("2 faces").
+    pub let summary: func(str) -> str!?
+    ## The panel's buttons: pick it ("": "Pick " and the label), and
+    ## forget it ("": none; "All edges").
+    pub let button: str
+    pub let clear: str
 
-    pub func init(self, label: str, levels: list[int], prompt: str = ""):
+    pub func init(self, label: str, levels: list[int], prompt: str = "", kind: int = 0, slot: int = -1, step: int = -1, hide_when: str = "", doc: str = "",
+                  rest: bool = false, most: int = 0, asked: bool = false, stays: bool = false, grouped: bool = false, still: int = -1, needed: func(list[float], list[str], bool) -> bool!? = none, taken: func(list[float], str) -> unit!? = none,
+                  bodies_when: func(list[float]) -> bool!? = none, part_of: func(str) -> str!? = none, with_part: func(str, str) -> str!? = none, summary: func(str) -> str!? = none, button: str = "", clear: str = ""):
         self.label = label
         self.levels = levels
         self.prompt = prompt
+        self.kind = kind
+        self.slot = slot
+        self.step = step
+        self.hide_when = hide_when
+        self.doc = doc
+        self.rest = rest
+        self.most = most
+        self.asked = asked
+        self.stays = stays
+        self.grouped = grouped
+        self.still = still
+        self.needed = needed
+        self.taken = taken
+        self.bodies_when = bodies_when
+        self.part_of = part_of
+        self.with_part = with_part
+        self.summary = summary
+        self.button = button
+        self.clear = clear
 
     pub func takes(self, level: int) -> bool:
         return self.levels.length == 0 or level in self.levels
+
+    ## The prompt's label while it is waited for ("Pick target faces").
+    pub func asking(self) -> str:
+        return "Pick " + self.label.lower()
+
+    ## Whether one click is all it takes.
+    pub func single(self) -> bool:
+        return not pick_kinds.many(self.kind) or self.most == 1
+
+    ## Whether the tool waits for it, empty, as `values` and `texts` stand.
+    pub func wanted(self, values: list[float], texts: list[str], wired: bool) -> bool!:
+        let check = self.needed else return true
+        return check(values, texts, wired)
+
+    ## Whether it takes whole bodies as `values` stand.
+    pub func bodies(self, values: list[float]) -> bool!:
+        if let check = self.bodies_when:
+            return check(values)
+        return pick_kinds.whole_bodies(self.kind)
+
+    ## What it holds of text `text` (its own part, for a Fillet's set).
+    pub func held(self, text: str) -> str!:
+        let part = self.part_of else return text
+        return part(text)
+
+    ## Text `text` with `picked` as what it holds.
+    pub func holding(self, text: str, picked: str) -> str!:
+        let put = self.with_part else return picked
+        return put(text, picked)
 
 ## What a node and a step both hand a tool's cook: the verb, its numbers
 ## and texts, one group per pick and how they were picked.
@@ -38,8 +146,18 @@ pub class Invocation:
     pub let topology: int
     pub let symmetry: int
     pub let keep: bool
+    ## Whether a node calls (its picks kept by name in its texts, its
+    ## values all 48) rather than an Edit step (its group picked on the pick
+    ## geometry); a node's second input, its worker-side memo (a Fillet's
+    ## plan) and the nearest sketch upstream (a Revolve's axis on a sketch
+    ## line).
+    pub let node: bool
+    pub let second: GeometryData?
+    pub let memo: BlendMemo?
+    pub let sketch: str
 
-    pub func init(self, verb: str, numbers: list[float], picks: list[str], group_type: int, topology: int = 0, symmetry: int = 0, keep: bool = false, texts: list[str] = []):
+    pub func init(self, verb: str, numbers: list[float], picks: list[str], group_type: int, topology: int = 0, symmetry: int = 0, keep: bool = false, texts: list[str] = [],
+                  node: bool = false, second: GeometryData? = none, memo: BlendMemo? = none, sketch: str = ""):
         self.verb = verb
         self.numbers = numbers
         self.picks = picks
@@ -48,6 +166,18 @@ pub class Invocation:
         self.symmetry = symmetry
         self.keep = keep
         self.texts = texts
+        self.node = node
+        self.second = second
+        self.memo = memo
+        self.sketch = sketch
+
+    ## Text `at`, "" past the last.
+    pub func text(self, at: int) -> str:
+        return self.texts[at] if at >= 0 and at < self.texts.length else ""
+
+    ## Number `at`, `otherwise` past the last.
+    pub func number(self, at: int, otherwise: float = 0.0) -> float:
+        return self.numbers[at] if at >= 0 and at < self.numbers.length else otherwise
 
     ## The group of the first pick ("" for everything).
     pub func group(self) -> str:
@@ -115,9 +245,29 @@ pub class Tool:
     ## Keys that change it while its drag lasts.
     pub let keys: list[ToolKey]
 
+    ## The verb of its Edit step when it is not its node's kind (the Move
+    ## node's Transform Components), its node menu category in its context
+    ## ("Surfaces"), its node's inputs, its step's starting numbers when
+    ## they are not its rows' (a Trim's picks after its rows; [] its rows').
+    pub let verb: str
+    pub let category: str
+    pub let inputs: int
+    pub let numbers: list[float]
+    ## Whether its cook's handles (Node.handles) drag its values, and
+    ## whether its value box opens by its handle as it is made (Fillet's
+    ## radius).
+    pub let handles: bool
+    pub let asks: bool
+    ## What its node waits for as its values and texts stand ("Pick the
+    ## faces to remove", "" none; `wired`: its second input is wired);
+    ## none: its empty needed picks say it.
+    pub let waits: func(list[float], list[str], bool) -> str!?
+
     pub func init(self, name: str, label: str, section: str, family: str, icon: str, doc: str, contexts: list[str], kinds: list[str], picks: list[Pick],
                   rows: list[Parameter], drag: int, gesture: str, whole: bool, cook: func(Invocation, GeometryData, str) -> GeometryData!, function: str = "",
-                  drag_mode: str = "length", follows: bool = false, wheel: int = -1, axis: int = -1, axis_choice: int = -1, keys: list[ToolKey] = []):
+                  drag_mode: str = "length", follows: bool = false, wheel: int = -1, axis: int = -1, axis_choice: int = -1, keys: list[ToolKey] = [],
+                  verb: str = "", category: str = "", inputs: int = 1, numbers: list[float] = [], handles: bool = false, asks: bool = false,
+                  waits: func(list[float], list[str], bool) -> str!? = none):
         self.name = name
         self.label = label
         self.section = section
@@ -139,6 +289,13 @@ pub class Tool:
         self.cook = cook
         self.function = function
         self.keys = keys
+        self.verb = verb if verb != "" else name
+        self.category = category
+        self.inputs = inputs
+        self.numbers = numbers
+        self.handles = handles
+        self.asks = asks
+        self.waits = waits
 
     ## The selection it runs on.
     pub func first_pick(self) -> Pick:
@@ -179,9 +336,15 @@ pub class Tool:
         let row = self.row_at(parm) else return -1
         return row.slot
 
-    ## Its starting numbers: each row's initial value in its slot (a
-    ## vector's in each component's, a value ramp's numbers in its slots).
+    ## Its step's starting numbers: its own, else its node's.
     pub func starting(self) -> list[float]:
+        if self.numbers.length > 0:
+            return self.numbers.copy()
+        return self.node_values()
+
+    ## Its node's starting values: each row's initial value in its slot (a
+    ## vector's in each component's, a value ramp's numbers in its slots).
+    pub func node_values(self) -> list[float]:
         let result: list[float] = []
         for row in self.rows:
             if not row.valued() and not row.value_ramp():
@@ -209,3 +372,51 @@ pub class Tool:
         if pick.prompt != "":
             return pick.prompt
         return f"Select {self.levels_text(level_names)} for {self.label}"
+
+    ## The rows its step's tool bar shows (`in_steps`; texts are a node's).
+    pub func bar_rows(self) -> list[Parameter]:
+        let result: list[Parameter] = []
+        for row in self.rows:
+            if row.in_steps and row.valued():
+                result.append(row)
+        return result
+
+    ## Its picks a node has, or an Edit step (`step`), with their places in
+    ## `picks`.
+    pub func picks_of(self, step: bool) -> list[int]:
+        let result: list[int] = []
+        for at in 0..<self.picks.length:
+            if (self.picks[at].step if step else self.picks[at].slot) != pick_kinds.nowhere:
+                result.append(at)
+        return result
+
+## A tool as its registry lists it: what menus, icons and the node catalog
+## read without building it (its name, label, icon, node menu category,
+## the contexts it is a node in, the Edit kinds it is a step of, its step's
+## verb), and how to build it.
+pub class ToolEntry:
+    pub let name: str
+    pub let label: str
+    pub let icon: str
+    pub let category: str
+    pub let contexts: list[str]
+    pub let kinds: list[str]
+    pub let verb: str
+    pub let make: func() -> Tool
+
+    pub func init(self, name: str, label: str, icon: str, category: str, contexts: list[str], kinds: list[str], make: func() -> Tool, verb: str = ""):
+        self.name = name
+        self.label = label
+        self.icon = icon
+        self.category = category
+        self.contexts = contexts
+        self.kinds = kinds
+        self.make = make
+        self.verb = verb if verb != "" else name
+
+    ## The tool: its entry's facts with the rest of its declaration.
+    pub func tool(self, section: str, family: str, doc: str, picks: list[Pick], rows: list[Parameter], cook: func(Invocation, GeometryData, str) -> GeometryData!,
+                  drag: int = -1, gesture: str = "", whole: bool = false, inputs: int = 1, numbers: list[float] = [], handles: bool = false, asks: bool = false,
+                  waits: func(list[float], list[str], bool) -> str!? = none) -> Tool:
+        return Tool(self.name, self.label, section, family, self.icon, doc, self.contexts, self.kinds, picks, rows, drag, gesture, whole, cook,
+                    verb = self.verb, category = self.category, inputs = inputs, numbers = numbers, handles = handles, asks = asks, waits = waits)

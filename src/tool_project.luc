@@ -1,0 +1,71 @@
+## Project (Alias's; Rhino's Pull): curves cast onto a face along a vector,
+## the view (its direction kept from when it was made) or the face's
+## normals, as curves on the face (surface_ops.luc). The node keeps its
+## curves and face by name; an Edit CAD step casts the curves picked (or
+## clicked while it waits, temporary isoparms too) onto a face clicked
+## next.
+from luce_cad.cad_curves import CadCurves
+from luce_3d.graphics import Vector3
+from tool_record import Tool, ToolEntry, Pick, Invocation
+from geometry_data import GeometryData
+from parameter_rows import Parameter, toggle, menu, vector
+from edit_types import face_level, curve_level
+import pick_kinds
+import edit_cad_surfaces
+import edit_cad_curves
+import surface_ops
+import build_ops
+import cad_cook
+
+pub func entry() -> ToolEntry:
+    return ToolEntry(edit_cad_surfaces.project_verb, edit_cad_surfaces.project_verb, "arrow-down", "Surfaces", [cad_cook.context], [cad_cook.edit_kind], made)
+
+func made() -> Tool:
+    return entry().tool("Modify", "Surface Edit", "Cast curves onto a face along a vector, the view or its normals", picks(), rows(), cook,
+                        numbers = edit_cad_surfaces.project_numbers(), gesture = "view", waits = waits)
+
+## The curves (a step: those picked, then those clicked as words in its
+## text 1), then the face.
+func picks() -> list[Pick]:
+    return [Pick("Curves", [curve_level], kind = pick_kinds.curves, slot = 0, step = 1, grouped = true, doc = "The curves cast onto the face, kept by their names."),
+            Pick("Projection face", [face_level], kind = pick_kinds.face, slot = 1, step = 0, doc = "The face the curves are cast onto, kept by its name.")]
+
+func waits(values: list[float], texts: list[str], wired: bool) -> str:
+    if texts[0].trim() == "":
+        return "Pick the curves to project"
+    if texts[1].trim() == "":
+        return "Pick the face to project onto"
+    return ""
+
+func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    let v = call.numbers
+    let direction = Vector3(v[edit_cad_surfaces.direction_slot], v[edit_cad_surfaces.direction_slot + 1], v[edit_cad_surfaces.direction_slot + 2])
+    let along = int(v[edit_cad_surfaces.along_slot])
+    let both = v[edit_cad_surfaces.both_slot] != 0.0
+    let original = v[edit_cad_surfaces.original_slot] != 0.0
+    if call.node:
+        let waiting = waits(v, call.texts, false)
+        if waiting != "":
+            return data.passed(waiting)
+        let curves: list[str] = []
+        for name in call.text(0).split(";"):
+            if name.trim() != "":
+                curves.append(name.trim())
+        return surface_ops.project(data, curves, call.text(1).trim(), along, direction, both, original)
+    cad_cook.needs_models(data)
+    let names: list[str] = []
+    for index in edit_cad_curves.picked_curves(cad_cook.step_of(call), data):
+        names.append(CadCurves.name(data.geometry, index))
+    # Curves clicked while it waited ("curve <name>"), and temporary
+    # isoparms (a double-click on a surface: "isoparm_at x y z").
+    for words in build_ops.items(call.text(1)):
+        names.append(words[6..] if words.starts_with("curve ") else words)
+    return surface_ops.project(data, names, call.text(0).trim(), along, direction, both, original)
+
+func rows() -> list[Parameter]:
+    let along = vector("Vector", edit_cad_surfaces.direction_slot, [0.0, -1.0, 0.0], "The direction the curves are cast along (View: the view's direction when the step was made).")
+    along.hide_when = "{ along == 2 }"
+    return [menu("Along", edit_cad_surfaces.along_slot, "Vector|View|Normal", 0.0, "Alias's Project options: along a vector, along the view, or along the face's normals (Rhino's Pull)."),
+            along,
+            toggle("Both ways", edit_cad_surfaces.both_slot, 1.0, "Cast both ways along the direction (Plasticity's Bidirectional), the nearest hit winning; off: only ahead along it."),
+            toggle("Match original", edit_cad_surfaces.original_slot, 0.0, "Alias's Match original: keep each curve's degree and spans; off: degree 5 on as many spans as the tolerance needs.")]

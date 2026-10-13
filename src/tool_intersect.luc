@@ -1,0 +1,60 @@
+## Intersect (Alias's): where two faces meet, or a face and a plane, as
+## curves on the face (and on the other with Curves on both;
+## surface_ops.luc). The node keeps its faces by name; an Edit CAD step
+## takes the two faces picked.
+from luce_3d.graphics import Vector3
+from tool_record import Tool, ToolEntry, Pick, Invocation
+from geometry_data import GeometryData
+from parameter_rows import Parameter, toggle, menu, vector
+from edit_types import face_level, patch_level
+import pick_kinds
+import edit_cad_surfaces
+import surface_ops
+import cad_cook
+from luce_ui import ui
+
+pub func entry() -> ToolEntry:
+    return ToolEntry(edit_cad_surfaces.intersect_verb, edit_cad_surfaces.intersect_verb, "boolean-intersect", "Surfaces", [cad_cook.context], [cad_cook.edit_kind], made)
+
+func made() -> Tool:
+    return entry().tool("Modify", "Surface Edit", "Curves where two faces meet, or a face and a plane", picks(), rows(), cook, waits = waits)
+
+func picks() -> list[Pick]:
+    return [Pick("Face", [face_level, patch_level], kind = pick_kinds.face, slot = 0, doc = "The face the meeting curves lie on."),
+            Pick("Second face", [face_level], kind = pick_kinds.face, slot = 1, step = pick_kinds.nowhere, hide_when = "{ with == 1 }", rest = true, needed = with_faces,
+                 doc = "The face it meets.")]
+
+func with_faces(values: list[float], texts: list[str], wired: bool) -> bool:
+    return int(values[edit_cad_surfaces.with_slot]) == 0
+
+func waits(values: list[float], texts: list[str], wired: bool) -> str:
+    if texts[0].trim() == "":
+        return "Pick the face"
+    if with_faces(values, texts, wired) and texts[1].trim() == "":
+        return "Pick the second face"
+    return ""
+
+func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    let v = call.numbers
+    let origin = Vector3(v[edit_cad_surfaces.origin_slot], v[edit_cad_surfaces.origin_slot + 1], v[edit_cad_surfaces.origin_slot + 2])
+    let normal = Vector3(v[edit_cad_surfaces.normal_slot], v[edit_cad_surfaces.normal_slot + 1], v[edit_cad_surfaces.normal_slot + 2])
+    let plane = int(v[edit_cad_surfaces.with_slot]) == 1
+    let both = v[edit_cad_surfaces.both_faces_slot] != 0.0
+    if call.node:
+        let waiting = waits(v, call.texts, false)
+        if waiting != "":
+            return data.passed(waiting)
+        return surface_ops.intersect(data, call.text(0).trim(), call.text(1).trim(), plane, origin, normal, both)
+    let faces = edit_cad_surfaces.step_faces(call, data)
+    if not plane and faces.length < 2:
+        error(ui.invalid, "Intersect: pick two faces (Shift adds), or choose With: Plane")
+    return surface_ops.intersect(data, faces[0], faces[1] if faces.length > 1 else "", plane, origin, normal, both)
+
+func rows() -> list[Parameter]:
+    let origin = vector("Plane origin", edit_cad_surfaces.origin_slot, [0.0, 0.0, 0.0], "With a plane: a point of the plane.")
+    origin.hide_when = "{ with == 0 }"
+    let normal = vector("Plane normal", edit_cad_surfaces.normal_slot, [0.0, 1.0, 0.0], "With a plane: its normal.")
+    normal.hide_when = "{ with == 0 }"
+    let both = toggle("Curves on both", edit_cad_surfaces.both_faces_slot, 0.0, "Alias's Create curves on both surfaces: the meeting curve on the second face too.")
+    both.hide_when = "{ with == 1 }"
+    return [menu("With", edit_cad_surfaces.with_slot, "Faces|Plane", 0.0, "Intersect two faces, or a face with a plane."), origin, normal, both]

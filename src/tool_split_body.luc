@@ -1,0 +1,44 @@
+## Split Body (Fusion 360's): bodies split by a picked face's surface
+## (extended, or with Extend splitting tool off only where the face
+## reaches) or an origin plane, each piece a body of its own
+## (edit_cad_faces.luc). The node keeps its bodies and face by name; an
+## Edit CAD step takes the bodies picked, then waits for the splitting
+## face (or an origin plane from its tool bar).
+from tool_record import Tool, ToolEntry, Pick, Invocation
+from geometry_data import GeometryData
+from parameter_rows import Parameter
+from edit_types import object_level, face_level
+import pick_kinds
+import edit_cad_faces
+import tool_split_face
+import cad_cook
+
+pub func entry() -> ToolEntry:
+    return ToolEntry("Split Body", "Split Body", "split-mesh", "Modify", [cad_cook.context], [cad_cook.edit_kind], made)
+
+func made() -> Tool:
+    return entry().tool("Modify", "Bodies", "Split bodies by a face's surface or an origin plane, each piece a body", picks(), rows(), cook, waits = waits)
+
+func picks() -> list[Pick]:
+    return [Pick("Body", [object_level], kind = pick_kinds.bodies, slot = 0, doc = "The bodies to split."),
+            Pick("Splitting face", [face_level], kind = pick_kinds.face, slot = 1, step = edit_cad_faces.target_text, hide_when = "{ splitting_tool != 0 }",
+                 needed = tool_split_face.by_face, taken = tool_split_face.picked_face, doc = "The face whose surface, extended, splits the bodies.")]
+
+func waits(values: list[float], texts: list[str], wired: bool) -> str:
+    if texts[0].trim() == "":
+        return "Pick the body to split"
+    if texts[1].trim() == "" and tool_split_face.by_face(values, texts, wired):
+        return "Pick the splitting face, or choose an origin plane"
+    return ""
+
+func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    if not call.node:
+        return cad_cook.face_step(call, data, tag)
+    let waiting = waits(call.numbers, call.texts, false)
+    if waiting != "":
+        return data.passed(waiting)
+    let mesh = cad_cook.node_mesh(data, call.verb)
+    return cad_cook.node_face_step(call, "Split Body", data, mesh, cad_cook.picked(call, mesh, 0, true), [call.text(1), ""], 8, tag)
+
+func rows() -> list[Parameter]:
+    return tool_split_face.split_rows("the body", "must cut a piece off")

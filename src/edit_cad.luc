@@ -37,20 +37,16 @@ from luce_cad.cad_edits import CadEdits
 from luce_cad.solids import CadSolids
 from luce_cad.model import CadModel
 from luce_cad.modeling import CadModeling
-import cad_nodes
 from geometry_data import GeometryData
 from edit_operations import EditStep
-from edit_types import EditKind, EditLevel, EditTool, object_level, point_level, edge_level, face_level, patch_level, curve_level, missing, own_data
-from parameter_rows import Parameter, number
+from edit_types import EditKind, EditLevel, EditTool, point_level, edge_level, face_level, curve_level, missing, own_data
 import cad_moves
 import tool_registry
+import cad_cook
 import edit_cad_sketches
-import edit_cad_faces
 import edit_cad_nets
 import edit_cad_curves
-import edit_cad_surfaces
 import edit_cad_align
-import edit_cad_build
 from luce_cad.cad_curves import CadCurves
 from luce_ui import ui
 
@@ -67,9 +63,17 @@ pub func primitive_names() -> list[str]:
     return ["Box", "Cylinder", "Cone", "Sphere", "Torus"]
 
 pub func kind() -> EditKind:
-    let steps = [edit_cad_sketches.sketch_verb, edit_cad_sketches.edit_sketch_verb, edit_cad_sketches.visibility_verb, edit_cad_sketches.plane_verb, "Extrude", "Revolve", edit_cad_nets.move_verb]
+    let steps = [edit_cad_sketches.sketch_verb, edit_cad_sketches.edit_sketch_verb, edit_cad_sketches.visibility_verb, edit_cad_sketches.plane_verb, edit_cad_nets.move_verb]
     return EditKind(kind_name, levels(), tool_list(), primitive_names(), start, pick, run, create, smart = [edge_level, face_level], steps = steps,
-                    draw_tools = edit_cad_curves.draw_verbs(), drawn = edit_cad_curves.drawn)
+                    draw_tools = placing(), drawn = edit_cad_curves.drawn)
+
+## The tools whose clicks place points (the curves' drawing tools).
+func placing() -> list[str]:
+    let result: list[str] = []
+    for tool in tool_registry.of_kind(kind_name):
+        if tool.gesture == "place":
+            result.append(tool.label)
+    return result
 
 func levels() -> list[EditLevel]:
     return [EditLevel("Object", "cube", Domain.face, GroupType.faces, model_piece),
@@ -90,40 +94,13 @@ func levels() -> list[EditLevel]:
 ## Attach, Detach, Close, Stretch, Reverse and Delete (edit_cad_curves).
 func tool_list() -> list[EditTool]:
     let result: list[EditTool] = []
-    result.append(EditTool("Move/Copy", "Transform Components", [object_level, face_level, patch_level], cad_moves.starting(), cad_moves.rows()))
-    let none_shown: list[Parameter] = []
-    result.append(EditTool("Delete", "Delete", [object_level, face_level, patch_level], [0.0], none_shown))
-    result.append(EditTool("Remove", "Remove", [object_level], [0.0], none_shown))
-    result.append(EditTool("Remove Faces", "Remove Faces", [face_level, patch_level], [0.0], none_shown))
-    # Reblend (Parasolid's; Fusion's Press Pull on a fillet): the picked
-    # blends given another radius (edit_cad_faces.luc).
-    let reblend_radius = number("Radius", 0, 1.0, 0.0001, 100000.0, 0.1, "The blends' new radius: they are deleted, the faces healed, and filleted again; blends meeting them keep their own.", soft = 10.0)
-    reblend_radius.length = true
-    result.append(EditTool(edit_cad_faces.reblend_verb, edit_cad_faces.reblend_verb, [face_level, patch_level], [1.0], [reblend_radius]))
-    for (name, offered) in [("Offset Face", [face_level, patch_level]), ("Replace Face", [face_level, patch_level]), ("Split Face", [face_level, patch_level]),
-                            ("Shell", [object_level, face_level, patch_level]), ("Combine", [object_level]), ("Split Body", [object_level])]:
-        result.append(EditTool(name, name, offered))
+    # The CAD tools' declarations (cad_tools.luc).
+    for tool in tool_registry.of_kind(kind_name):
+        result.append(EditTool(tool.label, tool.verb, tool.first_pick().levels, tool.starting(), tool.bar_rows(), tool = tool))
     for (name, offered) in [("Noise", [cv_level]), ("Flatten", [cv_level]), ("Snap", [cv_level])]:
         let made = tool_registry.find(name) else continue
-        result.append(EditTool(name, made.name, offered, made.starting()))
-    for feature in edge_features():
-        result.append(EditTool(feature, feature, [edge_level]))
-    # The NURBS structure steps (edit_cad_nets.luc) and the curves'
-    # (edit_cad_curves.luc).
-    result.extend(edit_cad_nets.tools(cv_level, face_level, patch_level))
-    result.extend(edit_cad_curves.tools(curve_level, edge_level, face_level, patch_level))
-    # Project, Intersect, Trim, Untrim, Trim Convert, Shrink, Stitch and
-    # Unstitch (edit_cad_surfaces.luc).
-    result.extend(edit_cad_surfaces.tools(curve_level, face_level, patch_level, object_level))
-    # Align and Symmetry Align (edit_cad_align.luc).
-    result.extend(edit_cad_align.tools(edge_level, curve_level))
-    # Surfaces from curves and Extend (edit_cad_build.luc).
-    result.extend(edit_cad_build.tools(edge_level, curve_level, face_level, patch_level))
+        result.append(EditTool(name, made.name, offered, made.starting(), tool = made))
     return result
-
-## The CAD nodes that are Edit CAD tools on picked edges.
-pub func edge_features() -> list[str]:
-    return ["Fillet", "Chamfer"]
 
 ## The whole model under a picked polygon.
 func model_piece(mesh: Mesh, face: int) -> str!:
@@ -177,20 +154,8 @@ func pick(data: GeometryData, level: int) -> Mesh?!:
         return CadGeometry.cv_cloud(data.geometry)
     if not data.has_cad():
         return Mesh.empty()
-    return pick_mesh(data)
+    return cad_cook.pick_mesh(data)
 
-
-## The tagged tessellations the Object, Faces and Edges levels pick on,
-## made once per result, with what the last step created as `.selection`
-## (a group may name it, so steps read their groups on this same mesh).
-pub func pick_mesh(data: GeometryData) -> Mesh!:
-    if let known = data.pick_cache:
-        return known
-    var made = CadEdits.pick_mesh(data.geometry)
-    if data.created != "":
-        made = Groups.with_group(made, ".selection", 2, data.created)
-    data.pick_cache = made
-    return made
 
 ## Step number `at` of a recipe on `data`, with the model's sketches told
 ## to the editor (Node.sketch_state); after Insert Knot or Remove Knot, the
@@ -225,66 +190,22 @@ func ran(step: EditStep, name: str, data: GeometryData) -> GeometryData!:
         return created(step, name, data)
     if edit_cad_sketches.is_sketch_step(step.verb):
         return edit_cad_sketches.sketched(step, data)
-    if edit_cad_sketches.is_feature_step(step.verb):
-        return edit_cad_sketches.featured(step, name, data)
-    # Curves: drawn ones and those on picked curves need no model.
-    if step.verb in edit_cad_curves.draw_verbs() or step.verb in edit_cad_curves.curve_verbs():
-        return edit_cad_curves.run(step, data, none)
-    if step.verb in edit_cad_align.verbs():
-        return edit_cad_align.run(step, data)
-    if step.verb in edit_cad_build.verbs():
-        return edit_cad_build.run(step, name, data)
-    if step.group_type == 1 and data.has_curves() and not data.has_cad():
+    # CVs moved by the gizmo or a point verb go back to their surfaces and
+    # curves.
+    if step.group_type == 1 and step.verb in cv_verbs():
+        if not data.has_cad() and not data.has_curves():
+            cad_cook.needs_models(data)
         return moved_cvs(step, data)
-    if not data.has_cad():
-        error(ui.invalid, "Edit CAD has no models to edit yet: create one, sketch and extrude, or connect CAD")
-    if step.verb == edit_cad_curves.isoparm_verb:
-        return edit_cad_curves.picked_isoparm(step, data)
-    # Surfacing (edit_cad_surfaces.luc): Project on curves, the rest on
-    # faces or bodies.
-    if step.verb in edit_cad_surfaces.verbs():
-        return edit_cad_surfaces.run(step, name, data, none if step.verb == edit_cad_surfaces.project_verb else edit_cad_faces.picked(step, data, pick_mesh))
+    # A CAD tool's step: its declaration's cook (cad_tools.luc).
+    if let tool = tool_registry.cad_step(step.verb):
+        return tool.cook(step.invocation(), data, name)
+    # The gizmo's CV moves in a frame of their own (Move CVs).
     if step.verb == edit_cad_nets.move_verb:
+        cad_cook.needs_models(data)
         return edit_cad_nets.run_move(step, data)
-    if step.verb in edit_cad_nets.structure_verbs():
-        return edit_cad_nets.run_structure(step, data, none if step.group_type == 1 else edit_cad_faces.picked(step, data, pick_mesh))
     if step.group_type == 1:
-        return moved_cvs(step, data)
-    let shown = edit_cad_faces.picked(step, data, pick_mesh)
-    if step.verb in edit_cad_curves.model_verbs():
-        return edit_cad_curves.run(step, data, shown)
-    if step.verb in edge_features():
-        return featured(step, name, data, shown)
-    if step.group_type == 2:
-        error(ui.invalid, f"{step.verb} does not apply to CAD edges")
-    if step.verb == "Transform Components" or step.verb in edit_cad_faces.face_verbs():
-        return edit_cad_faces.run_face_step(step, name, data, shown)
+        error(ui.invalid, f"{step.verb} does not apply to control vertices")
     error(ui.invalid, f"{step.verb} does not apply to CAD models or faces")
-
-## A feature on picked edges, as its node makes it: each model with picked
-## edges replaced by the feature on them (its new faces named for the
-## step); the first one's radius arrow is the step's handle.
-func featured(step: EditStep, name: str, data: GeometryData, shown: Mesh) -> GeometryData!:
-    var geometry = data.geometry
-    var any = false
-    var handles = ""
-    for index in 0..<CadGeometry.model_count(data.geometry):
-        let edges = CadEdits.model_edges(shown, step.group, index)
-        if edges == "":
-            continue
-        let body = GeometryData(geometry = CadGeometry.of_model(CadGeometry.model(data.geometry, index)))
-        # A Fillet's further selection sets (references, step text 4) go
-        # with the model its first set's edges are on.
-        let made = cad_nodes.evaluate_cad(step.verb, step.numbers, body, f"{name}.{index}", texts = [edges, "", "", step.text(3), step.text(4)])
-        geometry = CadEdits.replaced(geometry, index, CadGeometry.model(made.geometry, 0))
-        if handles == "":
-            handles = made.handles
-        any = true
-    if not any:
-        error(ui.invalid, f"{step.verb} needs edges of a model: pick them at the Edges level")
-    let result = GeometryData(geometry = geometry)
-    result.handles = handles
-    return result
 
 ## A point verb on the control vertices: the moved points go back.
 func moved_cvs(step: EditStep, data: GeometryData) -> GeometryData!:

@@ -1,0 +1,70 @@
+## Revolve (Fusion 360's): a sketch's profiles turned about an axis (a
+## sketch line, a body's edge, or an origin axis), by an angle, full, or to
+## a face, one side, two or symmetric; combined with the bodies down the
+## chain by Auto as Fusion does (feature_ops.luc, cad_features.luc). The
+## node keeps its profiles, axis and face by name; in Edit CAD it is a step
+## of a sketch's picked profiles, waiting for its axis.
+from tool_record import Tool, ToolEntry, Pick, Invocation
+from geometry_data import GeometryData
+from parameter_rows import Parameter, number, toggle, menu
+from edit_types import edge_level, face_level
+import pick_kinds
+import cad_features
+import feature_ops
+import edit_cad_sketches
+import cad_cook
+
+pub func entry() -> ToolEntry:
+    return ToolEntry("Revolve", "Revolve", "rotate-tool", "Create", [cad_cook.context], [cad_cook.edit_kind], made)
+
+func made() -> Tool:
+    return entry().tool("Create", "Features", "Turn a sketch's profiles about an axis into a body, joined, cut or intersected by Auto",
+                        picks(), rows(), cook, inputs = 2, gesture = "profiles", handles = true)
+
+## The profiles, the face it turns to (Type: To), and the axis.
+func picks() -> list[Pick]:
+    return [Pick("Profiles", [-1], kind = pick_kinds.profiles, slot = 0, step = 0, needed = optional, summary = feature_ops.profiles_summary, clear = "Closed shapes",
+                 doc = "The sketch's regions to take, remembered by the curves round them so they hold as dimensions change. None picked: its closed shapes, holes left empty."),
+            Pick("Object", [face_level], kind = pick_kinds.face, slot = cad_features.revolve_face_text, step = cad_features.revolve_face_text, hide_when = "{ type != 2 }", needed = optional,
+                 taken = to_face, prompt = "Click the face to turn to; Esc cancels", doc = "The face the revolve turns to (Type: To), kept by its name."),
+            Pick("Axis", [edge_level], kind = pick_kinds.axis, slot = cad_features.axis_text, step = cad_features.axis_text, hide_when = "{ axis != 0 }", needed = picked_axis,
+                 taken = on_picked, summary = cad_features.axis_summary,
+                 prompt = "Click the axis: a line of the sketch, or a straight or round edge of the body; Esc cancels",
+                 doc = "The sketch line or body edge the profiles turn about (projected onto the sketch's plane).")]
+
+func optional(values: list[float], texts: list[str], wired: bool) -> bool:
+    return false
+
+## An axis of its own is wanted while Axis says Picked.
+func picked_axis(values: list[float], texts: list[str], wired: bool) -> bool:
+    return int(values[cad_features.axis_slot]) == 0
+
+func on_picked(values: list[float], picked: str):
+    values[cad_features.axis_slot] = 0.0
+
+func to_face(values: list[float], picked: str):
+    values[cad_features.revolve_type_slot] = float(cad_features.revolve_to)
+
+## A node: waiting for its axis (a warning, the sketch shown as it is), or
+## from the nearest sketch upstream; a step: from its sketch in the model.
+func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    if not call.node:
+        return edit_cad_sketches.featured(cad_cook.step_of(call), tag, data)
+    if int(call.number(cad_features.axis_slot)) == 0 and call.text(cad_features.axis_text).trim() == "":
+        return data.passed("Pick the axis: a sketch line or a body edge (Pick axis), or choose an origin axis")
+    return feature_ops.featured(call.verb, call.numbers, call.texts, data, tag, call.second, call.sketch)
+
+## Revolve's rows, Fusion 360's dialog.
+func rows() -> list[Parameter]:
+    let axis = menu("Axis", cad_features.axis_slot, cad_features.axis_names(), 0.0, "Picked: the sketch line or body edge picked (Pick axis), projected onto the sketch's plane. X, Y, Z: an origin axis.")
+    let kind_row = menu("Type", cad_features.revolve_type_slot, "Angle|Full|To", 0.0, "Angle: as far as Angle says. Full: all the way round. To: until the face picked (Pick object), its surface extended past it.")
+    let direction = menu("Direction", cad_features.revolve_direction_slot, cad_features.direction_names(), 0.0, "One side: from the sketch's plane toward its normal (a negative angle the other way). Two sides: an angle each way. Symmetric: Angle each way.")
+    direction.hide_when = "{ type != 0 }"
+    let angle = number("Angle", cad_features.angle_slot, 360.0, -360.0, 360.0, 5.0, "How far the profiles turn about the axis.", suffix = "°")
+    angle.hide_when = "{ type != 0 }"
+    let angle_two = number("Side 2 angle", cad_features.angle_two_slot, 90.0, 0.0, 360.0, 5.0, "Two sides: how far the second side turns, the other way.", suffix = "°")
+    angle_two.hide_when = "{ type != 0 } { direction != 1 }"
+    let flip = toggle("Flip", cad_features.revolve_flip_slot, 0.0, "To: turn against the sketch plane's normal instead.")
+    flip.hide_when = "{ type != 2 }"
+    let operation = menu("Operation", cad_features.operation_slot, feature_ops.operation_names(), 0.0, "Auto: cuts where it turns into the body, else joins it (a new body without one). Join, Cut, Intersect: combined with the body flowing down the chain, or the second input's when one is wired.")
+    return [axis, kind_row, direction, angle, angle_two, flip, operation]

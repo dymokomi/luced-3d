@@ -386,6 +386,17 @@ every tool is a step on the model the steps before it made, nothing earlier
 changes when something later does, and each step is one undo that gives the
 model back exactly.
 
+Its tools, and the CAD network's nodes, are the tool registry's too
+([TOOLS.md](TOOLS.md)): each CAD tool is declared once in its
+`src/tool_<name>.luc` (listed in `src/cad_tools.luc`), and that declaration
+is its node, its Edit CAD step, its rows and tool bar, what it picks and in
+what order (one prompt chain for a node and a step, `tool_picks.luc`), its
+handles, its icon and its entries in the Create and Modify menus, the A and
+S marking menus, the right-click menu and Repeat (`tool_run.luc` runs it).
+A tool is offered at the levels its first pick takes: S and the right-click
+menu list the tools the selection's level takes, by family (Blends, Faces,
+Bodies, the surfacing families, Curves…), led by Repeat and Press Pull.
+
 - **Sketches are objects of the model** (luce-cad's `CadSketches`, a component
   of the geometry set: name, text, plane, visibility; the Outliner lists them).
   **Create Sketch** (right-click, A, Create) makes one on the selected flat
@@ -538,9 +549,9 @@ model back exactly.
     edges keep the gap as their precision; a body closed all round becomes
     a solid; for export, Detach periodic and Detach single-curve
     boundaries) and **Unstitch** (every face of a body a body of its own).
-  - The same eight are nodes of CAD networks (`cad_surface_nodes.luc`,
-    category Surfaces), their faces, curves and bodies picked as the Modify
-    features' are (`modify_picks.luc`); a Trim node shows its markers while
+  - The same eight are nodes of CAD networks (category Surfaces), their
+    faces, curves and bodies picked as the Modify features' are
+    (`tool_picks.luc`); a Trim node shows its markers while
     it is selected and displayed and keeps the clicked points, so its trim
     follows the body upstream.
   - The sketch's Blend Curve takes its control points from the same 3D
@@ -947,14 +958,14 @@ way) or Symmetric (the angle each way, Fusion's). A Revolve made from the
 sketch (right-click, A, Create) asks for its axis at once; while it waits the
 node warns, showing the sketch, rather than failing.
 
-**Modify features as nodes** (`cad_modify.luc`, stage 7 of
+**Modify features as nodes** (each its `tool_<name>.luc`, stage 7 of
 docs/research/FUSION-CAD-UX.md): **Shell**, **Move** (Fusion's Move/Copy),
 **Combine** (its tool bodies picked, or wired to the second input), **Split
 Body**, **Split Face**, **Replace Face**, **Delete Face** and **Remove** go
 in the chain like Extrude and Fillet. They keep their faces and bodies by
 name and run Edit CAD's own steps on them, with Fusion's options as above.
 The right-click menu (on selected faces), the S menu and Modify › CAD
-features make them after the displayed node, taking what is selected; a
+tools make them after the displayed node, taking what is selected; a
 node then waits for each input it lacks in turn (its input body shown, the
 prompt in the viewport, "waiting" on the node with no badge), and each input
 is a panel row with its pick button. A **Move** node of Free move or

@@ -32,16 +32,12 @@ from tool_icons import asset_name
 from luce_ui.ui import Command
 import sketch_tools
 from sketch_tools import SketchTool
-import cad_nodes
-import cad_commands
 import edit_cad_commands
-import sketch_node
-import cad_check
 import tool_menus
 import selection_sets
 
 ## Create (A).
-pub func create_items(w: Workspace, actions: Actions, add: func(str) -> unit!, sketch: SketchEditor) -> list[MarkItem]:
+pub func create_items(w: Workspace, actions: Actions, add: func(str) -> unit!, sketch: SketchEditor) -> list[MarkItem]!:
     if w.sketching():
         return sketch_items(sketch, 0) + command_items([actions.extrude_profiles, actions.revolve_profiles, actions.finish_sketch])
     if edit_cad_commands.active(w):
@@ -51,53 +47,37 @@ pub func create_items(w: Workspace, actions: Actions, add: func(str) -> unit!, s
         let first = command_items([actions.sketch_on_face]) if actions.sketch_on_face.is_enabled() else command_items([model.planes[1]])
         let sketching = MarkItem("Create Sketch", first[0].icon, true, first[0].run, variants = command_items([actions.sketch_on_face] + model.planes))
         let rest = command_items([actions.extrude_face]) if actions.extrude_face.is_enabled() else no_items()
-        return model_repeat(w, actions, add) + [sketching] + rest + command_items(actions.draw_commands()) + command_items(actions.create_commands())
+        return repeat_items(w, actions) + [sketching] + rest + command_items(actions.draw_commands()) + command_items(actions.create_commands())
     if w.editing():
         return command_items(actions.create_commands() + actions.draw_commands())
     let context = w.network.context()
     if context == "cad":
-        let items = node_items([sketch_node.kind_name, "Extrude", "Revolve"] + cad_nodes.solid_kinds(), add)
-        if actions.sketch_on_face.is_enabled():
-            return repeat_items(w, actions, add) + command_items([actions.sketch_on_face, actions.extrude_face]) + items
-        return repeat_items(w, actions, add) + items
+        # A CAD network: Sketch on face and Extrude face with a face
+        # selected, then the Create tools by family (columns).
+        let lead = command_items([actions.sketch_on_face, actions.extrude_face]) if actions.sketch_on_face.is_enabled() else no_items()
+        return repeat_items(w, actions) + lead + family_items(tool_menus.families(w, actions, "Create"))
     if context == "shading":
         return no_items()
     return node_items(["Cube", "Sphere", "Cylinder", "Cone", "Torus", "Grid", "Light", "Camera", "Group", "Null", "Code", "CAD", "Edit Mesh", "Edit SDF", "File"], add)
 
 ## Modify (S).
-pub func modify_items(w: Workspace, actions: Actions, add: func(str) -> unit!, sketch: SketchEditor) -> list[MarkItem]:
+pub func modify_items(w: Workspace, actions: Actions, add: func(str) -> unit!, sketch: SketchEditor) -> list[MarkItem]!:
     if w.sketching():
         return sketch_items(sketch, 1)
+    let pull = command_items([actions.press_pull]) if actions.press_pull.is_enabled() else no_items()
     if edit_cad_commands.active(w):
         # Edit CAD: Press Pull on what is selected, then the model's tools
-        # the level takes.
-        let pull = command_items([actions.press_pull]) if actions.press_pull.is_enabled() else no_items()
-        let offered: list[Command] = []
-        let drawing = w.strip_kind().draw_tools
-        for command in actions.modify_commands():
-            let available = w.tool_available(command.text()) catch failure:
-                recover false
-            if available and not (command.text() in drawing):
-                offered.append(command)
-        return model_repeat(w, actions, add) + pull + command_items(offered)
+        # the level takes, by family (its drawing tools are A's).
+        return repeat_items(w, actions) + pull + family_items(tool_menus.families(w, actions, "Modify", w.level_index()))
     if w.editing():
         return tools_at_level(w, actions)
     let context = w.network.context()
     if context == "cad":
-        let rest = node_items(["Mirror Body", "Pattern", "Transform", "Edit CAD", cad_check.kind_name], add)
-        # Selected edges go to the blends; without, they are added bare.
-        let blends = command_items([actions.fillet_edges, actions.chamfer_edges]) if actions.fillet_edges.is_enabled() else node_items(["Fillet", "Chamfer"], add)
-        let faces = command_items([actions.offset_face]) if actions.offset_face.is_enabled() else no_items()
-        let pull = command_items([actions.press_pull]) if actions.press_pull.is_enabled() else no_items()
-        let modify: list[Command] = []
-        for command in actions.cad_modify.commands:
-            if command.is_enabled():
-                modify.append(command)
-        # Alias's surface tools: on picked faces those for faces, else all.
-        let on_faces = cad_commands.selected_faces(w) catch failure:
-            recover []
-        let surfaces = actions.surfaces.on_faces() if on_faces.length > 0 else actions.surfaces.commands
-        return repeat_items(w, actions, add) + pull + blends + faces + command_items(modify) + command_items(surfaces) + rest
+        # A CAD network: Press Pull on what is selected, then the tools the
+        # selection's level takes (with nothing selected all of them), by
+        # family.
+        let level = w.level_index() if w.selected_count() > 0 else -1
+        return repeat_items(w, actions) + pull + family_items(tool_menus.families(w, actions, "Modify", level))
     if context == "shading":
         return no_items()
     return tools_at_level(w, actions) + node_items(["Transform", "Mirror", "CopyTransform"], add, "Nodes")
@@ -107,7 +87,7 @@ pub func modify_items(w: Workspace, actions: Actions, add: func(str) -> unit!, s
 ## Selection alone.
 pub func select_items(w: Workspace, actions: Actions) -> list[MarkItem]!:
     let selection = actions.selection
-    if not tool_menus.from_registry(w):
+    if not tool_menus.selects(w):
         return command_items([actions.select_all, selection.none_selected, selection.invert, actions.through_depth])
     let result = no_items()
     for family in tool_menus.select_families(w, actions):
@@ -124,47 +104,26 @@ pub func select_items(w: Workspace, actions: Actions) -> list[MarkItem]!:
 
 ## The viewport kind's tools for S: Repeat and the registry's Modify tools
 ## the level takes by family (Edit Mesh, Geo), else every tool of the kind.
-func tools_at_level(w: Workspace, actions: Actions) -> list[MarkItem]:
+func tools_at_level(w: Workspace, actions: Actions) -> list[MarkItem]!:
     if not tool_menus.from_registry(w):
         return command_items(actions.modify_commands())
-    let result = command_items(tool_menus.repeat(w, actions))
-    for family in tool_menus.families(w, actions, "Modify", w.level_index()):
+    return repeat_items(w, actions) + family_items(tool_menus.families(w, actions, "Modify", w.level_index()))
+
+## Repeat (the registry tool run last; none yet: no item), led by the
+## repeat icon (its name shows on hover).
+func repeat_items(w: Workspace, actions: Actions) -> list[MarkItem]!:
+    let result = no_items()
+    for command in tool_menus.repeat(w, actions):
+        let chosen = command
+        result.append(MarkItem(command.text(), "repeat", command.is_enabled(), func () -> unit!: chosen.trigger()))
+    return result
+
+## Families as entries, each in its column.
+func family_items(families: list[tool_menus.Family]) -> list[MarkItem]:
+    let result = no_items()
+    for family in families:
         result.extend(command_items(family.commands, family.name))
     return result
-
-## Repeat the CAD tool used last (none yet: no item), under the repeat
-## icon (its name shows on hover): a node kind is added again; a command is
-## triggered again when it applies to what is selected now, else its node
-## is added bare, waiting for its input, as Fusion's Repeat opens the
-## command with nothing picked.
-func repeat_items(w: Workspace, actions: Actions, add: func(str) -> unit!) -> list[MarkItem]:
-    let result = no_items()
-    let id = w.last_cad_tool
-    if id == "":
-        return result
-    let label = f"Repeat {w.last_cad_name}"
-    if id.starts_with("add_"):
-        let kind = id[4..]
-        result.append(MarkItem(label, "repeat", true, func () -> unit!: add(kind)))
-        return result
-    let kinds = {"fillet_edges": "Fillet", "chamfer_edges": "Chamfer", "extrude_profiles": "Extrude", "extrude_face": "Extrude", "press_pull": "Extrude", "revolve_profiles": "Revolve", "offset_face": "Offset Face", "sketch_on_face": sketch_node.kind_name}
-    for command in actions.all:
-        if command.id() == id:
-            let chosen = command
-            let bare = kinds[id] else ""
-            result.append(MarkItem(label, "repeat", true, func () -> unit!:
-                if chosen.is_enabled() or bare == "":
-                    chosen.trigger()
-                else:
-                    add(bare)))
-    return result
-
-## Repeat in an Edit CAD model: the last tool or command (a node added in
-## the network is no step, so it is not offered here).
-func model_repeat(w: Workspace, actions: Actions, add: func(str) -> unit!) -> list[MarkItem]:
-    if w.last_cad_tool.starts_with("add_"):
-        return no_items()
-    return repeat_items(w, actions, add)
 
 ## Constraints (D, in a sketch).
 pub func constraint_items(sketch: SketchEditor) -> list[MarkItem]:

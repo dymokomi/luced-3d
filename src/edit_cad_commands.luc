@@ -10,41 +10,24 @@
 ##   Extrude, Revolve (in a sketch): a step taking the picked profiles (none:
 ##     the closed shapes); Extrude's distance box opens by its arrow,
 ##     Revolve waits for its axis.
-##   Press Pull dispatches as Fusion's: profiles in a sketch Extrude, faces
-##     Offset Face, edges Fillet. Extrude face: a sketch on the face and an
-##     Extrude of its loops.
-##   Offset Face, Fillet, Chamfer, Shell: a step on the selection, its value
-##     box by its arrow. Replace Face, Combine and Split Body then wait for
-##     what they need: the target face, the tool bodies (Enter finishes),
-##     the splitting face (or an origin plane from the tool bar).
-##   Move/Copy: the Move tool on the selection; its tool bar holds the
-##     distances, the angles and Create copy.
+##   Extrude face: a sketch on the face and an Extrude of its loops.
+##   Add as fillet set, Select blends.
+## The tools' own steps are tool_run.luc's, from their declarations.
 from luce_geocore.geocore import Domain, Selection
-from luce_3d.graphics import Vector3
-from luce_std import math
 from workspace import Workspace
 from node import Node
-from edit_types import object_level, edge_level, face_level, patch_level, curve_level
+from edit_types import object_level, face_level, curve_level
 from edit_cad_sketches import SketchObject, sketch_step, feature_step, visibility_step, plane_step, next_name
-from edit_cad_picks import wait_for, target_label, tools_label, splitting_label, axis_label, object_label, plane_label, projection_label, master_label, second_label
-import edit_cad_align
-import edit_cad_build
-import build_ops
-import blend_ops
-import align_ops
-import edit_cad_surfaces
 from edit_operations import EditStep
 import view_projection
 import edit_cad_curves
 from sketch_node import face_plane
 import edit_cad
 import edit_cad_sketches
-import edit_cad_picks
-import modify_picks
-import modeling_commands
+import tool_picks
+import tool_registry
 import node_catalog
 import cad_blends
-import edit_cad_faces
 import selection_commands
 
 ## The Edit CAD node being edited in the viewport (its model, or one of
@@ -139,7 +122,8 @@ pub func redefine_sketch(w: Workspace, name: str) -> unit!:
         w.commit()
         w.rebuild()
         return
-    wait_for(w, node, plane_label, face_level, f"Click the flat face to put {name} on (or choose an origin plane in the tool bar, then Enter); Esc cancels")
+    let tool = tool_registry.cad(edit_cad_sketches.plane_verb) else return
+    tool_picks.ask(w, node, tool, 0)
 
 ## Extrude or Revolve (`kind`) of the edited sketch's picked profiles (none
 ## picked: its closed shapes); the sketch is finished. Extrude's distance
@@ -162,7 +146,11 @@ pub func feature_from_sketch(w: Workspace, kind: str) -> unit!:
         w.ask_value = kind == "Extrude"
         w.rebuild())
     if kind == "Revolve":
-        wait_for(w, node, axis_label, edge_level, "Click the axis: a line of the sketch, or a straight or round edge; Esc cancels")
+        let tool = tool_registry.cad("Revolve") else return
+        tool_picks.ask(w, node, tool, axis_pick)
+
+## Revolve's axis among its picks (tool_revolve.luc).
+let axis_pick = 2
 
 ## Extrude face: a sketch on the selected flat face (its loops projected)
 ## and an Extrude of its closed shapes, one undo step.
@@ -183,36 +171,19 @@ pub func extrude_face(w: Workspace) -> unit!:
 
 # -- Steps on the selection.
 
-## Edit CAD's tool `name` on the selection (the Modify commands): those
-## with a value open its box, those that need a second pick wait for it.
-pub func tool(w: Workspace, name: str) -> unit!:
-    if name == edit_cad_faces.reblend_verb:
-        reblend_step(w)
-    elif name in ["Offset Face", "Fillet", "Chamfer", "Shell"]:
-        valued_step(w, name)
-    elif name in ["Replace Face", "Combine", "Split Body", "Split Face"]:
-        waiting_step(w, name)
-    elif name == "Move/Copy":
-        move_copy(w)
-    elif name == edit_cad_surfaces.project_verb:
-        project_step(w)
-    elif name == edit_cad_curves.blend_verb and w.level_index() == curve_level:
-        blend_step(w)
-    elif name in edit_cad_align.verbs():
-        align_step(w, name)
-    elif name in edit_cad_build.verbs():
-        build_step(w, name)
-    else:
-        modeling_commands.model(w, name)
-
 ## A double-click at (`x`, `y`) on a surface at the Curves level with no
 ## curve under it: the isoparm through the point picked (Alias's), a step,
 ## the curve selected. While an Align waits for its master (a step's or a
 ## node's), the isoparm there is its master instead: Alias's temporary pick
 ## object, kept in the step as the point. Whether it took the click.
 pub func pick_isoparm(w: Workspace, x: float, y: float, width: float, height: float) -> bool!:
-    if align_isoparm(w, x, y, width, height):
-        return true
+    # A curve list or Align's master waiting takes Alias's temporary
+    # isoparm through the point instead.
+    if tool_picks.picking(w):
+        let way = view_projection.ray(w, x, y, width, height).normalized() catch failure:
+            return false
+        let found = w.surface_at(view_projection.origin(w, x, y, width, height), way)
+        return found.found and tool_picks.isoparm(w, found.point)
     if not active(w) or sketching(w) or w.level_index() != curve_level or w.prompt != none or w.placing != none:
         return false
     let node = model_node(w) else return false
@@ -227,232 +198,6 @@ pub func pick_isoparm(w: Workspace, x: float, y: float, width: float, height: fl
         w.pending_level = curve_level
         w.rebuild())
     return true
-
-## Align's master as a temporary isoparm (see pick_isoparm): a step
-## waiting in Edit CAD, or an Align node waiting for its master.
-func align_isoparm(w: Workspace, x: float, y: float, width: float, height: float) -> bool!:
-    let prompt = w.prompt else return false
-    if edit_cad_build.waits(prompt.label) or prompt.label in edit_cad_picks.builder_node_labels():
-        return builder_isoparm(w, prompt.node, prompt.label, x, y, width, height)
-    if not (prompt.label in [master_label, second_label, "Pick master", "Pick second master"]):
-        return false
-    let way = view_projection.ray(w, x, y, width, height).normalized() catch failure:
-        return false
-    let hit = w.surface_at(view_projection.origin(w, x, y, width, height), way)
-    if not hit.found:
-        return false
-    let p = hit.point
-    let words = f"isoparm_at {p.x} {p.y} {p.z}"
-    let node = w.network.find(prompt.node) else return false
-    if node.kind == edit_cad.kind_name and node.edits.length > 0:
-        let step = node.edits[-1]
-        let texts = [step.text(0), step.text(1), step.text(2)]
-        texts[align_ops.second_text if prompt.label == second_label else align_ops.master_text] = words
-        node.edits[-1] = step.with_texts(texts)
-        edit_cad_picks.accept_pick(w, node)
-        return true
-    node.texts[align_ops.second_text if prompt.label == "Pick second master" else align_ops.master_text] = words
-    modify_picks.accept(w, node, prompt.label)
-    return true
-
-## A double-click on a surface while a builder (a step's, a node's) waits
-## for curves: Alias's temporary isoparm through the point added to them.
-func builder_isoparm(w: Workspace, id: int, label: str, x: float, y: float, width: float, height: float) -> bool!:
-    let way = view_projection.ray(w, x, y, width, height).normalized() catch failure:
-        return false
-    let hit = w.surface_at(view_projection.origin(w, x, y, width, height), way)
-    if not hit.found:
-        return false
-    let words = edit_cad_build.isoparm_words(hit.point)
-    let node = w.network.find(id) else return false
-    if node.kind == edit_cad.kind_name and node.edits.length > 0:
-        node.edits[-1] = edit_cad_build.with_pick(node.edits[-1], label, words)
-        edit_cad_picks.after_builder_pick(w, node)
-        return true
-    modify_picks.add_curve_words(w, node, label, words)
-    return true
-
-## Align or Symmetry Align (`verb`) on the picked edge or curve: the step
-## takes it as its input; Align then waits for its master. Esc takes it
-## away.
-pub func align_step(w: Workspace, verb: str) -> unit!:
-    let node = model_node(w) else return
-    if w.in_transaction():
-        return
-    let mesh = w.geometry else return
-    let chosen = w.current_selection() else return
-    let input = edit_cad_align.pick_words(mesh, chosen.next(-1), w.level_index(), false)
-    if input == "":
-        say(w, f"{verb}: select the input first: a surface's edge (Edges level) or a curve near its end (Curves level)")
-        return
-    let numbers = align_ops.symmetry_starting() if verb == edit_cad_align.symmetry_verb else align_ops.starting()
-    if verb == edit_cad_align.symmetry_verb:
-        w.perform(verb, func () -> unit!:
-            node.edits.append(EditStep(verb, "", 0, numbers, 0).with_texts([input, "", ""]))
-            w.network.invalidate(node.id)
-            w.selection = none
-            w.rebuild())
-        return
-    w.begin(verb)
-    node.edits.append(EditStep(verb, "", 0, numbers, 0).with_texts([input, "", ""]))
-    w.network.invalidate(node.id)
-    wait_for(w, node, master_label, w.level_index(), "Click the master: an edge (Edges level), a curve (Curves level) or a face for Project and U/V (Faces level); double-click a surface for an isoparm; Esc cancels")
-
-## A surface builder `verb` (edit_cad_build.luc) on the curves or edges
-## picked, in order (Extend: the edge or curve end picked); when it needs
-## more it waits for them (a click adds one, Enter finishes); Esc takes it
-## away.
-pub func build_step(w: Workspace, verb: str) -> unit!:
-    let node = model_node(w) else return
-    if w.in_transaction():
-        return
-    var words: list[str] = []
-    let level = w.level_index()
-    let on_faces = blend_ops.takes_faces(verb) and (level == face_level or level == patch_level)
-    if let mesh = w.geometry:
-        if let chosen = w.current_selection():
-            if w.selecting() and (level == curve_level or level == edge_level or on_faces):
-                words = edit_cad_build.picked_words(mesh, chosen, level, verb == build_ops.extend_verb)
-    if verb == build_ops.extend_verb and words.length == 0:
-        say(w, "Extend: select a surface's edge (Edges level) or a curve near its end (Curves level) first")
-        return
-    let texts = [words[0] if verb == build_ops.extend_verb else words.join(";"), "", ""]
-    w.begin(verb)
-    node.edits.append(EditStep(verb, "", 0, edit_cad_build.starting(verb), 0).with_texts(texts))
-    w.network.invalidate(node.id)
-    let (label, hint) = edit_cad_build.next_prompt(node.edits[-1])
-    if label == "":
-        w.selection = none
-        w.pending_changed = true
-        w.commit()
-        w.rebuild()
-        return
-    wait_for(w, node, label, edit_cad_build.level_for(node.edits[-1], w.level_index()), hint)
-
-## The last Align step waits for its second master (from its tool bar).
-pub func pick_second_master(w: Workspace) -> unit!:
-    let node = model_node(w) else return
-    if w.in_transaction() or node.edits.length == 0 or node.edits[-1].verb != edit_cad_align.align_verb:
-        return
-    w.begin(second_label)
-    wait_for(w, node, second_label, edge_level, "Click the second master: an edge or a curve beside another side of the input (double-click a surface for an isoparm); Esc cancels")
-
-## Whether curves are picked at the Curves level.
-func curves_picked(w: Workspace) -> bool!:
-    if w.level_index() != curve_level or not w.selecting():
-        return false
-    let chosen = w.current_selection() else return false
-    return chosen.count() > 0
-
-## Project on the picked curves: the step takes the view's direction (for
-## Along: View), then waits for the face to cast onto; Esc takes it away.
-## With no curves picked it waits for them first: a click adds one, a
-## double-click on a surface a temporary isoparm (Alias's), Enter goes on.
-pub func project_step(w: Workspace) -> unit!:
-    let node = model_node(w) else return
-    if w.in_transaction():
-        return
-    w.begin(edit_cad_surfaces.project_verb)
-    let count = node.edits.length
-    let waiting = not curves_picked(w)
-    if waiting:
-        node.edits.append(EditStep(edit_cad_surfaces.project_verb, "", 0, edit_cad_surfaces.project_numbers(), 0).with_texts(["", ""]))
-    else:
-        modeling_commands.model(w, edit_cad_surfaces.project_verb)
-    if node.edits.length == count:
-        w.cancel()
-        return
-    let step = node.edits[-1]
-    let numbers = step.numbers.copy()
-    # From the eye to the target (view_state.luc's orbit).
-    let v = w.view
-    let look = Vector3(-math.sin(v.yaw) * math.cos(v.pitch), -math.sin(v.pitch), -math.cos(v.yaw) * math.cos(v.pitch))
-    # The view's direction is kept, so the step replays as made.
-    if int(numbers[edit_cad_surfaces.along_slot]) == 1:
-        numbers[edit_cad_surfaces.direction_slot] = look.x
-        numbers[edit_cad_surfaces.direction_slot + 1] = look.y
-        numbers[edit_cad_surfaces.direction_slot + 2] = look.z
-        node.edits[-1] = step.with_numbers(numbers)
-    if waiting:
-        wait_for(w, node, edit_cad_build.project_curves_label, curve_level, "Click the curves to project, or double-click a surface for an isoparm; Enter goes on to the face, Esc cancels")
-        return
-    wait_for(w, node, projection_label, face_level, "Click the face to project the curves onto; Esc cancels")
-
-## Blend Curve between the two picked curves; with fewer picked it waits for
-## them: a click adds a curve, a double-click on a surface a temporary
-## isoparm (Alias's); the second finishes it. Esc takes it away.
-pub func blend_step(w: Workspace) -> unit!:
-    let node = model_node(w) else return
-    if w.in_transaction():
-        return
-    var words: list[str] = []
-    if curves_picked(w):
-        if let mesh = w.geometry:
-            if let chosen = w.current_selection():
-                words = edit_cad_build.picked_words(mesh, chosen, curve_level, false)
-    if words.length >= 2:
-        modeling_commands.model(w, edit_cad_curves.blend_verb)
-        return
-    w.begin(edit_cad_curves.blend_verb)
-    node.edits.append(EditStep(edit_cad_curves.blend_verb, "", 0, edit_cad_curves.blend_numbers(), 0).with_texts([words.join(";"), ""]))
-    w.network.invalidate(node.id)
-    wait_for(w, node, edit_cad_build.blend_curves_label, curve_level, "Click the curves to blend between, or double-click a surface for an isoparm; Esc cancels")
-
-## Press Pull: profiles in a sketch Extrude, faces Offset Face, edges a
-## Fillet, as Fusion's dispatches.
-pub func press_pull(w: Workspace) -> unit!:
-    if sketching(w):
-        feature_from_sketch(w, "Extrude")
-        return
-    if selected_faces(w).length > 0:
-        # Fusion's Press Pull on fillet faces changes their radius.
-        if blends_selected(w):
-            reblend_step(w)
-            return
-        valued_step(w, "Offset Face")
-        return
-    if selected_edges(w):
-        valued_step(w, "Fillet")
-        return
-    say(w, "Press Pull: select faces or edges of the model, or edit a sketch and pick its profiles")
-
-## Tool `name` on the selection, its value box opening by its arrow.
-pub func valued_step(w: Workspace, name: str) -> unit!:
-    let node = model_node(w) else return
-    let count = node.edits.length
-    modeling_commands.model(w, name)
-    if node.edits.length > count:
-        w.selection = none
-        w.ask_value = true
-        w.rebuild()
-
-## Replace Face, Combine or Split Body (`name`) on the selection, then the
-## prompt for what it needs; Esc takes the step away again.
-pub func waiting_step(w: Workspace, name: str) -> unit!:
-    let node = model_node(w) else return
-    if w.in_transaction():
-        return
-    w.begin(name)
-    let count = node.edits.length
-    modeling_commands.model(w, name)
-    if node.edits.length == count:
-        w.cancel()
-        return
-    if name == "Replace Face":
-        wait_for(w, node, target_label, face_level, "Click the target faces the faces move onto (Shift adds), then Enter; Esc cancels")
-    elif name == "Combine":
-        wait_for(w, node, tools_label, object_level, "Click the tool bodies (Shift adds), then Enter; Esc cancels")
-    else:
-        wait_for(w, node, splitting_label, face_level, "Click the face to split with (or choose an origin plane in the tool bar, then Enter); Esc cancels")
-
-## Move/Copy: the Move tool on the selection, its tool bar Fusion's dialog
-## (a step of no move, which the gizmo's moves then merge into).
-pub func move_copy(w: Workspace) -> unit!:
-    let node = model_node(w) else return
-    let count = node.edits.length
-    modeling_commands.model(w, "Move/Copy")
-    if node.edits.length > count:
-        modeling_commands.choose_tool(w, "Move")
 
 ## The selected faces' names (Faces or Patch level) of the edited model.
 pub func selected_faces(w: Workspace) -> list[str]!:
@@ -533,7 +278,7 @@ pub func add_fillet_set(w: Workspace) -> unit!:
 
 ## The selected faces' blend radii (the pick mesh's `cad_blend_radius`,
 ## luce-cad's identify blends: 0 for a face that is no blend), one a face.
-func selected_blend_radii(w: Workspace) -> list[float]!:
+pub func selected_blend_radii(w: Workspace) -> list[float]!:
     let found: list[float] = []
     if not active(w) or sketching(w) or not w.selecting() or not w.on_domain(Domain.face) or w.level_index() == object_level:
         return found
@@ -565,21 +310,6 @@ pub func blends_selected(w: Workspace) -> bool!:
             return false
     return true
 
-## Reblend on the selected blends, its radius starting at the first one's.
-pub func reblend_step(w: Workspace) -> unit!:
-    if not blends_selected(w):
-        say(w, "Reblend: select fillet faces (constant radius blends) at the Faces level")
-        return
-    let radius = selected_blend_radii(w)[0]
-    let node = model_node(w) else return
-    let count = node.edits.length
-    modeling_commands.model(w, edit_cad_faces.reblend_verb)
-    if node.edits.length > count:
-        modeling_commands.set_last_step(w, 0, radius, 0.0001, 100000.0)
-        w.selection = none
-        w.ask_value = true
-        w.rebuild()
-
 ## Select blends (Parasolid's identify blends): every face of the edited
 ## models that is a constant rolling-ball blend (the pick mesh's
 ## `cad_blend_radius`), selected at the Faces level, so an imported body's
@@ -606,15 +336,6 @@ pub func selected_curves(w: Workspace) -> bool:
 ## Whether whole models are selected (the Object level).
 pub func selected_models(w: Workspace) -> bool:
     return active(w) and not sketching(w) and w.selecting() and w.level_index() == object_level and w.selected_count() > 0
-
-## To object picked in the tool bar: the last Extrude step waits for the
-## face it runs to.
-pub func pick_extent_face(w: Workspace) -> unit!:
-    let node = model_node(w) else return
-    if w.in_transaction() or node.edits.length == 0 or node.edits[-1].verb != "Extrude":
-        return
-    w.begin(object_label)
-    wait_for(w, node, object_label, face_level, "Click the face to extrude to; Esc cancels")
 
 func say(w: Workspace, text: str):
     w.notice = text

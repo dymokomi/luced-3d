@@ -1,0 +1,51 @@
+## Pattern: copies of the bodies along an axis (Spacing apart) or around
+## it through the origin (over an Angle), joined or kept apart; each copy's
+## faces named apart (copy k: `tag.k:` before them). A node of a CAD
+## network.
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.modeling import CadModeling
+from luce_3d.graphics import Vector3
+from tool_record import Tool, ToolEntry, Pick, Invocation
+from geometry_data import GeometryData
+from parameter_rows import Parameter, number, whole, toggle, menu
+from angles import radians
+import cad_cook
+
+pub func entry() -> ToolEntry:
+    return ToolEntry("Pattern", "Pattern", "array-modifier", "Modify", [cad_cook.context], [], made)
+
+func made() -> Tool:
+    let none_picked: list[Pick] = []
+    return entry().tool("Modify", "Bodies", "Copy the bodies along an axis or around it", none_picked, rows(), cook)
+
+func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    let v = call.numbers
+    let body = cad_cook.body_of(data, "first")
+    let count = int(v[1])
+    let axis = int(v[2])
+    let direction = Vector3(1.0 if axis == 0 else 0.0, 1.0 if axis == 1 else 0.0, 1.0 if axis == 2 else 0.0)
+    var result = body
+    var separate = GeometryData(geometry = CadGeometry.of_model(body))
+    for at in 1..<count:
+        var copy = CadModeling.prefixed(body, f"{tag}.{at}:")
+        if int(v[0]) == 0:
+            copy = copy.transformed(direction.multiply_scalar(v[3] * float(at)), Vector3(), Vector3(1.0, 1.0, 1.0))
+        else:
+            let step = radians(v[4]) / float(count if v[4] >= 359.999 else count - 1)
+            copy = copy.transformed(Vector3(), direction.multiply_scalar(step * float(at)), Vector3(1.0, 1.0, 1.0))
+        if v[5] != 0.0:
+            separate = separate.merged(GeometryData(geometry = CadGeometry.of_model(copy)))
+        else:
+            result = CadModeling.combined(result, copy, 0)
+    if v[5] != 0.0:
+        return separate
+    return GeometryData(geometry = CadGeometry.of_model(result))
+
+func rows() -> list[Parameter]:
+    let count = whole("Count", 1, 3.0, 1.0, 1000.0, "How many bodies, the original among them.")
+    return [menu("Type", 0, "Linear|Circular", 0.0, "Linear: copies along an axis, Spacing apart. Circular: copies around an axis through the origin, over Angle."),
+            count,
+            menu("Axis", 2, "X|Y|Z", 0.0, "The axis the copies go along or around."),
+            number("Spacing", 3, 20.0, -100000.0, 100000.0, 1.0, "Linear: the distance between copies.", soft = 100.0),
+            number("Angle", 4, 360.0, -360.0, 360.0, 5.0, "Circular: the angle the copies spread over (360: evenly around).", suffix = "°"),
+            toggle("Separate bodies", 5, 0.0, "Keep the copies bodies of their own instead of joining them.")]

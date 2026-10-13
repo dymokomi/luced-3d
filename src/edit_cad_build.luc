@@ -1,76 +1,37 @@
-## Edit CAD's surface builders (surfacing Stage 5; build_ops.luc does the
-## work): Square, Skin, Rail, Profile, Set Planar, Sheet Extrude, Sheet
-## Revolve on curves (the Curves level) or edges (the Edges level), Extend
-## on an edge or a curve's end. A builder starts on what is picked, in the
-## order picked; when it needs more (Square's four boundaries, Skin's
-## sections, Rail's and Profile's rail) it waits, and each click adds a
-## curve or an edge (a click on one already in takes it out; a
-## double-click on a surface adds a temporary isoparm, Alias's), Enter
-## finishing. Each builder is one step and one undo with its picks.
-## Stage 6's blends (blend_ops.luc) take their picks the same way: Blend
-## Surface its two sides (then its profiles), Surface Fillet its two face
-## sets at the Faces level, Tube its curve; Stage 7's Fill its boundaries
-## (one edge of a hole for all of it), then its guides.
+## What the surface builders (surfacing Stage 5: Square, Skin, Rail,
+## Profile, Set Planar, Sheet Extrude, Sheet Revolve, Extend; build_ops.luc
+## does the work) and the blends between surfaces (Stages 6 to 8: Blend
+## Surface, Surface Fillet, Tube, Fill Surface, Bridge Fillet, Corner;
+## blend_ops.luc) share, each declared in its tool_<name>.luc: their cook,
+## a node's and an Edit step's alike, and their picks as words. A builder
+## starts on what is picked, in the order picked; when it needs more it
+## waits, and each click adds a curve, an edge or a face (again: takes it
+## out; a double-click on a surface a temporary isoparm, Alias's), Enter
+## finishing (tool_picks.luc).
 from luce_geocore.geocore import Mesh, Selection
 from luce_3d.graphics import Vector3
 from geometry_data import GeometryData
-from edit_operations import EditStep
-from edit_types import EditTool, edge_level, curve_level, face_level
+from tool_record import Invocation
 import build_ops
 import blend_ops
 import edit_cad_align
-
-## The prompts a builder waits in; Project's and Blend Curve's curves
-## (taken the same way: clicks and temporary isoparms).
-pub let curves_label = "Pick builder curves"
-pub let rails_label = "Pick builder rails"
-pub let project_curves_label = "Pick curves to project"
-pub let blend_curves_label = "Pick blend curves"
-pub let profiles_label = "Pick blend profiles"
-## A blend's two lists (Blend Surface's sides, Surface Fillet's sets).
-pub let first_label = "Pick first side or set"
-pub let second_label = "Pick second side or set"
-## Fill's: the hole's boundaries, then its guides.
-pub let fill_boundaries_label = "Pick fill boundaries"
-pub let fill_guides_label = "Pick fill guides"
-## Bridge Fillet's third set.
-pub let center_label = "Pick center set"
-
-pub func verbs() -> list[str]:
-    return build_ops.verbs() + blend_ops.verbs()
 
 ## A new step's values (a builder's or a blend's).
 pub func starting(verb: str) -> list[float]:
     return blend_ops.starting(verb) if verb in blend_ops.verbs() else build_ops.starting(verb)
 
-## What step `verb` with values `v` and texts `t` waits for.
-func waits_for(verb: str, v: list[float], t: list[str]) -> str:
-    if verb in blend_ops.verbs():
-        return blend_ops.waits_for(verb, t)
-    return build_ops.waits_for(verb, t, build_ops.spined(verb, v))
-
-## The tools: the curve builders at the Curves and Edges levels, Extend at
-## the Edges and Curves levels; Blend Surface and Tube at the Edges and
-## Curves levels, Surface Fillet at the Faces and Patch levels.
-pub func tools(edges: int, curves: int, faces: int, patch: int) -> list[EditTool]:
-    let result: list[EditTool] = []
-    for verb in build_ops.curve_verbs():
-        result.append(EditTool(verb, verb, [curves, edges], build_ops.starting(verb), build_ops.rows(verb)))
-    result.append(EditTool(build_ops.extend_verb, build_ops.extend_verb, [edges, curves], build_ops.starting(build_ops.extend_verb), build_ops.rows(build_ops.extend_verb)))
-    for verb in blend_ops.verbs():
-        let offered = [faces, patch] if blend_ops.takes_faces(verb) else [edges, curves]
-        result.append(EditTool(verb, verb, offered, blend_ops.starting(verb), blend_ops.rows(verb)))
-    return result
-
-## Step `step` on `data`; `name` names the sheet it makes.
-pub func run(step: EditStep, name: str, data: GeometryData) -> GeometryData!:
-    let start = starting(step.verb)
-    let numbers = step.numbers.copy()
-    while numbers.length < start.length:
-        numbers.append(start[numbers.length])
-    if step.verb in blend_ops.verbs():
-        return blend_ops.build(step.verb, data, numbers, [step.text(0), step.text(1), step.text(2)], name)
-    return build_ops.build(step.verb, data, numbers, [step.text(0), step.text(1)], name)
+## A builder's or a blend's cook, a node's and a step's alike: its words
+## (curves, edges, faces) in its texts; `tag` names the sheet it makes. A
+## step's numbers made before rows were added take those rows' starts.
+pub func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    let numbers = call.numbers.copy()
+    if not call.node:
+        let start = starting(call.verb)
+        while numbers.length < start.length:
+            numbers.append(start[numbers.length])
+    if call.verb in blend_ops.verbs():
+        return blend_ops.build(call.verb, data, numbers, call.texts if call.node else [call.text(0), call.text(1), call.text(2)], tag)
+    return build_ops.build(call.verb, data, numbers, call.texts if call.node else [call.text(0), call.text(1)], tag)
 
 ## The words for the picks of `chosen` on `mesh` at `level`, in order: a
 ## curve ("curve <name>") or an edge ("edge <face> x y z"); for Extend
@@ -99,58 +60,6 @@ pub func toggled(text: str, words: str) -> str:
     list_now.append(words)
     return list_now.join(";")
 
-## The prompt a builder step waits in next ("" none) and its hint.
-pub func next_prompt(step: EditStep) -> (str, str):
-    let texts = [step.text(0), step.text(1), step.text(2)]
-    let waiting = waits_for(step.verb, step.numbers, texts)
-    if step.verb == blend_ops.fill_verb:
-        # Fill cooks on what it has and waits on: more boundaries, Enter
-        # going on to its guides.
-        if waiting != "":
-            return (fill_boundaries_label, waiting + "; a click adds one (again: takes it out), double-click a surface for an isoparm; Esc cancels")
-        return (fill_boundaries_label, "Enter goes on to the guides; a click adds a boundary (again: takes it out); Esc cancels")
-    if waiting == "":
-        return ("", "")
-    if step.verb == blend_ops.bridge_verb and build_ops.items(texts[1]).length > 0:
-        return (center_label, waiting + "; a click adds a face (again: takes it out); Esc cancels")
-    let second = step.verb == build_ops.rail_verb or step.verb == build_ops.profile_verb or blend_ops.two_lists(step.verb)
-    if second and build_ops.items(texts[build_ops.curves_text]).length > 0:
-        return (second_label if blend_ops.two_lists(step.verb) else rails_label, waiting + "; Enter finishes, Esc cancels")
-    if blend_ops.takes_faces(step.verb):
-        return (first_label, waiting + "; a click adds a face (again: takes it out); Esc cancels")
-    if blend_ops.two_lists(step.verb):
-        return (first_label, waiting + "; a click adds a curve or an edge (again: takes it out), double-click a surface for an isoparm; Esc cancels")
-    return (curves_label, waiting + "; a click adds a curve or an edge (again: takes it out), double-click a surface for an isoparm; Esc cancels")
-
-## Whether the prompt `label` is a builder's.
-pub func waits(label: str) -> bool:
-    return label in [curves_label, rails_label, project_curves_label, blend_curves_label, profiles_label, first_label, second_label, fill_boundaries_label, fill_guides_label, center_label]
-
-## A level for the prompt: the curves when the step's first pick was one.
-pub func level_for(step: EditStep, current: int) -> int:
-    if blend_ops.takes_faces(step.verb):
-        return face_level
-    let first = build_ops.items(step.text(0))
-    if first.length > 0:
-        return curve_level if first[0].starts_with("curve") else edge_level
-    return current
-
-## The last step's list for prompt `label` with the click's `words` toggled
-## (Project's curves in its second text, its first the face).
-pub func with_pick(step: EditStep, label: str, words: str) -> EditStep:
-    let texts = [step.text(0), step.text(1), step.text(2)]
-    var at = build_ops.curves_text
-    if label == rails_label or label == project_curves_label or label == second_label or label == fill_guides_label:
-        at = build_ops.rails_text
-    if label == profiles_label or label == center_label:
-        at = blend_ops.profiles_text
-    texts[at] = toggled(texts[at], words)
-    return step.with_texts(texts)
-
 ## Whether `words` name a point for a temporary isoparm ("isoparm_at").
 pub func isoparm_words(p: Vector3) -> str:
     return f"isoparm_at {p.x} {p.y} {p.z}"
-
-## How many curves the step's first list holds.
-pub func picked_count(step: EditStep) -> int:
-    return build_ops.items(step.text(0)).length

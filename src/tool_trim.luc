@@ -1,0 +1,73 @@
+## Trim (Alias's): a face cut by its curves, the regions clicked kept or
+## discarded, or every region a face of its own (Divide); 3D Trimming casts
+## curves off the face onto it, or cuts it by faces that meet it
+## (surface_ops.luc; the region markers: trim_regions.luc). The node keeps
+## its face by name and the regions by the points clicked on their markers;
+## an Edit CAD step trims the face picked (the faces after the first cut it
+## with Intersect faces).
+from tool_record import Tool, ToolEntry, Pick, Invocation
+from geometry_data import GeometryData
+from parameter_rows import Parameter, toggle, menu, vector
+from edit_types import face_level, patch_level
+import pick_kinds
+import edit_cad_surfaces
+import surface_ops
+import cad_cook
+from luce_ui import ui
+
+## The node's texts: the face, the points picked on its markers, the
+## cutting faces.
+pub let cutters_text = 2
+
+pub func entry() -> ToolEntry:
+    return ToolEntry(edit_cad_surfaces.trim_verb, edit_cad_surfaces.trim_verb, "crop-tool", "Surfaces", [cad_cook.context], [cad_cook.edit_kind], made)
+
+func made() -> Tool:
+    return entry().tool("Modify", "Surface Edit", "Cut a face by its curves, keeping or discarding the regions clicked, or dividing it", picks(), rows(), cook,
+                        numbers = edit_cad_surfaces.trim_numbers(), waits = waits)
+
+func picks() -> list[Pick]:
+    return [Pick("Face", [face_level, patch_level], kind = pick_kinds.face, slot = 0, doc = "The face trimmed by its curves; then click its region markers in the viewport."),
+            Pick("Cutting faces", [face_level], kind = pick_kinds.faces, slot = cutters_text, step = pick_kinds.nowhere, hide_when = "{ intersect_faces == 0 }", needed = optional,
+                 doc = "3D Trimming by Intersect: the faces that cut it where they meet it.")]
+
+func optional(values: list[float], texts: list[str], wired: bool) -> bool:
+    return false
+
+func waits(values: list[float], texts: list[str], wired: bool) -> str:
+    return "Pick the face" if texts[0].trim() == "" else ""
+
+func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    let v = call.numbers
+    let mode = int(v[edit_cad_surfaces.mode_slot])
+    let show = v[edit_cad_surfaces.show_slot] != 0.0
+    let cutting = v.length > edit_cad_surfaces.cutters_slot and v[edit_cad_surfaces.cutters_slot] != 0.0
+    if call.node:
+        let waiting = waits(v, call.texts, false)
+        if waiting != "":
+            return data.passed(waiting)
+        let cutters: list[str] = []
+        if cutting:
+            for name in call.text(cutters_text).split(";"):
+                if name.trim() != "":
+                    cutters.append(name.trim())
+        return surface_ops.trim(data, call.text(0).trim(), surface_ops.parse_points(call.text(1)), mode, show, [], tag, edit_cad_surfaces.trim_options(v), cutters)
+    # 3D Trimming by Intersect: the faces after the first cut it.
+    let faces = edit_cad_surfaces.step_faces(call, data)
+    let cutters: list[str] = []
+    if cutting:
+        for k in 1..<faces.length:
+            cutters.append(faces[k])
+    if faces.length > 1 and cutters.length == 0:
+        error(ui.invalid, "Trim works on one face: pick one (or turn on Intersect faces to cut it by the others)")
+    return surface_ops.trim(data, faces[0], edit_cad_surfaces.picks_of(v), mode, show, [], tag, edit_cad_surfaces.trim_options(v), cutters)
+
+func rows() -> list[Parameter]:
+    let direction = vector("Cast direction", edit_cad_surfaces.cast_direction_slot, [0.0, -1.0, 0.0], "3D Trimming along a vector: the direction curves off the face are cast along.")
+    direction.hide_when = "{ curves != 1 }"
+    return [menu("Mode", edit_cad_surfaces.mode_slot, "Keep|Discard|Divide", 0.0, "Alias's Trim: keep the regions clicked (their markers), discard them, or make every region a face of its own."),
+            toggle("Show intersections", edit_cad_surfaces.show_slot, 1.0, "Mark where the curves cross the face's edges and each other (green) and the ends of curves that cut nothing (red), as Alias's Show Intersections."),
+            menu("Curves", edit_cad_surfaces.cast_slot, "On face|Cast along vector|Cast along normals", 0.0, "Alias's 3D Trimming: only the curves on the face, or every curve of the model cast onto it as the trim runs (along a vector, or along its normals)."),
+            direction,
+            toggle("Intersect faces", edit_cad_surfaces.cutters_slot, 0.0, "3D Trimming by Intersect: the faces picked after the first (the node's Cutting faces) cut it where they meet it."),
+            toggle("Extend curves", edit_cad_surfaces.extend_slot, 0.0, "Carry curve ends that stop short of the face's edge on along the face, to its edge or the next curve (Alias's Extend).")]

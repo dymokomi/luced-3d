@@ -11,6 +11,8 @@ from luce_ui.ui import Event
 from luce_window.input import EventKind, Key
 from view_projection import project
 from sketch_support import render
+import tool_picks
+import tool_run
 import handle_lines
 from luce_prism.prism import Document, Encoding
 from project_graph import write_graph, read_graph
@@ -24,7 +26,6 @@ from luce_cad.modeling import CadModeling
 from geometry_data import GeometryData
 import edit_cad_commands
 import edit_cad_sketches
-import edit_cad_picks
 import edit_cad_faces
 import cad_moves
 import tool_prompts
@@ -247,7 +248,7 @@ func l_bracket_wall() -> unit!:
     assert(w.selected_count() > 0)
     let moved = total_volume(w, node)
     select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99 and c.y > 29.0)
-    edit_cad_commands.move_copy(w)
+    tool_run.run(w, "Move/Copy")
     modeling_commands.set_last_step(w, 5, 5.0, -360.0, 360.0)
     assert(fresh(w, node).warning == "")
     near(total_volume(w, node), moved, 1.0, "the top turned about its middle")
@@ -267,7 +268,7 @@ func fillet_face_healed() -> unit!:
     for at in 0..<mesh.edge_count():
         if edge < 0 and mesh.attribute_value(tag, at) >= 0.0: edge = at
     selection_commands.choose_component(w, edge, false)
-    edit_cad_commands.tool(w, "Fillet")
+    tool_run.run(w, "Fillet")
     assert(node.edits[-1].verb == "Fillet" and w.ask_value)
     modeling_commands.set_last_step(w, 0, 0.4, 0.0001, 100000.0)
     let rounded = total_volume(w, node)
@@ -275,7 +276,7 @@ func fillet_face_healed() -> unit!:
     # The fillet's radius arrow is the step's handle.
     assert(node.handles != "")
     select_named(w, "blend[")
-    edit_cad_commands.tool(w, "Delete")
+    tool_run.run(w, "Delete")
     assert(node.edits[-1].verb == "Delete" and node.warning == "")
     near(total_volume(w, node), 8.0, 1e-3, "the fillet's face deleted and healed")
     assert(data_of(w, node).models()[0].face_count() == 6)
@@ -316,7 +317,7 @@ func act(w: Workspace, node: Node, index: int) -> unit!:
         modeling_commands.create(w, "Box")
     elif index == 1:
         select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
-        edit_cad_commands.press_pull(w)
+        tool_run.press_pull(w)
     elif index == 2:
         modeling_commands.set_last_step(w, 0, 0.5, -100000.0, 100000.0)
     elif index == 3:
@@ -343,14 +344,14 @@ func face_tools() -> unit!:
     let node = model_node(w)
     modeling_commands.create(w, "Box")
     select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
-    edit_cad_commands.press_pull(w)
+    tool_run.press_pull(w)
     assert(fresh(w, node).edits[-1].verb == "Offset Face" and w.ask_value)
     modeling_commands.set_last_step(w, 0, 1.0, -100000.0, 100000.0)
     near(total_volume(w, node), 12.0, 1e-3, "the top pulled 1")
     assert(fresh(w, node).handles != "")
     # Shell with the top open, 0.2 thick: outside minus the hollow.
     select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
-    edit_cad_commands.tool(w, "Shell")
+    tool_run.run(w, "Shell")
     assert(fresh(w, node).edits[-1].verb == "Shell")
     modeling_commands.set_last_step(w, edit_cad_faces.thickness_slot, 0.2, 0.0001, 100000.0)
     near(total_volume(w, node), 12.0 - 1.6 * 1.6 * 2.8, 0.01, "the shell")
@@ -361,7 +362,7 @@ func face_tools() -> unit!:
     undo_to(w, node, 2)
     # Remove Faces: the top taken away, the box open.
     select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
-    edit_cad_commands.tool(w, "Remove Faces")
+    tool_run.run(w, "Remove Faces")
     assert(data_of(w, node).models()[0].face_count() == 5)
     undo_to(w, node, 2)
     # Replace Face: the +X side onto the -X side of a box standing 3 to the
@@ -369,9 +370,9 @@ func face_tools() -> unit!:
     modeling_commands.create(w, "Box")
     component_moves.move_selection(w, Vector3(3.0, 0.0, 0.0))
     select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.x > 0.99 and math.abs(c.x - 1.0) < 1e-6)
-    edit_cad_commands.tool(w, "Replace Face")
+    tool_run.run(w, "Replace Face")
     let prompt = w.prompt else trap("Replace Face waits for its target")
-    assert(prompt.label == edit_cad_picks.target_label)
+    assert(prompt.label == "Pick target faces")
     select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.x < -0.99 and math.abs(c.x - 2.0) < 1e-6)
     # Target faces take several (Fusion's field); Enter finishes.
     tool_prompts.accept_prompt(w)
@@ -390,11 +391,11 @@ func body_tools() -> unit!:
     # Combine: the first box the target, the moved one the tool.
     selection_commands.set_mode(w, 0)
     select_where(w, 0, func (c: Vector3, n: Vector3) -> bool: return c.x < -0.9)
-    edit_cad_commands.tool(w, "Combine")
+    tool_run.run(w, "Combine")
     let prompt = w.prompt else trap("Combine waits for its tools")
-    assert(prompt.label == edit_cad_picks.tools_label and fresh(w, node).warning.contains("waits"))
+    assert(prompt.label == "Pick tool bodies" and fresh(w, node).warning.contains("waits"))
     select_where(w, 0, func (c: Vector3, n: Vector3) -> bool: return c.x > 1.9)
-    edit_cad_picks.accept_pick(w, node)
+    tool_picks.accept(w)
     assert(w.prompt == none)
     near(total_volume(w, node), 12.0, 1e-3, "the boxes joined")
     assert(data_of(w, node).models().length == 1)
@@ -404,17 +405,17 @@ func body_tools() -> unit!:
     undo_to(w, node, 3)
     selection_commands.set_mode(w, 0)
     select_where(w, 0, func (c: Vector3, n: Vector3) -> bool: return c.x < -0.9)
-    edit_cad_commands.tool(w, "Split Body")
+    tool_run.run(w, "Split Body")
     assert(w.prompt != none)
     modeling_commands.set_last_step(w, edit_cad_faces.split_tool_slot, 3.0, 0.0, 3.0)
-    edit_cad_picks.accept_pick(w, node)
+    tool_picks.accept(w)
     assert(data_of(w, node).models().length == 3 and fresh(w, node).warning == "")
     near(total_volume(w, node), 16.0, 1e-3, "the split boxes")
     undo_to(w, node, 3)
     # Move/Copy with Create copy: a third box beside the two.
     selection_commands.set_mode(w, 0)
     select_where(w, 0, func (c: Vector3, n: Vector3) -> bool: return c.x < -0.9)
-    edit_cad_commands.move_copy(w)
+    tool_run.run(w, "Move/Copy")
     assert(w.edit_tool == "Move" and fresh(w, node).edits[-1].verb == "Transform Components")
     modeling_commands.set_last_step(w, cad_moves.copy_slot, 1.0, 0.0, 1.0)
     modeling_commands.set_last_step(w, 2, 5.0, -100000.0, 100000.0)
@@ -430,11 +431,11 @@ func revolve_axis() -> unit!:
     draw(w, node, polygon_text([2.0, 0.0, 4.0, 0.0, 4.0, 3.0, 2.0, 3.0]))
     edit_cad_commands.feature_from_sketch(w, "Revolve")
     let prompt = w.prompt else trap("Revolve waits for its axis")
-    assert(prompt.label == edit_cad_picks.axis_label)
+    assert(prompt.label == "Pick axis")
     assert(fresh(w, node).failure == "" and fresh(w, node).warning.contains("waits"))
     # The sketch's y axis: Y as the origin axis.
     modeling_commands.set_last_step(w, cad_features.axis_slot, 2.0, 0.0, 3.0)
-    edit_cad_picks.accept_pick(w, node)
+    tool_picks.accept(w)
     near(total_volume(w, node), math.pi * (16.0 - 4.0) * 3.0, 0.5, "the ring revolved")
 
 ## A square sketched on the ground inside a 2 mm box, extruded To object:
@@ -448,9 +449,9 @@ func to_object() -> unit!:
     draw(w, node, sketch_commands.rectangle_text(0.0, 0.0, 0.5, 0.5))
     edit_cad_commands.feature_from_sketch(w, "Extrude")
     modeling_commands.set_last_step(w, cad_features.extent_slot, 1.0, 0.0, 2.0)
-    edit_cad_commands.pick_extent_face(w)
+    tool_picks.start_named(w, node.id, "Object")
     let prompt = w.prompt else trap("To object waits for its face")
-    assert(prompt.label == edit_cad_picks.object_label and w.level_index() == 3)
+    assert(prompt.label == "Pick object" and w.level_index() == 3)
     select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
     assert(w.prompt == none and fresh(w, node).edits[-1].text(cad_features.face_text) != "")
     near(total_volume(w, node), 8.0 - 0.25, 1e-3, "the cut up to the top")
@@ -466,7 +467,7 @@ func step_handles() -> unit!:
     let node = model_node(w)
     modeling_commands.create(w, "Box")
     select_where(w, 3, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99)
-    edit_cad_commands.press_pull(w)
+    tool_run.press_pull(w)
     w.ask_value = false
     w.view.yaw = 0.5
     w.view.pitch = 0.4

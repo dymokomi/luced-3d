@@ -32,6 +32,7 @@ from angles import radians, degrees
 import handle_lines
 from move_manipulator import MoveManipulator, first_ring
 import node_catalog
+import tool_registry
 from edit_kinds import is_edit
 import view_projection
 import theme
@@ -60,9 +61,12 @@ pub class HandleTarget:
         self.values = values
         self.step = step
 
-## The steps whose handles show in Edit CAD.
-pub func step_verbs() -> list[str]:
-    return ["Extrude", "Revolve", "Offset Face", "Fillet", "Chamfer", "Shell", "Blend Curve", "Blend Edges", "Align"]
+## Whether node kind `name` (an Edit CAD step's verb: `step`) has handles
+## its values drag: a CAD tool's declaration says (Tool.handles); a move's
+## step is dragged by the gizmo instead.
+func handled(name: str, step: bool) -> bool:
+    let tool = (tool_registry.cad_step(name) if step else tool_registry.cad_node(name)) else return false
+    return tool.handles and not (step and tool.gesture == "move")
 
 pub class FeatureHandles:
     let w: Workspace
@@ -153,15 +157,17 @@ pub class FeatureHandles:
         let node = self.w.selected() else return none
         if not node.enabled or self.w.prompt != none:
             return none
-        if node.kind in ["Extrude", "Revolve", "Offset Face", "Fillet", "Chamfer", "Shell", "Move", "Blend Curve", "Align"]:
+        if handled(node.kind, false):
             return HandleTarget(node, node.kind, node.values, false)
         if not is_edit(node.kind) or node.edits.length == 0 or node.id != self.w.network.display or self.w.sketching():
             return none
         let last = node.edits[-1]
-        if not (last.verb in step_verbs()):
+        if not handled(last.verb, true):
             return none
-        # Blend Curve between edges has the curves' rows.
-        return HandleTarget(node, "Blend Curve" if last.verb == "Blend Edges" else last.verb, last.numbers, true)
+        # Its rows are its tool's node's (Blend Curve between edges has the
+        # curves' rows).
+        let tool = tool_registry.cad_step(last.verb) else return none
+        return HandleTarget(node, tool.label, last.numbers, true)
 
     ## Its handles, parsed once per report.
     func handles(self, target: HandleTarget) -> list[HandleLine]!:

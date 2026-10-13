@@ -1,0 +1,128 @@
+## Node and step parity for the CAD tools (POLY-MODELING.md §3.5, 1; Stage
+## 1): every CAD tool that is both a node in a CAD network and an Edit CAD
+## step, and runs on a box's top face, one of its top edges or the box
+## itself with nothing more to pick at its starting values, gives the same
+## body made from the viewport as a node after a Solid Box and as a step of
+## an Edit CAD after it: the same faces, the same volume (or both say the
+## same why not). The list is the registry's, so a new tool is checked from
+## its declaration alone.
+from workspace import Workspace
+from luce_geocore.geocore import Mesh
+from tool_record import Tool
+from geometry_data import GeometryData
+from edit_types import object_level, edge_level, face_level, step_reason
+import pick_kinds
+import tool_registry
+import tool_run
+import node_commands
+import selection_commands
+from luce_std import math
+
+pub func cad_tool_parity_tests() -> unit!:
+    var checked: list[str] = []
+    for tool in tool_registry.all():
+        let level = level_of(tool) else continue
+        let node = run(tool, level, false)
+        let step = run(tool, level, true)
+        if tool.label in differing():
+            assert(node != step, f"{tool.label} now agrees: take it off differing()")
+            continue
+        assert(node == step, f"{tool.label}: node {node}, step {step}")
+        checked.append(tool.label)
+    assert("Fillet" in checked and "Shell" in checked and "Offset Face" in checked)
+    print(f"PASS CAD tool parity: node = step for {checked.join(", ")}")
+
+## Tools whose node and step do not agree yet, recorded (as M0 recorded the
+## mesh tools'): the Move node starts from its rows, whose transform's
+## scale slots are 0, where Edit CAD's Move/Copy starts from its own numbers
+## (scale 1): faces picked on a Move node with nothing typed come out
+## changed (7 faces, the box grown), the step's leave them.
+func differing() -> list[str]:
+    return ["Move/Copy"]
+
+## The level a tool is checked at, when it is both a node and an Edit CAD
+## step whose first pick takes the box's top face, a top edge or the box,
+## and that wants no other pick at its starting values.
+func level_of(tool: Tool) -> int?!:
+    if not ("cad" in tool.contexts and "Edit CAD" in tool.kinds) or tool.picks.length == 0:
+        return none
+    let empty = ["", "", "", "", ""]
+    for at in 1..<tool.picks.length:
+        let pick = tool.picks[at]
+        if pick.slot >= 0 and pick.kind != pick_kinds.point and pick.wanted(tool.starting() + filler(), empty, false):
+            return none
+    let first = tool.first_pick()
+    if first.kind in [pick_kinds.face, pick_kinds.faces] and first.takes(face_level):
+        return face_level
+    if first.kind in [pick_kinds.edge, pick_kinds.edges] and first.takes(edge_level):
+        return edge_level
+    if pick_kinds.whole_bodies(first.kind) and first.takes(object_level):
+        return object_level
+    return none
+
+## Values past a tool's starting ones, as a node's 48 slots hold them.
+func filler() -> list[float]:
+    let result: list[float] = []
+    for _ in 0..<48:
+        result.append(0.0)
+    return result
+
+## `tool` run on the box's top face, a top edge or the box (at `level`),
+## as a node after a Solid Box or as a step of an Edit CAD after it: its
+## result's faces and volume, or why it was not made.
+func run(tool: Tool, level: int, step: bool) -> str!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    if step:
+        node_commands.add_node(w, "Edit CAD", 0.0, 120.0)
+    # A CAD network picks components at the component levels: its bodies
+    # are those of the faces picked.
+    let picked_at = face_level if level == object_level and not step else level
+    selection_commands.set_mode(w, picked_at)
+    let mesh = w.geometry else trap("the box's pick geometry")
+    let at = target(mesh, picked_at)
+    assert(at >= 0, f"{tool.label}: nothing to pick at level {level}")
+    selection_commands.choose_component(w, at, false)
+    tool_run.run(w, tool.label)
+    # A step still waiting, or a node: its result is what shows.
+    let shown = w.network.require(w.network.display)
+    var failed = ""
+    var made: GeometryData? = none
+    made = w.network.evaluate_data(shown.id) catch failure:
+        failed = failure.message
+        recover none
+    let data = made else return "not made: " + (failed[shown.name.length + 2..] if failed.starts_with(shown.name + ": ") else failed)
+    if data.warning.starts_with("Step "):
+        return "not made: " + step_reason(data.warning)
+    if data.models().length == 0:
+        return "no bodies"
+    var faces = 0
+    var total = 0.0
+    for model in data.models():
+        faces += model.face_count()
+        let triangles = model.tessellate(32)
+        for triangle in 0..<triangles.index_count() // 3:
+            let a = triangles.vertex(triangles.index(triangle * 3)).position
+            let b = triangles.vertex(triangles.index(triangle * 3 + 1)).position
+            let c = triangles.vertex(triangles.index(triangle * 3 + 2)).position
+            total += a.dot(b.cross(c)) / 6.0
+    return f"{faces} faces, volume {math.round(total * 10.0) / 10.0}"
+
+## What is picked at `level`: the face facing +Y, an edge of the top, or
+## (Object) any face of the box.
+func target(mesh: Mesh, level: int) -> int!:
+    if level == edge_level:
+        let owners = mesh.find_attribute("cad_edge", 4)
+        for edge in 0..<mesh.edge_count():
+            let a = mesh.point(mesh.edge_point(edge, 0))
+            let b = mesh.point(mesh.edge_point(edge, 1))
+            if owners >= 0 and int(mesh.attribute_value(owners, edge)) >= 0 and a.y > 9.999 and b.y > 9.999:
+                return edge
+        return -1
+    for face in 0..<mesh.face_count():
+        if mesh.face_normal(face).y > 0.999:
+            return face
+    return -1

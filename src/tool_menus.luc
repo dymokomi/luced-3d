@@ -1,13 +1,15 @@
-## The registry's tools as the menus show them: the viewport's Edit kind's
-## tools (tool_registry.luc's, for Edit Mesh and Geo) by section and
-## family, at the selection level, and the Select section with the
-## selection commands. The S and D marking menus, the right-click menu and
-## Modify › the kind's tools read these, so a tool reaches every surface
-## from its declaration alone.
+## The registry's tools as the menus show them: the viewport's context's
+## tools (tool_registry.luc's: an Edit kind's, Edit Mesh's in Geo, a CAD
+## network's nodes) by section and family, at the selection level, and the
+## Select section with the selection commands. The A, S and D marking
+## menus, the right-click menu and Modify › the context's tools read these,
+## so a tool reaches every surface from its declaration alone.
 from luce_ui.ui import Command
 from workspace import Workspace
 from actions import Actions
-from edit_types import edge_level
+from edit_types import edge_level, face_level
+import pick_kinds
+from tool_record import Tool
 import tool_registry
 
 ## A family's commands, in the kind's tool order.
@@ -19,26 +21,59 @@ pub class Family:
         self.name = name
         self.commands = []
 
-## Whether the viewport's kind takes its tools from the registry.
+## Whether the viewport's kind takes its tools from the registry (all of
+## them; Edit SDF's and Edit GSplats' are its own).
 pub func from_registry(w: Workspace) -> bool:
     for tool in w.strip_kind().tools:
-        if tool.tool != none:
-            return true
+        if tool.tool == none:
+            return false
+    return true
+
+## Whether the viewport's kind has Select tools of the registry (Edit
+## Mesh's and Geo's).
+pub func selects(w: Workspace) -> bool:
+    for tool in w.strip_kind().tools:
+        if let registered = tool.tool:
+            if registered.section == "Select":
+                return true
     return false
 
-## The kind's registry tools of `section` offered at level `level` (-1:
+## The context's tools: the viewport's Edit kind's registry tools, each
+## with whether it is offered at level `level` (-1: any); in a CAD network
+## (no Edit node edited) its nodes' tools.
+func context_tools(w: Workspace, level: int) -> list[(Tool, bool)]!:
+    let result: list[(Tool, bool)] = []
+    if w.network.context() == "cad" and not w.editing():
+        # A CAD network picks faces and edges of its bodies: a tool on
+        # bodies takes those of the faces picked.
+        for entry in tool_registry.cad_nodes():
+            let tool = entry.make()
+            let bodies = pick_kinds.whole_bodies(tool.first_pick().kind) and level == face_level
+            # One that picks nothing (Mirror Body) works on every body: it
+            # is offered when nothing is picked.
+            let picking = tool.picks.length > 0 and (tool.offered(level) or bodies)
+            result.append((tool, level < 0 or picking))
+        return result
+    for tool in w.strip_kind().tools:
+        let registered = tool.tool else continue
+        result.append((registered, level < 0 or tool.offered(level)))
+    return result
+
+## The context's registry tools of `section` offered at level `level` (-1:
 ## at any level), each its command, by family in the registry's family
 ## order (tool_registry.family_order), each family's tools in their
-## declaration order.
-pub func families(w: Workspace, actions: Actions, section: str, level: int = -1) -> list[Family]:
+## declaration order. A tool of two steps (Blend Curve on curves and on
+## edges) is one command.
+pub func families(w: Workspace, actions: Actions, section: str, level: int = -1) -> list[Family]!:
     let order = select_order(level) if section == "Select" else tool_registry.family_order()
     let found: list[Family] = []
     let commands = actions.modify_commands()
-    for tool in w.strip_kind().tools:
-        let registered = tool.tool else continue
-        if registered.section != section or (level >= 0 and not tool.offered(level)):
+    let named_already: list[str] = []
+    for (registered, offered) in context_tools(w, level):
+        if registered.section != section or not offered or registered.label in named_already:
             continue
-        let command = named(commands, tool.name) else continue
+        named_already.append(registered.label)
+        let command = named(commands, registered.label) else continue
         var family: Family? = none
         for each in found:
             if each.name == registered.family:
@@ -83,7 +118,7 @@ pub func repeat(w: Workspace, actions: Actions) -> list[Command]:
 ## family (select_order), then Selection (all, none, invert, through the
 ## depth), the sets and Hide. D lists them as columns, the right-click
 ## Select submenu with a divider between families.
-pub func select_families(w: Workspace, actions: Actions) -> list[Family]:
+pub func select_families(w: Workspace, actions: Actions) -> list[Family]!:
     let result = families(w, actions, "Select", w.level_index())
     let selection = Family("Selection")
     selection.commands.extend([actions.select_all, actions.selection.none_selected, actions.selection.invert, actions.through_depth])

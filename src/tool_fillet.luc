@@ -1,0 +1,159 @@
+## Fillet (Fusion 360's): edges rounded by a rolling ball, Constant, Chord
+## length or Variable radius, G1 to G3, Rule fillets and Full rounds,
+## selection sets each at its own radius, Parasolid's sections, limits,
+## setbacks and overflow (cad_blends.luc does the work). A node in a CAD
+## network keeps its edges by reference; an Edit CAD step fillets the edges
+## picked, model by model, by the node's own code.
+from tool_record import Tool, ToolEntry, Pick, Invocation
+from geometry_data import GeometryData
+from parameter_rows import Parameter, number, whole, toggle, menu
+import parameter_rows
+from edit_types import edge_level, face_level
+import pick_kinds
+import cad_blends
+import cad_cook
+
+pub func entry() -> ToolEntry:
+    return ToolEntry("Fillet", "Fillet", "bevel", "Modify", [cad_cook.context], [cad_cook.edit_kind], made)
+
+func made() -> Tool:
+    return entry().tool("Modify", "Blends", "Round edges with a rolling ball: constant, chord length or variable radius, G1 to G3, rule fillets, full rounds and selection sets",
+                        picks(), rows(), cook, drag = 0, handles = true, asks = true)
+
+## The edges picked (a node keeps them by reference); a Full round's center
+## face; a Rule fillet's two face sets; the further selection sets' edges.
+func picks() -> list[Pick]:
+    let between = "{ type != 1 } { rule == 0 }"
+    let result = [Pick("Edges", [edge_level], kind = pick_kinds.edges, slot = 0, hide_when = "{ type != 0 }", summary = cad_blends.edges_summary, clear = "All edges",
+                       needed = optional, doc = "The edges to blend, remembered by the faces they lie between, so they stay the same edges when anything upstream changes. None picked: every straight convex edge between flat faces."),
+                  Pick("Center face", [face_level], kind = pick_kinds.face, slot = cad_blends.faces_text, step = pick_kinds.nowhere, hide_when = "{ type != 2 }", needed = optional,
+                       taken = full_round, summary = first_face, doc = "Full round: the face rounded away, kept by its name; the faces on each side are found across its longest parallel edges."),
+                  Pick("Faces", [face_level], kind = pick_kinds.faces, slot = cad_blends.faces_text, step = pick_kinds.nowhere, hide_when = between, needed = optional,
+                       doc = "Rule fillet, Between faces: the first set of faces, kept by their names."),
+                  Pick("Other faces", [face_level], kind = pick_kinds.faces, slot = cad_blends.others_text, step = pick_kinds.nowhere, hide_when = between, needed = optional,
+                       summary = any_face, doc = "Rule fillet, Between faces: the second set (none: any face next to the first set).")]
+    for k in 2..<cad_blends.most_sets + 1:
+        result.append(set_pick(k))
+    return result
+
+## Selection set `k`'s edges, a part of text 4.
+func set_pick(k: int) -> Pick:
+    let hidden = "{ type != 0 } { radius_type == 1 } { selection_sets < " + f"{k}" + " }"
+    let part = func (text: str) -> str: return cad_blends.set_part(text, k)
+    let put = func (text: str, picked: str) -> str: return cad_blends.with_set_edges(text, k, picked)
+    let told = func (text: str) -> str: return cad_blends.edges_summary(text) if text != "" else "None picked"
+    return Pick(f"Set {k} edges", [edge_level], kind = pick_kinds.edges, slot = cad_blends.sets_text, step = pick_kinds.nowhere, hide_when = hidden, needed = optional,
+                part_of = part, with_part = put, summary = told,
+                doc = f"Selection set {k}'s edges, filleted at Set {k} radius (with Variable radius, set 2: the constant edges the law runs into).")
+
+func optional(values: list[float], texts: list[str], wired: bool) -> bool:
+    return false
+
+func full_round(values: list[float], picked: str):
+    values[cad_blends.type_slot] = float(cad_blends.full_round_type)
+
+func first_face(text: str) -> str:
+    let center = text.split(";")[0].trim()
+    return center if center != "" else "None picked"
+
+func any_face(text: str) -> str:
+    if text.trim() == "":
+        return "Any face"
+    let count = text.split(";").length
+    return "1 face" if count == 1 else f"{count} faces"
+
+## A node: its body's edges by reference, or its rule's; a step: the edges
+## picked on each model, the further sets (step text 4) going with the
+## model the first set's edges are on.
+func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    if call.node:
+        return cad_blends.blended(call.verb, call.numbers, call.texts, cad_cook.body_of(data, "first"), tag, call.memo)
+    return cad_cook.on_edges(call, data, tag, func (body: GeometryData, edges: str, name: str) -> GeometryData!:
+        return cad_blends.blended(call.verb, call.numbers, [edges, "", "", call.text(cad_blends.points_text), call.text(cad_blends.sets_text)], cad_cook.body_of(body, "first"), name, none))
+
+## Fusion 360's Fillet dialog (cad_blends.luc reads the slots): the section's
+## rows first, what bounds the fillet (its limits, a corner's setback, its
+## overflow) behind More options, closed at first.
+func rows() -> list[Parameter]:
+    let size = number("Radius", cad_blends.size_slot, 1.0, 0.0001, 100000.0, 0.1, "The rolling ball's radius.", soft = 10.0)
+    let chain = toggle("Tangent chain", cad_blends.chain_slot, 1.0, "Each picked edge brings the edges continuing it smoothly: a rounded slot's rim, the edges around an earlier fillet.")
+    let kind_row = menu("Type", cad_blends.type_slot, "Fillet|Rule fillet|Full round", 0.0, "Fillet: the edges picked. Rule fillet: the edges a rule takes (All edges, or Between faces), found again as the body changes. Full round: a center face (Pick center face) rounded away whole, tangent to it and to the faces on each side.")
+    let rule = menu("Rule", cad_blends.rule_slot, "All edges|Between faces", 0.0, "All edges: every edge of the kinds below. Between faces: those between the faces picked (Pick faces) and, when picked, the other faces (Pick other faces).")
+    rule.hide_when = "{ type != 1 }"
+    let rounds = toggle("Rounds", cad_blends.rounds_slot, 1.0, "Rule fillet: outside edges (convex), material taken away.")
+    rounds.hide_when = "{ type != 1 }"
+    let fillets = toggle("Fillets", cad_blends.fillets_slot, 1.0, "Rule fillet: inside edges (concave), material added.")
+    fillets.hide_when = "{ type != 1 }"
+    let radius_type = menu("Radius type", cad_blends.radius_type_slot, "Constant|Chord length|Variable", 0.0, "Constant: the fillet's radius. Chord length: the distance between where the fillet leaves the two faces. Variable: Radius at the start of the edge (or its tangent chain), End radius at its end and points between, G1, G2 or G3.")
+    radius_type.hide_when = "{ type == 2 }"
+    let chord = number("Chord length", cad_blends.chord_slot, 1.0, 0.0001, 100000.0, 0.1, "Chord length: how far apart the fillet's edges on the two faces are.", soft = 10.0)
+    chord.hide_when = "{ type == 2 } { radius_type != 1 }"
+    chord.length = true
+    let end_radius = number("End radius", cad_blends.end_radius_slot, 2.0, 0.0001, 100000.0, 0.1, "Variable: the radius at the end of the edge or chain (Radius is at its start).", soft = 10.0)
+    end_radius.hide_when = "{ type == 2 } { radius_type != 2 }"
+    end_radius.length = true
+    let points = parameter_rows.entry("Points", cad_blends.points_text, "Variable: radii between the ends, as \"position radius\" pairs apart by ; (positions 0 to 1 along the edge or chain, fractions of its length), e.g. 0.5 1.0; 0.75 1.5.")
+    points.hide_when = "{ type == 2 } { radius_type != 2 }"
+    let smooth = toggle("Smooth transition", cad_blends.smooth_slot, 0.0, "Variable: the radius held a moment at each point and eased between them; off (Fusion's): straight between two radii, a smooth spline through more.")
+    smooth.hide_when = "{ type == 2 } { radius_type != 2 }"
+    let continuity = menu("Continuity", cad_blends.continuity_slot, "G1|G2|G3", 0.0, "G1: a circular fillet (Fusion's Tangent). G2: curvature flows into the faces (Fusion's Curvature; no jump in reflections). G3: its change too, smoother still. Where three meet at a corner they stop short of it, and a patch as smooth as they are rounds it.")
+    let tangency = number("Tangency weight", cad_blends.tangency_slot, 1.0, 0.1, 2.0, 0.1, "How far the continuity reaches into the fillet (Fusion's Tangency weight): 1 the plain fillet; more hugs the faces longer and turns tighter in the middle, less is flatter. A G1 fillet with a weight is a conic, its corners setbacks.", slider = true)
+    tangency.hide_when = "{ type == 2 } { continuity == 0 conic != 0 } { continuity == 1 g2_shape != 0 }"
+    # Parasolid's sections (luce-cad blend_shape.lucb).
+    let conic = menu("Conic", cad_blends.conic_slot, "Off|Rho|Rho relative|Middle radius", 0.0, "G1 (Parasolid's conic section): Rho, the conic's own (0.5 a parabola, less an ellipse, more a hyperbola); Rho relative, against the circle's (0.5 the circle); Middle radius, the radius of curvature at the section's middle as a share of the fillet's radius (1 the circle).")
+    conic.hide_when = "{ type == 2 } { continuity != 0 }"
+    let rho = number("Rho", cad_blends.rho_slot, 0.5, 0.01, 10.0, 0.05, "The conic's rho (0 to 1), or Middle radius's share of the radius.", slider = true)
+    rho.hide_when = "{ type == 2 } { continuity != 0 } { conic == 0 }"
+    let g2_shape = menu("G2 shape", cad_blends.g2_shape_slot, "Fusion|Depth and skew|Softness", 0.0, "G2 (Parasolid's G2 section): Fusion's own; by Depth (0 at the chord between the contacts to 1 at the faces' corner) and Skew (0 toward the first face to 1 toward the second, 0.5 even); or by Softness (more is flatter and deeper, less like a chamfer with rounded edges).")
+    g2_shape.hide_when = "{ type == 2 } { continuity != 1 }"
+    let depth = number("Depth", cad_blends.depth_slot, 0.5, 0.01, 0.99, 0.05, "How far the section's middle lies from the chord toward the corner.", slider = true)
+    depth.hide_when = "{ type == 2 } { continuity != 1 } { g2_shape != 1 }"
+    let skew = number("Skew", cad_blends.skew_slot, 0.5, 0.01, 0.99, 0.05, "Where the section leans: toward the first face below 0.5, the second above.", slider = true)
+    skew.hide_when = "{ type == 2 } { continuity != 1 } { g2_shape != 1 }"
+    let softness = number("Softness", cad_blends.softness_slot, 0.5, 0.01, 1.0, 0.05, "The section's arms along the faces: more is flatter and deeper.", slider = true)
+    softness.hide_when = "{ type == 2 } { continuity != 1 } { g2_shape != 2 }"
+    let limits = toggle("Limits", cad_blends.limits_slot, 0.0, "Parasolid's limits: the fillet runs only from Limit from to Limit to along its one straight edge (fractions of its length), capped by planes square to the edge.")
+    limits.hide_when = "{ type == 2 } { more_options == 0 }"
+    let limit_from = number("Limit from", cad_blends.limit_from_slot, 0.0, 0.0, 1.0, 0.05, "Where along the edge the fillet starts (0 its start).", slider = true)
+    limit_from.hide_when = "{ type == 2 } { limits == 0 } { more_options == 0 }"
+    let limit_to = number("Limit to", cad_blends.limit_to_slot, 1.0, 0.0, 1.0, 0.05, "Where along the edge the fillet ends (1 its end).", slider = true)
+    limit_to.hide_when = "{ type == 2 } { limits == 0 } { more_options == 0 }"
+    let at_overlap = toggle("At overlap", cad_blends.limit_overlap_slot, 0.0, "Parasolid's overlap limit: within Limit from and Limit to, the fillet runs only along the longest stretch where it fits its faces, capped square there, rather than overflowing.")
+    at_overlap.hide_when = "{ type == 2 } { limits == 0 } { more_options == 0 }"
+    size.hide_when = "{ type == 2 } { radius_type == 1 }"
+    chain.hide_when = "{ type == 2 }"
+    # An Edit CAD step fillets the edges picked: the rule is the node's.
+    let corner = menu("Corner type", cad_blends.fillet_corner_slot, "Rolling ball|Setback", 0.0, "Where three fillets meet at a corner: Rolling ball, a ball rounds it (G2 and G3: they stop where the ball's would and a three-sided patch joins their ends; where inside and outside fillets meet, the pair's section rolls round the lone one), Fusion's; Setback, the fillets stop short of the corner (2 radii, Fusion's) and a patch blends them into the faces, a vertex blend where both kinds meet.")
+    corner.hide_when = "{ type == 2 }"
+    let setback_ratio = number("Setback", cad_blends.setback_ratio_slot, 0.0, 0.0, 10.0, 0.1, "Parasolid's setbacks: where fillets meet at a Setback corner, each stops at least this many radii from it, the corner's patch filling the gap; 0 as far as the corner needs (Fusion's).", slider = true)
+    setback_ratio.hide_when = "{ type == 2 } { corner_type == 0 } { more_options == 0 }"
+    let edge_shape = number("Corner edge shape", cad_blends.corner_shape_slot, 0.5, 0.05, 0.95, 0.05, "Alias's Corner Blend Edge Shape: a G1 Setback corner's curves on the faces, as conics (0.5 the circle, Fusion's; more runs nearer the faces' corner, keeping more of it; less is flatter).", slider = true)
+    edge_shape.hide_when = "{ type == 2 } { continuity != 0 } { corner_type == 0 } { more_options == 0 }"
+    let fullness = number("Corner fullness", cad_blends.corner_fullness_slot, 0.0, 0.0, 3.0, 0.05, "Alias's Pivot Curve Length Ratio: a Setback or G2 corner's patch bulges this much from its edges against the fairest fill (1); 0, the default, as Fusion's corners (Setback 1.27 at G1 and 1.1 at G2 and G3, three-sided 1.143).", slider = true)
+    fullness.hide_when = "{ type == 2 } { continuity == 0 corner_type == 0 } { more_options == 0 }"
+    let overflow = toggle("Overflow", cad_blends.overflow_slot, 1.0, "Parasolid's overflow: a fillet running off its face does what Smooth, Cliff and Notch allow, tried in that order; off, it must fit its faces.")
+    overflow.hide_when = "{ type == 2 } { more_options == 0 }"
+    let smooth_overflow = toggle("Smooth", cad_blends.smooth_overflow_slot, 1.0, "Overflow: the ball rolls on over a line splitting the face, or onto a round tangent to it beyond.")
+    let cliff_overflow = toggle("Cliff", cad_blends.cliff_overflow_slot, 1.0, "Overflow: a cliff-edge blend, tangent to the other face and running along the edge where the face ends (G1).")
+    let notch_overflow = toggle("Notch", cad_blends.notch_overflow_slot, 1.0, "Overflow: the fillet unchanged, the next face trimming it, or a ledge's plane covering its end.")
+    for row in [smooth_overflow, cliff_overflow, notch_overflow]:
+        row.hide_when = "{ type == 2 } { more_options == 0 } { overflow == 0 }"
+    let more = toggle("More options", cad_blends.more_slot, 0.0, "Show the rows that bound the fillet: Limits along its edge, a corner's Setback and shape, and what it does when it runs off its faces (Overflow: Smooth, Cliff, Notch).")
+    more.hide_when = "{ type == 2 }"
+    # Fusion's selection sets: the edges picked are the first, at Radius;
+    # each further set its own edges (Pick set k edges) and radius. With
+    # Variable radius, a second set is the constant edges its law runs
+    # into at corners.
+    let sets = whole("Selection sets", cad_blends.sets_slot, 1.0, 1.0, float(cad_blends.most_sets), "Fusion's selection sets: the edges picked are set 1 at Radius; sets 2 and on each take their own edges (Pick set 2 edges…) and radius, meeting at setback corners where radii differ. With Variable radius, set 2 is the constant edges the law runs into at corners (a straight law runs in as Fusion's, a cone; any other must end at their radius).")
+    sets.hide_when = "{ type != 0 } { radius_type == 1 }"
+    let set_rows: list[Parameter] = []
+    for k in 2..<cad_blends.most_sets + 1:
+        let row = number(f"Set {k} radius", cad_blends.set_radius_slot + k - 2, 2.0, 0.0001, 100000.0, 0.1, f"Selection set {k}'s radius.", soft = 10.0)
+        row.length = true
+        # Set 2 shows with Variable radius too; the others with Constant.
+        let kind_clause = "{ radius_type == 1 }" if k == 2 else "{ radius_type != 0 }"
+        row.hide_when = "{ type != 0 } " + kind_clause + " { selection_sets < " + f"{k}" + " }"
+        set_rows.append(row)
+    for row in [kind_row, rule, rounds, fillets, radius_type, chord, end_radius, points, smooth, corner]:
+        row.in_steps = false
+    return [kind_row, rule, rounds, fillets, radius_type, size, chord, end_radius, points, smooth, sets] + set_rows + [chain, continuity, tangency, conic, rho, g2_shape, depth, skew, softness, corner, more, limits, limit_from, limit_to, at_overlap, setback_ratio, edge_shape, fullness, overflow, smooth_overflow, cliff_overflow, notch_overflow]

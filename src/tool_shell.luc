@@ -1,0 +1,53 @@
+## Shell (Fusion 360's): a body hollowed, the faces picked opened (Tangent
+## chain: with the faces meeting them smoothly; a whole body: a closed
+## void), its wall Inside, Outside or Both (edit_cad_faces.luc). A node
+## keeps its faces and bodies by name; an Edit CAD step hollows what it
+## picked; both run the step's code.
+from tool_record import Tool, ToolEntry, Pick, Invocation
+from geometry_data import GeometryData
+from parameter_rows import Parameter, number, toggle, menu
+from edit_types import object_level, face_level, patch_level
+import pick_kinds
+import edit_cad_faces
+import cad_cook
+
+pub func entry() -> ToolEntry:
+    return ToolEntry("Shell", "Shell", "solid-wireframe", "Modify", [cad_cook.context], [cad_cook.edit_kind], made)
+
+func made() -> Tool:
+    return entry().tool("Modify", "Faces", "Hollow a body to a wall Inside, Outside or Both, the faces picked opened", picks(), rows(), cook, drag = 0, handles = true, asks = true, waits = waits)
+
+func picks() -> list[Pick]:
+    return [Pick("Faces", [object_level, face_level, patch_level], kind = pick_kinds.faces, slot = 0, needed = no_bodies, doc = "The faces opened (removed); kept by their names."),
+            Pick("Bodies", [object_level], kind = pick_kinds.bodies, slot = 1, step = pick_kinds.nowhere, needed = optional, doc = "Bodies hollowed closed, with nothing opened.")]
+
+## Faces are wanted until a body to hollow closed is picked.
+func no_bodies(values: list[float], texts: list[str], wired: bool) -> bool:
+    return texts[1].trim() == ""
+
+func optional(values: list[float], texts: list[str], wired: bool) -> bool:
+    return false
+
+func waits(values: list[float], texts: list[str], wired: bool) -> str:
+    return "Pick the faces to remove, or a body to hollow" if texts[0].trim() == "" and texts[1].trim() == "" else ""
+
+func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    if not call.node:
+        return cad_cook.face_step(call, data, tag)
+    let waiting = waits(call.numbers, call.texts, false)
+    if waiting != "":
+        return data.passed(waiting)
+    let mesh = cad_cook.node_mesh(data, call.verb)
+    let group = cad_cook.joined([cad_cook.picked(call, mesh, 0, false), cad_cook.picked(call, mesh, 1, true)])
+    return cad_cook.node_face_step(call, "Shell", data, mesh, group, ["", ""], 8, tag)
+
+func rows() -> list[Parameter]:
+    let inside = number("Inside thickness", edit_cad_faces.thickness_slot, 1.0, 0.0001, 100000.0, 0.1, "The wall's thickness inside the body's faces.", soft = 10.0)
+    inside.length = true
+    inside.hide_when = "{ direction == 1 }"
+    let outside = number("Outside thickness", edit_cad_faces.outside_slot, 1.0, 0.0001, 100000.0, 0.1, "The wall's thickness outside the body's faces.", soft = 10.0)
+    outside.length = true
+    outside.hide_when = "{ direction == 0 }"
+    return [toggle("Tangent chain", edit_cad_faces.shell_chain_slot, 1.0, "Each face removed brings the faces meeting it smoothly: a rounded rim opens whole."),
+            inside, outside,
+            menu("Direction", edit_cad_faces.shell_side_slot, "Inside|Outside|Both", 0.0, "Inside: the wall inside the body's faces. Outside: outside them. Both: Inside thickness in, Outside thickness out.")]

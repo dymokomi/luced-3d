@@ -8,16 +8,12 @@
 ##     level changes.
 ##   Modify: what applies to the selection: the node's flags, Output, grouping,
 ##     renaming, cutting, copying, pasting, duplicating and deletion; the transform
-##     tools; the active Edit kind's modeling tools (each a new node outside
-##     an Edit node; Edit Mesh's and Geo's are Repeat and a submenu per
-##     family of the registry's Modify tools); in a CAD node its features on
-##     the selection (Press Pull, Offset Face, Extrude face, Fillet,
-##     Chamfer, then Fusion's Modify features: Shell, Move/Copy, Combine,
-##     Split Body, Split Face, Replace Face, Delete, Remove; nodes in a CAD
-##     network, steps in Edit CAD, which also has Remove Faces); the
-##     selection's edits; Selection: select all or none, invert, through
-##     the depth, a submenu per family of the registry's Select tools, the
-##     selection sets and Hide/Unhide (tool_menus.select_menu).
+##     tools; the context's tools (tool_menus.luc): Repeat and a submenu per
+##     family of the registry's Modify tools (an Edit kind's steps, a Geo
+##     tool's or a CAD network's nodes), in CAD led by Press Pull and Extrude
+##     face; the selection's edits; Selection: select all or none, invert,
+##     through the depth, a submenu per family of the registry's Select
+##     tools, the selection sets and Hide/Unhide (tool_menus.select_menu).
 ## Every item is one of Actions' commands, so choosing one is choosing it in
 ## Tab or a marking menu, its shortcut shows, and it is disabled when it
 ## does not apply (Actions.refresh).
@@ -40,8 +36,6 @@ pub class TopMenus:
     pub let transform: Command
     pub let modeling: Command
     pub let selecting: Command
-    ## CAD features on the selection.
-    pub let cad: Command
     ## The modeling submenu's family submenus, as last built.
     var families: list[Command]
     ## Create's entries, as last built, and Modify's.
@@ -61,15 +55,13 @@ pub class TopMenus:
         self.modeling = Command("Modeling tools")
         self.selecting = Command("Selection")
         self.families = []
-        self.cad = Command("CAD features")
-        self.cad.set_items([actions.press_pull, actions.offset_face, actions.extrude_face, actions.fillet_edges, actions.chamfer_edges, Command("", divider = true)] + actions.cad_modify.commands + edit_cad_tools(actions))
         self.create_key = self.network_key()
         self.create_entries = self.create_items()
         self.create = Menu("Create", self.create_entries, font = font)
         self.update_modeling()
         self.modify_entries = [actions.display, actions.enabled, actions.freeze, Command("", divider = true),
                                actions.set_output, actions.group, actions.rename, actions.cut, actions.copy, actions.paste, actions.duplicate, actions.delete, Command("", divider = true),
-                               self.transform, self.modeling, self.cad, actions.surfaces.menu, actions.clear_edits, Command("", divider = true),
+                               self.transform, self.modeling, actions.clear_edits, Command("", divider = true),
                                self.selecting]
         self.modify = Menu("Modify", self.modify_entries, font = font)
         self.refresh()
@@ -89,7 +81,7 @@ pub class TopMenus:
             let title = self.selecting.item(index)
             if title.item_count() > 0:
                 enable_by_items(title)
-        for title in self.families + [self.primitives, self.drawing, self.transform, self.modeling, self.cad, self.selecting]:
+        for title in self.families + [self.primitives, self.drawing, self.transform, self.modeling, self.selecting]:
             enable_by_items(title)
 
     ## The network level and whether an Edit node is displayed (and its kind).
@@ -132,15 +124,17 @@ pub class TopMenus:
     ## Mesh, Geo), else the kind's tools.
     func update_modeling(self) -> unit!:
         let tools = self.actions.modify_commands()
-        var key = self.workspace.strip_kind().name
+        let w = self.workspace
+        let cad = w.network.context() == "cad"
+        var key = f"{w.strip_kind().name} {cad and not w.editing()}"
         for tool in tools:
             key += "/" + tool.text()
         if key == self.modeling_key:
             return
         self.modeling_key = key
         self.selecting.set_items(tool_menus.select_menu(self.workspace, self.actions))
-        self.modeling.set_text(self.workspace.strip_kind().name + " tools")
-        if not tool_menus.from_registry(self.workspace):
+        self.modeling.set_text("CAD tools" if cad and not w.editing() else w.strip_kind().name + " tools")
+        if not tool_menus.from_registry(w):
             self.families = []
             self.modeling.set_items(tools)
             return
@@ -149,7 +143,8 @@ pub class TopMenus:
             let title = Command(family.name)
             title.set_items(family.commands)
             titles.append(title)
-        self.modeling.set_items([self.actions.repeat_tool] + titles)
+        let lead = [self.actions.press_pull, self.actions.extrude_face, Command("", divider = true)] if cad else []
+        self.modeling.set_items(lead + [self.actions.repeat_tool] + titles)
         self.families = titles
 
 ## Enable submenu `title` while any of its items is enabled.
@@ -158,16 +153,6 @@ func enable_by_items(title: Command) -> unit!:
     for index in 0..<title.item_count():
         any = any or title.item(index).is_enabled()
     title.set_enabled(any)
-
-## Edit CAD's direct modeling tools that are no Modify feature (Remove
-## Faces), for Modify › CAD features: enabled while an Edit CAD model is
-## edited with what they take selected.
-func edit_cad_tools(actions: Actions) -> list[Command]:
-    let result: list[Command] = []
-    for command in actions.modeling:
-        if command.text() == "Remove Faces":
-            result.append(command)
-    return result
 
 ## A submenu for each of the Tab menu's categories that offers something in
 ## the network shown, holding Actions' add commands: the Create menu's and

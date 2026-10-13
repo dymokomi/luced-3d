@@ -5,37 +5,35 @@
 ## too. CAD features exist only inside a CAD node; inside one, the menu
 ## offers only these.
 from luce_cad.cad_geometry import CadGeometry
-from luce_cad.solids import CadSolids
-from luce_cad.modeling import CadModeling, CadDirect
+from luce_cad.modeling import CadModeling
 from luce_cad.model import CadModel
 from geometry_data import GeometryData
 from luce_ui import ui
-from luce_3d.graphics import Vector3
-import sketch_node
-from handle_lines import HandleLine
-import handle_lines
-import cad_features
-import extrude_inputs
-import cad_blends
-import cad_modify
-import cad_check
-import cad_curve_nodes
-import cad_surface_nodes
 from cad_blends import BlendMemo
-from angles import radians
+from tool_record import Invocation
+import tool_registry
 
-## The solid primitives (analytic B-reps, centered on the origin along +Y).
+## The solid primitives (analytic B-reps, centered on the origin along +Y):
+## the CAD tools of the Solids family.
 pub func solid_kinds() -> list[str]:
-    return ["Solid Box", "Solid Cylinder", "Solid Cone", "Solid Sphere", "Solid Torus"]
+    let result: list[str] = []
+    for entry in tool_registry.cad_nodes():
+        if entry.name.starts_with("Solid "):
+            result.append(entry.name)
+    return result
 
-## Nodes only a CAD node holds.
+## Nodes only a CAD node holds: the CAD tools' nodes (tool_registry.luc).
 pub func cad_only_kinds() -> list[str]:
-    return [sketch_node.kind_name, "Extrude", "Revolve", "Offset Face", "Fillet", "Chamfer"] + cad_modify.kinds() + ["Mirror Body", "Pattern", cad_check.kind_name] + solid_kinds() + cad_curve_nodes.kinds() + cad_surface_nodes.kinds()
+    let result: list[str] = []
+    for entry in tool_registry.cad_nodes():
+        result.append(entry.name)
+    return result
 
 ## Features with a second input (Combine's tool bodies, Extrude's target
 ## bodies, Check's reference for its deviation map).
 pub func two_inputs(kind: str) -> bool:
-    return kind in ["Extrude", "Revolve", "Combine", cad_check.kind_name]
+    let tool = tool_registry.cad_node(kind) else return false
+    return tool.inputs > 1
 
 pub func is_cad_only(kind: str) -> bool:
     return kind in cad_only_kinds()
@@ -64,18 +62,9 @@ pub func cad_categories() -> list[str]:
 
 ## A node's category in the CAD menu.
 pub func cad_category(kind: str) -> str:
-    if kind == sketch_node.kind_name:
-        return "Sketch"
-    if kind == cad_check.kind_name:
-        return "Inspect"
-    if kind in cad_curve_nodes.kinds():
-        return "Curves"
-    if kind in cad_surface_nodes.kinds():
-        return "Surfaces"
-    if kind in ["Fillet", "Chamfer", "Offset Face", "Mirror Body", "Pattern"] or kind in cad_modify.kinds():
-        return "Modify"
-    if is_cad_only(kind):
-        return "Create"
+    for entry in tool_registry.cad_nodes():
+        if entry.name == kind:
+            return entry.category
     if kind in ["Edit CAD", "Transform"]:
         return "Modify"
     return "Utility"
@@ -90,70 +79,9 @@ func body_of(data: GeometryData, role: str) -> CadModel!:
         body = CadModeling.combined(body, CadGeometry.model(data.geometry, at), 0)
     return body
 
-## The bodies flowing down the chain in `data` (a Sketch passes its input's
-## on beside its curves), without the curves; none without a body.
-pub func bodies_in(data: GeometryData) -> GeometryData?!:
-    if CadGeometry.model_count(data.geometry) == 0:
-        return none
-    return GeometryData(geometry = data.geometry.without("curves"))
-
-## The operation Extrude's and Revolve's Operation menu means: 0 Auto, then
-## New body, Join, Cut, Intersect.
-pub func operation_names() -> str:
-    return "Auto|New body|Join|Cut|Intersect"
-
-## The Operation menu as shown: Auto with what it chose at the last cook
-## ("Auto (Cut)"), when it chose.
-pub func operation_items(chosen: str) -> str:
-    return operation_names() if chosen == "" else f"Auto ({chosen})|New body|Join|Cut|Intersect"
-
-## Auto's choice, Fusion's: inside a body at `probe` (a point halfway along
-## the new solid) it cuts, else it joins when there are bodies, else it is
-## a new body (0 new, 1 join, 2 cut).
-func automatic(target: GeometryData?, probe: Vector3) -> int!:
-    let bodies = target else return 0
-    for at in 0..<CadGeometry.model_count(bodies.geometry):
-        if CadModeling.inside(CadGeometry.model(bodies.geometry, at), probe):
-            return 2
-    return 1
-
-## `made` as a new body beside the bodies of `target`.
-func beside(made: CadModel, target: GeometryData?) -> GeometryData!:
-    let other = target else return GeometryData(geometry = CadGeometry.of_model(made))
-    return other.merged(GeometryData(geometry = CadGeometry.of_model(made)))
-
-## What an Extrude's or Revolve's Profiles text (profile keys apart by
-## `;`) shows.
-pub func profiles_summary(text: str) -> str:
-    if text.trim() == "":
-        return "Islands (the sketch's closed shapes)"
-    if extrude_inputs.profile_face(text) != "":
-        return "A face of the body"
-    let count = text.split(";").length
-    return "1 profile" if count == 1 else f"{count} profiles"
-
-## What a blend's Edges text (edge references apart by `;`) shows.
-pub func edges_summary(text: str) -> str:
-    if text.trim() == "":
-        return "All straight edges"
-    let count = text.split(";").length
-    return "1 edge" if count == 1 else f"{count} edges"
-
 ## The tag that names the faces node `id` makes (luce-cad's naming).
 pub func tag_of(id: int) -> str:
     return f"#{id}"
-
-## A primitive's body, its faces named for `tag`.
-func primitive(kind: str, v: list[float], tag: str) -> CadModel!:
-    if kind == "Solid Box":
-        return CadModeling.tagged(CadSolids.box(v[0], v[1], v[2]), tag)
-    if kind == "Solid Cylinder":
-        return CadModeling.tagged(CadSolids.cylinder(v[0], v[1]), tag)
-    if kind == "Solid Cone":
-        return CadModeling.tagged(CadSolids.cone(v[0], v[1], v[2]), tag)
-    if kind == "Solid Sphere":
-        return CadModeling.tagged(CadSolids.sphere(v[0]), tag)
-    return CadModeling.tagged(CadSolids.torus(v[0], v[1]), tag)
 
 ## A CAD feature's result from its input `data`, its second input, values
 ## `v` and texts `texts`; the faces it makes are named for `tag` (tag_of).
@@ -162,138 +90,8 @@ func primitive(kind: str, v: list[float], tag: str) -> CadModel!:
 ## line reads it). A feature with viewport handles reports where they
 ## stand (GeometryData.handles).
 pub func evaluate_cad(kind: str, v: list[float], data: GeometryData, tag: str, second: GeometryData? = none, texts: list[str]? = none, memo: BlendMemo? = none, sketch: str = "") -> GeometryData!:
-    if kind in solid_kinds():
-        return GeometryData(geometry = CadGeometry.of_model(primitive(kind, v, tag)))
-    let t = texts else ["", "", ""]
-    if kind == sketch_node.kind_name:
-        return sketch_node.evaluate_sketch(v, t, data)
-    if kind == "Revolve" and int(v[cad_features.axis_slot]) == 0 and t[cad_features.axis_text].trim() == "":
-        # Waiting for its axis (Pick axis): a warning, the sketch shown as
-        # it is, not a failure.
-        return data.passed("Pick the axis: a sketch line or a body edge (Pick axis), or choose an origin axis")
-    if kind == "Extrude" or kind == "Revolve":
-        return featured(kind, v, t, data, tag, second, sketch)
-    if kind == "Offset Face":
-        # Press Pull on faces: Fusion's Offset Face, tangent faces following.
-        let body = body_of(data, "first")
-        if t[0].trim() == "":
-            error(ui.invalid, "Pick the faces to offset (Press Pull on a face of the body)")
-        let result = GeometryData(geometry = CadGeometry.of_model(CadDirect.offset_faces(body, t[0], v[0], true)))
-        let first = t[0].split(";")[0].trim()
-        let at = CadModeling.face_point(body, first)
-        if at.found:
-            result.handles = handle_lines.encode([HandleLine("arrow", 0, 1.0, at.point, at.normal, -1, Vector3())])
-        return result
-    if kind in cad_modify.kinds():
-        return cad_modify.evaluate(kind, v, t, data, tag, second)
-    if kind == "Fillet" or kind == "Chamfer":
-        return cad_blends.blended(kind, v, t, body_of(data, "first"), tag, memo)
-    if kind in cad_curve_nodes.kinds():
-        return cad_curve_nodes.evaluate(kind, v, t, data, tag)
-    if kind in cad_surface_nodes.kinds():
-        return cad_surface_nodes.evaluate(kind, v, t, data, tag)
-    if kind == cad_check.kind_name:
-        var reference: CadModel? = none
-        if let other = second:
-            if other.has_cad():
-                reference = body_of(other, "second")
-        var body: CadModel? = none
-        if data.has_cad():
-            body = body_of(data, "first")
-        return cad_check.evaluate(v, t[0], data, body, reference)
-    if kind == "Mirror Body":
-        # Across the plane facing X, Y or Z through the origin.
-        let body = body_of(data, "first")
-        let axis = int(v[0])
-        let flip = Vector3(-1.0 if axis == 0 else 1.0, -1.0 if axis == 1 else 1.0, -1.0 if axis == 2 else 1.0)
-        # The copy's faces named apart from the original's.
-        let reflected = CadModeling.prefixed(body, f"{tag}.1:").transformed(Vector3(), Vector3(), flip)
-        if v[1] != 0.0:
-            return GeometryData(geometry = CadGeometry.of_model(body)).merged(GeometryData(geometry = CadGeometry.of_model(reflected)))
-        return GeometryData(geometry = CadGeometry.of_model(CadModeling.combined(body, reflected, 0)))
-    if kind == "Pattern":
-        # Copies along an axis (spacing apart) or around it (over an angle).
-        let body = body_of(data, "first")
-        let count = int(v[1])
-        let axis = int(v[2])
-        let direction = Vector3(1.0 if axis == 0 else 0.0, 1.0 if axis == 1 else 0.0, 1.0 if axis == 2 else 0.0)
-        var result = body
-        var separate = GeometryData(geometry = CadGeometry.of_model(body))
-        for at in 1..<count:
-            # Each copy's faces named apart (copy k: `tag.k:` before them).
-            var copy = CadModeling.prefixed(body, f"{tag}.{at}:")
-            if int(v[0]) == 0:
-                copy = copy.transformed(direction.multiply_scalar(v[3] * float(at)), Vector3(), Vector3(1.0, 1.0, 1.0))
-            else:
-                let step = radians(v[4]) / float(count if v[4] >= 359.999 else count - 1)
-                copy = copy.transformed(Vector3(), direction.multiply_scalar(step * float(at)), Vector3(1.0, 1.0, 1.0))
-            if v[5] != 0.0:
-                separate = separate.merged(GeometryData(geometry = CadGeometry.of_model(copy)))
-            else:
-                result = CadModeling.combined(result, copy, 0)
-        if v[5] != 0.0:
-            return separate
-        return GeometryData(geometry = CadGeometry.of_model(result))
+    if let tool = tool_registry.cad_node(kind):
+        return tool.cook(Invocation(kind, v, [], 0, texts = texts else ["", "", "", "", ""], node = true, second = second, memo = memo, sketch = sketch), data, tag)
     error(ui.invalid, f"{kind} is not a CAD feature")
 
-## Extrude or Revolve (cad_features.luc) from the nearest sketch upstream's
-## profiles (the first text's keys; none: islands alternating from the
-## outside in), combined with the bodies flowing down the chain (or the
-## second input's, when wired) by its Operation.
-func featured(kind: str, v: list[float], texts: list[str], data: GeometryData, tag: str, second: GeometryData?, sketch: str) -> GeometryData!:
-    let chain = bodies_in(data)
-    let target = second if second != none else chain
-    var handles: list[HandleLine] = []
-    var probe: Vector3? = none
-    var solid: CadModel? = none
-    if kind == "Extrude":
-        # The profiles: the sketch's, a face of the body, or Thin's bands
-        # (extrude_inputs.luc).
-        var curves = data.geometry
-        var profiles = texts[0]
-        let face = extrude_inputs.profile_face(texts[0])
-        if face != "":
-            let bodies = chain else error(ui.invalid, "The face to extrude is on the body flowing down the chain: there is none")
-            curves = extrude_inputs.face_curves(bodies, face)
-            profiles = ""
-        if int(v[cad_features.type_slot]) == 1:
-            if face != "":
-                error(ui.invalid, "Thin Extrude follows a sketch's curves: pick the sketch's profiles, not a face")
-            curves = extrude_inputs.thin_curves(sketch, sketch_node.plane_of(data.geometry), profiles, v[cad_features.thickness_slot], int(v[cad_features.wall_slot]))
-            profiles = ""
-        let anchor = CadModeling.profile_anchor(curves, profiles)
-        solid = cad_features.extruded(v, texts, curves, profiles, tag, target)
-        if anchor.found:
-            let start = cad_features.start_height(v, texts, anchor, target)
-            probe = cad_features.extrude_probe(v, texts, anchor, start)
-            handles = cad_features.extrude_handles(v, texts, anchor, start)
-    else:
-        let (revolved, middle) = cad_features.revolved(v, texts, data, tag, sketch, target)
-        solid = revolved
-        probe = middle
-        handles = cad_features.revolve_handles(v, texts, data, sketch)
-    let body = solid else error(ui.invalid, f"{kind} made nothing")
-    var operation = int(v[1]) - 1
-    if int(v[1]) == 0:
-        operation = 0
-        if let at = probe:
-            operation = automatic(target, at)
-    if operation != 0 and target == none:
-        error(ui.invalid, "Join, Cut and Intersect need a body: the sketch's input body, or one wired to the second input")
-    # Objects To Cut: the bodies acted on (none named: every body); Cut
-    # and Intersect act on each apart.
-    let chosen = texts[cad_features.bodies_text] if kind == "Extrude" else ""
-    var result = beside(body, target) if operation == 0 else extrude_inputs.combined_with(body, target else trap("target"), operation, chosen)
-    # An explicit target leaves the chain's bodies as they were.
-    if second != none:
-        if let bodies = chain:
-            result = bodies.merged(result)
-    # What Auto chose, for the Operation row.
-    if int(v[1]) == 0:
-        result.automatic = ["New body", "Join", "Cut", "Intersect"][operation]
-    return handled(result, handles)
 
-## `data` with its handles.
-func handled(data: GeometryData, handles: list[HandleLine]) -> GeometryData:
-    data.handles = handle_lines.encode(handles)
-    return data

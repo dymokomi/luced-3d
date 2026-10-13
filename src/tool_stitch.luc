@@ -1,0 +1,44 @@
+## Stitch (Alias's): bodies joined where their edges lie within a gap, the
+## joined edges keeping the gap as their precision; detaching periodic
+## faces and single-curve boundaries for export (surface_ops.luc). The
+## node keeps its bodies by one face's name each (none: every body); an
+## Edit CAD step stitches the bodies picked.
+from tool_record import Tool, ToolEntry, Pick, Invocation
+from geometry_data import GeometryData
+from parameter_rows import Parameter, number, toggle
+from edit_types import object_level
+import pick_kinds
+import edit_cad_surfaces
+import surface_ops
+import cad_cook
+
+pub func entry() -> ToolEntry:
+    return ToolEntry(edit_cad_surfaces.stitch_verb, edit_cad_surfaces.stitch_verb, "attachment", "Surfaces", [cad_cook.context], [cad_cook.edit_kind], made)
+
+func made() -> Tool:
+    return entry().tool("Modify", "Surface Edit", "Join bodies along edges that lie within a gap", picks(), rows(), cook)
+
+func picks() -> list[Pick]:
+    return [Pick("Bodies", [object_level], kind = pick_kinds.bodies, slot = 0, needed = optional, doc = "The bodies joined (none picked: every body of the input).")]
+
+func optional(values: list[float], texts: list[str], wired: bool) -> bool:
+    return false
+
+func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    let v = call.numbers
+    let periodic = v[edit_cad_surfaces.periodic_slot] != 0.0 if v.length > edit_cad_surfaces.periodic_slot else false
+    let single = v[edit_cad_surfaces.single_slot] != 0.0 if v.length > edit_cad_surfaces.single_slot else false
+    var bodies: list[int] = []
+    if call.node:
+        bodies = edit_cad_surfaces.named_bodies(data, call.text(0))
+        bodies.sort()
+    else:
+        bodies = edit_cad_surfaces.step_bodies(call, data)
+    return surface_ops.stitch(data, bodies, v[edit_cad_surfaces.gap_slot], periodic, single)
+
+func rows() -> list[Parameter]:
+    let gap = number("Gap", edit_cad_surfaces.gap_slot, 0.001, 0.0000001, 1.0, 0.0005, "Edges whose ends and middles lie this close join (Alias's Stitch tolerance, 0.0001 to 1); the joined edges keep the gap as their precision.", soft = 0.1)
+    gap.length = true
+    return [gap,
+            toggle("Detach periodic", edit_cad_surfaces.periodic_slot, 0.0, "Alias's Detach periodic surfaces (for export): a face wrapping round its surface split in two, each meeting its seam once."),
+            toggle("Detach single-curve boundaries", edit_cad_surfaces.single_slot, 0.0, "Alias's Detach single curve boundaries (for export): a loop of one closed edge split into two edges.")]

@@ -33,7 +33,7 @@ def build(project, binary, optimization="0"):
                    check=True, env=environment, timeout=480)
 
 # The tool registry's surfaces in Edit Mesh (tools/preview_poly.luc).
-POLY_SCENES = ["poly_marking_edges", "poly_menu_faces", "poly_marking_select", "poly_checker"]
+POLY_SCENES = ["poly_marking_edges", "poly_menu_faces", "poly_marking_select", "poly_checker", "poly_marking_disabled"]
 # Selection in Edit Mesh (tools/preview_select.luc).
 SELECT_SCENES = ["select_d_edges", "select_d_faces", "select_loop", "select_ring", "select_path", "select_similar", "select_hide"]
 # Drags after tools and the interactive tools in Edit Mesh (tools/preview_drag.luc).

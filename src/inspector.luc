@@ -23,17 +23,17 @@ from edit_types import point_level
 import edit_cad
 from usd_nodes import Composition, compose_usd
 import node_commands
-import cad_nodes
+import feature_ops
 import sketch_node
 import sketch_commands
 from sketch_commands import SketchDimension
 import units
 from angles import radians, degrees
 import tool_prompts
-import modify_picks
-import cad_features
-import cad_blends
-import cad_check
+import tool_picks
+import tool_registry
+import pick_kinds
+from tool_record import Tool, Pick
 
 pub class Inspector:
     ## A path row's Browse: pick a file for text slot `slot`.
@@ -172,33 +172,20 @@ pub class Inspector:
                 callback()
         elif role == "clear":
             self.actions.clear_edits.trigger()
-        elif role == "pick_edges":
-            if let node = self.workspace.selected(): tool_prompts.pick_edges(self.workspace, node.id)
-        elif role.starts_with("pick_set:"):
-            if let node = self.workspace.selected(): tool_prompts.pick_edges(self.workspace, node.id, int(role[9..]))
-        elif role == "all_edges" or role == "all_profiles":
-            node_commands.set_text(self.workspace, 0, "")
-        elif role == "pick_face":
-            if let node = self.workspace.selected(): tool_prompts.pick_face(self.workspace, node.id)
-        elif role == "pick_profiles":
-            if let node = self.workspace.selected(): tool_prompts.pick_profiles(self.workspace, node.id)
-        elif role == "pick_object" or role == "pick_object_two":
-            if let node = self.workspace.selected(): tool_prompts.pick_object(self.workspace, node.id, role == "pick_object_two")
-        elif role == "pick_axis":
-            if let node = self.workspace.selected(): tool_prompts.pick_axis(self.workspace, node.id)
-        elif role == "pick_center_face":
-            if let node = self.workspace.selected(): tool_prompts.pick_center_face(self.workspace, node.id)
-        elif role == "pick_start_object":
-            if let node = self.workspace.selected(): tool_prompts.pick_start_object(self.workspace, node.id)
-        elif role == "pick_bodies":
-            if let node = self.workspace.selected(): tool_prompts.pick_bodies(self.workspace, node.id)
-        elif role == "auto_bodies":
-            node_commands.set_text(self.workspace, cad_features.bodies_text, "")
-        elif role == "pick_faces" or role == "pick_other_faces" or role == "pick_offset_faces":
-            if let node = self.workspace.selected(): tool_prompts.pick_faces(self.workspace, node.id, 2 if role == "pick_other_faces" else (0 if role == "pick_offset_faces" else 1))
-        elif role.starts_with("modify_pick:"):
+        elif role.starts_with("pick_button:"):
             if let node = self.workspace.selected():
-                modify_picks.start(self.workspace, node.id, modify_picks.inputs(node.kind)[int(role[12..])])
+                let found = self.pick_of(node.kind, role[12..]) else return
+                let (tool, at) = found
+                if tool.picks[at].kind == pick_kinds.profiles:
+                    tool_prompts.pick_profiles(self.workspace, node.id)
+                else:
+                    tool_picks.start(self.workspace, node, tool, at)
+        elif role.starts_with("pick_clear:"):
+            if let node = self.workspace.selected():
+                let found = self.pick_of(node.kind, role[11..]) else return
+                let (tool, at) = found
+                let pick = tool.picks[at]
+                node_commands.set_text(self.workspace, pick.slot, pick.holding(node.texts[pick.slot], ""))
         elif role == "reselect":
             if let node = self.workspace.selected(): tool_prompts.reselect(self.workspace, node.id)
         elif role == "keep_ids":
@@ -266,99 +253,19 @@ pub class Inspector:
         # its numbers on a changed topology (Houdini's behaviour).
         # A blend's edges: references to them by their faces (luce-cad's
         # names), which survive changes upstream; shown as a count.
-        if kind == sketch_node.kind_name:
-            self.add(specs, "face", ParameterSpec(name = "face", label = "Face", kind = ParameterKind.info,
-                                                  doc = "The input body's face the sketch is on (Plane: Face), kept by its name so it stays that face as the body changes."))
-            self.add(specs, "pick_face", ParameterSpec(name = "pick_face", label = "Pick face", kind = ParameterKind.button,
-                                                       doc = "Show the input body and click the flat face to sketch on."))
-        if kind in ["Extrude", "Revolve"]:
-            self.add(specs, "profiles", ParameterSpec(name = "profiles", label = "Profiles", kind = ParameterKind.info,
-                                                      doc = "The sketch's regions to take, remembered by the curves round them so they hold as dimensions change. None picked: its closed shapes, holes left empty."))
-            self.add(specs, "pick_profiles", ParameterSpec(name = "pick_profiles", label = "Pick profiles", kind = ParameterKind.button, join = true,
-                                                           doc = "Click the sketch's regions to take (again to leave one out); Enter finishes."))
-            self.add(specs, "all_profiles", ParameterSpec(name = "all_profiles", label = "Closed shapes", kind = ParameterKind.button,
-                                                          doc = "Forget the picked profiles: take the sketch's closed shapes."))
-        # Extrude's To object faces, Revolve's picked axis, Offset Face's
-        # faces: kept by name, shown, picked in the viewport.
-        if kind == "Extrude":
-            self.add(specs, "object", ParameterSpec(name = "object", label = "Object", kind = ParameterKind.info, hide_when = "{ extent != 1 }",
-                                                    doc = "The face the extrusion runs to (To object), kept by its name so it stays that face as the body changes."))
-            self.add(specs, "pick_object", ParameterSpec(name = "pick_object", label = "Pick object", kind = ParameterKind.button, hide_when = "{ extent != 1 }",
-                                                         doc = "Show the body and click the face to extrude to."))
-            self.add(specs, "object_two", ParameterSpec(name = "object_two", label = "Side 2 object", kind = ParameterKind.info, hide_when = "{ direction != 1 } { side_2_extent != 1 }",
-                                                        doc = "The face the second side runs to (To object)."))
-            self.add(specs, "pick_object_two", ParameterSpec(name = "pick_object_two", label = "Pick side 2 object", kind = ParameterKind.button, hide_when = "{ direction != 1 } { side_2_extent != 1 }",
-                                                             doc = "Show the body and click the face the second side extrudes to."))
-            self.add(specs, "start_object", ParameterSpec(name = "start_object", label = "Start object", kind = ParameterKind.info, hide_when = "{ start != 2 }",
-                                                          doc = "The face the extrusion starts from (Start: Object), kept by its name."))
-            self.add(specs, "pick_start_object", ParameterSpec(name = "pick_start_object", label = "Pick start object", kind = ParameterKind.button, hide_when = "{ start != 2 }",
-                                                               doc = "Show the body and click the face to start from."))
-            self.add(specs, "bodies", ParameterSpec(name = "bodies", label = "Objects To Cut", kind = ParameterKind.info, hide_when = "{ operation == 1 }",
-                                                    doc = "The bodies Join, Cut and Intersect act on, kept by their faces' names. Auto-select: every body, as it is when the node cooks."))
-            self.add(specs, "pick_bodies", ParameterSpec(name = "pick_bodies", label = "Pick bodies", kind = ParameterKind.button, join = true, hide_when = "{ operation == 1 }",
-                                                         doc = "Show the bodies and pick those to act on (Shift adds); Enter accepts."))
-            self.add(specs, "auto_bodies", ParameterSpec(name = "auto_bodies", label = "Auto-select", kind = ParameterKind.button, hide_when = "{ operation == 1 }",
-                                                         doc = "Forget the picked bodies: act on every body."))
-        if kind == "Revolve":
-            self.add(specs, "object", ParameterSpec(name = "object", label = "Object", kind = ParameterKind.info, hide_when = "{ type != 2 }",
-                                                    doc = "The face the revolve turns to (Type: To), kept by its name."))
-            self.add(specs, "pick_object", ParameterSpec(name = "pick_object", label = "Pick object", kind = ParameterKind.button, hide_when = "{ type != 2 }",
-                                                         doc = "Show the body and click the face to turn to."))
-            self.add(specs, "axis", ParameterSpec(name = "axis_picked", label = "Picked axis", kind = ParameterKind.info, hide_when = "{ axis != 0 }",
-                                                  doc = "The sketch line or body edge the profiles turn about (projected onto the sketch's plane)."))
-            self.add(specs, "pick_axis", ParameterSpec(name = "pick_axis", label = "Pick axis", kind = ParameterKind.button, hide_when = "{ axis != 0 }",
-                                                       doc = "Click a line of the sketch, or a straight or round edge of the body."))
-        if kind == "Offset Face":
-            self.add(specs, "faces", ParameterSpec(name = "faces", label = "Faces", kind = ParameterKind.info,
-                                                   doc = "The faces moved, kept by their names (Press Pull on faces of the body)."))
-            self.add(specs, "pick_offset_faces", ParameterSpec(name = "pick_offset_faces", label = "Pick faces", kind = ParameterKind.button,
-                                                               doc = "Show the body and pick the faces to move (Shift adds); Enter accepts."))
-        # The Modify features' selection inputs (modify_picks.luc): what
-        # each holds, and its pick button.
-        let picks = modify_picks.inputs(kind)
-        for index in 0..<picks.length:
-            let input = picks[index]
-            self.add(specs, f"modify:{index}", ParameterSpec(name = f"picked_{index}", label = input.label, kind = ParameterKind.info, hide_when = input.hide_when, doc = input.doc))
-            self.add(specs, f"modify_pick:{index}", ParameterSpec(name = f"pick_{index}", label = "Set pivot" if input.label == "Pivot" else input.prompt(), kind = ParameterKind.button, hide_when = input.hide_when,
-                                                                 doc = f"Show the input body and {"click the point" if input.takes == modify_picks.point else "pick it"} in the viewport."))
-        if kind == "Fillet":
-            let between = "{ type != 1 } { rule == 0 }"
-            self.add(specs, "center_face", ParameterSpec(name = "center_face", label = "Center face", kind = ParameterKind.info, hide_when = "{ type != 2 }",
-                                                         doc = "Full round: the face rounded away, kept by its name; the faces on each side are found across its longest parallel edges."))
-            self.add(specs, "pick_center_face", ParameterSpec(name = "pick_center_face", label = "Pick center face", kind = ParameterKind.button, hide_when = "{ type != 2 }",
-                                                              doc = "Show the body and click the face to round away whole."))
-            self.add(specs, "rule_faces", ParameterSpec(name = "rule_faces", label = "Faces", kind = ParameterKind.info, hide_when = between,
-                                                        doc = "Rule fillet, Between faces: the first set of faces, kept by their names."))
-            self.add(specs, "pick_faces", ParameterSpec(name = "pick_faces", label = "Pick faces", kind = ParameterKind.button, hide_when = between,
-                                                        doc = "Show the body and pick the first set of faces (Shift adds); Enter accepts."))
-            self.add(specs, "rule_others", ParameterSpec(name = "rule_others", label = "Other faces", kind = ParameterKind.info, hide_when = between,
-                                                         doc = "Rule fillet, Between faces: the second set (none: any face next to the first set)."))
-            self.add(specs, "pick_other_faces", ParameterSpec(name = "pick_other_faces", label = "Pick other faces", kind = ParameterKind.button, hide_when = between,
-                                                              doc = "Show the body and pick the second set of faces (Shift adds); Enter accepts."))
-        if kind in ["Fillet", "Chamfer"]:
-            # A Rule fillet's edges come from its rule.
-            let ruled = "{ type != 0 }" if kind == "Fillet" else ""
-            self.add(specs, "edges", ParameterSpec(name = "edges", label = "Edges", kind = ParameterKind.info, hide_when = ruled,
-                                                   doc = "The edges to blend, remembered by the faces they lie between, so they stay the same edges when anything upstream changes. None picked: every straight convex edge between flat faces."))
-            self.add(specs, "pick_edges", ParameterSpec(name = "pick_edges", label = "Pick edges", kind = ParameterKind.button, join = true, hide_when = ruled,
-                                                        doc = "Show the input body and pick the edges to blend (Enter accepts). Hole rims can be picked too."))
-            self.add(specs, "all_edges", ParameterSpec(name = "all_edges", label = "All edges", kind = ParameterKind.button, hide_when = ruled,
-                                                       doc = "Forget the picked edges: blend every straight convex edge between flat faces."))
-            # A Fillet's further selection sets: each its edges and pick.
-            if kind == "Fillet":
-                for k in 2..<cad_blends.most_sets + 1:
-                    let hidden = "{ type != 0 } { radius_type == 1 } { selection_sets < " + f"{k}" + " }"
-                    self.add(specs, f"set_edges:{k}", ParameterSpec(name = f"set_{k}_edges", label = f"Set {k} edges", kind = ParameterKind.info, hide_when = hidden,
-                                                                     doc = f"Selection set {k}'s edges, filleted at Set {k} radius (with Variable radius, set 2: the constant edges the law runs into)."))
-                    self.add(specs, f"pick_set:{k}", ParameterSpec(name = f"pick_set_{k}", label = f"Pick set {k} edges", kind = ParameterKind.button, hide_when = hidden,
-                                                                    doc = f"Show the input body and pick set {k}'s edges (Enter accepts)."))
-        if kind == cad_check.kind_name:
-            self.add(specs, "edges", ParameterSpec(name = "edges", label = "Edges", kind = ParameterKind.info,
-                                                   doc = "The edges checked, remembered by the faces they lie between. None picked: every edge between two faces."))
-            self.add(specs, "pick_edges", ParameterSpec(name = "pick_edges", label = "Pick edges", kind = ParameterKind.button, join = true,
-                                                        doc = "Show the input body and pick the edges to check (Enter accepts)."))
-            self.add(specs, "all_edges", ParameterSpec(name = "all_edges", label = "All edges", kind = ParameterKind.button,
-                                                       doc = "Forget the picked edges: check every edge between two faces."))
+        # A CAD tool's picks (tool_picks.luc): what each holds, its button
+        # to pick it again, and one to forget it where empty means all.
+        if let tool = tool_registry.cad_node(kind):
+            for at in tool.picks_of(false):
+                let pick = tool.picks[at]
+                let key = pick.label.lower()
+                self.add(specs, "pick:" + key, ParameterSpec(name = key.replace(" ", "_"), label = pick.label, kind = ParameterKind.info, hide_when = pick.hide_when, doc = pick.doc))
+                let button = pick.button if pick.button != "" else pick.asking()
+                self.add(specs, "pick_button:" + key, ParameterSpec(name = button.lower().replace(" ", "_"), label = button, kind = ParameterKind.button, join = pick.clear != "", hide_when = pick.hide_when,
+                                                                    doc = f"Show the input and {"click the point" if pick.kind == pick_kinds.point else "pick it"} in the viewport."))
+                if pick.clear != "":
+                    self.add(specs, "pick_clear:" + key, ParameterSpec(name = pick.clear.lower().replace(" ", "_").replace("-", "_"), label = pick.clear, kind = ParameterKind.button, hide_when = pick.hide_when,
+                                                                       doc = f"Forget what is picked: {pick.clear}."))
         # A sketch's dimensions, each a row in the document's unit (an
         # angle in degrees); its constraint is the row's slot.
         if kind == sketch_node.kind_name:
@@ -389,6 +296,15 @@ pub class Inspector:
     ## and Keep rows: only at its CVs level, the one level they act on.
     func cv_rows(self) -> bool:
         return self.workspace.level_index() == point_level
+
+    ## The CAD tool of node kind `kind` and its pick whose role key (its
+    ## label, lower-cased) is `key`.
+    func pick_of(self, kind: str, key: str) -> (Tool, int)?:
+        let tool = tool_registry.cad_node(kind) else return none
+        for at in 0..<tool.picks.length:
+            if tool.picks[at].label.lower() == key:
+                return (tool, at)
+        return none
 
     pub func refresh(self) -> unit!:
         self.generic_rows.layout().set_visible(self.workspace.selected() != none)
@@ -454,7 +370,7 @@ pub class Inspector:
                     self.parameters.set_component(index, component, node.values[row.slot + component])
                 # Auto says what it chose: "Auto (Cut)".
                 if row.name == "Operation" and node.kind in ["Extrude", "Revolve"]:
-                    let items = cad_nodes.operation_items(node.automatic)
+                    let items = feature_ops.operation_items(node.automatic)
                     if items != self.operation_items:
                         self.operation_items = items
                         self.parameters.set_items(index, items)
@@ -472,42 +388,14 @@ pub class Inspector:
                 self.parameters.set_text(index, row.text)
             elif role == "edits":
                 self.parameters.set_text(index, f"{node.edits.length} edits / {self.workspace.selected_entities()} selected")
-            elif role == "edges":
-                self.parameters.set_text(index, cad_check.edges_summary(node.texts[0]) if node.kind == cad_check.kind_name else cad_nodes.edges_summary(node.texts[0]))
-            elif role.starts_with("set_edges:"):
-                let picked = cad_blends.set_edges(node.texts, int(role[10..]))
-                self.parameters.set_text(index, cad_nodes.edges_summary(picked) if picked != "" else "None picked")
-            elif role == "all_edges" or role == "all_profiles":
-                self.parameters.set_enabled(index, node.texts[0] != "")
-            elif role == "face":
-                self.parameters.set_text(index, node.texts[1] if node.texts[1] != "" else "None picked")
-            elif role == "profiles":
-                self.parameters.set_text(index, cad_nodes.profiles_summary(node.texts[0]))
-            elif role == "object" or role == "object_two" or role == "start_object":
-                var slot = cad_features.face_two_text if role == "object_two" else cad_features.face_text
-                if role == "start_object":
-                    slot = cad_features.start_face_text
-                elif node.kind == "Revolve":
-                    slot = cad_features.revolve_face_text
-                let picked = node.texts[slot]
-                self.parameters.set_text(index, picked if picked != "" else "None picked")
-            elif role == "center_face":
-                let center = node.texts[cad_blends.faces_text].split(";")[0].trim()
-                self.parameters.set_text(index, center if center != "" else "None picked")
-            elif role == "bodies":
-                let text = node.texts[cad_features.bodies_text]
-                let count = text.split(";").length
-                self.parameters.set_text(index, "Auto-select (every body)" if text.trim() == "" else ("1 body" if count == 1 else f"{count} bodies"))
-            elif role == "auto_bodies":
-                self.parameters.set_enabled(index, node.texts[cad_features.bodies_text] != "")
-            elif role == "axis":
-                self.parameters.set_text(index, cad_features.axis_summary(node.texts[cad_features.axis_text]))
-            elif role == "faces" or role == "rule_faces" or role == "rule_others":
-                let text = node.texts[0 if role == "faces" else (1 if role == "rule_faces" else 2)]
-                let count = text.split(";").length
-                self.parameters.set_text(index, ("Any face" if role == "rule_others" else "None picked") if text.trim() == "" else ("1 face" if count == 1 else f"{count} faces"))
-            elif role.starts_with("modify:"):
-                self.parameters.set_text(index, modify_picks.summary(node, modify_picks.inputs(node.kind)[int(role[7..])]))
+            elif role.starts_with("pick:"):
+                if let found = self.pick_of(node.kind, role[5..]):
+                    let (tool, at) = found
+                    self.parameters.set_text(index, summary(tool.picks[at], node))
+            elif role.starts_with("pick_clear:"):
+                if let found = self.pick_of(node.kind, role[11..]):
+                    let (tool, at) = found
+                    self.parameters.set_enabled(index, tool_picks.held(node, tool.picks[at], false) != "")
             elif role == "clear":
                 self.parameters.set_enabled(index, node.edits.length > 0)
             elif role == "keep_ids":
@@ -639,3 +527,35 @@ func linked_slot(node: Node, slot: int) -> bool:
 ## `text` on one line: line breaks and tabs as spaces (a Text holds one).
 func one_line(text: str) -> str:
     return text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+
+## What pick `pick` of `node` holds, in words: its own summary, else by
+## its kind ("None picked", "2 faces", "An edge", the point).
+func summary(pick: Pick, node: Node) -> str!:
+    if pick.kind == pick_kinds.point:
+        let v = node.values
+        return f"{v[pick.slot]:.3f}, {v[pick.slot + 1]:.3f}, {v[pick.slot + 2]:.3f}"
+    let text = tool_picks.held(node, pick, false).trim()
+    if let told = pick.summary:
+        return told(text)
+    if text == "":
+        return "None picked"
+    if pick.kind == pick_kinds.face:
+        return text
+    if pick.kind == pick_kinds.edge:
+        return "An edge"
+    if pick.kind == pick_kinds.curve_or_edge:
+        return text if text.starts_with("curve ") else "An edge"
+    if pick.kind in [pick_kinds.align_input, pick_kinds.align_master]:
+        let words = text.split(" ")
+        if words[0] == "isoparm" or words[0] == "isoparm_at":
+            return "An isoparm"
+        return f"{words[1]} ({words[0]})" if words.length > 1 else text
+    let count = text.split(";").length
+    if pick.kind in [pick_kinds.curves, pick_kinds.words]:
+        return "1 curve" if count == 1 else f"{count} curves"
+    if pick.kind == pick_kinds.edges:
+        return "1 edge" if count == 1 else f"{count} edges"
+    let noun = "body" if pick.bodies(node.values) else "face"
+    if count == 1:
+        return f"1 {noun}"
+    return f"{count} {"bodies" if noun == "body" else "faces"}"
