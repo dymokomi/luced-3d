@@ -994,7 +994,8 @@ Depth and Skew or by Softness; **Limits** (with **At overlap**, Parasolid's
 overlap limit: only where the fillet fits its faces); **Setback** (radii); the
 setback corner's **Corner edge shape** (G1, Alias's Corner Blend Edge Shape: its
 curves on the faces as conics, 0.5 the circle) and **Corner fullness** (Alias's
-Pivot Curve Length Ratio: its patch's bulge scaled, 1 the fairest fill);
+Pivot Curve Length Ratio: its patch's bulge scaled, 1 the fairest fill, the
+default, 0 as Fusion's corners);
 **Overflow** with its Smooth, Cliff and Notch behaviours (Smooth rolls an inside
 foot onto a wall's rounded top; Notch trims a fillet where a notch cuts under
 one end, Fusion's). **Selection sets** (Fusion's
