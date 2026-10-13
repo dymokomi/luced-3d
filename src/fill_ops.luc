@@ -1,0 +1,223 @@
+## Surfacing Stage 7's Fill (docs/research/SURFACING-ALIAS-PLASTICITY.md §5.2,
+## §6.8, §7.1), luce-cad's CadSurfaceFill: xNURBS's variational fill
+## (Plasticity's xNURBS and Patch, Alias's N-sided, Rhino 9's Patch). The
+## smoothest surface meeting a closed loop of boundaries (edges, curves,
+## isoparms, picked in any order; one edge of a hole picks the whole hole),
+## each Free, G0, G1 or G2 to the surface beside it, through guide curves
+## and points (a double-click on a surface adds a point); N-sided (one
+## trimmed face) or Quad (an untrimmed four-sided face); Tension, Flatness,
+## the Quad's boundary flow, Explicit Control, refinement and its
+## tolerances. Shared by Edit CAD's Fill step (edit_cad_build.luc) and the
+## CAD network's Fill node (cad_surface_nodes.luc), through blend_ops.luc.
+## The cook publishes each boundary's label (its continuity, a click
+## cycles it: the Continuity row's, then Free, G0, G1, G2), the picks'
+## lines, Alias's Continuity Check, and the conflicts: where the
+## neighbors' demands disagree, drawn on the model as xNURBS 7 draws them
+## (build_labels.luc). Its name is Fill Surface: Edit Mesh has a Fill.
+from luce_cad.surfacing import CadSurfaceFill, CadFill
+from luce_3d.graphics import Vector3
+from geometry_data import GeometryData
+from parameter_rows import Parameter, number, toggle, menu
+import build_ops
+
+pub let fill_verb = "Fill Surface"
+
+## The texts: the boundaries, then the guides (curves, and points as
+## "isoparm_at x y z" from a double-click).
+pub let boundaries_text = 0
+pub let guides_text = 1
+
+## The conflicts' state lines: from, to (x y z each), the order, the
+## amount, 1 at a corner, the boundary, then the label's text.
+pub let conflict_head = "build_conflict "
+
+# -- Slots.
+
+pub let continuity_slot = 0
+pub let quad_slot = 1
+pub let tension_slot = 2
+pub let flatness_slot = 3
+pub let flow_slot = 4
+pub let guide_slot = 5
+pub let explicit_slot = 6
+pub let degree_u_slot = 7
+pub let spans_u_slot = 8
+pub let degree_v_slot = 9
+pub let spans_v_slot = 10
+pub let refine_slot = 11
+pub let most_slot = 12
+pub let position_slot = 13
+pub let angle_slot = 14
+pub let curvature_slot = 19
+pub let labels_slot = 16
+pub let check_slot = 17
+pub let conflicts_slot = 18
+## (Slot 15 is a node's Group Type, node_catalog.group_type_slot.)
+## Each boundary's own continuity, by its place in the loop picked (0: the
+## Continuity row's; 1 to 4: Free, G0, G1, G2), set by its label.
+pub let boundary_slot = 20
+pub let boundary_count = 16
+
+pub let continuity_cycle = "Free|G0|G1|G2"
+
+# -- Rows.
+
+pub func rows() -> list[Parameter]:
+    let result = [menu("Continuity", continuity_slot, continuity_cycle, 2.0, "Each boundary's continuity to the surface beside it (xNURBS's, Alias's N-sided): Free keeps its position, G0 position, G1 tangent, G2 curvature. A boundary's label on the model sets its own (a click cycles it)."),
+                  toggle("Quad", quad_slot, 0.0, "xNURBS's Quad sided: four boundaries make an untrimmed four-sided face (else one trimmed face over any number)."),
+                  number("Tension", tension_slot, 0.0, 0.0, 1.0, 0.05, "Plasticity's Tension: 0 the smoothest bend, toward 1 tighter (shorter between the boundaries)."),
+                  number("Flatness", flatness_slot, 0.0, 0.0, 1.0, 0.05, "xNURBS's Flatness: a pull toward the boundaries' best plane.")]
+    let flow = menu("Boundary flow", flow_slot, "Natural|Normal|Next|Adjacent", 0.0, "Plasticity's Boundary (Quad): the isoparms leaving each side as they fall (Natural), square to it (Normal), along the next sides (Next) or along the neighbor's own (Adjacent).")
+    flow.hide_when = "{ quad == 0 }"
+    result.append(flow)
+    result.append(menu("Guide continuity", guide_slot, "G0|G1", 0.0, "Guide curves the fill passes through (G0), or tangent to the face a guide lies on (G1)."))
+    result.append(toggle("Explicit control", explicit_slot, 0.0, "Alias's Explicit Control: the degrees and spans as set here, no refining (else multi-span quintic, refined)."))
+    let dims = [("Degree U", degree_u_slot, 5.0, 2.0, 9.0), ("Spans U", spans_u_slot, 4.0, 1.0, 64.0), ("Degree V", degree_v_slot, 5.0, 2.0, 9.0), ("Spans V", spans_v_slot, 4.0, 1.0, 64.0)]
+    for (label, slot, initial, low, high) in dims:
+        let row = number(label, slot, initial, low, high, 1.0, "Explicit Control's degree or span count that way.")
+        row.hide_when = "{ explicit_control == 0 }"
+        result.append(row)
+    result.append(toggle("Refine", refine_slot, 1.0, "Rhino's Refine, xNURBS's Quality: spans are halved while a boundary misses its tolerance."))
+    let most = number("Most spans", most_slot, 32.0, 1.0, 64.0, 1.0, "The most spans refining reaches each way.")
+    most.hide_when = "{ refine == 0 }"
+    result.append(most)
+    let position = number("Position tolerance", position_slot, 0.0, 0.0, 1.0, 0.000001, "The gap a boundary may keep (0: a millionth of the hole's size).")
+    position.length = true
+    result.extend([position,
+                   number("Angle tolerance", angle_slot, 0.05, 0.001, 5.0, 0.01, "The angle between normals a G1 or G2 boundary may keep, in degrees."),
+                   number("Curvature tolerance", curvature_slot, 0.5, 0.01, 20.0, 0.1, "The normal curvatures' difference a G2 boundary may keep, in percent of the larger."),
+                   toggle("Boundary labels", labels_slot, 1.0, "Each boundary's continuity at its middle; a click cycles it."),
+                   toggle("Continuity check", check_slot, 1.0, "Alias's Continuity Check: the fill's edges against the surfaces beside them, drawn as the Check node's."),
+                   toggle("Show conflicts", conflicts_slot, 1.0, "Where the neighbors' demands disagree (xNURBS 7): the corners and stretches no surface meets, drawn red with their amounts.")])
+    for k in 0..<boundary_count:
+        let own = menu(f"Boundary {k + 1}", boundary_slot + k, "Continuity row|Free|G0|G1|G2", 0.0, "This boundary's own continuity (its label sets it).")
+        own.hide_when = "{ quad >= 0 }"
+        result.append(own)
+    return result
+
+## What Fill waits for ("" when it has what it needs).
+pub func waits_for(t: list[str]) -> str:
+    if build_ops.items(t[boundaries_text]).length == 0:
+        return "Pick the hole's boundaries (edges, curves or isoparms, any order), or one edge of a hole, then Enter"
+    return ""
+
+## Boundary `k`'s continuity code (0 Free to 3 G2) by values `v`.
+pub func code_of(v: list[float], k: int) -> int:
+    if k < boundary_count and boundary_slot + k < v.length and v[boundary_slot + k] > 0.0:
+        return int(v[boundary_slot + k]) - 1
+    return int(v[continuity_slot])
+
+# -- The cook.
+
+## Fill on `data` by values `v` and texts `t`; `name` names the sheet.
+pub func build(data: GeometryData, v: list[float], t: list[str], name: str) -> GeometryData!:
+    let picked = build_ops.items(t[boundaries_text])
+    let guide_items = build_ops.items(t[guides_text] if t.length > guides_text else "")
+    let waiting = waits_for(t)
+    if waiting != "":
+        return labelled(data.passed(waiting), data, v, picked, guide_items, none)
+    var words = build_ops.resolve_isoparms(data, picked, false)
+    if words.length == 1 and words[0].starts_with("edge "):
+        # One edge of a hole: the whole hole (Plasticity's and Alias's).
+        words = CadSurfaceFill.hole(data.geometry, words[0]).split(";")
+    let codes: list[int] = []
+    for k in 0..<words.length:
+        codes.append(code_of(v, k))
+    let points: list[Vector3] = []
+    let guides: list[str] = []
+    for g in guide_items:
+        let parts = g.split(" ")
+        if parts.length == 4 and parts[0] == "isoparm_at":
+            points.append(Vector3(float(parts[1]), float(parts[2]), float(parts[3])))
+        else:
+            guides.append(g)
+    let made = CadSurfaceFill.fill(data.geometry, words.join(";"), codes, points, guides = guides.join(";"), guide_order = int(v[guide_slot]), quad = v[quad_slot] != 0.0,
+                                   tension = v[tension_slot], flatness = v[flatness_slot], flow = int(v[flow_slot]), explicit = v[explicit_slot] != 0.0,
+                                   degree_u = int(v[degree_u_slot]), spans_u = int(v[spans_u_slot]), degree_v = int(v[degree_v_slot]), spans_v = int(v[spans_v_slot]),
+                                   refine = v[refine_slot] != 0.0, most_spans = int(v[most_slot]), position = v[position_slot], angle = v[angle_slot], curvature = v[curvature_slot], name = name)
+    let result = GeometryData(geometry = made.geometry())
+    var worst = 0
+    for code in codes:
+        if code > worst:
+            worst = code
+    let kind = "Quad" if v[quad_slot] != 0.0 else f"{words.length}-sided"
+    result.report = f"{kind} {continuity_cycle.split("|")[worst]}, {made.spans_u} by {made.spans_v} spans of degree {made.degree_u}" + (f", {made.conflict_count()} conflicts" if made.conflict_count() > 0 else "")
+    if made.conflict_count() > 0:
+        result.warning = f"Fill: {made.conflict_count()} places where the boundaries' demands disagree (drawn red)"
+    if v[check_slot] != 0.0 and worst >= 1:
+        build_ops.checked(result, name, words, worst - 1 if worst >= 2 else 0)
+    return labelled(result, data, v, words, guide_items, made)
+
+## `result` with each boundary's label (when Boundary labels is on), the
+## conflicts (when Show conflicts is), and the picks' lines as state lines.
+func labelled(result: GeometryData, data: GeometryData, v: list[float], boundaries: list[str], guides: list[str], made: CadFill?) -> GeometryData!:
+    let lines: list[str] = []
+    if v[labels_slot] != 0.0:
+        for k in 0..<(boundaries.length if boundaries.length < boundary_count else boundary_count):
+            if boundaries[k].starts_with("isoparm_at"):
+                continue
+            let own = v[boundary_slot + k] > 0.0
+            let text = continuity_cycle.split("|")[code_of(v, k)] + ("" if own else " (all)")
+            let at = build_ops.middle_of(data, boundaries[k]) catch failure:
+                continue
+            lines.append(build_ops.label_line(at, boundary_slot + k, 5, text))
+    if let fill = made:
+        if v[conflicts_slot] != 0.0:
+            for k in 0..<fill.conflict_count():
+                let c = fill.conflict(k)
+                let orders = ["G0", "G1", "G2"]
+                let what = f"{orders[c.order]} {"corner" if c.corner else "conflict"} {c.amount:.3g}"
+                lines.append(f"{conflict_head}{c.start.x} {c.start.y} {c.start.z} {c.finish.x} {c.finish.y} {c.finish.z} {c.order} {c.amount} {1 if c.corner else 0} {c.boundary} {what}")
+    lines.extend(build_ops.pick_lines(data, boundaries + guides))
+    if lines.length > 0:
+        result.sketch_state = (result.sketch_state + "\n" if result.sketch_state != "" else "") + lines.join("\n")
+    return result
+
+## A conflict read back: from, to, whether a corner, its boundary and
+## order, its amount and text, and whether its plate shows (corners, and
+## the worst run of each boundary and order: runs come many to an edge).
+pub class FillConflictLine:
+    pub let start: Vector3
+    pub let finish: Vector3
+    pub let corner: bool
+    pub let boundary: int
+    pub let order: int
+    pub let amount: float
+    pub let text: str
+    pub var labelled: bool = true
+
+    pub func init(self, start: Vector3, finish: Vector3, corner: bool, boundary: int, order: int, amount: float, text: str):
+        self.start = start
+        self.finish = finish
+        self.corner = corner
+        self.boundary = boundary
+        self.order = order
+        self.amount = amount
+        self.text = text
+
+## The conflicts a cook's state holds.
+pub func conflicts_of(state: str) -> list[FillConflictLine]:
+    let found: list[FillConflictLine] = []
+    for line in state.split("\n"):
+        if not line.starts_with(conflict_head):
+            continue
+        let words = line[conflict_head.length..].split(" ")
+        if words.length < 11:
+            continue
+        let numbers: list[float] = []
+        for k in 0..<10:
+            let value = float(words[k]) catch failure:
+                recover 0.0
+            numbers.append(value)
+        found.append(FillConflictLine(Vector3(numbers[0], numbers[1], numbers[2]), Vector3(numbers[3], numbers[4], numbers[5]), numbers[8] != 0.0, int(numbers[9]), int(numbers[6]),
+                                      numbers[7], words[10..].join(" ")))
+    # One plate a boundary and order for runs: the worst.
+    for k in 0..<found.length:
+        let c = found[k]
+        if c.corner:
+            continue
+        for l in 0..<found.length:
+            let other = found[l]
+            if l != k and not other.corner and other.boundary == c.boundary and other.order == c.order and (other.amount > c.amount or other.amount == c.amount and l < k):
+                c.labelled = false
+    return found

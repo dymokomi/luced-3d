@@ -6,7 +6,10 @@
 ## undo step, the same value as its row in the parameters. The labels come
 ## from the cook's state lines (build_ops.labels_of), so the worker's
 ## results serve and the viewport never cooks. While the builder waits for
-## more picks, those it has are lit along their length.
+## more picks, those it has are lit along their length. A Fill's conflicts
+## (fill_ops.conflicts_of: where the boundaries' demands disagree) are drawn
+## in the failure color, a run along its boundary and a corner as a ring,
+## each with its amount, as xNURBS 7 marks them.
 from luce_ui.ui import Painter, Rect, Point
 from workspace import Workspace
 from node import Node
@@ -15,6 +18,7 @@ import edit_cad_build
 import edit_cad_picks
 import build_ops
 import blend_ops
+import fill_ops
 import surface_ops
 import view_projection as gm
 import theme
@@ -135,9 +139,33 @@ pub class BuildLabels:
                     painter.line(Point(before[0], before[1]), Point(s[0], s[1]), 3.0, theme.accent())
                 previous = s
 
+    ## A Fill's conflicts: each run a thick red line (a corner a ring) and
+    ## a plate with what disagrees and by how much.
+    func draw_conflicts(self, painter: Painter, width: float, height: float) -> unit!:
+        let found = self.target() else return
+        let (node, _) = found
+        for c in fill_ops.conflicts_of(node.sketch_state):
+            let a = gm.project(self.w, c.start, width, height)
+            let b = gm.project(self.w, c.finish, width, height)
+            if a[2] <= 0.0 or b[2] <= 0.0:
+                continue
+            if c.corner or math.hypot(a[0] - b[0], a[1] - b[1]) < 2.0:
+                painter.rounded_rectangle(Rect(a[0] - 7.0, a[1] - 7.0, 14.0, 14.0), theme.failure(), 7.0)
+                painter.rounded_rectangle(Rect(a[0] - 4.0, a[1] - 4.0, 8.0, 8.0), theme.grey(24.0), 4.0)
+            else:
+                painter.line(Point(a[0], a[1]), Point(b[0], b[1]), 4.0, theme.failure())
+            if not c.labelled:
+                continue
+            let w = float(c.text.length) * 7.5 + 14.0
+            let box = Rect((a[0] + b[0]) * 0.5 + 12.0, (a[1] + b[1]) * 0.5 + 8.0, w, 22.0)
+            painter.rounded_rectangle(Rect(box.x - 1.0, box.y - 1.0, box.width + 2.0, box.height + 2.0), theme.failure(), 4.0)
+            painter.rounded_rectangle(box, theme.grey(24.0), 3.0)
+            painter.text(c.text, box.x + 7.0, box.y + 3.0, theme.text())
+
     ## The labels: a dark plate with the continuity, the hovered one lit.
     pub func draw(self, painter: Painter, width: float, height: float) -> unit!:
         self.draw_picks(painter, width, height)
+        self.draw_conflicts(painter, width, height)
         let shown = self.labels()
         for k in 0..<shown.length:
             let box = self.plate(shown[k], width, height) else continue

@@ -605,6 +605,24 @@ model back exactly.
     for an isoparm), Radius, Normal and Tangent offsets, Flip.
   - While they wait, their picks are lit (a face set by its outline) and
     the prompts read "Pick first side or set", "Pick second side or set".
+- **Surfacing Stage 7, Fill Surface** (`fill_ops.luc`, through `blend_ops.luc`;
+  luce-cad's `CadSurfaceFill`; named Fill Surface because Edit Mesh has a
+  Fill): xNURBS's variational fill, an Edit CAD step and a CAD network node,
+  from the right-click on edges and curves, the S and Modify › Surfaces menus.
+  The boundaries (edges, curves or isoparms in any order; one edge of a hole
+  takes the whole hole) cook at once and the step waits for more; Enter goes
+  on to guide curves (a double-click on a surface adds a point guide), Enter
+  finishes. Rows: Continuity (Free, G0, G1, G2; each boundary's label on the
+  model sets its own, cycling the row's, Free, G0, G1, G2), Quad (an
+  untrimmed four-sided face), Tension, Flatness, Boundary flow (Quad:
+  Natural, Normal, Next, Adjacent), Guide continuity, Explicit control
+  (degrees and spans), Refine and Most spans, the position, angle and
+  curvature tolerances, Boundary labels, Continuity check and Show
+  conflicts: where the boundaries' demands disagree (a corner whose
+  neighbors' normals or twists differ, a stretch no surface meets) the
+  model shows a red ring or line with what disagrees by how much, and the
+  node a warning. An N-sided fill whose neighbor stands square to the
+  hole's plane (a box's top on its walls) is refused with "use Quad".
 - **Stage 3 follow-up**: Trim's 3D Trimming draws the curves as they are cast
   onto the face (white) while it waits for its region clicks.
 - Primitives are luce-cad's analytic solids: Box, Cylinder, Cone, Sphere and

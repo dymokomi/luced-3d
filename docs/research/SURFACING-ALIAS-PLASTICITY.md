@@ -97,7 +97,7 @@ remaining blend options on solids come last.
 | 4 | Align (match) G0–G3, with every Alias option. **Done** (§8) |
 | 5 | Surfaces from curves: Square, Skin, Rail, Profile, Set Planar, Extend. **Done** (§8) |
 | 6 | Blends between surfaces: Freeform Blend, Profile Blend, Surface Fillet between face sets. **Done** (§8) |
-| 7 | Fill: N-sided and four-sided variational patches (xNURBS parity) |
+| 7 | Fill: N-sided and four-sided variational patches (xNURBS parity). **Done** (§8) |
 | 8 | Parasolid's blend options on solids: conic, overflow, limits, caps, Y-blends, corners |
 
 ## 2. Shared ideas across the references
@@ -2050,6 +2050,74 @@ trims, Symmetric Fillet, Round and the corner tools (Stage 8).
   - a four-sided hole between planes gives a plane;
   - a guide curve lies on the result;
   - Quad mode gives an untrimmed face.
+
+**Stage 7: done** (2026-10-12). What was built:
+
+- **luce-cad** (`surfacing/fill.lucb`, `fill_bounds`, `fill_net`, `fill_bands`, `fill_reference`,
+  `fill_solve`, `fill_refine`, `fill_api`; public `CadSurfaceFill`, `CadFill`, `FillConflict`; luce-cad
+  MODELING.md, Fill): §6.8 as written, with these choices:
+  - the net quintic both ways on uniform spans, halved while a boundary misses its tolerance (to 32;
+    graded nets met the boundaries worse), or Explicit Control's degrees (2 to 9) and spans;
+  - the energy bending (and with any G2 boundary its rate, Moreton and Séquin's, the order position,
+    slope and curvature are well posed in) of S less a reference R: the neighbors carried on into
+    the hole (each side's neighbor met along the chart's normal, a plane, sphere or cylinder in
+    closed form, else its tangent plane; blended by the inverse fourth power of the distance), so a
+    ball's cap fills with the ball, not with the clamped plate's paraboloid; Tension (membrane) and
+    Flatness of S itself;
+  - the constraints weighted a million times the energy's diagonal and driven to hold by the method
+    of multipliers (penalties alone trade exactness for the condition); G1 linear; G2 by
+    Gauss–Newton (iterating its right side alone diverges); the unknowns the change from the
+    reference, so the band's rounding is relative to it (a planar loop fills to 1e-12);
+  - the equations a band, factored by band Cholesky in Base;
+  - N-sided: Newell's plane as the chart, the net trimmed by the boundaries laid on it (their feet,
+    fitted to a billionth, by their own parameters); Quad: the boundary rows fixed, a weak
+    preference that the cross derivative leaves a neighbor its own way where G1 must turn it square
+    (a lid on vertical walls rises, not collapses);
+  - conflicts: corners whose neighbors' normals, tangent planes, twists (Gregory's compatibility)
+    or G2 curvatures disagree are found before the solve, eased within 3% of each side and reported;
+    what still fails is reported as runs; `CadSurfaceFill.hole` walks a hole's open edges from one
+    (seams between touching sheets passed over).
+  - Also fixed: Surface Fillet's ball at a fillet's very end (a contact on a B-spline face's edge)
+    carries the face on along its partials instead of failing.
+- **luced-3d**: the Fill Surface step and node (`fill_ops.luc`), its labels and the conflicts drawn
+  on the model (`build_labels.luc`), the picks (boundaries, then guides), the menus.
+
+Captures: `tools/preview.py --scene` with `surf_fill_waiting`, `surf_fill_quad` (also `--mode 7`,
+zebra), `surf_fill_nsided`, `surf_fill_node` (each also with `--background`).
+
+Tests, against closed forms and the Check tools (luce-cad `fill_tests.luc`; luced-3d
+`edit_cad_fill_tests.luc`):
+
+- a planar pentagon fills with its plane to 1e-9; a square hole in a tilted plane with the plane at
+  G1 and G2, N-sided and Quad (one untrimmed face);
+- a square hole in a smooth height field fills G0, G1 and G2 on all four edges, N-sided and Quad;
+- a 30° cap cut from a ball of radius 2 fills G1 and G2 within a thousandth of the radius of the
+  sphere, measuring G1 and G2 on its edge;
+- a five-sided corner between three G2 fillets and two walls fills G1 on all five edges; with
+  circular fillets the corners where a fillet meets a wall's strip are reported (their twists
+  disagree);
+- a guide curve and a point lie on the fill within a millionth, G1 kept; a hole is found from one
+  edge; Tension and Flatness lower a cap's dome, Explicit Control keeps its degrees and spans,
+  Normal flow leaves the cross isoparms square to the side;
+- in the editor: Fill Surface from one edge of an open box's top takes the whole hole, waits for
+  boundaries then guides; N-sided G1 on the walls says "use Quad"; Quad G1 rises as a pillow inside
+  the walls, measured G1 on all four edges, its four corners conflicts; G0 is the flat top; a label
+  sets its boundary's own continuity; the node follows the box upstream.
+
+Answers from the reference tools (the doc's questions that Stage 7 met):
+
+- **Free** keeps the boundary's position, as Square's (Alias's N-sided Free trims there too); it is
+  not checked.
+- **Quad sided** is off by default, as xNURBS's; **Tension** 0 to 1 and **Flatness** 0 to 1 (xNURBS's
+  ranges are narrower slices of the same pulls).
+- **Boundary flow** applies to Quad, as xNURBS's notes it for quads; N-sided's isoparms are its chart's.
+
+Left for later: a Molded domain (an N-sided boundary whose neighbor stands square to its plane is
+refused, Quad is the way round); natural extensions of B-spline neighbors beyond their domain as the
+reference (now their tangent planes); G2 at corners whose neighbors' curvature rates disagree (a G2
+fillet's end meeting a wall at an angle) found before the solve rather than as runs; G2 Quad lids on
+vertical walls (the corners make most of each side a conflict); a fill's speed on large corner
+configurations (tens of spans: seconds).
 
 **Stage 8: Parasolid's blend options on solids** (S13, S14).
 

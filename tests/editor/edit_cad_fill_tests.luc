@@ -1,0 +1,217 @@
+## Surfacing Stage 7's Fill in Edit CAD and CAD networks (fill_ops.luc,
+## blend_ops.luc, edit_cad_build.luc, cad_surface_nodes.luc): on an Edit
+## CAD box unstitched into six squares with its top removed, the
+## right-click on one of the hole's edges offers Fill Surface; Fill from that one
+## edge takes the whole hole, cooks at once and waits for more boundaries,
+## then (Enter) for guides, then (Enter) finishes; N-sided cannot rise
+## square to the walls and says to use Quad; Quad at G1 to the box's
+## perpendicular walls reports the four corners as conflicts (their
+## normals disagree), drawn as state lines, with a label on each boundary;
+## at G0 it is the flat top again, conflict free, and a click on a label
+## sets that boundary's own continuity. The Fill node over the box's top edges
+## follows the box when it grows upstream.
+from workspace import Workspace
+from node import Node
+import node as nodes
+from app import Luce3D
+from geometry_data import GeometryData
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadModel
+from luce_cad.modeling import CadModeling
+from luce_cad.nurbs import CadNurbs
+from luce_3d.graphics import Vector3
+import blend_ops
+import build_ops
+import fill_ops
+import edit_cad_align
+import edit_cad_build
+import edit_cad_commands
+import edit_cad_picks
+import edit_cad_surfaces
+import modeling_commands
+import node_commands
+import selection_commands
+import view_projection
+from luce_std import math
+
+pub func edit_cad_fill_tests() -> unit!:
+    fill_step()
+    fill_node()
+    print("PASS Edit CAD fill: the right-click on a hole's edge offers Fill Surface; from one edge it fills the whole hole, waits for boundaries then guides; G1 to a box's walls reports its four corners as conflicts, G0 is the flat top again; a label sets its boundary's own continuity; the Fill node follows the box upstream")
+
+func data_of(w: Workspace, node: Node) -> GeometryData!:
+    return w.network.evaluate_data(node.id)
+
+## The pick mesh's polygon whose middle and normal `keep` takes.
+func face_where(w: Workspace, keep: func(Vector3, Vector3) -> bool) -> int!:
+    let mesh = w.geometry else trap("pick geometry")
+    for polygon in 0..<mesh.face_count():
+        var middle = Vector3()
+        for k in 0..<mesh.face_size(polygon):
+            middle = middle.add(mesh.point(mesh.face_point(polygon, k)))
+        middle = middle.multiply_scalar(1.0 / float(mesh.face_size(polygon)))
+        if keep(middle, mesh.face_normal(polygon)):
+            return polygon
+    return -1
+
+## The pick mesh's edge whose middle `keep` takes with the normal of a
+## polygon of its body with corners at its ends (-1 none).
+func edge_where(w: Workspace, keep: func(Vector3, Vector3) -> bool) -> int!:
+    let mesh = w.geometry else trap("pick geometry")
+    let polygon_models = mesh.find_attribute("cad_model", 2)
+    let edge_models = mesh.find_attribute("cad_edge_model", 4)
+    for edge in 0..<mesh.edge_count():
+        let a = mesh.point(mesh.edge_point(edge, 0))
+        let b = mesh.point(mesh.edge_point(edge, 1))
+        let middle = a.add(b).multiply_scalar(0.5)
+        for polygon in 0..<mesh.face_count():
+            if int(mesh.attribute_value(polygon_models, polygon)) != int(mesh.attribute_value(edge_models, edge)):
+                continue
+            var ends = 0
+            for k in 0..<mesh.face_size(polygon):
+                if edit_cad_align.on_segment(mesh.point(mesh.face_point(polygon, k)), a, b, 1e-6):
+                    ends += 1
+            if ends >= 2 and keep(middle, mesh.face_normal(polygon)):
+                return edge
+    return -1
+
+## The entries of the viewport's right-click menu now.
+func menu_entries(editor: Luce3D) -> list[str]!:
+    editor.panels.refresh()
+    let offered: list[str] = []
+    for command in editor.panels.viewport_menu.entries():
+        offered.append(command.text())
+    return offered
+
+## The last step's value at `slot` set to `value` (one undo).
+func set_value(w: Workspace, node: Node, slot: int, value: float) -> unit!:
+    w.perform("value", func () -> unit!:
+        let numbers = node.edits[-1].numbers.copy()
+        numbers[slot] = value
+        node.edits[-1] = node.edits[-1].with_numbers(numbers)
+        w.network.invalidate(node.id)
+        w.rebuild())
+
+func fill_step() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    let node = w.selected() else trap("Edit CAD")
+    modeling_commands.create(w, "Box")
+    selection_commands.set_mode(w, 0)
+    selection_commands.choose_component(w, 0, false)
+    edit_cad_commands.tool(w, edit_cad_surfaces.unstitch_verb)
+    # The top taken away: a square hole bounded by the walls' top edges.
+    let top = face_where(w, func (c: Vector3, n: Vector3) -> bool: return c.y > 0.99 and n.y > 0.99)
+    selection_commands.choose_component(w, top, false)
+    edit_cad_commands.tool(w, "Remove")
+    assert(data_of(w, node).models().length == 5, node.warning)
+    # One edge of the hole picked: the right-click offers Fill.
+    selection_commands.set_mode(w, 2)
+    let edge = edge_where(w, func (c: Vector3, n: Vector3) -> bool: return math.abs(c.y - 1.0) < 1e-6 and math.abs(c.x - 1.0) < 1e-6 and n.x > 0.99)
+    assert(edge >= 0, "no top edge of the +X wall")
+    selection_commands.choose_component(w, edge, false)
+    assert(blend_ops.fill_verb in menu_entries(editor), "the right-click on an edge offers Fill Surface")
+    edit_cad_commands.tool(w, blend_ops.fill_verb)
+    let prompt = w.prompt else trap("Fill waits for more boundaries")
+    assert(prompt.label == edit_cad_build.first_label, prompt.label)
+    # It cooks at once on the whole hole. N-sided cannot rise square to
+    # the walls, and says so; Quad can, and G1 to perpendicular walls has
+    # no answer at the four corners, which are conflicts.
+    _ = data_of(w, node)
+    assert(node.warning.contains("use Quad"), f"N-sided G1 on the walls: {node.warning}")
+    set_value(w, node, fill_ops.quad_slot, 1.0)
+    let first = data_of(w, node)
+    assert(first.models().length == 6, f"{first.models().length} bodies: {node.warning}")
+    let conflicts = fill_ops.conflicts_of(node.sketch_state)
+    var corners = 0
+    for c in conflicts:
+        if c.corner:
+            corners += 1
+    assert(corners == 4, f"{corners} corner conflicts of {conflicts.length}: {node.sketch_state}")
+    assert(node.warning.contains("disagree"), f"the conflicts' warning: {node.warning}")
+    # A pillow: it rises from the walls inside them.
+    let lid = first.models()[5]
+    let ls = CadNurbs.surface_of_face(lid, lid.face_name(0))
+    var peak = 0.0
+    var out = 0.0
+    for i in 0..<9:
+        for j in 0..<9:
+            let p = CadNurbs.point_at(lid, ls, float(i) / 8.0, float(j) / 8.0)
+            peak = math.max(peak, p.y)
+            out = math.max(out, math.max(math.abs(p.x), math.abs(p.z)) - 1.0)
+    assert(peak > 1.2 and out < 1e-6, f"the Quad lid rises to {peak}, {out} outside the walls")
+    assert(first.report.contains("4 of 4 edges G1"), f"the continuity check: {first.report}")
+    let labels = build_ops.labels_of(node.sketch_state)
+    assert(labels.length == 4 and labels[0].text == "G1 (all)", f"{labels.length} labels: {node.sketch_state}")
+    # Enter: on to the guides; Enter again: done.
+    edit_cad_picks.accept_pick(w, node)
+    let guides = w.prompt else trap("Fill asks for guides")
+    assert(guides.label == edit_cad_build.second_label, guides.label)
+    edit_cad_picks.accept_pick(w, node)
+    assert(w.prompt == none, "Enter finishes the fill's picks")
+    # G0: the flat top again.
+    set_value(w, node, fill_ops.continuity_slot, 1.0)
+    let flat = data_of(w, node)
+    assert(fill_ops.conflicts_of(node.sketch_state).length == 0, node.sketch_state)
+    let sheet = flat.models()[5]
+    let s = CadNurbs.surface_of_face(sheet, sheet.face_name(0))
+    for i in 0..<5:
+        for j in 0..<5:
+            let p = CadNurbs.point_at(sheet, s, float(i) / 4.0, float(j) / 4.0)
+            assert(math.abs(p.y - 1.0) < 1e-9, f"a G0 fill point {p}")
+    # A click on a label: that boundary's own continuity (Free first).
+    let shown = build_ops.labels_of(node.sketch_state)
+    let at = view_projection.project(w, shown[0].point, 800.0, 600.0)
+    assert(editor.panels.view.build_labels.click(at[0], at[1], 800.0, 600.0), "the boundary label took no click")
+    assert(node.edits[-1].numbers[shown[0].slot] == 1.0, f"{node.edits[-1].numbers}")
+
+## The name of `model`'s flat face facing `normal`.
+func facing(model: CadModel, normal: Vector3) -> str!:
+    for f in 0..<model.face_count():
+        let name = model.face_name(f)
+        let frame = CadModeling.face_frame(model, name)
+        if frame.found and frame.u.cross(frame.v).dot(normal) > 0.999:
+            return name
+    trap("no such face")
+
+func fill_node() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 0.0, 0.0)
+    let box = w.network.selected
+    for k in 0..<3:
+        w.network.require(box).values[k] = 2.0
+    w.network.invalidate(box)
+    let first = CadGeometry.model(w.network.evaluate_data(box).geometry, 0)
+    let top = facing(first, Vector3(0.0, 1.0, 0.0))
+    node_commands.add_node(w, blend_ops.fill_verb, 0.0, 80.0)
+    let fill = w.network.require(w.network.selected)
+    w.network.connect(box, fill.id, 0)
+    _ = w.network.evaluate_data(fill.id)
+    assert(nodes.waiting(fill.warning), fill.warning)
+    # The top's four edges, G0: the top again.
+    fill.texts[fill_ops.boundaries_text] = f"edge {top} 1 1 0;edge {top} -1 1 0;edge {top} 0 1 1;edge {top} 0 1 -1"
+    fill.values[fill_ops.continuity_slot] = 1.0
+    w.network.invalidate(fill.id)
+    let made = w.network.evaluate_data(fill.id)
+    assert(fill.warning == "", fill.warning)
+    assert(made.models().length == 2, f"{made.models().length} bodies")
+    # The box 3 wide upstream: the fill spans the new top.
+    w.network.require(box).values[0] = 3.0
+    w.network.invalidate(box)
+    let wider = w.network.evaluate_data(fill.id)
+    assert(fill.warning == "", fill.warning)
+    let mesh = wider.models()[1].tessellate(8)
+    var low = 1.0e300
+    var high = -1.0e300
+    for k in 0..<mesh.point_count():
+        low = math.min(low, mesh.point(k).x)
+        high = math.max(high, mesh.point(k).x)
+    assert(math.abs(high - low - 3.0) < 1e-6, f"the fill after the box grew spans x {low} to {high}")
