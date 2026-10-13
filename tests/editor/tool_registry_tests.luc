@@ -31,7 +31,8 @@ pub func tool_registry_tests() -> unit!:
     repeat_checks()
     select_checks()
     cad_surfaces()
-    print("PASS tool registry: every tool a node and an Edit Mesh step with docs, starting values, icons and docs/TOOLS.md; S, D, A, the right-click menu and Modify reach each at its levels only; Repeat with the last numbers; Select Checker; D in the viewport and the network")
+    context_icons()
+    print("PASS tool registry: every tool a node and an Edit Mesh step with docs, starting values, icons and docs/TOOLS.md; a label's icon is its context's tool's; S, D, A, the right-click menu and Modify reach each at its levels only; Repeat with the last numbers; Select Checker; D in the viewport and the network")
 
 ## What each declaration gives: a node in each of its contexts (Geo, CAD),
 ## a step of each of its Edit kinds (Edit Mesh, Edit CAD), rows with docs
@@ -45,8 +46,10 @@ func declarations() -> unit!:
         for kind_name in tool.kinds:
             let edit = w.kind_of(kind_name) else trap(kind_name)
             let step = edit.tool_at(tool.label, tool.first_pick().levels[0] if tool.first_pick().levels.length > 0 else 0) else trap(tool.label)
-            assert(step.verb == tool.verb and step.tool != none, tool.label)
-        assert(ui.icon_known(tool.icon) and asset_name(tool.label) == tool.icon, tool.label)
+            assert(step.verb == tool.verb and step.tool != none and step.icon == tool.icon, tool.label)
+        # The icon is drawn for its node and its step (a label two
+        # contexts share draws each one's: context_icons).
+        assert(ui.icon_known(tool.icon) and (tool.contexts.length == 0 or asset_name(tool.name) == tool.icon), tool.label)
         assert(tool.doc != "" and tool.family != "" and tool.section in ["Create", "Modify", "Select"])
         for row in tool.rows:
             if row.valued():
@@ -166,6 +169,48 @@ func surfaces() -> unit!:
     editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.d))
     editor.app.dispatch(Event(kind = EventKind.key_up, key = Key.d))
     assert(w.network.display == grid and shown != grid)
+
+## A label that is a tool in two contexts runs one command, and the command
+## draws the context's tool: Intersect is a boolean in Edit SDF and two
+## surfaces crossing in Edit CAD and a CAD network; Reverse turns a curve in
+## Edit CAD and flips normals in Edit Mesh. The S menu and the tool bar's
+## last-tool slot show the same icon.
+func context_icons() -> unit!:
+    let mesh = grid_editor(true)
+    pick(mesh.workspace, face_level)
+    mesh.panels.actions.refresh()
+    assert(icon(mesh, "Reverse") == "reverse-normals" and icon(mesh, "Delete") == "trash")
+    let sdf = Luce3D()
+    let s = sdf.workspace
+    node_commands.delete_selected(s)
+    node_commands.add_node(s, "SDF", 0.0, 0.0)
+    node_commands.enter_group(s, s.network.selected)
+    node_commands.add_node(s, "Edit SDF", 0.0, 0.0)
+    modeling_commands.create(s, "Sphere")
+    sdf.panels.actions.refresh()
+    assert(icon(sdf, "Intersect") == "boolean-intersect" and icon(sdf, "Add") == "boolean-union" and icon(sdf, "Delete") == "trash")
+    let shown = marking_items.modify_items(s, sdf.panels.actions, no_add, sdf.panels.view.sketch.editor)
+    var found = false
+    for item in shown:
+        if item.name == "Intersect":
+            assert(item.icon == "boolean-intersect")
+            found = true
+    assert(found)
+    let cad = Luce3D()
+    let c = cad.workspace
+    node_commands.delete_selected(c)
+    node_commands.add_node(c, "CAD", 0.0, 0.0)
+    node_commands.enter_group(c, c.network.selected)
+    cad.panels.actions.refresh()
+    assert(icon(cad, "Intersect") == "intersect-surfaces")
+    node_commands.add_node(c, "Edit CAD", 0.0, 0.0)
+    modeling_commands.create(c, "Box")
+    cad.panels.actions.refresh()
+    assert(icon(cad, "Intersect") == "intersect-surfaces" and icon(cad, "Reverse") == "reverse-curve")
+
+func icon(editor: Luce3D, label: str) -> str:
+    let command = editor.panels.actions.command(label) else trap(label)
+    return command.icon()
 
 ## Repeat: Bevel, its offset changed on the tool bar, then Repeat on
 ## another edge bevels it with that offset, as a step; on a plain Grid it

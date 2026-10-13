@@ -1,0 +1,96 @@
+## Icon review captures for preview.py: the A, S and D marking menus in
+## Edit Mesh, a CAD network, a sketch and Edit CAD; pale disabled entries;
+## networks holding many node kinds (Geo, CAD, scene, a Material's shaders).
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3
+from view_projection import project
+import node_commands
+import preview_poly
+import preview_cad
+import preview_direct
+
+pub func scenes() -> list[str]:
+    let result: list[str] = []
+    for place in ["mesh", "cad", "sketch", "direct"]:
+        for key in ["a", "s", "d"]:
+            result.append(f"icons_{place}_{key}")
+    return result + ["icons_direct_none_s", "icons_net_geo", "icons_net_cad", "icons_net_scene", "icons_net_shader", "icons_net_fields"]
+
+func place_of(scene: str) -> str:
+    return scene.split("_")[1]
+
+## Nodes of `kinds` in rows of `columns`.
+func add_all(editor: Luce3D, kinds: list[str], columns: int) -> unit!:
+    let w = editor.workspace
+    var at = 0
+    for kind in kinds:
+        # Unwired, so none moves another down.
+        w.network.selected = -1
+        node_commands.add_node(w, kind, 40.0 + float(at % columns) * 250.0, 40.0 + float(at // columns) * 110.0)
+        at += 1
+    editor.panels.refresh()
+
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    let w = editor.workspace
+    let place = place_of(scene)
+    if place == "mesh":
+        preview_poly.setup(editor, "poly_menu_faces")
+    elif place == "cad":
+        preview_cad.setup(editor, "cad_marking")
+    elif place == "sketch":
+        preview_cad.setup(editor, "cad_window")
+    elif scene == "icons_direct_none_s":
+        preview_direct.setup(editor, "direct_menu")
+    elif place == "direct":
+        preview_direct.setup(editor, "direct_marking")
+    elif scene == "icons_net_geo":
+        add_all(editor, ["Edit Mesh", "Subdivision", "Merge", "Null", "Switch", "Output", "Input", "Blast", "CopyToPoints", "MatchSize",
+                         "AttributeCreate", "AttributeDelete", "AttributeRename", "AttributeRandomize", "AttributePromote", "Name", "UVProject",
+                         "Cache", "Script", "Code", "Assign Material", "Transform", "Normal", "Mirror", "CopyTransform", "Color", "Measure"], 6)
+    elif scene == "icons_net_fields":
+        add_all(editor, ["Curve Line", "Curve Circle", "Curve Arc", "Curve Spiral", "Resample Curve", "Trim Curve", "Fillet Curve",
+                         "Reverse Curve", "Set Curve Type", "Curve to Mesh", "Mesh to Curve", "SDF Sphere", "SDF Boolean", "Mesh to SDF",
+                         "Volume from Points", "Convert to Mesh", "Volume Slice", "Volume", "Relight GSplats", "Crop GSplats", "Reduce GSplats",
+                         "Bake GSplats", "Clean GSplats", "Edit SDF", "Edit GSplats", "PolyBevel", "Spin", "Bridge"], 6)
+    elif scene == "icons_net_cad":
+        node_commands.delete_selected(w)
+        node_commands.add_node(w, "CAD", 40.0, 40.0)
+        node_commands.enter_group(w, w.network.selected)
+        add_all(editor, ["Sketch", "Extrude", "Revolve", "Solid Box", "Fillet", "Chamfer", "Shell", "Offset Face", "Split Body", "Check",
+                         "Pattern", "Mirror Body", "Combine", "Edit CAD", "Tessellate", "Curve", "Square", "Skin", "Rail", "Blend Surface",
+                         "Fill Surface", "Trim", "Project", "Output"], 6)
+    elif scene == "icons_net_scene":
+        node_commands.leave_group(w)
+        add_all(editor, ["CAD", "SDF", "Volumes", "GSplats", "Materials", "Group", "Camera", "Light", "Render"], 5)
+    elif scene == "icons_net_shader":
+        node_commands.leave_group(w)
+        node_commands.add_node(w, "Materials", 40.0, 40.0)
+        node_commands.enter_group(w, w.network.selected)
+        node_commands.add_node(w, "Material", 40.0, 40.0)
+        node_commands.enter_group(w, w.network.selected)
+        add_all(editor, ["Image Texture", "Checker Texture", "Noise Texture", "Math", "Mix Color", "Color Ramp", "Normal Map", "Fresnel"], 4)
+
+pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
+    let w = editor.workspace
+    let place = place_of(scene)
+    if place == "net":
+        # Nodes chained for their icons may not cook; their notices are not the point.
+        w.notice = ""
+        editor.panels.graph.frame_all()
+        return
+    if frame != last - 1:
+        return
+    let area = editor.panels.view.layout().bounds()
+    var x = area.x + area.width * 0.5
+    var y = area.y + area.height * 0.5
+    if place in ["mesh", "cad", "direct"]:
+        let anchor = Vector3(0.0, 2.0, 0.0) if place == "mesh" else (Vector3(0.0, 10.0, 0.0) if place == "cad" else Vector3(-8.0, 8.0, 4.0))
+        let at = project(w, anchor, area.width, area.height)
+        x = area.x + at[0]
+        y = area.y + at[1]
+    editor.app.focus(editor.panels.view.layout())
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = x, y = y))
+    let letter = scene.split("_")[-1]
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.a if letter == "a" else (Key.s if letter == "s" else Key.d)))
