@@ -65,11 +65,15 @@ func anchor(node: Branch) -> str:
     return node.ids[0]
 
 ## Own references even while panels are temporarily detached during restoration.
+## A panel can have the dock to itself (solo: the viewport full screen), the
+## others' layout kept to restore.
 pub class DockLayout:
     let dock: DStack
     let panels: list[Panel]
     let ids: list[str]
     pub let default_text: str
+    ## The layout while one panel is solo ("": none is).
+    var kept: str = ""
 
     pub func init(self, dock: DStack, panels: list[Panel]) -> unit!:
         self.dock = dock
@@ -82,7 +86,37 @@ pub class DockLayout:
     func panel(self, id: str) -> Panel!:
         return self.panels[self.ids.index_of(id) else error(ui.invalid, "Unknown panel")]
 
-    pub func reset(self) -> unit!: self.restore(self.default_text)
+    pub func reset(self) -> unit!:
+        self.kept = ""
+        self.restore(self.default_text)
+
+    ## The layout to keep (for the next start): while a panel is solo, the
+    ## one it will go back to.
+    pub func text(self) -> str!:
+        return self.kept if self.kept != "" else self.dock.layout_text()
+
+    ## Whether a panel has the dock to itself.
+    pub func is_solo(self) -> bool:
+        return self.kept != ""
+
+    ## Panel `id` alone in the dock, the layout kept.
+    pub func solo(self, id: str) -> unit!:
+        if self.kept != "":
+            return
+        let alone = self.panel(id)
+        self.kept = self.dock.layout_text()
+        for panel in self.panels:
+            if not (panel is alone):
+                self.dock.remove(panel)
+        self.dock.select(alone)
+
+    ## The kept layout back.
+    pub func unsolo(self) -> unit!:
+        if self.kept == "":
+            return
+        let text = self.kept
+        self.kept = ""
+        self.restore(text)
 
     ## Validate the complete plan before moving any live panel.
     pub func restore(self, text: str) -> unit!:
@@ -104,7 +138,8 @@ pub class DockLayout:
             floats.append(fields[5])
             bounds.append(box)
         if reader.seen.length != self.ids.length: error(ui.invalid, "Layout is missing a panel")
-        for id in self.ids: self.dock.remove(self.panel(id))
+        for id in self.ids:
+            if self.dock.contains(self.panel(id)): self.dock.remove(self.panel(id))
         if let tree = root:
             let start = anchor(tree)
             self.dock.add(self.panel(start))

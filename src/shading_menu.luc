@@ -25,7 +25,7 @@ func quality_divisions() -> list[int]:
 
 ## The CAD mesh row, under every mode's options.
 func quality_row(workspace: Workspace) -> str:
-    let at = quality_divisions().index_of(workspace.view.cad_quality) else 1
+    let at = quality_divisions().index_of(workspace.display.cad_quality) else 1
     return f"CAD mesh: {quality_names()[at]}"
 
 ## The Render mode's sample caps a click steps through.
@@ -56,11 +56,13 @@ func limit_text(value: float) -> str:
 
 ## The options shown under the modes: stripes while Zebra or Isophotes is on,
 ## the value, range and radius band while Curvature is, the pull direction
-## and angle while Draft is; then the CAD mesh quality; then,
-## while Gaussian splats are shown, how they draw.
+## and angle while Draft is; then the CAD mesh quality and the viewport's
+## layout (one pane or four); then, while Gaussian splats are shown, how
+## they draw.
 func option_rows(workspace: Workspace) -> list[str]:
     let rows = mode_option_rows(workspace)
     rows.append(quality_row(workspace))
+    rows.append("Layout: Four views" if workspace.panes.four else "Layout: One view")
     for text in splat_rows(workspace):
         rows.append(text)
     return rows
@@ -83,24 +85,24 @@ func showing_splats(workspace: Workspace) -> bool:
 func splat_rows(workspace: Workspace) -> list[str]:
     if not showing_splats(workspace):
         return []
-    let v = workspace.view
+    let v = workspace.display
     let cull = "1/255" if v.splat_cull < 0.005 else f"{v.splat_cull}"
     return ["Splats: Centers" if v.splat_centers else "Splats: Shaded", f"SH degree: {v.splat_degree}", f"Alpha cull: {cull}", f"Splat scale: {v.splat_scale}"]
 
 func mode_option_rows(workspace: Workspace) -> list[str]:
     if workspace.view.display_mode == 5:
-        return [f"Samples: {workspace.view.render_samples}"]
+        return [f"Samples: {workspace.display.render_samples}"]
     if workspace.view.display_mode == 9:
-        let range = "Auto" if workspace.view.curvature_range <= 0.0 else f"{workspace.view.curvature_range} / unit"
-        return [f"Value: {curvature_names()[workspace.view.curvature_kind]}", f"Range: {range}", f"Min radius: {limit_text(workspace.view.curvature_band_low)}",
-                f"Max radius: {limit_text(workspace.view.curvature_band_high)}"]
+        let range = "Auto" if workspace.display.curvature_range <= 0.0 else f"{workspace.display.curvature_range} / unit"
+        return [f"Value: {curvature_names()[workspace.display.curvature_kind]}", f"Range: {range}", f"Min radius: {limit_text(workspace.display.curvature_band_low)}",
+                f"Max radius: {limit_text(workspace.display.curvature_band_high)}"]
     if workspace.view.display_mode == 10:
-        return [f"Pull: {pull_names()[workspace.view.draft_axis]}", f"Draft angle: {workspace.view.draft_angle}°"]
+        return [f"Pull: {pull_names()[workspace.display.draft_axis]}", f"Draft angle: {workspace.display.draft_angle}°"]
     if not (workspace.view.display_mode in [7, 8]):
         return []
-    let axis = ["X", "Y", "Z", "View up"][workspace.view.zebra_axis]
-    return [f"Stripes: {workspace.view.zebra_stripes}", f"Dark share: {int(workspace.view.zebra_duty * 100.0 + 0.5)}%", f"Axis: {axis}",
-            "Model: Planar" if workspace.view.zebra_planar else "Model: Cylinder", "Shading: Off" if workspace.view.zebra_stripes_only else "Shading: On"]
+    let axis = ["X", "Y", "Z", "View up"][workspace.display.zebra_axis]
+    return [f"Stripes: {workspace.display.zebra_stripes}", f"Dark share: {int(workspace.display.zebra_duty * 100.0 + 0.5)}%", f"Axis: {axis}",
+            "Model: Planar" if workspace.display.zebra_planar else "Model: Cylinder", "Shading: Off" if workspace.display.zebra_stripes_only else "Shading: On"]
 
 let row: float = 35.0
 
@@ -149,14 +151,18 @@ pub class ShadingMenu: Widget:
     ## mesh quality, which meshes CAD bodies again).
     func option(self, index: int) -> unit!:
         let w = self.workspace
-        let splat_index = index - mode_option_rows(w).length - 1
+        let splat_index = index - mode_option_rows(w).length - 2
         if splat_index >= 0:
             self.splat_option(splat_index)
             return
         if index == mode_option_rows(w).length:
             let qualities = quality_divisions()
-            let at = qualities.index_of(w.view.cad_quality) else 1
+            let at = qualities.index_of(w.display.cad_quality) else 1
             w.set_cad_quality(qualities[(at + 1) % qualities.length])
+            self.box.invalidate()
+            return
+        if index == mode_option_rows(w).length + 1:
+            w.toggle_four()
             self.box.invalidate()
             return
         if w.view.display_mode == 5:
@@ -164,26 +170,26 @@ pub class ShadingMenu: Widget:
             if index != 0:
                 return
             let caps = render_caps()
-            let at = caps.index_of(w.view.render_samples) else 2
-            w.view.render_samples = caps[(at + 1) % caps.length]
+            let at = caps.index_of(w.display.render_samples) else 2
+            w.display.render_samples = caps[(at + 1) % caps.length]
             w.revision += 1
             self.box.invalidate()
             return
         if w.view.display_mode == 9:
             if index == 0:
-                w.view.curvature_kind = (w.view.curvature_kind + 1) % curvature_names().length
+                w.display.curvature_kind = (w.display.curvature_kind + 1) % curvature_names().length
             elif index == 1:
                 let ranges = curvature_ranges()
-                let at = ranges.index_of(w.view.curvature_range) else 0
-                w.view.curvature_range = ranges[(at + 1) % ranges.length]
+                let at = ranges.index_of(w.display.curvature_range) else 0
+                w.display.curvature_range = ranges[(at + 1) % ranges.length]
             elif index == 2:
                 let lows = band_lows()
-                let at = lows.index_of(w.view.curvature_band_low) else 0
-                w.view.curvature_band_low = lows[(at + 1) % lows.length]
+                let at = lows.index_of(w.display.curvature_band_low) else 0
+                w.display.curvature_band_low = lows[(at + 1) % lows.length]
             elif index == 3:
                 let highs = band_highs()
-                let at = highs.index_of(w.view.curvature_band_high) else 0
-                w.view.curvature_band_high = highs[(at + 1) % highs.length]
+                let at = highs.index_of(w.display.curvature_band_high) else 0
+                w.display.curvature_band_high = highs[(at + 1) % highs.length]
             else:
                 return
             w.revision += 1
@@ -191,33 +197,33 @@ pub class ShadingMenu: Widget:
             return
         if w.view.display_mode == 10:
             if index == 0:
-                w.view.draft_axis = (w.view.draft_axis + 1) % pull_names().length
+                w.display.draft_axis = (w.display.draft_axis + 1) % pull_names().length
             elif index == 1:
                 let angles = draft_angles()
-                let at = angles.index_of(w.view.draft_angle) else 0
-                w.view.draft_angle = angles[(at + 1) % angles.length]
+                let at = angles.index_of(w.display.draft_angle) else 0
+                w.display.draft_angle = angles[(at + 1) % angles.length]
             else:
                 return
             w.revision += 1
             self.box.invalidate()
             return
         if index == 0:
-            w.view.zebra_stripes = w.view.zebra_stripes * 2 if w.view.zebra_stripes < 64 else 8
+            w.display.zebra_stripes = w.display.zebra_stripes * 2 if w.display.zebra_stripes < 64 else 8
         elif index == 1:
-            w.view.zebra_duty = w.view.zebra_duty + 0.1 if w.view.zebra_duty < 0.85 else 0.1
+            w.display.zebra_duty = w.display.zebra_duty + 0.1 if w.display.zebra_duty < 0.85 else 0.1
         elif index == 2:
-            w.view.zebra_axis = (w.view.zebra_axis + 1) % 4
+            w.display.zebra_axis = (w.display.zebra_axis + 1) % 4
         elif index == 3:
-            w.view.zebra_planar = not w.view.zebra_planar
+            w.display.zebra_planar = not w.display.zebra_planar
         elif index == 4:
-            w.view.zebra_stripes_only = not w.view.zebra_stripes_only
+            w.display.zebra_stripes_only = not w.display.zebra_stripes_only
         else:
             return
         w.revision += 1
         self.box.invalidate()
     ## Step splat option `index` (splat_rows' order); nothing recooks.
     func splat_option(self, index: int) -> unit!:
-        let v = self.workspace.view
+        let v = self.workspace.display
         if index == 0:
             v.splat_centers = not v.splat_centers
         elif index == 1:
@@ -244,7 +250,7 @@ pub class ShadingMenu: Widget:
         let names = mode_names()
         for index in 0..<names.length:
             let y = 6.0 + float(index) * row
-            let selected = index == self.workspace.view.display_mode or (index == 6 and self.workspace.view.normals_visible)
+            let selected = index == self.workspace.view.display_mode or (index == 6 and self.workspace.display.normals_visible)
             if self.hovered == index:
                 p.rectangle(Rect(4.0, y, 260.0, 34.0), theme.grey(72.0))
             if selected:

@@ -9,7 +9,8 @@ import memory
 from luce_std import math
 from luce_geocore.geocore import Vector3, Matrix4, Bounds, Mesh, invalid, mesh_overlay_points
 from luce_geocore.core.growing import Growing
-from luce_3d.graphics import WireBatch, wire_batch_type, PerspectiveCamera, WireRenderer, append_curve_segments
+from luce_3d.graphics import WireBatch, wire_batch_type, WireRenderer, append_curve_segments
+from luce_3d import graphics
 from luce_gpu import gpu
 from luce_cad.model import CadOverlay, CadPreviewSet
 from luce_cad.measure import CadCheck, check_lines, check_labels
@@ -43,7 +44,7 @@ pub struct OverlayLines:
         return self.points.items[(usize)index]
 
     ## Highlight helper strokes without rebuilding Luce endpoint lists.
-    pub func draw(camera: interop.Reference[PerspectiveCamera], target: interop.View[gpu.RenderTarget], color: gpu.Color, width: f64 = 3.0) -> !:
+    pub func draw(camera: interop.Reference[graphics.Camera], target: interop.View[gpu.RenderTarget], color: gpu.Color, width: f64 = 3.0) -> !:
         try WireRenderer.lines(self.points.view(), camera, target, color, width, writes_depth = false)
 
     ## Strokes lighting lines already drawn (a hovered or picked curve over
@@ -51,7 +52,7 @@ pub struct OverlayLines:
     ## At one depth, the two lines' strips of different widths each won
     ## where rounding favored them: a lit line showed the plain one through
     ## it in blobs.
-    pub func draw_lit(camera: interop.Reference[PerspectiveCamera], target: interop.View[gpu.RenderTarget], color: gpu.Color, width: f64) -> !:
+    pub func draw_lit(camera: interop.Reference[graphics.Camera], target: interop.View[gpu.RenderTarget], color: gpu.Color, width: f64) -> !:
         try WireRenderer.lines(self.points.view(), camera, target, color, width, bias = lit_bias, writes_depth = false)
 
     ## The box around every endpoint (a zero box when there are none).
@@ -331,28 +332,27 @@ pub struct OverlayLines:
         else: try self.add_light(item.light, item.matrix)
 
     ## Distance to a helper stroke within eight screen pixels, or -1.
-    pub func pick(camera: interop.Reference[PerspectiveCamera], x: f64, y: f64, width: f64, height: f64) -> f64!:
+    pub func pick(camera: interop.Reference[graphics.Camera], x: f64, y: f64, width: f64, height: f64) -> f64!:
         let p = try camera.value().projection(width / math.max(1.0, height))
         var best = 8.0
         var depth = -1.0
         for at in 0..<self.points.count // 2:
-            let a = self.points.items[at * 2].subtract(p.position)
-            let b = self.points.items[at * 2 + 1].subtract(p.position)
-            let az = -a.dot(p.backward)
-            let bz = -b.dot(p.backward)
-            if az <= p.near or bz <= p.near: continue
-            let ax = (a.dot(p.right) * p.focal / p.aspect / az + 1.0) * width * 0.5
-            let ay = (1.0 - a.dot(p.up) * p.focal / az) * height * 0.5
-            let bx = (b.dot(p.right) * p.focal / p.aspect / bz + 1.0) * width * 0.5
-            let by = (1.0 - b.dot(p.up) * p.focal / bz) * height * 0.5
-            let dx = bx - ax
-            let dy = by - ay
-            let t = math.clamp(((x - ax) * dx + (y - ay) * dy) / math.max(1e-12, dx * dx + dy * dy), 0.0, 1.0)
-            let distance = math.hypot(x - ax - t * dx, y - ay - t * dy)
+            let a = self.points.items[at * 2]
+            let b = self.points.items[at * 2 + 1]
+            let sa = p.screen(a, width, height)
+            let sb = p.screen(b, width, height)
+            if sa.z <= p.near or sb.z <= p.near: continue
+            let dx = sb.x - sa.x
+            let dy = sb.y - sa.y
+            let t = math.clamp(((x - sa.x) * dx + (y - sa.y) * dy) / math.max(1e-12, dx * dx + dy * dy), 0.0, 1.0)
+            let distance = math.hypot(x - sa.x - t * dx, y - sa.y - t * dy)
             if distance >= best: continue
             best = distance
-            let fraction = (t / bz) / ((1.0 - t) / az + t / bz)
-            depth = a.add(b.subtract(a).multiply_scalar(fraction)).length()
+            # The point on the stroke (perspective-correct) and its distance
+            # along the view ray through it.
+            let fraction = t if p.orthographic() else (t / sb.z) / ((1.0 - t) / sa.z + t / sb.z)
+            let point = a.add(b.subtract(a).multiply_scalar(fraction))
+            depth = point.subtract(p.eye_for(point)).length()
         return depth
 
     func segment(matrix: Matrix4, a: Vector3, b: Vector3) -> !:

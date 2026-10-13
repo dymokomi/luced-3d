@@ -7,15 +7,17 @@ import project_values as values
 from luce_std import files, paths
 from luce_ui import ui
 import platform
+from view_panes import panes_size, valid_panes
 
 pub class Project:
     pub let graph: Network
-    pub let camera: list[float]
+    ## The viewport's layout and its panes' views (ViewPanes.state()).
+    pub let panes: list[float]
     pub let graph_view: list[float]
 
-    pub func init(self, graph: Network, camera: list[float], graph_view: list[float]):
+    pub func init(self, graph: Network, panes: list[float], graph_view: list[float]):
         self.graph = graph
-        self.camera = camera
+        self.panes = panes
         self.graph_view = graph_view
 
 ## Absolute lexical filename; the containing directory must exist, not the file.
@@ -61,7 +63,8 @@ pub func save(path: str, workspace: Workspace, graph_view: list[float]) -> unit!
     write_graph(doc, graph)
     doc.add("/scene/view", "editor_view")
     let w = workspace
-    doc.set("/scene/view", "camera", Value.numbers([6], [w.view.yaw, w.view.pitch, w.view.distance, w.view.target.x, w.view.target.y, w.view.target.z]))
+    # The viewport's layout and every pane's view (view_panes.luc).
+    doc.set("/scene/view", "panes", Value.numbers([panes_size], w.panes.state()))
     doc.set("/scene/view", "network", Value.numbers([3], graph_view))
     # Never produce a project our bounded loader would refuse to open. Encode
     # once; Prism's durable writer still uses synchronized atomic replacement.
@@ -73,16 +76,16 @@ pub func load(path: str) -> Project!:
     let source = filename(path)
     let doc = Document.parse(files.read_text(source, limit = 67108864))
     let graph = read_graph(doc)
-    let camera = values.numbers(doc, "/scene/view", "camera", 6, 6)
+    let panes = values.numbers(doc, "/scene/view", "panes", panes_size, panes_size)
     let graph_view = values.numbers(doc, "/scene/view", "network", 3, 3)
-    if camera[1] < -1.5 or camera[1] > 1.5 or camera[2] < 0.001 or camera[2] > 10000000.0 or graph_view[0] < 0.25 or graph_view[0] > 2.5:
-        error(ui.invalid, "Invalid project camera or network zoom")
+    if not valid_panes(panes) or graph_view[0] < 0.25 or graph_view[0] > 2.5:
+        error(ui.invalid, "Invalid project views or network zoom")
     for node in graph.nodes:
         if node.kind == "File" and node.texts[0] != "":
             node.texts[0] = values.line(paths.normalize(paths.join(paths.directory(source), node.texts[0])))
         if node.frozen != "":
             node.frozen = paths.normalize(paths.join(paths.directory(source), node.frozen))
-    return Project(graph, camera, graph_view)
+    return Project(graph, panes, graph_view)
 
 ## Authored edits only: selection, cooked caches and background progress aren't dirty.
 pub func same_graph(a: Network, b: Network) -> bool:

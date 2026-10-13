@@ -116,7 +116,7 @@ pub class Panels:
         self.spreadsheet = GeometrySheet(workspace)
         self.outliner = Outliner(workspace, font)
         self.outliner.on_menu = self.open_outliner_menu
-        self.render_view = RenderView(self.workspace.view)
+        self.render_view = RenderView(self.workspace.display)
         self.takes = TakesList(workspace, font)
         self.take_name = TextField("", font = font, placeholder = "Take name", cells = 12.0)
         self.search = NodeMenu(self.actions.add)
@@ -166,7 +166,7 @@ pub class Panels:
         let header = HStack([
             Menu("File", [self.actions.new_project, self.actions.open_project, self.actions.save, self.actions.save_as], font = font),
             self.menus.create, self.menus.modify,
-            Menu("Window", [self.actions.project_settings, self.actions.reset_layout], font = font),
+            Menu("Window", [self.actions.project_settings, self.actions.reset_layout, self.actions.four_views, self.actions.full_screen], font = font),
             Button(action = self.actions.undo, font = font), Button(action = self.actions.redo, font = font), Spacer(), self.projects.caption
         ], spacing = 4.0, padding = 4.0)
         let viewport = Panel("Viewport", self.view, minimum = Size(440.0, 270.0), closable = false, id = "viewport")
@@ -251,7 +251,7 @@ pub class Panels:
         if let node = self.workspace.selected():
             self.add_x = node.x
             self.add_y = node.y + node_room.row
-        let view_bounds = self.view.layout().bounds()
+        let view_bounds = self.view.pane_bounds()
         let body_bounds = self.body.layout().bounds()
         self.search.open(view_bounds.x - body_bounds.x + self.view.pointer_x, view_bounds.y - body_bounds.y + self.view.pointer_y, self.workspace.network.context(), self.workspace.network.has_inputs(self.workspace.network.scope))
 
@@ -297,7 +297,7 @@ pub class Panels:
         if not w.sketching() and w.hovered_sketch == "" and w.selecting() and not w.picking_objects() and w.selected_count() == 0 and hovered >= 0:
             selection_commands.choose_component(w, hovered, false)
         self.refresh()
-        let bounds = self.view.layout().bounds()
+        let bounds = self.view.pane_bounds()
         self.viewport_menu.open(bounds.x + x, bounds.y + y)
         self.tool_bar.refresh(true)
 
@@ -346,7 +346,7 @@ pub class Panels:
 
     ## A sketch tool asks for a length: the value box opens at the pointer.
     func ask_sketch_value(self, label: str, value: float, answer: func(float) -> unit!) -> unit!:
-        let bounds = self.view.layout().bounds()
+        let bounds = self.view.pane_bounds()
         let root = self.body.layout().bounds()
         let e = self.view.sketch.editor
         self.sketch_value.ask(label, value, bounds.x - root.x + e.pointer_x + 16.0, bounds.y - root.y + e.pointer_y + 16.0, answer)
@@ -356,7 +356,7 @@ pub class Panels:
     ## On a label (`inline`), the field alone covers it.
     func open_sketch_value(self, constraint: int, x: float, y: float, inline: bool) -> unit!:
         let node = self.workspace.selected() else return
-        let bounds = self.view.layout().bounds()
+        let bounds = self.view.pane_bounds()
         let root = self.body.layout().bounds()
         let name = self.workspace.edit_sketch if node.id == self.workspace.edit_sketch_node else ""
         for d in sketch_commands.dimensions(sketch_source.edited_text(node, name)):
@@ -386,7 +386,7 @@ pub class Panels:
         let target = handles.feature() else return
         let id = target.node.id
         let wanted = slot
-        let bounds = self.view.layout().bounds()
+        let bounds = self.view.pane_bounds()
         let root = self.body.layout().bounds()
         let tip = handles.tip(bounds.width, bounds.height, slot) else [bounds.width * 0.5, bounds.height * 0.5]
         let label = handles.row_name(target.kind, slot)
@@ -405,13 +405,13 @@ pub class Panels:
     ## a long press opens it (letting go over a mode chooses it).
     func open_context_menu(self, held: bool) -> unit!:
         self.actions.refresh()
-        let bounds = self.view.layout().bounds()
+        let bounds = self.view.pane_bounds()
         let anchor = self.context_anchor.layout().bounds()
         let button = context_display.button(shading_button(bounds.width))
         self.context_menu.open_at(bounds.x + button.x - anchor.x, bounds.y + button.y + button.height + 4.0 - anchor.y, held = held)
 
     func open_shading(self, held: bool) -> unit!:
-        let bounds = self.view.layout().bounds()
+        let bounds = self.view.pane_bounds()
         let root = self.body.layout().bounds()
         self.shading.open(bounds.x - root.x + bounds.width - 282.0, bounds.y - root.y + 42.0, held)
 
@@ -441,6 +441,7 @@ pub class Panels:
         self.refresh()
 
     pub func refresh(self) -> unit!:
+        self.apply_full_screen()
         self.projects.refresh()
         self.path.set_text(self.workspace.network.path())
         self.outliner.refresh()
@@ -461,7 +462,7 @@ pub class Panels:
         self.view.layout().invalidate()
         self.graph.layout().invalidate()
         # Once the viewport is laid out, so the box lands by the arrow.
-        if (self.workspace.ask_value or self.view.arrow.clicked >= 0) and self.view.layout().bounds().width > 0.0:
+        if (self.workspace.ask_value or self.view.arrow.clicked >= 0) and self.view.pane_bounds().width > 0.0:
             self.ask_value()
         self.status.set_text(self.status_text())
         self.shown_revision = self.workspace.revision
@@ -489,7 +490,7 @@ pub class Panels:
             if self.placed and not self.search.is_open():
                 self.placed = false
         self.inspector.poll()
-        if (self.workspace.ask_value or self.view.arrow.clicked >= 0) and self.view.layout().bounds().width > 0.0:
+        if (self.workspace.ask_value or self.view.arrow.clicked >= 0) and self.view.pane_bounds().width > 0.0:
             self.ask_value()
         self.place_tool_bar()
         if self.workspace.poll_compute():
@@ -498,12 +499,25 @@ pub class Panels:
             self.refresh()
         if self.render_view.running():
             self.render_view.layout().invalidate()
-        if self.view.render.running():
+        if self.view.rendering():
             self.view.layout().invalidate()
+
+    ## The viewport filling the window (Space with F, Window › Full screen
+    ## viewport): every other panel and the timeline hidden, their layout
+    ## kept; or them back as they were.
+    func apply_full_screen(self) -> unit!:
+        let wanted = self.workspace.panes.full_screen
+        if wanted == self.dock_layout.is_solo():
+            return
+        if wanted:
+            self.dock_layout.solo("viewport")
+        else:
+            self.dock_layout.unsolo()
+        self.timeline.body.layout().set_visible(not wanted)
 
     ## The tool bar follows the viewport (resized, docked elsewhere).
     func place_tool_bar(self) -> unit!:
-        let view_bounds = self.view.layout().bounds()
+        let view_bounds = self.view.pane_bounds()
         let body_bounds = self.body.layout().bounds()
         self.tool_bar.place(Rect(view_bounds.x - body_bounds.x, view_bounds.y - body_bounds.y, view_bounds.width, view_bounds.height))
 
@@ -545,5 +559,5 @@ pub class Panels:
         self.connections.clear()
         self.inspector.close()
         self.render_view.stop()
-        self.view.render.stop()
+        self.view.stop_rendering()
         self.actions.close()

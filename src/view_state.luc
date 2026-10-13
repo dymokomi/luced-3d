@@ -1,73 +1,75 @@
-## The viewport's camera and display settings: an orbit camera (yaw, pitch
-## and distance around a target), the display mode and its analysis
-## settings, and which guides are drawn. None of it is part of the graph or
-## its undo history; the Workspace holds one and bumps its revision when a
-## setting changes what is drawn.
-from luce_3d.graphics import Vector3, PerspectiveCamera, SplatLook, SplatMode
+## One viewport pane's view (view_panes.luc holds the panes; what they all
+## show alike, the analysis modes' settings among it, is
+## display_settings.luc's): what it looks through, its shading mode and its
+## grid. Its camera orbits a target (yaw, pitch and distance about it,
+## turned `roll` about the view's axis), seeing in perspective or
+## orthographically: the Perspective view, the six orthographic ones (Top,
+## Bottom, Front, Back, Left, Right), a scene Camera node looked through
+## (camera_views.luc moves the node with the view) or a sketch's plane seen
+## square on (sketch editing). An orthographic view's height follows the
+## distance, so a switch keeps what is at the target the same size. None of
+## it is part of the graph or its undo history; the Workspace bumps its
+## revision when a setting changes what is drawn.
+from luce_3d.graphics import Vector3, Camera
 from luce_std import math
 
+## What a pane looks through (ViewState.looking): the Perspective view, the
+## orthographic views (Maya's names), a scene Camera node, a sketch's plane.
+pub let perspective = 0
+pub let top_view = 1
+pub let bottom_view = 2
+pub let front_view = 3
+pub let back_view = 4
+pub let left_view = 5
+pub let right_view = 6
+pub let scene_camera = 7
+pub let sketch_plane = 8
+
+## The views' names, perspective to sketch_plane (a scene camera goes by its
+## node's name).
+pub func view_names() -> list[str]:
+    return ["Perspective", "Top", "Bottom", "Front", "Back", "Left", "Right", "Camera", "Sketch"]
+
+## How many numbers ViewState.state() holds.
+pub let state_size = 11
+
 pub class ViewState:
-    pub let camera: PerspectiveCamera
+    pub let camera: Camera
     pub var yaw: float = 0.7
     pub var pitch: float = 0.5
     pub var distance: float = 9.0
     pub var target: Vector3
+    ## The view's turn about its axis, in radians (a sketch's plane is seen
+    ## with its own up).
+    pub var roll: float = 0.0
+    pub var orthographic: bool = false
+    ## What the view looks through (perspective .. sketch_plane), the Camera
+    ## node for scene_camera, and the vertical field of view in degrees.
+    pub var looking: int = 0
+    pub var camera_node: int = -1
+    pub var fov: float = 45.0
+    ## A scene camera's own near and far clip (empty: the view's), and the
+    ## node values the view last took from it or gave it (camera_views.luc).
+    pub var clip: list[float]
+    pub var through: list[float]
+    ## The pane's width for its height as last drawn (what framing fits).
+    pub var aspect: float = 1.0
+    ## The Perspective view as it was when this view last left it for
+    ## another (state(); empty: never left): choosing it again returns there,
+    ## as Maya's perspective camera stays where it was.
+    var held: list[float]
     pub var grid_visible: bool = true
-    ## How the rest of the scene draws around a context (context_display.luc):
-    ## 0 all, 1 greyed, 2 hidden.
-    pub var context_mode: int = 1
     ## 0 wireframe, 1 flat + wire, 2 flat, 3 shaded, 4 shaded + wire,
     ## 5 rendered (luce-render, render_mode.luc), 7 zebra, 8 isophotes,
     ## 9 curvature, 10 draft (6, the normals toggle, is not a mode).
     pub var display_mode: int = 3
-    ## Zebra and isophote stripes: count, dark share, axis (0 X, 1 Y, 2 Z,
-    ## 3 the view's up), planar instead of cylindrical, stripes without shading.
-    pub var zebra_stripes: int = 20
-    pub var zebra_duty: float = 0.5
-    pub var zebra_axis: int = 1
-    pub var zebra_planar: bool = false
-    pub var zebra_stripes_only: bool = false
-    ## Curvature (mode 9): the value shown (0 mean, 1 Gaussian, 2 k1, 3 k2,
-    ## 4 the larger |k|) and the value the map spans (0: automatic).
-    pub var curvature_kind: int = 0
-    pub var curvature_range: float = 0.0
-    ## Curvature's radius band: where the smallest radius of curvature is
-    ## under the least, magenta; over the greatest, grey (0: no limit).
-    pub var curvature_band_low: float = 0.0
-    pub var curvature_band_high: float = 0.0
-    ## Draft (mode 10): the pull direction (0 +X, 1 +Y, 2 +Z, 3 -X, 4 -Y,
-    ## 5 -Z) and the draft angle asked for, in degrees.
-    pub var draft_axis: int = 1
-    pub var draft_angle: float = 1.0
-    pub var normals_visible: bool = false
-    ## How finely CAD bodies are meshed for the viewport (surface divisions,
-    ## as the Tessellate node's): finer shows zebra and curvature truer.
-    pub var cad_quality: int = 16
-    ## Whether control hulls (curve control polygons, CV nets) are drawn.
-    pub var hulls_visible: bool = true
-    ## Gaussian splats: dots at their centers instead of shaded splats
-    ## (Wireframe always shows centers, as Houdini does), the highest SH band
-    ## evaluated, the alpha below which splats are culled, and a multiplier on
-    ## their size.
-    pub var splat_centers: bool = false
-    pub var splat_degree: int = 3
-    pub var splat_cull: float = 0.00392156862745098
-    pub var splat_scale: float = 1.0
-    ## Level of detail: merged splats stand in for runs of splats whose
-    ## footprint is under this many pixels (0: off), once the clouds shown
-    ## number `splat_lod_from` splats or more (luce-3d's SplatLook).
-    pub var splat_lod: float = 2.0
-    pub var splat_lod_from: int = 10000000
-    ## Render mode: the samples a pixel it refines to, and the display
-    ## transform it shares with the Render panel (exposure in stops; neutral
-    ## tone mapping, else standard clipping).
-    pub var render_samples: int = 256
-    pub var render_exposure: float = 0.0
-    pub var render_neutral: bool = true
 
     pub func init(self) -> unit!:
         self.target = Vector3(0.0, 0.8, 0.0)
-        self.camera = PerspectiveCamera(45.0, near = 0.05, far = 500.0)
+        self.clip = []
+        self.through = []
+        self.held = []
+        self.camera = Camera(45.0, near = 0.05, far = 500.0)
         self.update_camera()
 
     ## The mode meshes are prepared for: the analysis modes (zebra,
@@ -75,15 +77,54 @@ pub class ViewState:
     pub func mesh_mode(self) -> int:
         return self.display_mode if self.display_mode <= 4 else 3
 
-    pub func update_camera(self) -> unit!:
-        # Keep useful depth precision across CAD units and avoid a fixed far clip
-        # slicing large parts. Lens planes follow the orbit's working scale.
-        self.camera.set_projection(45.0, math.max(0.00001, self.distance * 0.01), math.min(1000000000.0, math.max(500.0, self.distance * 20.0)))
-        let horizontal = math.cos(self.pitch) * self.distance
-        self.camera.set_position(self.target.add(Vector3(math.sin(self.yaw) * horizontal, math.sin(self.pitch) * self.distance, math.cos(self.yaw) * horizontal)))
-        self.camera.look_at(self.target)
+    ## The unit direction from the target toward the eye.
+    pub func backward(self) -> Vector3:
+        let horizontal = math.cos(self.pitch)
+        return Vector3(math.sin(self.yaw) * horizontal, math.sin(self.pitch), math.cos(self.yaw) * horizontal)
 
+    ## The view's up: the orbit's (square to the view, toward world Y, or
+    ## away from the eye's side when looking straight down or up), turned by
+    ## the roll.
+    pub func up(self) -> Vector3:
+        let orbit = Vector3(-math.sin(self.yaw) * math.sin(self.pitch), math.cos(self.pitch), -math.cos(self.yaw) * math.sin(self.pitch))
+        if self.roll == 0.0:
+            return orbit
+        return orbit.rotated_about(self.backward(), self.roll)
+
+    ## Half the view's height at the target, in world units: an orthographic
+    ## view's height.
+    pub func half_height(self) -> float:
+        return self.distance * math.tan(self.fov * math.pi / 360.0)
+
+    pub func update_camera(self) -> unit!:
+        let back = self.backward()
+        let half = self.half_height()
+        var reach = self.distance
+        if self.clip.length == 2:
+            self.camera.set_projection(self.fov, self.clip[0], self.clip[1])
+        elif self.orthographic:
+            # The eye stands far back, so nothing near the target is cut
+            # away; its depth range reaches as far past the target. Depth is
+            # linear in orthographic: precision stays even across it.
+            reach = math.min(400000000.0, math.max(self.distance, half * 400.0))
+            self.camera.set_projection(self.fov, reach * 0.0001, reach * 2.0)
+        else:
+            # Keep useful depth precision across CAD units and avoid a fixed
+            # far clip slicing large parts. Lens planes follow the orbit's
+            # working scale.
+            self.camera.set_projection(self.fov, math.max(0.00001, self.distance * 0.01), math.min(1000000000.0, math.max(500.0, self.distance * 20.0)))
+        self.camera.set_orthographic(half if self.orthographic else 0.0)
+        self.camera.set_position(self.target.add(back.multiply_scalar(reach)))
+        self.camera.look_at(self.target, self.up())
+
+    ## Turn the view about its target. An orthographic view of the six, or a
+    ## sketch's plane, turns into the Perspective view as it goes (Blender's
+    ## auto perspective); a scene camera stays as it projects.
     pub func orbit(self, dx: float, dy: float) -> unit!:
+        if self.looking != scene_camera and self.looking != perspective:
+            self.looking = perspective
+            self.orthographic = false
+        self.roll = 0.0
         self.yaw -= dx * 0.008
         self.pitch = math.max(-1.5, math.min(1.5, self.pitch + dy * 0.008))
         self.update_camera()
@@ -92,15 +133,17 @@ pub class ViewState:
         self.distance = math.max(0.001, math.min(10000000.0, self.distance * math.exp(math.max(-2.0, math.min(2.0, -delta * 0.08)))))
         self.update_camera()
 
+    ## Slide the view across the screen by (`dx`, `dy`) points of a view
+    ## `height` tall: what is at the target follows the pointer.
     pub func pan(self, dx: float, dy: float, height: float) -> unit!:
-        let scale = self.distance * 0.828427 / math.max(1.0, height)
-        let right = Vector3(math.cos(self.yaw), 0.0, -math.sin(self.yaw))
-        let up = Vector3(-math.sin(self.yaw) * math.sin(self.pitch), math.cos(self.pitch), -math.cos(self.yaw) * math.sin(self.pitch))
-        self.target = self.target.add(right.multiply_scalar(-dx * scale)).add(up.multiply_scalar(dy * scale))
+        let lens = self.camera.projection(1.0)
+        let scale = 2.0 * self.half_height() / math.max(1.0, height)
+        self.target = self.target.add(lens.right.multiply_scalar(-dx * scale)).add(lens.up.multiply_scalar(dy * scale))
         self.update_camera()
 
     ## Frame `points`, from at least `least` away (the default view when
-    ## there are none).
+    ## there are none). Perspective frames their box's diagonal;
+    ## orthographic their extent across the pane, as wide as it was drawn.
     pub func frame(self, points: list[Vector3], least: float = 0.001) -> unit!:
         if points.length > 0:
             var minimum = points[0]
@@ -116,21 +159,126 @@ pub class ViewState:
             # bit, and a saved camera must read the same on every machine.
             let d = maximum.subtract(minimum)
             self.distance = math.max(math.max(0.001, least), math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z) * 1.8)
+            if self.orthographic:
+                self.distance = math.max(math.max(0.001, least), self.across(points, self.aspect) * 1.25 / math.tan(self.fov * math.pi / 360.0))
         else:
             self.target = Vector3(0.0, 1.0, 0.0)
             self.distance = 9.0
         self.update_camera()
 
-    ## How point clouds draw under these settings.
-    pub func splat_look(self) -> SplatLook:
-        var look = SplatLook()
-        look.mode = SplatMode.centers if self.splat_centers or self.display_mode == 0 else SplatMode.splats
-        look.sh_degree = self.splat_degree
-        look.alpha_cull = self.splat_cull
-        look.scale = self.splat_scale
-        look.lod_pixels = self.splat_lod
-        look.lod_from = self.splat_lod_from
-        return look
+    ## Half the height an orthographic view needs to hold `points` about the
+    ## target, `aspect` wide for its height.
+    func across(self, points: list[Vector3], aspect: float) -> float:
+        let back = self.backward()
+        let up = self.up()
+        let right = up.cross(back)
+        var half = 0.0
+        for point in points:
+            let offset = point.subtract(self.target)
+            half = math.max(half, math.max(math.abs(offset.dot(up)), math.abs(offset.dot(right)) / math.max(0.01, aspect)))
+        return half
+
+    ## Look from orthographic view `view` (top_view .. right_view) at the target, from
+    ## as far: the Perspective view is kept to return to.
+    pub func look_from(self, view: int) -> unit!:
+        if view < top_view or view > right_view:
+            return
+        self.hold_perspective()
+        let yaws = [0.0, 0.0, 0.0, math.pi, -math.pi * 0.5, math.pi * 0.5]
+        let pitches = [math.pi * 0.5, -math.pi * 0.5, 0.0, 0.0, 0.0, 0.0]
+        self.yaw = yaws[view - top_view]
+        self.pitch = pitches[view - top_view]
+        self.roll = 0.0
+        self.looking = view
+        self.camera_node = -1
+        self.orthographic = true
+        self.fov = 45.0
+        self.clip = []
+        self.update_camera()
+
+    ## Back to the Perspective view: where it was when the view left it, or,
+    ## never left, turned as it is now.
+    pub func look_in_perspective(self) -> unit!:
+        if self.looking == perspective:
+            return
+        if self.held.length == state_size:
+            self.set_state(self.held)
+            return
+        self.looking = perspective
+        self.camera_node = -1
+        self.orthographic = false
+        self.roll = 0.0
+        self.fov = 45.0
+        self.clip = []
+        self.update_camera()
+
+    ## Look square at the plane through the target facing `normal`, its `up`
+    ## toward the view's top, orthographically (a sketch being edited).
+    pub func look_square(self, normal: Vector3, up: Vector3) -> unit!:
+        self.hold_perspective()
+        self.turn_to(normal, up)
+        self.looking = sketch_plane
+        self.camera_node = -1
+        self.orthographic = true
+        self.fov = 45.0
+        self.clip = []
+        self.update_camera()
+
+    ## Look through Camera node `node` (camera_views.luc reads it): from
+    ## `position` along -`backward`, `up` toward the top, about a target
+    ## `distance` ahead; a field of view of `fov` degrees, orthographic
+    ## when `orthographic`; its own clip `near` to `far`.
+    pub func look_through(self, node: int, position: Vector3, backward: Vector3, up: Vector3, distance: float, fov: float, orthographic: bool, near: float, far: float) -> unit!:
+        self.hold_perspective()
+        self.turn_to(backward, up)
+        self.distance = distance
+        self.target = position.subtract(self.backward().multiply_scalar(distance))
+        self.looking = scene_camera
+        self.camera_node = node
+        self.orthographic = orthographic
+        self.fov = fov
+        self.clip = [near, far]
+        self.update_camera()
+
+    ## Turn the view so the eye looks along -`normal`, `up` toward the top.
+    func turn_to(self, normal: Vector3, up: Vector3) -> unit!:
+        let n = normal.normalized()
+        self.pitch = math.asin(math.max(-1.0, math.min(1.0, n.y)))
+        self.yaw = math.atan2(n.x, n.z) if math.abs(n.y) < 0.999999 else 0.0
+        self.roll = 0.0
+        # The roll that brings the orbit's up onto the one asked for.
+        let orbit = self.up()
+        self.roll = math.atan2(orbit.cross(up).dot(n), orbit.dot(up))
+
+    ## Keep the Perspective view to return to, while the view shows it.
+    func hold_perspective(self):
+        if self.looking == perspective:
+            self.held = self.state()
+
+    ## The view as numbers, to keep and set again (set_state): what it looks
+    ## through, the camera node, yaw, pitch, distance, the target, roll,
+    ## orthographic (1) or not, and the field of view.
+    pub func state(self) -> list[float]:
+        return [float(self.looking), float(self.camera_node), self.yaw, self.pitch, self.distance,
+                self.target.x, self.target.y, self.target.z, self.roll, 1.0 if self.orthographic else 0.0, self.fov]
+
+    ## Set the view to `values` (state()'s). A scene camera's lens and clip
+    ## come back from its node (camera_views.sync).
+    pub func set_state(self, values: list[float]) -> unit!:
+        if values.length != state_size:
+            return
+        self.looking = int(values[0])
+        self.camera_node = int(values[1])
+        self.yaw = values[2]
+        self.pitch = values[3]
+        self.distance = values[4]
+        self.target = Vector3(values[5], values[6], values[7])
+        self.roll = values[8]
+        self.orthographic = values[9] != 0.0
+        self.fov = values[10]
+        self.clip = []
+        self.through = []
+        self.update_camera()
 
     ## Switch to display `mode`; false when it is not a mode or is current.
     pub func set_display_mode(self, mode: int) -> bool:
@@ -138,3 +286,14 @@ pub class ViewState:
             return false
         self.display_mode = mode
         return true
+
+## Whether `values` (ViewState.state()'s) make a view that can be set:
+## finite, a known view, the pitch within a quarter turn, the distance and
+## the field of view in range.
+pub func valid_state(values: list[float]) -> bool:
+    if values.length != state_size:
+        return false
+    for value in values:
+        if not math.is_finite(value):
+            return false
+    return values[0] >= 0.0 and values[0] <= float(sketch_plane) and math.abs(values[3]) <= math.pi * 0.5 + 0.000001 and values[4] >= 0.001 and values[4] <= 10000000.0 and values[10] > 0.0 and values[10] < 179.0

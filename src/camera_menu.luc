@@ -1,0 +1,157 @@
+## Each viewport pane's camera menu, top right under the view buttons: what
+## the pane looks through, as its label; open, the Perspective view, the six
+## orthographic ones and every Camera node of the scene (looked through:
+## camera_views.luc), the current one lit. One menu is open at a time, in the
+## pane it was opened in.
+from luce_ui.ui import Painter, Point, Event
+from luce_gpu.gpu import Rect
+from luce_window.input import EventKind
+from workspace import Workspace
+from view_state import ViewState, view_names, perspective, scene_camera
+import camera_views
+import theme
+from luce_ui import ui
+
+## The button's top, its height and the menu's rows' height and width.
+pub let top = 46.0
+let button_height = 26.0
+let row = 26.0
+let menu_width = 176.0
+
+## One entry: its label, what a pane then looks through and the Camera
+## node (-1: none).
+pub class CameraEntry:
+    pub let label: str
+    pub let looking: int
+    pub let node: int
+
+    pub func init(self, label: str, looking: int, node: int):
+        self.label = label
+        self.looking = looking
+        self.node = node
+
+pub class CameraMenu:
+    let w: Workspace
+    ## The pane the menu is open in (-1: closed), and the entry under the
+    ## pointer (-1: none; on_button: the button).
+    pub var open_pane: int = -1
+    pub var hovered: int = -1
+
+    pub func init(self, w: Workspace):
+        self.w = w
+
+    ## The entries: the views, then the scene's cameras.
+    pub func entries(self) -> list[CameraEntry]:
+        let names = view_names()
+        let result: list[CameraEntry] = []
+        for at in perspective..<scene_camera:
+            result.append(CameraEntry(names[at], at, -1))
+        for node in camera_views.cameras(self.w):
+            result.append(CameraEntry(node.name, scene_camera, node.id))
+        return result
+
+    ## What `view` looks through, as the button says it.
+    pub func label(self, view: ViewState) -> str:
+        if view.looking == scene_camera:
+            if let node = self.w.network.find(view.camera_node):
+                return node.name
+        return view_names()[view.looking]
+
+    ## The button of a pane `width` wide, right-aligned under the view
+    ## buttons.
+    pub func button(self, view: ViewState, width: float) -> Rect:
+        let wide = float(self.label(view).length) * 7.5 + 44.0
+        return Rect(width - 18.0 - wide, top, wide, button_height)
+
+    ## The open list's rectangle, under the button.
+    func list_rect(self, width: float) -> Rect:
+        return Rect(width - 18.0 - menu_width, top + button_height + 4.0, menu_width, float(self.entries().length) * row + 12.0)
+
+    ## The top of entry `at` in the open list.
+    func row_top(self, at: int) -> float:
+        # A gap sets the scene's cameras apart from the views.
+        return top + button_height + 10.0 + float(at) * row + (4.0 if at >= scene_camera else 0.0)
+
+    ## Pane `pane`'s button and, open there, the list over everything.
+    pub func draw(self, p: Painter, pane: int, view: ViewState, width: float) -> unit!:
+        let b = self.button(view, width)
+        let lit = self.open_pane == pane or (self.hovered == on_button and pane == self.w.panes.active)
+        p.rounded_rectangle(b, theme.surface(), 4.0)
+        let icon = "camera" if view.looking == scene_camera else ("orthographic" if view.orthographic else "perspective")
+        ui.draw_icon(p.target(), icon, Rect(b.x + 6.0, b.y + 4.0, 18.0, 18.0), theme.accent() if lit else theme.text())
+        p.text(self.label(view), b.x + 28.0, b.y + 4.0, theme.accent() if lit else theme.text())
+        # A chevron: the menu opens below.
+        let cx = b.x + b.width - 10.0
+        p.triangle(Point(cx - 4.0, b.y + 11.0), Point(cx + 4.0, b.y + 11.0), Point(cx, b.y + 16.0), theme.text_muted())
+
+    ## The open list, drawn last over the pane it is open in.
+    pub func draw_list(self, p: Painter, pane: int, view: ViewState, width: float) -> unit!:
+        if self.open_pane != pane:
+            return
+        let entries = self.entries()
+        p.rounded_rectangle(self.list_rect(width), theme.surface(), 4.0)
+        for at in 0..<entries.length:
+            let entry = entries[at]
+            let y = self.row_top(at)
+            let current = entry.looking == view.looking and (entry.looking != scene_camera or entry.node == view.camera_node)
+            if at == self.hovered:
+                p.rectangle(Rect(width - 14.0 - menu_width, y, menu_width - 8.0, row - 2.0), theme.grey(72.0))
+            if at == scene_camera:
+                p.rectangle(Rect(width - 10.0 - menu_width, y - 5.0, menu_width - 16.0, 1.0), theme.border())
+            let icon = "camera" if entry.looking == scene_camera else ("perspective" if entry.looking == perspective else "orthographic")
+            ui.draw_icon(p.target(), icon, Rect(width - 10.0 - menu_width, y + 3.0, 18.0, 18.0), theme.accent() if current else theme.text_muted())
+            p.text(entry.label, width + 14.0 - menu_width, y + 4.0, theme.accent() if current else theme.text())
+
+    ## What is under (x, y) of a pane `width` wide: the button, an entry of
+    ## the list open in pane `pane`, or -1.
+    pub func hit(self, pane: int, view: ViewState, x: float, y: float, width: float) -> int:
+        let b = self.button(view, width)
+        if x >= b.x and x <= b.x + b.width and y >= b.y and y <= b.y + b.height:
+            return on_button
+        if self.open_pane != pane:
+            return -1
+        let r = self.list_rect(width)
+        if x < r.x or x > r.x + r.width:
+            return -1
+        let entries = self.entries()
+        for at in 0..<entries.length:
+            let y0 = self.row_top(at)
+            if y >= y0 and y < y0 + row:
+                return at
+        return -1
+
+    ## Pane `pane`'s pointer events: hover, the button opening or closing
+    ## the list, an entry chosen. Whether the menu took the event; a press
+    ## elsewhere closes the list and goes on.
+    pub func event(self, pane: int, view: ViewState, event: Event, width: float) -> bool!:
+        if not (event.kind in [EventKind.pointer_moved, EventKind.pointer_down]):
+            return false
+        let at = self.hit(pane, view, event.x, event.y, width) if event.inside else -1
+        if event.kind == EventKind.pointer_moved:
+            let changed = at != self.hovered
+            self.hovered = at
+            return changed or at != -1
+        if at == on_button:
+            self.open_pane = -1 if self.open_pane == pane else pane
+            return true
+        if at >= 0 and event.button == 0:
+            self.choose(view, self.entries()[at])
+            self.open_pane = -1
+            return true
+        if self.open_pane >= 0:
+            self.open_pane = -1
+            return at >= 0
+        return false
+
+    ## Look through `entry` in `view`.
+    pub func choose(self, view: ViewState, entry: CameraEntry) -> unit!:
+        if entry.looking == perspective:
+            view.look_in_perspective()
+        elif entry.looking == scene_camera:
+            camera_views.look_through(self.w, view, entry.node)
+        else:
+            view.look_from(entry.looking)
+        self.w.revision += 1
+
+## hit's answer for the button.
+pub let on_button = 100

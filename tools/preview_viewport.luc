@@ -1,0 +1,128 @@
+## The captures of the viewport's panes and cameras (view_panes.luc,
+## camera_menu.luc, view_cube.luc, camera_views.luc):
+##   view_quad: a torus on a box and a camera, in four panes (Top,
+##     Perspective, Front, Right), each framed; Perspective active.
+##   view_maximized: those four, Space tapped over Front: Front alone.
+##   view_full_screen: Space and F: the viewport fills the window.
+##   view_camera_menu: the Perspective pane's camera menu open, the scene's
+##     camera listed under the views.
+##   view_cube: the navigation gizmo with its +Y ball under the pointer.
+##   view_top_grid: Top, orthographic, its grid to the edges.
+##   view_look_through: the pane looking through the scene's camera.
+##   view_cad_quad: a CAD block in four panes, its edges over its faces.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3
+from workspace import Workspace
+from view_state import top_view
+import view_cube
+import camera_views
+import node_commands
+import preview_support
+
+pub func scenes() -> list[str]:
+    return ["view_quad", "view_maximized", "view_full_screen", "view_camera_menu", "view_cube", "view_top_grid", "view_look_through", "view_cad_quad"]
+
+## A torus on a box, and a camera looking at them from the front left.
+func torus_and_box(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    node_commands.set_parameter(w, 0, 2.0)
+    node_commands.add_node(w, "Torus", 200.0, 0.0)
+    node_commands.add_node(w, "Transform", 200.0, 100.0)
+    node_commands.set_parameter(w, 2, 2.4)
+    node_commands.set_parameter(w, 4, 90.0)
+    let moved = w.network.selected
+    node_commands.select_node(w, 1)
+    node_commands.add_node(w, "Merge", 0.0, 200.0)
+    node_commands.connect(w, moved, w.network.selected, 1)
+    node_commands.display_selected(w)
+    node_commands.leave_group(w)
+    node_commands.add_node(w, "Camera", 300.0, 200.0)
+    for (slot, value) in [(1, -6.0), (2, 4.0), (3, 9.0), (4, -18.0), (5, -33.0)]:
+        node_commands.set_parameter(w, slot, value)
+    node_commands.select_node(w, 1)
+    editor.panels.refresh()
+
+## A CAD block 40 by 20 by 30.
+func cad_block(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 40.0, 40.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+    for (slot, value) in [(0, 40.0), (1, 20.0), (2, 30.0)]:
+        node_commands.set_parameter(w, slot, value)
+    preview_support.settle(w)
+    w.selection = none
+    editor.panels.refresh()
+
+## Frame every pane on what is shown.
+func frame_panes(w: Workspace) -> unit!:
+    let acting = w.view
+    for view in w.panes.views:
+        w.view = view
+        w.frame_cube()
+    w.view = acting
+
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    let w = editor.workspace
+    if scene == "view_cad_quad":
+        cad_block(editor)
+        w.panes.four = true
+    else:
+        torus_and_box(editor)
+    if scene in ["view_quad", "view_maximized", "view_camera_menu"]:
+        w.panes.four = true
+    if scene == "view_top_grid":
+        w.view.look_from(top_view)
+    editor.panels.refresh()
+
+## Scene `scene` at frame `frame` of `last`: the panes framed once their
+## sizes are known, then the scene's gesture.
+pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
+    let w = editor.workspace
+    preview_support.settle(w)
+    if frame == 2:
+        if scene == "view_cad_quad":
+            w.selection = none
+        frame_panes(w)
+        if scene == "view_top_grid":
+            w.view.distance *= 1.6
+            w.view.update_camera()
+        if scene == "view_look_through":
+            for node in camera_views.cameras(w):
+                camera_views.look_through(w, w.view, node.id)
+    if frame != 3:
+        editor.panels.view.layout().invalidate()
+        return
+    let area = editor.panels.view.layout().bounds()
+    if scene == "view_maximized":
+        # Space tapped over the bottom left pane (Front).
+        editor.app.focus(editor.panels.view.layout())
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + area.width * 0.25, y = area.y + area.height * 0.75))
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.space))
+        editor.app.dispatch(Event(kind = EventKind.key_up, key = Key.space))
+    elif scene == "view_full_screen":
+        editor.app.focus(editor.panels.view.layout())
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + area.width * 0.5, y = area.y + area.height * 0.5))
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.space))
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.f))
+        editor.app.dispatch(Event(kind = EventKind.key_up, key = Key.f))
+        editor.app.dispatch(Event(kind = EventKind.key_up, key = Key.space))
+    elif scene == "view_camera_menu":
+        let pane = editor.panels.view.pane_bounds()
+        let b = editor.panels.view.cameras.button(w.view, pane.width)
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = pane.x + b.x + 10.0, y = pane.y + b.y + 10.0))
+        editor.app.dispatch(Event(kind = EventKind.pointer_down, x = pane.x + b.x + 10.0, y = pane.y + b.y + 10.0, button = 0))
+        editor.app.dispatch(Event(kind = EventKind.pointer_up, x = pane.x + b.x + 10.0, y = pane.y + b.y + 10.0, button = 0))
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = pane.x + b.x + 10.0, y = pane.y + b.y + 120.0))
+    elif scene == "view_cube":
+        # The pointer over the gizmo's +Y ball.
+        let lens = w.view.camera.projection(1.0)
+        let c = view_cube.center(area.width)
+        let x = c.x + Vector3(0.0, 1.0, 0.0).dot(lens.right) * view_cube.radius
+        let y = c.y - Vector3(0.0, 1.0, 0.0).dot(lens.up) * view_cube.radius
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + x, y = area.y + y))
+    editor.panels.refresh()
+    editor.panels.view.layout().invalidate()

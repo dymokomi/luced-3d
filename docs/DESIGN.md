@@ -194,6 +194,38 @@ and picking live in `node_gizmos`/`gizmo_math`, independent of evaluation.
 - Five display modes plus normal guides; Wireframe is transparent line-only,
   Flat ignores `N`, Shaded consumes it. CAD patch boundaries have their own batch.
 - Camera clip planes follow orbit distance for depth precision on large parts.
+- Panes and cameras (`view_panes.luc`, `view_state.luc`): the viewport shows
+  one pane or four (the viewport options' Layout row, Window › Four views, or
+  Space tapped over a pane: Maya's layout, Top, Perspective, Front and Right).
+  Each pane has its own view: what it looks through, its shading mode and its
+  grid; selection, the analysis and display settings
+  (`display_settings.luc`) and the network are shared. The pane under the
+  pointer is the active one, the Workspace's `view` while it is handled, so
+  every tool reads the pane it works in. Space with F makes the viewport
+  fill the window (the other panels and the timeline hidden, their layout
+  kept); Space alone pans only in the Network, as before.
+- Projection: luce-3d's `Camera` sees in perspective or orthographically
+  (`set_orthographic`); every renderer, the grid (which faces the plane an
+  orthographic view looks square at), lines, gizmos, picking, marquees,
+  splats and fog follow it through `Projection`'s `screen`, `ray_origin`,
+  `ray_direction`, `pixel` and `clip`. An orthographic view's height follows
+  the orbit distance, so switching keeps the size of what is at the target;
+  its eye stands far back so nothing near the target is cut away; framing
+  fits the extent across the pane. Render mode renders orthographic views
+  orthographically (luce-render's `look(..., orthographic)`).
+- Each pane's camera menu (`camera_menu.luc`, top right): Perspective, Top,
+  Bottom, Front, Back, Left, Right, and every Camera node, looked through
+  with its lens and clip (`camera_views.luc`); moving that view moves the
+  node, live during a drag and one undo step for it. Under it, Blender's
+  navigation gizmo (`view_cube.luc`): a click on an axis ball looks from
+  that side orthographically, a second click from the opposite one; a drag
+  orbits, and orbiting an orthographic view returns to perspective.
+- Entering a sketch (a Sketch node, an Edit CAD sketch, a sketch on a face)
+  turns the active pane to look square at its plane orthographically, its
+  axes upright; leaving it gives the pane its view back
+  (`sketch_camera.luc`). The camera menu may switch to Perspective meanwhile.
+- Projects keep the layout and every pane's view (`/scene/view` `panes`);
+  `~/.luced-3d/ui.prisma` keeps them too, with each pane's shading and grid.
 - Picking reads the renderer's GPU id pass (faces; points and edges on the
   picked face), read back once per view. Distance queries use an immutable
   triangle BVH built lazily on first query, shared by snapshots and refitted
@@ -279,8 +311,8 @@ for the selection, enabled by `Actions.refresh`.
   component selection and level) and its transactions (`perform`,
   `begin`/`commit`, undo/redo); it cooks the graph (`rebuild`, locally
   through `local_cook.luc` or on the worker, `poll_compute`) and holds the
-  view (`view_state.luc`: camera, display mode and analysis settings) and the
-  viewport's line batches (`viewport_batches.luc`). Commands on it live
+  viewport's panes (`view_panes.luc`; `view` is the pane acted on), the
+  display settings they share and the viewport's line batches (`viewport_batches.luc`). Commands on it live
   beside it, each change one transaction: `node_commands.luc` (nodes, flags,
   wiring, parameters, Groups), `selection_commands.luc` (picking, walking and
   the selection level), `modeling_commands.luc` (tools as Edit steps or verb
@@ -296,8 +328,9 @@ for the selection, enabled by `Actions.refresh`.
   without replacing an active field's value while typing.
 - `viewport_tools.luc`: component controls, selection overlays and handles,
   enabled by the selected/displayed node's capabilities.
-- `view.luc`: navigation, and composition of the scene through `luce-ui`'s
-  `SceneView`.
+- `view.luc`: the panes, each drawn by luce-3d's `Renderer` into its own
+  region of the viewport through its own view, navigation, and the routing
+  of events to the pane under the pointer.
 - `panels.luc` / `app.luc`: composition, search palette, refresh and lifecycle.
 - `node_catalog.luc`: node kinds, arity, parameter defaults/ranges and inspector
   metadata. `node_evaluation.luc` dispatches operators; `component_groups.luc`

@@ -2,8 +2,9 @@
 ## displayed geometry and its component selection, the selection level, and
 ## the transactions every change goes through (perform, begin/commit,
 ## undo/redo). It cooks the graph (rebuild), synchronously or on the worker
-## (poll_compute), and publishes the scene. It holds the view (camera and
-## display settings, view_state.luc) and the viewport's line batches
+## (poll_compute), and publishes the scene. It holds the viewport's panes
+## (view_panes.luc: each pane's camera and shading), the display settings
+## they share (display_settings.luc) and the viewport's line batches
 ## (viewport_batches.luc). Commands on it live beside it: node_commands,
 ## selection_commands, modeling_commands and placing_commands.
 import sketch_node
@@ -27,6 +28,8 @@ from compute_session import ComputeSession
 from display_publisher import DisplayPublisher
 from node_evaluation import SourceCache
 from view_state import ViewState
+from view_panes import ViewPanes
+from display_settings import DisplaySettings
 from viewport_batches import ViewportBatches
 from edit_kinds import is_edit, edit_kind, context_kind
 from geometry_data import GeometryData
@@ -42,7 +45,13 @@ pub class Workspace:
     pub let history: History
     pub let scene: Scene
     let objects: Group
-    pub let view: ViewState
+    ## The viewport's panes, and the view of the one acted on: the active
+    ## pane's, or while the viewport draws or handles a pane, that pane's
+    ## (everything drawing, picking or moving the camera reads this one).
+    pub let panes: ViewPanes
+    pub var view: ViewState
+    ## What every pane shows alike.
+    pub let display: DisplaySettings
     pub let batches: ViewportBatches
     pub var geometry: Mesh? = none
     ## Components of `geometry` (a luce-geocore Selection), on any displayed
@@ -83,6 +92,10 @@ pub class Workspace:
     ## While a Sketch is edited, the node displayed before it was (-1:
     ## none): Finish Sketch shows it again, as Fusion rolls forward.
     pub var sketch_return: int = -1
+    ## While a sketch is edited, the view its pane had before, and which
+    ## pane (sketch_camera.luc); empty when none is kept.
+    pub var sketch_view: list[float]
+    pub var sketch_pane: int = 0
     ## The sketch of an Edit CAD node edited in the viewport (its name, ""
     ## none) and that node: Fusion's sketches in direct modeling, objects of
     ## the model (edit_cad_sketches.luc), edited by the same editor.
@@ -170,6 +183,7 @@ pub class Workspace:
     ## happens only if it is still there (a camera set or moved meanwhile,
     ## the user's or a scene's, is not taken away).
     var pending_view: list[float] = []
+    var pending_pane: int = 0
     var project_epoch: int = 0
 
     pub func init(self) -> unit!:
@@ -177,7 +191,10 @@ pub class Workspace:
         self.snaps = SnapSettings()
         self.sketch_profiles = []
         self.sketch_picks = []
-        self.view = ViewState()
+        self.sketch_view = []
+        self.panes = ViewPanes()
+        self.view = self.panes.view()
+        self.display = DisplaySettings()
         self.batches = ViewportBatches()
         self.sources = SourceCache()
         self.edit_kinds = {}
@@ -235,6 +252,7 @@ pub class Workspace:
             if session.busy:
                 self.pending_frame = true
                 self.pending_view = self.camera_key()
+                self.pending_pane = self.panes.index_of(self.view)
                 return
             for point in self.publisher.bounds:
                 points.append(point)
@@ -256,7 +274,7 @@ pub class Workspace:
                 points.append(box.maximum)
         for at in 0..<self.batches.scenes.length:
             for helper in self.batches.helpers(at):
-                if self.view.hulls_visible and helper.count() > 0:
+                if self.display.hulls_visible and helper.count() > 0:
                     let box = helper.bounds()
                     points.append(box.minimum)
                     points.append(box.maximum)
@@ -277,14 +295,33 @@ pub class Workspace:
             append_bounds(data, item.matrix, points)
         self.frame_points(points)
 
-    ## Where the camera is (its orbit: yaw, pitch, distance and target).
+    ## Where the camera is (its view's state).
     func camera_key(self) -> list[float]:
-        let v = self.view
-        return [v.yaw, v.pitch, v.distance, v.target.x, v.target.y, v.target.z]
+        return self.view.state()
 
     ## Frame `points`, from at least `least` away.
     func frame_points(self, points: list[Vector3], least: float = 0.001) -> unit!:
         self.view.frame(points, least)
+        self.revision += 1
+
+    ## F: frame, or with Space held over the viewport, make the viewport
+    ## fill the window (or give the panels back).
+    pub func frame_or_fill(self) -> unit!:
+        if self.panes.space.held:
+            self.panes.space.other()
+            self.toggle_full_screen()
+            return
+        self.frame_cube()
+
+    ## The viewport filling the window, or the panels back (the panels apply
+    ## it).
+    pub func toggle_full_screen(self) -> unit!:
+        self.panes.full_screen = not self.panes.full_screen
+        self.revision += 1
+
+    ## The active pane alone, or the four panes.
+    pub func toggle_four(self) -> unit!:
+        self.panes.toggle(self.panes.active)
         self.revision += 1
 
     pub func reset_view(self) -> unit!:
@@ -294,13 +331,13 @@ pub class Workspace:
 
     ## Normal guides are made on the worker only while they are shown.
     pub func toggle_normals(self) -> unit!:
-        self.view.normals_visible = not self.view.normals_visible
+        self.display.normals_visible = not self.display.normals_visible
         self.revision += 1
-        if self.compute != none and self.view.normals_visible:
+        if self.compute != none and self.display.normals_visible:
             self.rebuild()
 
     pub func toggle_hulls(self) -> unit!:
-        self.view.hulls_visible = not self.view.hulls_visible
+        self.display.hulls_visible = not self.display.hulls_visible
         self.revision += 1
 
     ## Show lengths in `name` ("mm" or "in"): the document's unit, kept with
@@ -317,9 +354,9 @@ pub class Workspace:
 
     ## CAD bodies are meshed again at the new quality.
     pub func set_cad_quality(self, divisions: int) -> unit!:
-        if divisions == self.view.cad_quality:
+        if divisions == self.display.cad_quality:
             return
-        self.view.cad_quality = divisions
+        self.display.cad_quality = divisions
         self.network.cad_quality = divisions
         self.revision += 1
         self.rebuild()
@@ -353,9 +390,9 @@ pub class Workspace:
     ## Draw the rest of the scene around a context as `mode` says (all,
     ## greyed, hidden: context_display.luc). A view setting: nothing recooks.
     pub func set_context_mode(self, mode: int) -> unit!:
-        if mode < context_display.all or mode > context_display.hidden or mode == self.view.context_mode:
+        if mode < context_display.all or mode > context_display.hidden or mode == self.display.context_mode:
             return
-        self.view.context_mode = mode
+        self.display.context_mode = mode
         if self.compute != none:
             self.publisher.restyle(self.network, mode)
         else:
@@ -371,7 +408,7 @@ pub class Workspace:
             for mesh in self.local_around: result.append(mesh)
             return result
         # Greyed or hidden, the rest of the scene hides nothing.
-        if self.view.context_mode != context_display.all:
+        if self.display.context_mode != context_display.all:
             return result
         for at in 0..<self.publisher.nodes.length:
             if is_outside(self.network, self.publisher.nodes[at]):
@@ -663,6 +700,24 @@ pub class Workspace:
         self.network.invalidate(node.id)
         self.rebuild()
 
+    ## Camera node `id` moved with a pane looking through it
+    ## (camera_views.luc) to `values`: live inside a gesture begun with
+    ## begin() (committed as one undo step), else an undo step of its own.
+    pub func move_camera_node(self, id: int, values: list[float]) -> unit!:
+        let node = self.network.find(id) else return
+        if node.values == values:
+            return
+        if self.pending != none:
+            node.values = values.copy()
+            self.pending_changed = true
+            self.network.invalidate(id)
+            self.rebuild()
+            return
+        self.perform("Move " + node.name, func () -> unit!:
+            node.values = values.copy()
+            self.network.invalidate(id)
+            self.rebuild())
+
     ## An Edit node's last step's numbers dragged (a handle in the
     ## viewport): live, one undo step with the drag that began it.
     pub func preview_step(self, numbers: list[float]) -> unit!:
@@ -774,16 +829,16 @@ pub class Workspace:
         self.network.cv_nets = self.network.display if self.editing() and self.component_mode == point_level and (self.selected() else trap("selected")).kind == "Edit CAD" else -1
         if let session = self.compute:
             self.network.level = self.component_mode
-            self.network.cad_quality = self.view.cad_quality
+            self.network.cad_quality = self.display.cad_quality
             self.network.picking_cad = self.prompt != none
             self.network.picking = self.picking()
-            session.submit(self.network, self.view.mesh_mode(), self.view.normals_visible)
+            session.submit(self.network, self.view.mesh_mode(), self.display.normals_visible)
             self.revision += 1
             return
         self.network.picking_cad = self.prompt != none
         self.network.picking = self.picking()
         stamp_graph(self.network)
-        let cooked = cook_outputs(self.network, self.objects, self.batches, self.view.mesh_mode(), self.slicer, self.view.context_mode, self.dragging)
+        let cooked = cook_outputs(self.network, self.objects, self.batches, self.view.mesh_mode(), self.slicer, self.display.context_mode, self.dragging)
         self.notice = cooked.notice
         self.local_cast()
         self.section = self.slicer.section
@@ -850,7 +905,7 @@ pub class Workspace:
             return true
         # Lines split by the scope the result was styled for: a new scope
         # with the same products splits them again.
-        if self.publisher.adopt(session.service, self.network, self.view.context_mode) or self.batches_scope != self.network.scope:
+        if self.publisher.adopt(session.service, self.network, self.display.context_mode) or self.batches_scope != self.network.scope:
             self.batches.adopt(session.service, self.outside_nodes())
             self.batches_scope = self.network.scope
         self.batches.volumes = self.publisher.volumes
@@ -866,9 +921,13 @@ pub class Workspace:
         self.revision += 1
         if self.pending_frame:
             self.pending_frame = false
-            # Only a camera nobody moved since is framed.
+            # Only a camera nobody moved since is framed, in the pane that
+            # asked.
+            let acting = self.view
+            self.view = self.panes.views[self.pending_pane]
             if self.camera_key() == self.pending_view:
                 self.frame_cube()
+            self.view = acting
         return true
 
     ## The nearest visible surface along a view ray (the displayed scene).

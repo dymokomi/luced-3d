@@ -1,0 +1,115 @@
+## The viewport's panes: one view, or four (Maya's layout: Top, Perspective,
+## Front and Right, the Perspective one shown alone at first). Each pane has
+## its own view (view_state.luc: its camera, shading and grid); selection,
+## display settings and the network are the workspace's, shared. A tap of
+## Space over a pane shows it alone, or the four again (space_tap.luc); Space
+## and F together make the viewport fill the window (the panels apply
+## `full_screen`). The pane last pointed at is the active one: the one the
+## workspace's `view` is, which the shading menu, framing and the tools act
+## on.
+from luce_gpu.gpu import Rect
+from view_state import ViewState, top_view, front_view, right_view, state_size, valid_state
+from space_tap import SpaceTap
+
+## The gap between panes, in points.
+pub let gap = 2.0
+
+pub class ViewPanes:
+    pub let views: list[ViewState]
+    ## Four panes shown, or the active one alone.
+    pub var four: bool = false
+    pub var active: int = 1
+    ## Whether the viewport fills the window, its panels hidden.
+    pub var full_screen: bool = false
+    pub let space: SpaceTap
+
+    pub func init(self) -> unit!:
+        self.views = []
+        for at in 0..<4:
+            self.views.append(ViewState())
+        self.views[0].look_from(top_view)
+        self.views[2].look_from(front_view)
+        self.views[3].look_from(right_view)
+        self.space = SpaceTap()
+
+    ## The active pane's view.
+    pub func view(self) -> ViewState:
+        return self.views[self.active]
+
+    ## Which pane `view` is (the active one when it is none of them).
+    pub func index_of(self, view: ViewState) -> int:
+        for at in 0..<self.views.length:
+            if self.views[at] is view:
+                return at
+        return self.active
+
+    ## The panes shown in a viewport `width` by `height`: each pane's index
+    ## and its rectangle in the viewport, the active pane last.
+    pub func shown(self, width: float, height: float) -> list[(int, Rect)]:
+        if not self.four:
+            return [(self.active, Rect(0.0, 0.0, width, height))]
+        let half_width = (width - gap) * 0.5
+        let half_height = (height - gap) * 0.5
+        let result: list[(int, Rect)] = []
+        for at in 0..<4:
+            if at != self.active:
+                result.append((at, pane_rect(at, half_width, half_height)))
+        result.append((self.active, pane_rect(self.active, half_width, half_height)))
+        return result
+
+    ## The pane under (x, y) of a viewport `width` by `height` (the active
+    ## one off every pane, as in a gap).
+    pub func pane_at(self, x: float, y: float, width: float, height: float) -> int:
+        for (index, r) in self.shown(width, height):
+            if x >= r.x and x < r.x + r.width and y >= r.y and y < r.y + r.height:
+                return index
+        return self.active
+
+    ## The rectangle of pane `index` in a viewport `width` by `height`.
+    pub func rect_of(self, index: int, width: float, height: float) -> Rect:
+        for (at, r) in self.shown(width, height):
+            if at == index:
+                return r
+        return Rect(0.0, 0.0, width, height)
+
+    ## Show pane `index` alone, or the four again when one is alone.
+    pub func toggle(self, index: int) -> unit:
+        if index >= 0 and index < 4:
+            self.active = index
+        self.four = not self.four
+
+    ## The layout and every pane's view as numbers, to keep (set_state):
+    ## four (1) or one, the active pane, then each view's state().
+    pub func state(self) -> list[float]:
+        let result: list[float] = [1.0 if self.four else 0.0, float(self.active)]
+        for view in self.views:
+            result.extend(view.state())
+        return result
+
+    ## Set the layout and views to `values` (state()'s); false, changing
+    ## nothing, when they do not make one (valid_panes).
+    pub func set_state(self, values: list[float]) -> bool!:
+        if not valid_panes(values):
+            return false
+        self.four = values[0] != 0.0
+        self.active = int(values[1])
+        for at in 0..<4:
+            self.views[at].set_state(values[2 + at * state_size..<2 + (at + 1) * state_size])
+        return true
+
+## How many numbers ViewPanes.state() holds.
+pub let panes_size = 2 + 4 * state_size
+
+## Whether `values` (ViewPanes.state()'s) make a layout and its views.
+pub func valid_panes(values: list[float]) -> bool:
+    if values.length != panes_size or not (values[0] in [0.0, 1.0]) or not (values[1] in [0.0, 1.0, 2.0, 3.0]):
+        return false
+    for at in 0..<4:
+        if not valid_state(values[2 + at * state_size..<2 + (at + 1) * state_size]):
+            return false
+    return true
+
+## Pane `index`'s rectangle among four, each `width` by `height`: Top at the
+## top left, Perspective top right, Front bottom left, Right bottom right.
+func pane_rect(index: int, width: float, height: float) -> Rect:
+    return Rect(float(index % 2) * (width + gap), float(index // 2) * (height + gap), width, height)

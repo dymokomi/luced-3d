@@ -1,0 +1,235 @@
+## The viewport's panes and cameras (view_panes.luc, view_state.luc,
+## camera_views.luc, sketch_camera.luc): orthographic projection and picking
+## in a Front view, framing in a Top view, the layout and pane views kept and
+## set again (and through a project file), Space tapped against held, a scene
+## camera looked through moving its node, and a sketch's square view given
+## back when it is finished.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3
+from workspace import Workspace
+from view_state import perspective, top_view, front_view, back_view, right_view, scene_camera, sketch_plane
+from view_panes import ViewPanes
+from space_tap import SpaceTap, tap_nanoseconds
+from view_projection import project
+from sketch_support import render
+import camera_views
+import sketch_camera
+import cad_commands
+import node_commands
+import project_file
+from luce_std import math
+
+pub func viewport_panes_tests() -> unit!:
+    orthographic_picking()
+    orthographic_framing()
+    layout_round_trip()
+    space_tap()
+    camera_look_through()
+    sketch_view_restored()
+    print("PASS viewport panes: orthographic projection and picking, framing in Top, layout and views kept and restored (project too), Space tap and Space+F, a camera looked through moved as one undo step, a sketch's square view given back")
+
+func near(a: float, b: float, within: float = 0.000001):
+    assert(math.abs(a - b) <= within, f"{a} is not {b}")
+
+## A Front view sees the box's front face square on: a face center lands
+## where an orthographic projection puts it, a point's depth does not move
+## it across the screen, and the face under it is the one picked.
+func orthographic_picking() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.add_node(w, "Edit Mesh", 600.0, 80.0)
+    render(editor)
+    w.view.look_from(front_view)
+    assert(w.view.orthographic and w.view.looking == front_view)
+    w.frame_cube()
+    render(editor)
+    let area = editor.panels.view.layout().bounds()
+    let mesh = w.geometry else trap("mesh")
+    # The face looking at the camera (+Z) and its center on screen.
+    var facing = -1
+    for face in 0..<mesh.face_count():
+        if mesh.face_normal(face).z > 0.99:
+            facing = face
+    assert(facing >= 0)
+    let center = mesh.face_center(facing)
+    let at = project(w, center, area.width, area.height)
+    let behind = project(w, center.subtract(Vector3(0.0, 0.0, 1.0)), area.width, area.height)
+    near(at[0], behind[0], 0.0001)
+    near(at[1], behind[1], 0.0001)
+    let lens = w.view.camera.projection(area.width / area.height)
+    assert(lens.orthographic())
+    near(at[0], (center.subtract(lens.position).dot(lens.right) / (lens.ortho * lens.aspect) + 1.0) * area.width * 0.5, 0.0001)
+    editor.app.focus(editor.panels.view.layout())
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + at[0], y = area.y + at[1]))
+    assert(editor.panels.view.tools.hovered == facing, f"picked {editor.panels.view.tools.hovered}, not {facing}")
+    editor.close()
+
+## Framing in a Top view fits the scene's extent across the pane, not its
+## diagonal: every corner of the box lands inside, and it fills much of it.
+func orthographic_framing() -> unit!:
+    let w = Workspace()
+    node_commands.add_node(w, "Cube", 0.0, 0.0)
+    w.view.aspect = 1.5
+    w.view.look_from(top_view)
+    w.frame_cube()
+    let mesh = w.geometry else trap("mesh")
+    let b = mesh.bounds()
+    var widest = 0.0
+    for corner in 0..<8:
+        let p = Vector3(b.maximum.x if corner % 2 == 1 else b.minimum.x, b.maximum.y if (corner // 2) % 2 == 1 else b.minimum.y, b.maximum.z if corner >= 4 else b.minimum.z)
+        let s = project(w, p, 600.0, 400.0)
+        assert(s[0] >= 0.0 and s[0] <= 600.0 and s[1] >= 0.0 and s[1] <= 400.0, f"a corner is off the pane: {s}")
+        widest = math.max(widest, math.abs(s[1] - 200.0))
+    assert(widest > 120.0, f"the box fills too little of the pane: {widest}")
+    # Looking straight down: X right, -Z up.
+    let lens = w.view.camera.projection(1.5)
+    near(lens.right.x, 1.0)
+    near(lens.up.z, -1.0)
+
+## The panes' layout and views as numbers set again on new panes: the same
+## views; and through a project file.
+func layout_round_trip() -> unit!:
+    let panes = ViewPanes()
+    assert(not panes.four and panes.active == 1 and panes.views[0].looking == top_view and panes.views[1].looking == perspective)
+    assert(panes.views[2].looking == front_view and panes.views[3].looking == right_view)
+    panes.toggle(2)
+    assert(panes.four and panes.active == 2)
+    panes.views[3].look_from(back_view)
+    panes.views[1].orbit(40.0, -10.0)
+    panes.views[1].zoom(3.0)
+    let kept = panes.state()
+    let other = ViewPanes()
+    assert(other.set_state(kept))
+    assert(other.state() == kept and other.four and other.active == 2 and other.views[3].looking == back_view)
+    # Numbers that make no layout change nothing.
+    let broken = kept.copy()
+    broken[1] = 7.0
+    assert(not other.set_state(broken) and other.state() == kept)
+    # Saved with a project and opened again.
+    let w = Workspace()
+    node_commands.add_node(w, "Sphere", 0.0, 0.0)
+    _ = w.panes.set_state(kept)
+    w.view = w.panes.view()
+    let path = "panes-round-trip.prisma"
+    project_file.save(path, w, [1.0, 0.0, 0.0])
+    let opened = project_file.load(path)
+    assert(opened.panes == kept)
+
+## Space let go quickly with nothing else pressed is a tap; held long, or
+## with another key or a button meanwhile, it is not. Over the viewport a
+## tap shows the pane alone or the four; Space with F fills the window.
+func space_tap() -> unit!:
+    let tap = SpaceTap()
+    tap.press(0)
+    assert(tap.held and tap.release(tap_nanoseconds - 1))
+    tap.press(0)
+    tap.press(100)
+    assert(tap.release(200))
+    tap.press(0)
+    assert(not tap.release(tap_nanoseconds + 1))
+    tap.press(0)
+    tap.other()
+    assert(not tap.release(10))
+    assert(not tap.release(20))
+    let editor = Luce3D()
+    let w = editor.workspace
+    render(editor)
+    let area = editor.panels.view.layout().bounds()
+    editor.app.focus(editor.panels.view.layout())
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + area.width * 0.25, y = area.y + area.height * 0.25))
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.space))
+    editor.app.dispatch(Event(kind = EventKind.key_up, key = Key.space))
+    assert(w.panes.four, "a tap did not show the four panes")
+    render(editor)
+    # Over the top left pane (Top): tapped again, it shows alone.
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + area.width * 0.25, y = area.y + area.height * 0.25))
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.space))
+    editor.app.dispatch(Event(kind = EventKind.key_up, key = Key.space))
+    assert(not w.panes.four and w.panes.active == 0 and w.view.looking == top_view, "the pane under the pointer did not show alone")
+    # Space and F: the viewport fills the window; Space let go is no tap.
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.space))
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.f))
+    editor.app.dispatch(Event(kind = EventKind.key_up, key = Key.f))
+    editor.app.dispatch(Event(kind = EventKind.key_up, key = Key.space))
+    assert(w.panes.full_screen and not w.panes.four)
+    render(editor)
+    assert(editor.panels.dock_layout.is_solo() and not editor.panels.timeline.body.layout().is_visible())
+    w.toggle_full_screen()
+    render(editor)
+    assert(not editor.panels.dock_layout.is_solo() and editor.panels.timeline.body.layout().is_visible())
+    editor.close()
+
+## Looking through a Camera node: the pane sees from its placement; an
+## orbit moves the node, one undo step for the drag, which the undo takes
+## back (and the view with it).
+func camera_look_through() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.leave_group(w)
+    node_commands.add_node(w, "Camera", 300.0, 0.0)
+    let id = w.network.selected
+    render(editor)
+    camera_views.look_through(w, w.view, id)
+    assert(w.view.looking == scene_camera and w.view.camera_node == id, f"not looking through {id} ({w.network.require(id).kind}): {w.view.state()}")
+    let node = w.network.require(id)
+    let lens = w.view.camera.projection(1.0)
+    near(lens.position.x, node.values[1], 0.000001)
+    near(lens.position.y, node.values[2], 0.000001)
+    near(lens.position.z, node.values[3], 0.000001)
+    let before = node.values.copy()
+    let cursor = w.history.cursor
+    let area = editor.panels.view.layout().bounds()
+    editor.app.focus(editor.panels.view.layout())
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = area.x + 300.0, y = area.y + 220.0, button = 0, alt = true))
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + 340.0, y = area.y + 230.0, alt = true))
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + 380.0, y = area.y + 240.0, alt = true))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = area.x + 380.0, y = area.y + 240.0, button = 0, alt = true))
+    let moved = w.network.require(id).values
+    assert(moved[1] != before[1] and moved[5] != before[5], "the camera did not move with the view")
+    assert(w.history.cursor == cursor + 1, f"the drag made {w.history.cursor - cursor} undo steps")
+    # The view still sees from the node.
+    let after = w.view.camera.projection(1.0)
+    near(after.position.x, moved[1], 0.00001)
+    near(after.position.z, moved[3], 0.00001)
+    w.undo()
+    assert(w.network.require(id).values == before)
+    _ = camera_views.sync(w)
+    near(w.view.camera.projection(1.0).position.x, before[1], 0.00001)
+    # The camera gone, the pane falls back to Perspective.
+    node_commands.select_node(w, id)
+    node_commands.delete_selected(w)
+    _ = camera_views.sync(w)
+    assert(w.view.looking == perspective)
+    editor.close()
+
+## Entering a sketch turns the active pane to look square at its plane,
+## orthographic; finishing it gives the pane its view back.
+func sketch_view_restored() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    render(editor)
+    w.view.orbit(30.0, 12.0)
+    let kept = w.view.state()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Sketch", 0.0, 0.0)
+    node_commands.display_selected(w)
+    render(editor)
+    assert(w.sketching())
+    assert(w.view.looking == sketch_plane and w.view.orthographic, "entering the sketch did not look square at it")
+    let f = editor.panels.view.sketch.editor.frame
+    let lens = w.view.camera.projection(1.0)
+    near(math.abs(lens.backward.dot(f.normal())), 1.0, 0.000001)
+    near(lens.up.dot(f.v), 1.0, 0.000001)
+    # Perspective may be picked while sketching.
+    editor.panels.view.cameras.choose(w.view, editor.panels.view.cameras.entries()[0])
+    assert(not w.view.orthographic)
+    cad_commands.finish_sketch(w)
+    render(editor)
+    assert(not w.sketching())
+    assert(sketch_camera.follow(w) or w.view.state() == kept)
+    assert(w.view.state() == kept, "finishing the sketch did not give the view back")
+    editor.close()

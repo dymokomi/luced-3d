@@ -688,7 +688,9 @@ from the front), XZ (the ground, as from above), YZ (as from the right) or
 **Face**: a flat face of the body connected to its input, picked with
 **Pick face** (one click on the body), kept by the face's name so the sketch
 follows it as features upstream change the body. **Offset** moves the plane
-along its normal; starting to edit (or a new face) looks straight at it.
+along its normal; starting to edit (or a new face) turns the active pane to
+look square at it, orthographic, and finishing gives the pane its view back
+(DESIGN.md, Viewport and rendering).
 
 Selecting a Sketch edits it and rolls the display back to it, as Fusion
 does: the viewport shows the model as it was at the sketch. **Finish Sketch**

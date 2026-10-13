@@ -8,7 +8,17 @@
 ## Pick axis's sketch lines and the right-click menu. Its events go to the
 ## marking menu, the chrome, the sketch editor, the pickers, the handles
 ## and the tools before the camera's navigation.
-from luce_ui.ui import Widget, Layout, Constraints, Size, Event, Painter, SceneView
+##
+## It shows one pane or four (view_panes.luc), each drawn through its own
+## view, with its camera menu (camera_menu.luc) and navigation gizmo
+## (view_cube.luc) at the top right. The workspace's `view` is the pane
+## being drawn or handled: every tool reads it. Events go to the pane under
+## the pointer (a drag stays with the pane it began in), which becomes the
+## active one; the active pane is drawn last, so what the tools keep from a
+## draw (dimension labels, glyphs) is the active pane's. Space tapped shows
+## the pane alone or the four again (space_tap.luc); held with F the
+## viewport fills the window.
+from luce_ui.ui import Widget, Layout, Constraints, Size, Event, Painter
 from luce_3d.graphics import GroundGrid, Vector3, Renderer, SplatScene, FogScene, GaussianSplats, FogVolume
 from luce_3d import graphics as three
 from luce_gpu.gpu import RenderTarget, Rect
@@ -16,7 +26,7 @@ from luce_window.input import EventKind, Key, ScrollUnit
 from workspace import Workspace
 from viewport_tools import ViewportTools
 from splat_select import is_edited_cloud
-from viewport_chrome import shading_button, on_shading_button, snap_row_end
+from viewport_chrome import shading_button, on_shading_button, snap_row_end, outline
 from snapping import grid_step
 from sketch_view import SketchView
 from model_sketch_view import ModelSketchView
@@ -34,6 +44,11 @@ from sketch_shown import SketchShown
 from actions import Actions
 from marking_menu import MarkingMenu, MarkItem
 from render_mode import RenderMode
+from camera_menu import CameraMenu
+from view_cube import ViewCube
+from view_state import front_view, back_view, left_view, right_view, scene_camera
+import camera_views
+import sketch_camera
 import marking_items
 import theme
 import check_labels
@@ -51,8 +66,10 @@ import tool_prompts
 from luce_std import math
 
 pub class SceneViewport: Widget:
-    let view: SceneView
+    let box: Layout
     let workspace: Workspace
+    ## Draws every pane's scene (each through its own camera).
+    pub let renderer: Renderer
     pub let tools: ViewportTools
     ## A Sketch node's editor, while one is selected and displayed.
     pub let sketch: SketchView
@@ -85,8 +102,12 @@ pub class SceneViewport: Widget:
     pub let splats: SplatScene
     ## Every displayed fog drawing, marched together each view.
     pub let fog: FogScene
-    ## The Render shading mode's progressive render.
-    pub let render: RenderMode
+    ## Each pane's Render shading mode's progressive render.
+    pub let renders: list[RenderMode]
+    ## Each pane's camera menu and navigation gizmo (one open or pressed at
+    ## a time).
+    pub let cameras: CameraMenu
+    pub let cube: ViewCube
     let actions: Actions
     ## A marking menu's node entry: add that node after the selected one.
     pub var on_add: func(str) -> unit!? = none
@@ -106,13 +127,25 @@ pub class SceneViewport: Widget:
     pub var on_menu: func(float, float) -> unit!? = none
     ## Tab: the node menu, at the pointer.
     pub var on_search: func() -> unit!? = none
+    ## The pointer in the pane under it (what the tools and menus place by),
+    ## and in the whole viewport.
     pub var pointer_x: float = 100.0
     pub var pointer_y: float = 100.0
+    var viewport_x: float = 100.0
+    var viewport_y: float = 100.0
+    ## The pane a press began in, which keeps its drag (-1: none).
+    var captured: int = -1
+    ## A camera drag through a scene camera: one undo step for the gesture.
+    var moving_camera: bool = false
     ## Whether the viewport takes typed text now (take_text).
     var typing: bool = false
 
     pub func poll_hold(self) -> unit!:
         if self.marking.poll(time.now()):
+            self.layout().invalidate()
+        # A pane looking through a camera follows its node; a sketch left
+        # gives its pane's view back.
+        if camera_views.sync(self.workspace) or sketch_camera.follow(self.workspace):
             self.layout().invalidate()
         if self.mode_press >= 0 and time.now() - self.mode_press >= 350000000:
             self.mode_press = -1
@@ -141,29 +174,81 @@ pub class SceneViewport: Widget:
         self.marking = MarkingMenu()
         self.splats = SplatScene()
         self.fog = FogScene()
-        self.render = RenderMode()
+        self.renders = [RenderMode(), RenderMode(), RenderMode(), RenderMode()]
+        self.cameras = CameraMenu(workspace)
+        self.cube = ViewCube()
         self.actions = actions
         self.tools.chrome.on_reuse = self.reuse_tool
         self.tools.chrome.sketch_selected = self.sketch_selected
-        self.view = SceneView(workspace.scene, workspace.view.camera, Renderer(true))
-        self.tools.picker.renderer = self.view.renderer()
-        self.view.layout().set_interactive(true)
-        self.view.layout().set_focusable(true)
-        self.view.layout().set_accepts_tab(true)
+        self.renderer = Renderer(true)
+        self.tools.picker.renderer = self.renderer
+        self.box = Layout()
+        self.box.set_flex()
+        self.box.set_interactive(true)
+        self.box.set_focusable(true)
+        self.box.set_accepts_tab(true)
 
     pub func layout(self) -> Layout:
-        return self.view.layout()
+        return self.box
 
     pub func measure(self, available: Constraints) -> Size!:
-        return self.view.measure(available)
+        return Size(320.0, 240.0)
 
+    ## The active pane's Render mode.
+    pub func render_mode(self) -> RenderMode:
+        return self.renders[self.workspace.panes.active]
+
+    ## Whether a pane's Render mode is rendering.
+    pub func rendering(self) -> bool:
+        for render in self.renders:
+            if render.running():
+                return true
+        return false
+
+    ## Stop every pane's Render mode.
+    pub func stop_rendering(self):
+        for render in self.renders:
+            render.stop()
+
+    ## The active pane's rectangle, in the window.
+    pub func pane_bounds(self) -> Rect:
+        let bounds = self.layout().bounds()
+        let r = self.workspace.panes.rect_of(self.workspace.panes.active, bounds.width, bounds.height)
+        return Rect(bounds.x + r.x, bounds.y + r.y, r.width, r.height)
+
+    ## Every pane shown, each into its own region through its own view, the
+    ## active one last; between four, a gap, the active one outlined.
     pub func draw(self, target: RenderTarget) -> unit!:
+        let size = target.size()
+        let painter = Painter(target)
+        painter.rectangle(Rect(0.0, 0.0, size.width, size.height), theme.grey(30.0) if self.workspace.panes.four else theme.backdrop())
+        painter.close()
+        let w = self.workspace
+        _ = camera_views.sync(w)
+        for (index, r) in w.panes.shown(size.width, size.height):
+            if r.width < 8.0 or r.height < 8.0:
+                continue
+            w.view = w.panes.views[index]
+            w.view.aspect = r.width / r.height
+            self.draw_pane(target.region(r), index, index == w.panes.active)
+        w.view = w.panes.view()
+        if w.panes.four:
+            let r = w.panes.rect_of(w.panes.active, size.width, size.height)
+            let edge = Painter(target)
+            outline(edge, r, theme.accent())
+            edge.close()
+
+    ## Pane `index` into `target`, through the workspace's view (the pane's);
+    ## the `active` pane draws what the pointer is doing (boxes, strokes,
+    ## the marking menu, value boxes).
+    func draw_pane(self, target: RenderTarget, index: int, active: bool) -> unit!:
         let size = target.size()
         let painter = Painter(target)
         painter.rectangle(Rect(0.0, 0.0, size.width, size.height), theme.backdrop())
         painter.close()
         let w = self.workspace
-        let renderer = self.view.renderer()
+        let renderer = self.renderer
+        let render = self.renders[index]
         # Components are shown while editing, prompting, or with a selection.
         let editing = w.editing() or w.prompt != none or w.selected_count() > 0
         let wired = w.view.display_mode in [0, 1, 4]
@@ -171,10 +256,10 @@ pub class SceneViewport: Widget:
         # Draft (mode 10) measures against its pull direction where zebra's
         # stripes take their axis.
         let draft = w.view.display_mode == 10
-        renderer.set_shading(2 if w.view.display_mode == 7 else (3 if w.view.display_mode == 8 else (6 if w.view.display_mode == 9 else (7 if draft else 0))), float(w.view.zebra_stripes), w.view.zebra_duty,
-                             self.pull() if draft else self.zebra_axis(), w.view.zebra_planar, w.view.zebra_stripes_only)
-        renderer.set_curvature(w.view.curvature_kind, w.view.curvature_range, w.view.curvature_band_low, w.view.curvature_band_high)
-        renderer.set_draft(w.view.draft_angle)
+        renderer.set_shading(2 if w.view.display_mode == 7 else (3 if w.view.display_mode == 8 else (6 if w.view.display_mode == 9 else (7 if draft else 0))), float(w.display.zebra_stripes), w.display.zebra_duty,
+                             self.pull() if draft else self.zebra_axis(), w.display.zebra_planar, w.display.zebra_stripes_only)
+        renderer.set_curvature(w.display.curvature_kind, w.display.curvature_range, w.display.curvature_band_low, w.display.curvature_band_high)
+        renderer.set_draft(w.display.draft_angle)
         # Selected faces are tinted in the surface pass: one bit per face.
         let accent = theme.accent()
         let tinted = w.selecting() and not w.picking_brep() and w.selection != none and w.on_domain(Domain.face)
@@ -191,22 +276,22 @@ pub class SceneViewport: Widget:
         # Render mode shows luce-render's image once it suits the viewport
         # (render_mode.luc); until then the scene draws as Shaded draws it.
         let rendering = w.view.display_mode == 5
-        let rendered = rendering and self.render.advance(w, target, size.width, size.height)
+        let rendered = rendering and render.advance(w, target, size.width, size.height)
         if not rendering:
-            self.render.stop()
+            render.stop()
         if rendered:
             # The rasterized scene lays down the depth the overlays test
             # against; luce-render's image then covers its colors, and the
             # editing wires draw again over the image, alone.
             renderer.set_edges(0.0, wire_color, true)
             renderer.set_wire_overlay(0.0)
-            self.view.draw(target)
-            self.render.show(target, size.width, size.height)
+            renderer.render(w.scene, w.view.camera, target, fit_aspect = true)
+            render.show(target, size.width, size.height)
             if polygons:
                 renderer.set_edges(1.0, wire_color, false)
-                self.view.draw(target)
+                renderer.render(w.scene, w.view.camera, target, fit_aspect = true)
         else:
-            self.view.draw(target)
+            renderer.render(w.scene, w.view.camera, target, fit_aspect = true)
         if wired:
             if let batch = w.batches.wire_batch:
                 batch.draw(w.view.camera, target, theme.grey(175.0) if w.view.display_mode == 0 else theme.grey(55.0))
@@ -216,7 +301,7 @@ pub class SceneViewport: Widget:
         # Curves draw in every mode, over their dimmer control hulls. A sketch
         # being edited draws its own curves (live as they move), no hulls.
         let sketching = self.sketch.editor.active()
-        if w.view.hulls_visible and not sketching:
+        if w.display.hulls_visible and not sketching:
             # A CV drag's hulls as they were, a ghost under the moving ones.
             if w.dragging:
                 for batch in w.ghost_hulls:
@@ -234,22 +319,25 @@ pub class SceneViewport: Widget:
                 w.batches.check_batches[at].draw(w.view.camera, target, theme.check_group(group), 2.5 if group < 3 else 1.25)
         # The rest of the scene's lines around a context: as they are, dim,
         # or not at all.
-        if w.view.context_mode != context_display.hidden and not sketching:
+        if w.display.context_mode != context_display.hidden and not sketching:
             for batch in w.batches.around:
-                batch.draw(w.view.camera, target, theme.grey(120.0) if w.view.context_mode == context_display.all else theme.grey(68.0))
+                batch.draw(w.view.camera, target, theme.grey(120.0) if w.display.context_mode == context_display.all else theme.grey(68.0))
         self.sketch.draw_lines(target)
         self.model_sketches.draw(target)
         self.profiles.draw_lines(target)
         self.combine_target.draw(target)
         self.shown.draw_lines(target, size.width, size.height)
-        if w.view.normals_visible:
+        if w.display.normals_visible:
             if let batch = w.batches.normal_batch:
                 batch.draw(w.view.camera, target, theme.accent())
         if self.workspace.view.grid_visible and not sketching:
             # The ground grid to the horizon (luce-3d's GroundGrid), its
             # lines at the snapping step and every fifth level of it, finer
             # ones fading in as the camera nears; its axes in the accent.
-            GroundGrid.draw(w.view.camera, target, -0.008, grid_step(w.view.distance), theme.grey(58.0), theme.grey(84.0), theme.accent(), w.view.distance * 18.0)
+            # An orthographic view of the six shows the grid it looks
+            # square at, through the origin, as Maya's do.
+            let facing = grid_facing(w.view.looking) if w.view.orthographic else 1
+            GroundGrid.draw(w.view.camera, target, -0.008 if facing == 1 else 0.0, grid_step(w.view.distance), theme.grey(58.0), theme.grey(84.0), theme.accent(), w.view.distance * 18.0, facing = facing)
         # Point clouds after the opaque scene, all sorted together back to
         # front: they veil what lies behind them and hide behind what is in
         # front. Fog last of the 3D, every grid in one march: it veils the
@@ -257,20 +345,22 @@ pub class SceneViewport: Widget:
         # render draws splats itself, and has no fog.
         if not rendered:
             self.mark_selection()
-            self.splats.set_look(w.view.splat_look())
+            self.splats.set_look(w.display.splat_look(w.view.display_mode))
             let (clouds, volumes) = self.styled_around()
             self.splats.draw(clouds, w.view.camera, target)
             self.fog.draw(volumes, w.view.camera, target)
         let overlay = Painter(target)
-        # Where we are, centered along the top: the network's path.
+        # Where we are, centered along the top: the network's path; along
+        # the bottom in a pane too narrow for it between the top's buttons.
         let where = self.workspace.network.path()
-        overlay.text(where, (size.width - float(where.length) * 7.5) * 0.5, 14.0, theme.text_muted())
+        let roomy = size.width - float(where.length) * 7.5 > 2.0 * 420.0
+        overlay.text(where, (size.width - float(where.length) * 7.5) * 0.5, 14.0 if roomy else size.height - 32.0, theme.text_muted())
         overlay.text(f"Y up  /  grid: {units.length_text(grid_step(w.view.distance), units.document_unit(w))}", snap_row_end() + 10.0, size.height - 32.0, theme.text_muted())
         if rendering:
             # What the render is at, in the bottom-right corner.
-            let label = self.render.label()
+            let label = render.label()
             overlay.text(label, size.width - float(label.length) * 7.5 - 16.0, size.height - 32.0, theme.text_muted())
-        self.tools.draw(overlay, size.width, size.height)
+        self.tools.draw(overlay, size.width, size.height, active)
         self.knots.draw(overlay)
         self.regions.draw(overlay, size.width, size.height)
         self.align_lines.draw(overlay, size.width, size.height)
@@ -278,27 +368,33 @@ pub class SceneViewport: Widget:
         self.stretch.draw(overlay, size.width, size.height)
         self.arrow.draw(overlay, size.width, size.height)
         self.axes.draw(overlay, size.width, size.height)
-        self.sketch.draw(overlay, size.width, size.height)
+        self.sketch.draw(overlay, size.width, size.height, active)
         self.shown.draw(overlay, size.width, size.height)
         # Check nodes' edge labels, over the model.
         if not self.sketch.editor.active():
             check_labels.draw(overlay, w.batches.check_labels, func (at: Vector3) -> list[float]!:
                 return project(w, at, size.width, size.height))
-        self.marking.draw(overlay, size.width, size.height)
+        if active:
+            self.marking.draw(overlay, size.width, size.height)
         # The shading button, left of the view buttons.
         let shading = shading_button(size.width)
         overlay.rounded_rectangle(shading, theme.surface(), 4.0)
         mode_icon(overlay, w.view.display_mode, shading.x + 4.0, 11.0)
         overlay.rectangle(Rect(shading.x + 28.0, 34.0, 3.0, 3.0), theme.accent())
         # The context display button, left of it.
-        context_display.draw_button(overlay, shading, w.view.context_mode, w.network.scope >= 0, context_display.on_button(self.pointer_x, self.pointer_y, shading))
+        context_display.draw_button(overlay, shading, w.display.context_mode, w.network.scope >= 0, active and context_display.on_button(self.pointer_x, self.pointer_y, shading))
+        # Under them, the camera menu and the navigation gizmo; the menu's
+        # list over everything.
+        self.cameras.draw(overlay, index, w.view, size.width)
+        self.cube.draw(overlay, w.view, size.width, active)
+        self.cameras.draw_list(overlay, index, w.view, size.width)
         overlay.close()
 
     ## The point clouds and fog volumes to draw: the rest of the scene's
     ## faded (Greyed) or left out (Hidden) around a context.
     func styled_around(self) -> (list[GaussianSplats], list[FogVolume]):
         let w = self.workspace
-        let mode = w.view.context_mode
+        let mode = w.display.context_mode
         let clouds: list[GaussianSplats] = []
         for at in 0..<w.batches.clouds.length:
             let around = at < w.batches.cloud_nodes.length and is_outside(w.network, w.batches.cloud_nodes[at])
@@ -384,21 +480,93 @@ pub class SceneViewport: Widget:
 
     ## Draft's pull direction: +X, +Y, +Z, -X, -Y or -Z.
     func pull(self) -> Vector3:
-        let axis = self.workspace.view.draft_axis
+        let axis = self.workspace.display.draft_axis
         let sign = 1.0 if axis < 3 else -1.0
         let at = axis % 3
         return Vector3(sign if at == 0 else 0.0, sign if at == 1 else 0.0, sign if at == 2 else 0.0)
 
     ## The world axis zebra and isophote stripes run around: X, Y, Z or the view's up.
     func zebra_axis(self) -> Vector3!:
-        let axis = self.workspace.view.zebra_axis
+        let axis = self.workspace.display.zebra_axis
         if axis == 3:
             return self.workspace.view.camera.projection(1.0).up
         return Vector3(1.0 if axis == 0 else 0.0, 1.0 if axis == 1 else 0.0, 1.0 if axis == 2 else 0.0)
 
+    ## An event for the pane under the pointer (or the one a drag began in),
+    ## in its coordinates and through its view; that pane becomes the active
+    ## one, but while a marking menu, the camera menu or a value box holds
+    ## the active pane.
     pub func event(self, event: Event) -> unit!:
         let bounds = self.layout().bounds()
-        self.workspace.viewport_focus = self.view.layout().is_focused()
+        let w = self.workspace
+        let pointer = event.kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up, EventKind.scroll, EventKind.magnify]
+        if pointer:
+            self.viewport_x = event.x
+            self.viewport_y = event.y
+        var index = w.panes.pane_at(self.viewport_x, self.viewport_y, bounds.width, bounds.height)
+        if self.captured >= 0:
+            index = self.captured
+        let held = self.marking.is_open() or self.cameras.open_pane >= 0 or self.sketch.editor.typing.active()
+        if index != w.panes.active and not held:
+            w.panes.active = index
+            self.layout().invalidate()
+        index = w.panes.active
+        if event.kind == EventKind.pointer_down:
+            self.captured = index
+        let r = w.panes.rect_of(index, bounds.width, bounds.height)
+        var local = event
+        local.x = event.x - r.x
+        local.y = event.y - r.y
+        w.view = w.panes.views[index]
+        self.pane_event(local, index, r.width, r.height)
+        w.view = w.panes.view()
+        if event.kind == EventKind.pointer_up or event.cancelled or event.kind == EventKind.focus_lost:
+            self.captured = -1
+            if self.moving_camera:
+                self.moving_camera = false
+                w.commit()
+
+    ## Space: tapped over a pane, that pane alone or the four again; the
+    ## press is spent by any other key or button (Space with F fills the
+    ## window: Workspace.frame_or_fill). Whether the event was Space's.
+    func space(self, event: Event, index: int) -> bool:
+        let tap = self.workspace.panes.space
+        if event.kind == EventKind.key_down and event.key == Key.space:
+            tap.press(time.now())
+            return true
+        if event.kind == EventKind.key_up and event.key == Key.space:
+            if tap.release(time.now()):
+                self.workspace.panes.toggle(index)
+                self.workspace.revision += 1
+                self.layout().invalidate()
+            return true
+        if event.kind == EventKind.key_down or event.kind == EventKind.pointer_down:
+            tap.other()
+        if event.kind == EventKind.focus_lost:
+            tap.cancel()
+        return false
+
+    ## The view moved by navigation (`how`: 0 orbit, 1 zoom, 2 pan) by
+    ## (`dx`, `dy`) in a pane `height` tall; a camera looked through moves
+    ## with it.
+    func navigate(self, how: int, dx: float, dy: float, height: float) -> unit!:
+        let view = self.workspace.view
+        # Through a camera, a drag moves it as one undo step (event ends it).
+        if view.looking == scene_camera and self.captured >= 0 and not self.moving_camera:
+            self.workspace.begin("Move camera")
+            self.moving_camera = true
+        if how == 0:
+            view.orbit(dx, dy)
+        elif how == 1:
+            view.zoom(dx)
+        else:
+            view.pan(dx, dy, height)
+        camera_views.follow_view(self.workspace, view)
+
+    ## Pane `index`'s event, (x, y) in it, the pane `width` by `height`.
+    func pane_event(self, event: Event, index: int, width: float, height: float) -> unit!:
+        let bounds = Rect(0.0, 0.0, width, height)
+        self.workspace.viewport_focus = self.layout().is_focused()
         # The arrows nudge picked CVs by the step size (Alias's), only while
         # a CV move is on and the viewport has the keyboard: left and right
         # along the gizmo's first axis, up and down its second, with Shift
@@ -420,6 +588,8 @@ pub class SceneViewport: Widget:
             self.layout().invalidate()
             return
         self.take_text(self.sketch.editor.typing.active())
+        if self.space(event, index):
+            return
         if event.kind == EventKind.key_down and event.key == Key.tab:
             if let search = self.on_search:
                 search()
@@ -428,6 +598,13 @@ pub class SceneViewport: Widget:
             self.layout().invalidate()
             return
         if self.open_marking(event):
+            self.layout().invalidate()
+            return
+        # The camera menu and the navigation gizmo keep their pointer events.
+        if not event.alt and self.cameras.event(index, self.workspace.view, event, width):
+            self.layout().invalidate()
+            return
+        if not event.alt and self.cube.event(self.workspace.view, event, width, func (dx: float, dy: float) -> unit!: self.navigate(0, dx, dy, height)):
             self.layout().invalidate()
             return
         if event.cancelled or event.kind == EventKind.focus_lost:
@@ -461,7 +638,7 @@ pub class SceneViewport: Widget:
             return
         if event.kind == EventKind.pointer_up and self.context_press >= 0:
             self.context_press = -1
-            self.workspace.set_context_mode((self.workspace.view.context_mode + 1) % context_display.names().length)
+            self.workspace.set_context_mode((self.workspace.display.context_mode + 1) % context_display.names().length)
             self.layout().invalidate()
             return
         if event.cancelled:
@@ -554,11 +731,11 @@ pub class SceneViewport: Widget:
             let dx = event.x - self.last_x
             let dy = event.y - self.last_y
             if self.navigation_button == 2:
-                self.workspace.view.pan(dx, dy, self.layout().bounds().height)
+                self.navigate(2, dx, dy, height)
             elif self.navigation_button == 1:
-                self.workspace.view.zoom((dx - dy) * 0.1)
+                self.navigate(1, (dx - dy) * 0.1, 0.0, height)
             else:
-                self.workspace.view.orbit(dx, dy)
+                self.navigate(0, dx, dy, height)
             self.last_x = event.x
             self.last_y = event.y
         elif event.kind == EventKind.pointer_up or event.kind == EventKind.focus_lost or event.kind == EventKind.overflow:
@@ -567,14 +744,14 @@ pub class SceneViewport: Widget:
         elif event.kind == EventKind.scroll and event.scroll_unit == ScrollUnit.points:
             # A touchpad's two fingers: orbit, or pan with Shift; a pinch zooms.
             if event.shift:
-                self.workspace.view.pan(event.scroll_x, event.scroll_y, self.layout().bounds().height)
+                self.navigate(2, event.scroll_x, event.scroll_y, height)
             else:
-                self.workspace.view.orbit(event.scroll_x, event.scroll_y)
+                self.navigate(0, event.scroll_x, event.scroll_y, height)
         elif event.kind == EventKind.scroll:
             # A mouse wheel's lines zoom.
-            self.workspace.view.zoom(event.scroll_y)
+            self.navigate(1, event.scroll_y, 0.0, height)
         elif event.kind == EventKind.magnify:
-            self.workspace.view.zoom(event.scroll_y * 12.0)
+            self.navigate(1, event.scroll_y * 12.0, 0.0, height)
         elif event.kind == EventKind.key_down:
             if event.key == Key.escape:
                 self.dragging = false
@@ -588,3 +765,12 @@ pub class SceneViewport: Widget:
         if event.kind == EventKind.pointer_moved and not self.dragging and not self.tools.hover_changed:
             return
         self.layout().invalidate()
+
+## The world axis the grid of orthographic view `looking` faces: Front and
+## Back see the XY plane, Left and Right the YZ plane, the rest the ground.
+func grid_facing(looking: int) -> int:
+    if looking == front_view or looking == back_view:
+        return 2
+    if looking == left_view or looking == right_view:
+        return 0
+    return 1

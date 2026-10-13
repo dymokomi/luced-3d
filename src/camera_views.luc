@@ -1,0 +1,104 @@
+## Looking through a scene Camera node from a viewport pane, as Maya's Look
+## Through Selected does: the pane sees from the camera's placement (its
+## container's frame times its Translate and Rotate) with its lens (the
+## vertical field of view its focal length and vertical aperture make, or
+## orthographic, half its vertical aperture in tenths of a unit tall, USD's
+## convention) and clip planes. Moving the pane's view moves the camera: its
+## Translate and Rotate (and an orthographic camera's apertures, which zoom
+## changes) follow, live through a gesture and one undo step for it. The
+## camera changed elsewhere (its parameters, an undo) moves the pane's view.
+from workspace import Workspace
+from node import Node
+from view_state import ViewState, scene_camera
+from context_view import frame
+from angles import radians, degrees, euler_angles
+from luce_3d.graphics import Vector3, Matrix4
+from luce_std import math
+
+## Every Camera node of the network, in its order.
+pub func cameras(w: Workspace) -> list[Node]:
+    let result: list[Node] = []
+    for node in w.network.nodes:
+        if node.kind == "Camera":
+            result.append(node)
+    return result
+
+## Camera node `id` (none when there is no such Camera node).
+func camera_node(w: Workspace, id: int) -> Node?:
+    let node = w.network.find(id) else return none
+    return node if node.kind == "Camera" else none
+
+## Camera node `node`'s placement in the world.
+func placement(w: Workspace, node: Node) -> Matrix4!:
+    let v = node.values
+    let own = Matrix4.compose(Vector3(v[1], v[2], v[3]), Vector3(radians(v[4]), radians(v[5]), radians(v[6])), Vector3(1.0, 1.0, 1.0))
+    return frame(w.network, node.parent).multiply(own)
+
+## Look through Camera node `id` in `view`, about a target at its focus
+## distance.
+pub func look_through(w: Workspace, view: ViewState, id: int) -> unit!:
+    let node = camera_node(w, id) else return
+    take(w, view, node, math.max(0.01, node.values[13]))
+
+## Set `view` to see as `node` does, about a target `distance` ahead.
+func take(w: Workspace, view: ViewState, node: Node, distance: float) -> unit!:
+    let v = node.values
+    let m = placement(w, node)
+    let orthographic = v[0] != 0.0
+    # Perspective: the field of view of the lens and film back. Orthographic:
+    # the field of view that makes the view as tall as the film back at
+    # the target's distance.
+    let half = 0.05 * v[9] if orthographic else 0.5 * v[9] / v[7]
+    let fov = degrees(2.0 * math.atan((half / distance) if orthographic else half))
+    view.look_through(node.id, m.translation, m.z.normalized(), m.y.normalized(), distance, math.max(0.01, math.min(170.0, fov)), orthographic, v[10], v[11])
+    view.through = v.copy()
+
+## Keep every pane looking through a camera in step with its node: one
+## changed elsewhere (its parameters, an undo) moves the view; one gone
+## leaves the pane in Perspective. Whether a view changed.
+pub func sync(w: Workspace) -> bool!:
+    var changed = false
+    for view in w.panes.views:
+        if view.looking != scene_camera:
+            continue
+        if let node = camera_node(w, view.camera_node):
+            if node.values != view.through:
+                take(w, view, node, view.distance)
+                changed = true
+        else:
+            view.look_in_perspective()
+            changed = true
+    return changed
+
+## The values Camera node `node` takes for `view`'s eye: its Translate and
+## Rotate placing it there in its container (and an orthographic camera's
+## apertures, as tall as the view).
+func values_for(w: Workspace, view: ViewState, node: Node) -> list[float]!:
+    let lens = view.camera.projection(1.0)
+    let inside = frame(w.network, node.parent).inverse()
+    let position = inside.transform_point(lens.position)
+    let axes = [inside.transform_direction(lens.right).normalized(), inside.transform_direction(lens.up).normalized(), inside.transform_direction(lens.backward).normalized()]
+    let angles = euler_angles(axes)
+    let v = node.values.copy()
+    v[1] = position.x
+    v[2] = position.y
+    v[3] = position.z
+    v[4] = degrees(angles[0])
+    v[5] = degrees(angles[1])
+    v[6] = degrees(angles[2])
+    if v[0] != 0.0:
+        let ratio = v[8] / v[9]
+        v[9] = 20.0 * view.half_height()
+        v[8] = v[9] * ratio
+    return v
+
+## `view` was moved (orbit, pan, zoom, a view picked): when it looks
+## through a camera, the camera moves with it (live inside a gesture begun
+## with Workspace.begin, else one undo step).
+pub func follow_view(w: Workspace, view: ViewState) -> unit!:
+    if view.looking != scene_camera:
+        return
+    let node = camera_node(w, view.camera_node) else return
+    let values = values_for(w, view, node)
+    view.through = values.copy()
+    w.move_camera_node(node.id, values)

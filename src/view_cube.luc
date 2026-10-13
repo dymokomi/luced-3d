@@ -1,0 +1,166 @@
+## Blender's navigation gizmo in each viewport pane's top right corner,
+## under the camera menu: a ball at the end of each world axis as the pane
+## sees it (X, Y and Z labelled in their colors, their negatives paler), the
+## nearer ones over the farther. A click on a ball looks from that side,
+## orthographic (+Y Top, -Y Bottom, +Z Front, -Z Back, +X Right, -X Left);
+## a click on the ball of the view already shown looks from the opposite
+## side. A drag on the gizmo orbits, and an orthographic view orbited turns
+## into the Perspective view (view_state.luc's orbit).
+from luce_ui.ui import Painter, Point, Event
+from luce_gpu.gpu import Rect, Color
+from luce_window.input import EventKind
+from luce_3d.graphics import Vector3
+from view_state import ViewState, top_view, bottom_view, front_view, back_view, left_view, right_view
+import camera_menu
+import theme
+from luce_std import math
+
+## The gizmo's radius, its balls' radius and the gap above it, in points.
+pub let radius = 44.0
+let ball = 9.0
+let above = 12.0
+
+## The six balls: +X, +Y, +Z, then -X, -Y, -Z; and hit's answer for the
+## gizmo's disc between them.
+pub let disc = 6
+
+## The gizmo's center in a pane `width` wide.
+pub func center(width: float) -> Point:
+    return Point(width - 18.0 - radius, camera_menu.top + 26.0 + above + radius)
+
+## The view ball `index` looks from.
+pub func view_of(index: int) -> int:
+    return [right_view, top_view, front_view, left_view, bottom_view, back_view][index]
+
+## The view opposite `view` (top_view .. right_view).
+pub func opposite(view: int) -> int:
+    return [bottom_view, top_view, back_view, front_view, right_view, left_view][view - top_view]
+
+pub class ViewCube:
+    ## The ball (or disc) under the pointer, and the one pressed (-1: none).
+    pub var hovered: int = -1
+    var pressed: int = -1
+    ## Whether the press has become a drag, and where it was last.
+    var dragging: bool = false
+    var start_x: float = 0.0
+    var start_y: float = 0.0
+    var last_x: float = 0.0
+    var last_y: float = 0.0
+
+    ## Whether a drag on the gizmo is orbiting.
+    pub func orbiting(self) -> bool:
+        return self.dragging
+
+    ## The balls on screen for `view` in a pane `width` wide, farthest first:
+    ## each one's index, x, y and depth toward the eye.
+    func balls(self, view: ViewState, width: float) -> list[(int, float, float, float)]!:
+        let lens = view.camera.projection(1.0)
+        let c = center(width)
+        let xs: list[float] = []
+        let ys: list[float] = []
+        let depths: list[float] = []
+        for index in 0..<6:
+            let sign = 1.0 if index < 3 else -1.0
+            let k = index % 3
+            let axis = Vector3(sign if k == 0 else 0.0, sign if k == 1 else 0.0, sign if k == 2 else 0.0)
+            xs.append(c.x + axis.dot(lens.right) * radius)
+            ys.append(c.y - axis.dot(lens.up) * radius)
+            depths.append(axis.dot(lens.backward))
+        # Farthest first, so the nearer draw over them.
+        let order = [0, 1, 2, 3, 4, 5]
+        for at in 1..<6:
+            var probe = at
+            while probe > 0 and depths[order[probe - 1]] > depths[order[probe]]:
+                let held = order[probe]
+                order[probe] = order[probe - 1]
+                order[probe - 1] = held
+                probe -= 1
+        let result: list[(int, float, float, float)] = []
+        for index in order:
+            result.append((index, xs[index], ys[index], depths[index]))
+        return result
+
+    ## The gizmo for `view` in a pane `width` wide; lit under the pointer
+    ## in the `active` pane.
+    pub func draw(self, p: Painter, view: ViewState, width: float, active: bool) -> unit!:
+        let c = center(width)
+        let hovered = self.hovered if active else -1
+        if hovered >= 0 or (active and self.dragging):
+            p.rounded_rectangle(Rect(c.x - radius - ball - 4.0, c.y - radius - ball - 4.0, 2.0 * (radius + ball + 4.0), 2.0 * (radius + ball + 4.0)), theme.grey(90.0), radius + ball + 4.0, opacity = 0.35)
+        for (index, x, y, depth) in self.balls(view, width):
+            let k = index % 3
+            let color = theme.axis(k)
+            let lit = index == hovered
+            if index < 3:
+                p.line(Point(c.x, c.y), Point(x, y), 2.0, color)
+                p.rounded_rectangle(Rect(x - ball, y - ball, 2.0 * ball, 2.0 * ball), theme.text() if lit else color, ball)
+                p.text(["X", "Y", "Z"][k], x - 4.0, y - 8.0, theme.grey(20.0))
+            else:
+                let size = ball - 1.5
+                p.rounded_rectangle(Rect(x - size, y - size, 2.0 * size, 2.0 * size), theme.text() if lit else dim(color), size)
+                if lit:
+                    p.text("-" + ["X", "Y", "Z"][k], x - 8.0, y - 8.0, theme.grey(20.0))
+
+    ## The ball under (x, y) of a pane `width` wide (the nearest first), the
+    ## disc, or -1.
+    pub func hit(self, view: ViewState, x: float, y: float, width: float) -> int!:
+        let found = self.balls(view, width)
+        for at in 0..<found.length:
+            let (index, bx, by, depth) = found[found.length - 1 - at]
+            if math.hypot(x - bx, y - by) <= ball + 1.0:
+                return index
+        let c = center(width)
+        if math.hypot(x - c.x, y - c.y) <= radius + ball:
+            return disc
+        return -1
+
+    ## Pane `view`'s pointer events on the gizmo: hover, a ball clicked
+    ## (the pane looks from that side), a drag orbiting. Whether it took
+    ## the event; `orbit` turns the view by a drag's (dx, dy).
+    pub func event(self, view: ViewState, event: Event, width: float, orbit: func(float, float) -> unit!) -> bool!:
+        if event.kind == EventKind.pointer_moved and self.pressed < 0:
+            let at = self.hit(view, event.x, event.y, width) if event.inside else -1
+            let changed = at != self.hovered
+            self.hovered = at
+            return changed or at >= 0
+        if event.kind == EventKind.pointer_down and event.button == 0 and not event.alt and event.inside:
+            let at = self.hit(view, event.x, event.y, width)
+            if at < 0:
+                return false
+            self.pressed = at
+            self.dragging = false
+            self.start_x = event.x
+            self.start_y = event.y
+            self.last_x = event.x
+            self.last_y = event.y
+            return true
+        if self.pressed < 0:
+            return false
+        if event.kind == EventKind.pointer_moved:
+            if not self.dragging and math.hypot(event.x - self.start_x, event.y - self.start_y) > 3.0:
+                self.dragging = true
+            if self.dragging:
+                orbit(event.x - self.last_x, event.y - self.last_y)
+            self.last_x = event.x
+            self.last_y = event.y
+            return true
+        if event.kind == EventKind.pointer_up or event.cancelled or event.kind == EventKind.focus_lost:
+            let clicked = self.pressed
+            let dragged = self.dragging
+            self.pressed = -1
+            self.dragging = false
+            if event.kind == EventKind.pointer_up and not dragged and clicked >= 0 and clicked < disc:
+                self.snap(view, clicked)
+            return true
+        return false
+
+    ## Look from ball `index`'s side, or from the opposite one when the view
+    ## shows that side already.
+    pub func snap(self, view: ViewState, index: int) -> unit!:
+        let wanted = view_of(index)
+        view.look_from(opposite(wanted) if view.looking == wanted else wanted)
+
+## A ball's color for a negative axis: paler, toward the backdrop.
+func dim(color: Color) -> Color:
+    let base = theme.grey(60.0)
+    return Color(base.red + (color.red - base.red) * 0.55, base.green + (color.green - base.green) * 0.55, base.blue + (color.blue - base.blue) * 0.55)
