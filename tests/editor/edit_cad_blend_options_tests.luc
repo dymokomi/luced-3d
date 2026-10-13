@@ -1,0 +1,89 @@
+## Surfacing Stage 6's follow-ups in Edit CAD (blend_ops.luc, build_ops.luc):
+## on an Edit CAD box unstitched into six squares, Surface Fillet's Bias,
+## Lead, one-sided Curvature and Variable rows reach the kernel (a Bias
+## fillet is G3 on both faces, a variable one widens along the edge). The
+## other builders' new rows (Blend Surface, Tube, Skin, Rail, Profile) pass
+## straight to luce-cad, whose tests measure them.
+from workspace import Workspace
+from node import Node
+from app import Luce3D
+from geometry_data import GeometryData
+from luce_cad.nurbs import CadNurbs
+from luce_3d.graphics import Vector3
+import blend_ops
+import edit_cad_commands
+import edit_cad_picks
+import edit_cad_surfaces
+import modeling_commands
+import node_commands
+import selection_commands
+from luce_std import math
+
+pub func edit_cad_blend_options_tests() -> unit!:
+    fillet_options()
+    print("PASS Edit CAD blend options: Surface Fillet's Bias (G3 both sides), Lead, one-sided Curvature and Variable (widening along the edge)")
+
+func data_of(w: Workspace, node: Node) -> GeometryData!:
+    return w.network.evaluate_data(node.id)
+
+## The pick mesh's polygon whose middle and normal `keep` takes.
+func face_where(w: Workspace, keep: func(Vector3, Vector3) -> bool) -> int!:
+    let mesh = w.geometry else trap("pick geometry")
+    for polygon in 0..<mesh.face_count():
+        var middle = Vector3()
+        for k in 0..<mesh.face_size(polygon):
+            middle = middle.add(mesh.point(mesh.face_point(polygon, k)))
+        middle = middle.multiply_scalar(1.0 / float(mesh.face_size(polygon)))
+        if keep(middle, mesh.face_normal(polygon)):
+            return polygon
+    return -1
+
+## The last step's values at `slots` set (one undo).
+func set_values(w: Workspace, node: Node, slots: list[int], values: list[float]) -> unit!:
+    w.perform("values", func () -> unit!:
+        let numbers = node.edits[-1].numbers.copy()
+        for k in 0..<slots.length:
+            numbers[slots[k]] = values[k]
+        node.edits[-1] = node.edits[-1].with_numbers(numbers)
+        w.network.invalidate(node.id)
+        w.rebuild())
+
+func fillet_options() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    let node = w.selected() else trap("Edit CAD")
+    modeling_commands.create(w, "Box")
+    selection_commands.set_mode(w, 0)
+    selection_commands.choose_component(w, 0, false)
+    edit_cad_commands.tool(w, edit_cad_surfaces.unstitch_verb)
+    selection_commands.set_mode(w, 3)
+    selection_commands.choose_component(w, face_where(w, func (c: Vector3, n: Vector3) -> bool: return c.y > 0.99 and n.y > 0.99), false)
+    edit_cad_commands.tool(w, blend_ops.fillet_verb)
+    selection_commands.choose_component(w, face_where(w, func (c: Vector3, n: Vector3) -> bool: return c.x > 0.99 and n.x > 0.99), false)
+    edit_cad_picks.accept_pick(w, node)
+    # Bias: G3 on both faces (its section's own report).
+    set_values(w, node, [blend_ops.size_slot, blend_ops.section_slot, blend_ops.bias_slot], [0.3, 4.0, -0.4])
+    let bias = data_of(w, node)
+    assert(node.warning == "", node.warning)
+    assert(bias.report.contains("Bias") and bias.report.contains("G3"), f"the Bias fillet's report: {bias.report}")
+    # Lead, then G2 curvature on side 1 only.
+    set_values(w, node, [blend_ops.section_slot, blend_ops.knee_slot], [5.0, 0.8])
+    _ = data_of(w, node)
+    assert(node.warning == "", node.warning)
+    set_values(w, node, [blend_ops.section_slot, blend_ops.curvature_slot], [2.0, 1.0])
+    _ = data_of(w, node)
+    assert(node.warning == "", node.warning)
+    # Variable: 0.2 at the start to 0.5 at the end, G1.
+    set_values(w, node, [blend_ops.section_slot, blend_ops.size_slot, blend_ops.variable_slot, blend_ops.variable_slot + 2], [1.0, 0.2, 1.0, 0.5])
+    let grown = data_of(w, node)
+    assert(node.warning == "", node.warning)
+    let sheet = grown.models()[grown.models().length - 1]
+    let s = CadNurbs.surface_of_face(sheet, sheet.face_name(0))
+    var widths: list[float] = []
+    for v in [0.0, 1.0]:
+        widths.append(CadNurbs.point_at(sheet, s, 0.0, v).subtract(CadNurbs.point_at(sheet, s, 1.0, v)).length())
+    assert(math.abs(math.min(widths[0], widths[1]) - 0.2 * math.sqrt(2.0)) < 1e-4 and math.abs(math.max(widths[0], widths[1]) - 0.5 * math.sqrt(2.0)) < 1e-4, f"the variable fillet's chords {widths}")

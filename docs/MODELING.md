@@ -602,7 +602,14 @@ model back exactly.
     arrow), Trim Automatic, Curves on surface or Off, Form factor,
     Continuity check.
   - **Tube** (Alias's Tubular Offset): one curve or edge (or a double-click
-    for an isoparm), Radius, Normal and Tangent offsets, Flip.
+    for an isoparm), Radius, Normal and Tangent offsets, Flip, Variable
+    (a middle and an end radius), Trim (Off, Curves on surface, Inside).
+  - Surface Fillet also has Sections Bias (Bias factor) and Lead (Knee
+    ratio), Curvature (Both, Side 1, Side 2, None) and Variable (a middle and
+    an end size); Blend Surface Flow control Edge align, Interior edge align
+    and Explicit control; Skin Flow control and Modify range, Rail Rebuild
+    per curve and Colinear per rail, and Explicit control on Skin, Rail and
+    Profile.
   - While they wait, their picks are lit (a face set by its outline) and
     the prompts read "Pick first side or set", "Pick second side or set".
 - **Surfacing Stage 7, Fill Surface** (`fill_ops.luc`, through `blend_ops.luc`;

@@ -95,6 +95,11 @@ pub let end_slot = 3
 pub let multiple_slot = 5
 pub let crown_slot = 6
 pub let set_slot = 7
+## Skin's Flow Control, Modify Range (on, from, to) and Explicit Control
+## (on, then degree and spans each way).
+pub let skin_flow_slot = 8
+pub let skin_range_slot = 9
+pub let skin_explicit_slot = 16
 
 ## Rail: the sweep mode, its vector, two rails' transform, the generation
 ## curves' blend, each side's continuity (rail 1, rail 2, first, last).
@@ -113,12 +118,18 @@ pub let pivot_point_slot = 14
 pub let fixed_slot = 17
 pub let segments_on_slot = 18
 pub let segments_slot = 19
+## Rail's Rebuild (rail 1, rail 2, the generation curves), Colinear (each
+## rail) and Explicit Control.
+pub let rail_rebuild_slot = 25
+pub let rail_colinear_slot = 28
+pub let rail_explicit_slot = 30
 ## Rail's Sweep mode menu index for Spine (the kernel's sweep_spine is 4).
 pub let spine_mode = 3
 
-## Profile: orientation and transition.
+## Profile: orientation and transition, Explicit Control.
 pub let orientation_slot = 0
 pub let transition_slot = 1
+pub let profile_explicit_slot = 2
 
 ## Sheet Extrude: direction, distance, both ways. Sheet Revolve: the axis
 ## through a point along a direction, from and to angles.
@@ -157,7 +168,7 @@ pub func rows(verb: str) -> list[Parameter]:
             result.append(toggle(f"Rebuild {k + 1}", rebuild_slot + k, 0.0, f"Alias's Rebuild: boundary {k + 1} rebuilt to fewer spans, evenly parameterized by its length, before the surface is made (within a ten-millionth)."))
         for k in 0..<4:
             result.append(toggle(f"Colinear {k + 1}", colinear_slot + k, 0.0, f"Alias's Colinear Options: across boundary {k + 1} the surface's isoparms line up with the neighbor's (as Align without skew); the corners keep their own lines."))
-        result.extend(explicit_rows())
+        result.extend(explicit_rows(explicit_slot))
         result.extend([toggle("Boundary labels", labels_slot, 1.0, "Alias's Boundary Labels: each boundary's continuity at its middle; a click cycles it."),
                        toggle("Continuity check", check_slot, 1.0, "Alias's Continuity Check: the new surface's edges against the surfaces they meet, drawn as the Check node's.")])
         return result
@@ -172,7 +183,9 @@ pub func rows(verb: str) -> list[Parameter]:
                 toggle("Boundary labels", 4, 1.0, "The start and end continuity at their sections; a click cycles them."),
                 whole("Curves a section", set_slot, 1.0, 1.0, 16.0, "Alias's curve sets: the picks taken this many at a time as one section (curves end to end)."),
                 menu("Surface type", multiple_slot, "Single surface|Multiple surfaces", 0.0, "Alias's Surface Type: one surface through the sets (each joined), or one surface for each curve of the sets."),
-                number("Proportional crown", crown_slot, 0.0, -0.25, 0.25, 0.01, "Alias's Proportional Crown (two sections): the middle between them raised (or lowered) along the surface's normal by this much of the gap.")]
+                number("Proportional crown", crown_slot, 0.0, -0.25, 0.25, 0.01, "Alias's Proportional Crown (two sections): the middle between them raised (or lowered) along the surface's normal by this much of the gap."),
+                menu("Flow control", skin_flow_slot, "Connect ends|Free", 0.0, "Alias's Flow Control: the sections matched by their own parameters, ends joined (Connect ends), or by their lengths, the isoparms spread evenly along each (Free)."),
+                toggle("Modify range", skin_range_slot, 0.0, "Alias's Modify Range: skin only a stretch of every section.")] + range_rows() + explicit_rows(skin_explicit_slot)
     if verb == rail_verb:
         let along = vector("Vector", vector_slot, [0.0, 1.0, 0.0], "Sweep mode Vector (Alias's View): the direction the sections keep up.")
         along.hide_when = "{ sweep_mode != 2 }"
@@ -203,10 +216,15 @@ pub func rows(verb: str) -> list[Parameter]:
             let row = number(label, segments_slot + k, initial, 0.0, 1.0, 0.01, "The stretch's end, a fraction along the curve.")
             row.hide_when = "{ curve_segments == 0 }"
             result.append(row)
+        for (k, label) in [(0, "Rail 1"), (1, "Rail 2"), (2, "Generation curves")]:
+            result.append(toggle(f"Rebuild {label.lower()}", rail_rebuild_slot + k, 0.0, f"Alias's Rebuild per curve: {label.lower()} rebuilt by its length to the fewest spans (within a ten-millionth) before the sweep."))
+        for k in 0..<2:
+            result.append(toggle(f"Colinear rail {k + 1}", rail_colinear_slot + k, 0.0, f"Alias's Colinear Options: the sections placed along rail {k + 1} by its own parameter, so the isoparms line up with the surface it is an edge of."))
+        result.extend(explicit_rows(rail_explicit_slot))
         return result
     if verb == profile_verb:
         return [menu("Orientation", orientation_slot, "Parallel|Radial|Surface normal", 1.0, "Alias's Profile orientation: the profiles carried without turning, turning with the rail, or kept up the normal of the face the rail lies on."),
-                menu("Transition", transition_slot, "Linear|Local|Global|Limited", 0.0, "Between profiles: Linear (straight), Local (eased between neighbors), Global (a smooth spline through all), Limited (smooth, never past a profile).")]
+                menu("Transition", transition_slot, "Linear|Local|Global|Limited", 0.0, "Between profiles: Linear (straight), Local (eased between neighbors), Global (a smooth spline through all), Limited (smooth, never past a profile).")] + explicit_rows(profile_explicit_slot)
     if verb == extrude_verb:
         let distance = number("Distance", distance_slot, 1.0, 0.000001, 100000.0, 0.1, "How far the curves are carried.", soft = 50.0)
         distance.length = true
@@ -226,12 +244,22 @@ pub func rows(verb: str) -> list[Parameter]:
     let none_shown: list[Parameter] = []
     return none_shown
 
-## Explicit Control's rows (Square).
-func explicit_rows() -> list[Parameter]:
-    let result = [toggle("Explicit control", explicit_slot, 0.0, "Off: the multi-span quintic the continuity needs. On: the degrees and spans given (refitted, its sides held).")]
-    for (label, slot, initial, top) in [("Degree U", degree_u_slot, 5.0, 11.0), ("Spans U", spans_u_slot, 4.0, 64.0), ("Degree V", degree_v_slot, 5.0, 11.0), ("Spans V", spans_v_slot, 4.0, 64.0)]:
-        let row = whole(label, slot, initial, 1.0, top, "Explicit Control's structure.")
+## Explicit Control's rows from slot `at`: on, then degree U, spans U,
+## degree V, spans V.
+pub func explicit_rows(at: int) -> list[Parameter]:
+    let result = [toggle("Explicit control", at, 0.0, "Off: the multi-span quintic the continuity needs. On: the degrees and spans given (refitted, its sides held).")]
+    for (label, k, initial, top) in [("Degree U", 1, 5.0, 11.0), ("Spans U", 2, 4.0, 64.0), ("Degree V", 3, 5.0, 11.0), ("Spans V", 4, 4.0, 64.0)]:
+        let row = whole(label, at + k, initial, 1.0, top, "Explicit Control's structure.")
         row.hide_when = "{ explicit_control == 0 }"
+        result.append(row)
+    return result
+
+## Skin's Modify Range rows.
+func range_rows() -> list[Parameter]:
+    let result: list[Parameter] = []
+    for (label, k, initial) in [("Range from", 1, 0.0), ("Range to", 2, 1.0)]:
+        let row = number(label, skin_range_slot + k, initial, 0.0, 1.0, 0.01, "The stretch's end, a fraction of every section (of its length with Flow Control Free).")
+        row.hide_when = "{ modify_range == 0 }"
         result.append(row)
     return result
 
@@ -416,8 +444,12 @@ pub func build(verb: str, data: GeometryData, v: list[float], t: list[str], name
         made = edit
         report = f"fields fitted within {edit.deviation:.2e}"
     elif verb == skin_verb:
+        let ranged = v[skin_range_slot] != 0.0
+        let e = skin_explicit_slot
         made = CadSurfaceBuild.skin(data.geometry, joined, degree = int(v[degree_slot]), closed = v[closed_slot] != 0.0, start = int(v[start_slot]), end = int(v[end_slot]), name = name,
-                                    multiple = v[multiple_slot] != 0.0, crown = v[crown_slot])
+                                    multiple = v[multiple_slot] != 0.0, crown = v[crown_slot], flow = int(v[skin_flow_slot]), range_from = v[skin_range_slot + 1] if ranged else 0.0,
+                                    range_to = v[skin_range_slot + 2] if ranged else 1.0, explicit = v[e] != 0.0, degree_u = int(v[e + 1]), spans_u = int(v[e + 2]),
+                                    degree_v = int(v[e + 3]), spans_v = int(v[e + 4]))
         report = f"through {curves.length} sections"
     elif verb == rail_verb:
         let orders = [int(v[rail_continuity_slot]), int(v[rail_continuity_slot + 1]), int(v[rail_continuity_slot + 2]), int(v[rail_continuity_slot + 3])]
@@ -427,10 +459,15 @@ pub func build(verb: str, data: GeometryData, v: list[float], t: list[str], name
         made = CadSurfaceBuild.rail(data.geometry, joined, rails.join(";"), mode = 4 if spine else int(v[mode_slot]), vector = Vector3(v[vector_slot], v[vector_slot + 1], v[vector_slot + 2]),
                                     transform = int(v[transform_slot]), bias = v[bias_slot], continuity = orders, name = name, spine = spine_words, pivot = int(v[pivot_slot]),
                                     pivot_rail = v[pivot_rail_slot], pivot_generation = v[pivot_generation_slot],
-                                    pivot_point = Vector3(v[pivot_point_slot], v[pivot_point_slot + 1], v[pivot_point_slot + 2]), fixed = int(v[fixed_slot]), segments = segments)
+                                    pivot_point = Vector3(v[pivot_point_slot], v[pivot_point_slot + 1], v[pivot_point_slot + 2]), fixed = int(v[fixed_slot]), segments = segments,
+                                    rebuild = [v[rail_rebuild_slot] != 0.0, v[rail_rebuild_slot + 1] != 0.0, v[rail_rebuild_slot + 2] != 0.0],
+                                    colinear = [v[rail_colinear_slot] != 0.0, v[rail_colinear_slot + 1] != 0.0], explicit = v[rail_explicit_slot] != 0.0,
+                                    degree_u = int(v[rail_explicit_slot + 1]), spans_u = int(v[rail_explicit_slot + 2]), degree_v = int(v[rail_explicit_slot + 3]), spans_v = int(v[rail_explicit_slot + 4]))
         report = f"{curves.length} generation curve{"" if curves.length == 1 else "s"} along {rails.length} rail{"" if rails.length == 1 else "s"}"
     elif verb == profile_verb:
-        made = CadSurfaceBuild.profile(data.geometry, joined, rails.join(";"), orientation = int(v[orientation_slot]), transition = int(v[transition_slot]), name = name)
+        let e = profile_explicit_slot
+        made = CadSurfaceBuild.profile(data.geometry, joined, rails.join(";"), orientation = int(v[orientation_slot]), transition = int(v[transition_slot]), name = name,
+                                       explicit = v[e] != 0.0, degree_u = int(v[e + 1]), spans_u = int(v[e + 2]), degree_v = int(v[e + 3]), spans_v = int(v[e + 4]))
         report = f"{curves.length} profile{"" if curves.length == 1 else "s"}"
     elif verb == planar_verb:
         made = CadSurfaceBuild.set_planar(data.geometry, joined, name = name)

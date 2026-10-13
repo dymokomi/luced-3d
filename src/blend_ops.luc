@@ -57,6 +57,9 @@ pub let range_on_slot = 7
 pub let range_slot = 8
 pub let blend_labels_slot = 12
 pub let blend_check_slot = 13
+## Blend Surface's Interior Edge Align and Explicit Control (16 to 20).
+pub let interior_slot = 14
+pub let blend_explicit_slot = 16
 
 ## Surface Fillet: the section, Radius or Chord, the size, each set's side
 ## flipped, the trim, the Form Factor and the check.
@@ -67,12 +70,21 @@ pub let flip_slot = 3
 pub let trim_slot = 5
 pub let form_slot = 6
 pub let fillet_check_slot = 7
+## Surface Fillet's Bias Factor, Knee Ratio, Curvature, and Variable
+## (on, the middle size and the end size).
+pub let bias_slot = 8
+pub let knee_slot = 9
+pub let curvature_slot = 10
+pub let variable_slot = 11
 
 ## Tube: the radius, the normal and tangent offsets, Flip.
 pub let radius_slot = 0
 pub let normal_slot = 1
 pub let tangent_slot = 2
 pub let tube_flip_slot = 3
+## Tube's variable radius (on, middle, end) and trim.
+pub let tube_variable_slot = 4
+pub let tube_trim_slot = 7
 
 # -- Rows.
 
@@ -91,7 +103,7 @@ pub func rows(verb: str) -> list[Parameter]:
             result.append(shape)
         result.append(toggle("Lock shapes", lock_slot, 1.0, "Alias's Lock Shape Controls: side 2's Shape follows side 1's."))
         result.append(number("Proportional crown", crown_slot, 0.0, -0.25, 0.25, 0.01, "Alias's Proportional Crown: the middle raised (or lowered) by this much of the gap between the sides, along the normal of the gap and side 1."))
-        result.append(menu("Flow control", flow_slot, "Connect ends|Free", 0.0, "Alias's Flow Control: the sides' ends joined to each other (Connect ends), or each section square to side 1 (Free)."))
+        result.append(menu("Flow control", flow_slot, "Connect ends|Free|Edge align", 0.0, "Alias's Flow Control: the sides' ends joined to each other (Connect ends), each section square to side 1 (Free), or the sides matched by their own parameters so the isoparms leave them as their surfaces' do (Edge align)."))
         result.append(toggle("Modify range", range_on_slot, 0.0, "Alias's Modify Range: blend only a stretch of each side."))
         let ends = [("Side 1 from", 0.0), ("Side 1 to", 1.0), ("Side 2 from", 0.0), ("Side 2 to", 1.0)]
         for k in 0..<4:
@@ -100,20 +112,36 @@ pub func rows(verb: str) -> list[Parameter]:
             row.hide_when = "{ modify_range == 0 }"
             result.append(row)
         result.extend([toggle("Boundary labels", blend_labels_slot, 1.0, "Each side's continuity at its middle; a click cycles it."),
-                       toggle("Continuity check", blend_check_slot, 1.0, "Alias's Continuity Check: the blend's edges against the surfaces its sides lie on, drawn as the Check node's.")])
+                       toggle("Continuity check", blend_check_slot, 1.0, "Alias's Continuity Check: the blend's edges against the surfaces its sides lie on, drawn as the Check node's."),
+                       toggle("Interior edge align", interior_slot, 0.0, "Alias's Interior Edge Align (Profile Blend): the blend's isoparms run along each profile from side to side (side 2 matched through the profiles' ends).")])
+        result.extend(build_ops.explicit_rows(blend_explicit_slot))
         return result
     if verb == fillet_verb:
         let size = number("Radius", size_slot, 1.0, 0.000001, 100000.0, 0.1, "The rolling ball's radius (Chord: the distance between the contacts).", soft = 20.0)
         size.length = true
         let form = number("Form factor", form_slot, 1.0, 0.1, 2.0, 0.05, "Alias's Form Factor (G2 and G3): the section's arms, below 1 sharper, above rounder.")
-        form.hide_when = "{ section < 2 }"
-        return [menu("Section", section_slot, "G0 chamfer|G1 circular|G2 curvature|G3 curvature", 1.0, "Alias's Section Type: a chamfer between the contacts, the ball's circle, or a curvature-continuous section (G2, or G3 also matching the curvature's rate)."),
+        form.hide_when = "{ section < 2 } { section == 5 }"
+        let bias = number("Bias factor", bias_slot, 0.0, -1.0, 1.0, 0.05, "Alias's Bias Factor: the peak radius pushed toward set 1 (negative) or set 2 (positive).")
+        bias.hide_when = "{ section != 4 }"
+        let knee = number("Knee ratio", knee_slot, 0.0, 0.0, 10.0, 0.05, "Alias's Knee Ratio (Lead): the peak radius over the tangent offset (0: the ball's circle).")
+        knee.hide_when = "{ section != 5 }"
+        let curvature = menu("Curvature", curvature_slot, "Both|Side 1|Side 2|None", 0.0, "Alias's Curvature: the sets whose curvature the section matches (G2, G3, Bias); the other it meets tangent only.")
+        curvature.hide_when = "{ section < 2 } { section == 5 }"
+        let middle = number("Middle size", variable_slot + 1, 0.0, 0.0, 100000.0, 0.1, "The radius (or chord) halfway along (0: none, straight from start to end).", soft = 20.0)
+        middle.length = true
+        middle.hide_when = "{ variable == 0 }"
+        let last = number("End size", variable_slot + 2, 1.0, 0.000001, 100000.0, 0.1, "The radius (or chord) at the end.", soft = 20.0)
+        last.length = true
+        last.hide_when = "{ variable == 0 }"
+        return [menu("Section", section_slot, "G0 chamfer|G1 circular|G2 curvature|G3 curvature|Bias|Lead", 1.0, "Alias's Section Type: a chamfer between the contacts, the ball's circle, a curvature-continuous section (G2, or G3 also matching the curvature's rate), Bias (the peak pushed toward a set) or Lead (a conic by its Knee Ratio)."),
                 menu("Construction", construction_slot, "Radius|Chord", 0.0, "Alias's Construction: the ball's radius, or the chord between the contacts held constant."),
                 size,
                 toggle("Flip set 1", flip_slot, 0.0, "The ball rolls on the other side of the first set's faces (Alias's arrow)."),
                 toggle("Flip set 2", flip_slot + 1, 0.0, "The other side of the second set's faces."),
                 menu("Trim", trim_slot, "Automatic|Curves on surface|Off", 0.0, "Alias's Trim Type: the faces trimmed back to the contacts, the contacts left on them as curves, or the faces as they are."),
-                form,
+                form, bias, knee, curvature,
+                toggle("Variable", variable_slot, 0.0, "Alias's Variable Fillets: the radius (or chord) from its size at the start through a middle size to an end size, eased between."),
+                middle, last,
                 toggle("Continuity check", fillet_check_slot, 1.0, "The fillet's edges against the faces it rolls on, drawn as the Check node's.")]
     if verb == tube_verb:
         let radius = number("Radius", radius_slot, 0.25, 0.000001, 100000.0, 0.05, "The tube's radius.", soft = 10.0)
@@ -122,7 +150,15 @@ pub func rows(verb: str) -> list[Parameter]:
         normal.length = true
         let across = number("Tangent offset", tangent_slot, 0.0, -100000.0, 100000.0, 0.05, "Alias's Tangent offset: the axis moved across the curve, in the face.", soft = 10.0)
         across.length = true
-        return [radius, normal, across, toggle("Flip", tube_flip_slot, 0.0, "Alias's Flip: the normal offset the other way (a groove for a bump).")]
+        let middle = number("Middle radius", tube_variable_slot + 1, 0.0, 0.0, 100000.0, 0.05, "The radius halfway along (0: none).", soft = 10.0)
+        middle.length = true
+        middle.hide_when = "{ variable == 0 }"
+        let last = number("End radius", tube_variable_slot + 2, 0.25, 0.000001, 100000.0, 0.05, "The radius at the curve's end.", soft = 10.0)
+        last.length = true
+        last.hide_when = "{ variable == 0 }"
+        return [radius, normal, across, toggle("Flip", tube_flip_slot, 0.0, "Alias's Flip: the normal offset the other way (a groove for a bump)."),
+                toggle("Variable", tube_variable_slot, 0.0, "Alias's variable radius: from the radius at the start through a middle radius to an end radius, eased between."), middle, last,
+                menu("Trim", tube_trim_slot, "Off|Curves on surface|Inside", 0.0, "Alias's Tubular Offset trims (a curve on a face): where the tube meets the face as curves on it, or the face's strip under the tube taken away.")]
     let none_shown: list[Parameter] = []
     return none_shown
 
@@ -210,17 +246,21 @@ pub func build(verb: str, data: GeometryData, v: list[float], t: list[str], name
         if v[range_on_slot] != 0.0:
             for k in 0..<4:
                 ranges[k] = v[range_slot + k]
+        let e = blend_explicit_slot
         made = CadSurfaceBlend.blend(data.geometry, side1, side2, continuity = [int(v[side_slot]), int(v[side_slot + 1])], shape = [v[shape_slot], shape2],
-                                     crown = v[crown_slot], flow = int(v[flow_slot]), range = ranges, profiles = profiles, name = name)
+                                     crown = v[crown_slot], flow = int(v[flow_slot]), range = ranges, profiles = profiles, name = name, interior = v[interior_slot] != 0.0,
+                                     explicit = v[e] != 0.0, degree_u = int(v[e + 1]), spans_u = int(v[e + 2]), degree_v = int(v[e + 3]), spans_v = int(v[e + 4]))
         report = f"G{int(v[side_slot])} to G{int(v[side_slot + 1])}" + (f" through {build_ops.items(texts[profiles_text]).length} profiles" if profiles != "" else "")
     elif verb == fillet_verb:
-        let sections = ["G0 chamfer", "G1 circular", "G2 curvature", "G3 curvature"]
+        let sections = ["G0 chamfer", "G1 circular", "G2 curvature", "G3 curvature", "Bias", "Lead"]
         made = CadSurfaceBlend.fillet(data.geometry, face_names(first), face_names(second), v[size_slot], section = int(v[section_slot]), chordal = int(v[construction_slot]) == 1,
-                                      flips = [v[flip_slot] != 0.0, v[flip_slot + 1] != 0.0], trim = int(v[trim_slot]), form = v[form_slot], name = name)
+                                      flips = [v[flip_slot] != 0.0, v[flip_slot + 1] != 0.0], trim = int(v[trim_slot]), form = v[form_slot], name = name,
+                                      bias = v[bias_slot], knee = v[knee_slot], curvature = int(v[curvature_slot]), variable = law(v, size_slot, variable_slot))
         report = f"{sections[int(v[section_slot])]} {"chord" if int(v[construction_slot]) == 1 else "radius"} {v[size_slot]}"
     elif verb == tube_verb:
         let along = build_ops.resolve_isoparms(data, first, false)
-        made = CadSurfaceBlend.tube(data.geometry, along[0], v[radius_slot], tangent_offset = v[tangent_slot], normal_offset = v[normal_slot], flip = v[tube_flip_slot] != 0.0, name = name)
+        made = CadSurfaceBlend.tube(data.geometry, along[0], v[radius_slot], tangent_offset = v[tangent_slot], normal_offset = v[normal_slot], flip = v[tube_flip_slot] != 0.0, name = name,
+                                    variable = law(v, radius_slot, tube_variable_slot), trim = int(v[tube_trim_slot]))
         report = f"radius {v[radius_slot]}"
     let edit = made else error(ui.invalid, f"{verb} is not a blend")
     let result = GeometryData(geometry = edit.geometry())
@@ -232,9 +272,21 @@ pub func build(verb: str, data: GeometryData, v: list[float], t: list[str], name
                 level = int(v[side_slot + k])
         build_ops.checked(result, name, first + second, level if level > 0 else 1)
     if verb == fillet_verb and v[fillet_check_slot] != 0.0 and int(v[trim_slot]) == 0:
-        let orders = [0, 1, 2, 3]
+        let orders = [0, 1, 2, 3, 3, 1]
         build_ops.checked(result, name, first + second, orders[int(v[section_slot])] if int(v[section_slot]) > 0 else 1)
     return labelled(result, data, verb, v, first, second)
+
+## A variable size's law from values `v`: (fraction, size) pairs, the
+## start the row at `size`, the middle (when more than 0) and end the rows
+## after `at` (its toggle); a constant when off.
+func law(v: list[float], size: int, at: int) -> list[float]:
+    if v[at] == 0.0:
+        return [0.0, 0.0]
+    let found = [0.0, v[size]]
+    if v[at + 1] > 0.0:
+        found.extend([0.5, v[at + 1]])
+    found.extend([1.0, v[at + 2]])
+    return found
 
 ## `result` with Blend Surface's side labels (its continuity rows),
 ## Surface Fillet's set labels (a click flips the side the ball rolls on:

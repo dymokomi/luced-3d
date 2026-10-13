@@ -1957,8 +1957,8 @@ Left for later, and what became of it (2026-10-12, with Stage 6):
 - ~~Edit CAD's Project and Blend Curve with temporary isoparms~~ Done: started with nothing picked they
   wait for curves, a double-click adding an isoparm (Project's Enter goes on to its face). While a
   builder waits, its picks are lit along their length.
-- Still left: the builders' Explicit Control on Skin, Rail and Profile; Rail's Colinear Options and
-  Rebuild per curve.
+- ~~Still left: the builders' Explicit Control on Skin, Rail and Profile; Rail's Colinear Options and
+  Rebuild per curve.~~ Done with Stage 7.
 
 **Stage 6: blends between surfaces** (S11).
 
@@ -2032,10 +2032,21 @@ Answers from the reference tools (the doc's questions that Stage 6 met):
   Fillet trims Automatic by default, and so does ours.
 - **Shape above 1** lengthens the tangents (tighter toward the corner), as Alias's words it.
 
-Left for later: Alias's Bias and Lead sections, one-sided Curvature and variable radius along the
-fillet (Stage 8's variable handles), Flow Control Edge align and Interior Edge Align, Explicit Control
-on the blends, G3 Curvature's rate on faces whose curvature changes, Tube's variable radius and its
-trims, Symmetric Fillet, Round and the corner tools (Stage 8).
+Left for later, and what became of it (2026-10-12, with Stage 7):
+
+- ~~Alias's Bias and Lead sections, one-sided Curvature, variable radius or chord along the fillet~~
+  Done (Bias Factor, Knee Ratio, Curvature Both/Side 1/Side 2/None, Variable with a middle and an end
+  size; the law as fraction and size pairs in luce-cad). A variable fillet's G3 contacts measure G2:
+  its sections lean off the plane square to the edge. Variable handles on the model are Stage 8's.
+- ~~G3 Curvature's rate on faces whose curvature changes~~ Done: the rate measured along each leg.
+- ~~Flow Control Edge align, Interior Edge Align, Explicit Control on the blends~~ Done: Edge align
+  matches the sides by their own parameters (their surfaces' isoparms), Interior Edge Align runs the
+  isoparms along slanted profiles, Explicit Control refits with the sides' rows held.
+- ~~Tube's variable radius and its trims~~ Done: Curves on surface, Inside (the strip under it).
+- ~~Stage 5's: Skin's Flow Control and Modify Range; Rail's Colinear and Rebuild per curve; Explicit
+  Control on Skin, Rail and Profile~~ Done (Free reads the curves by their lengths; Colinear places
+  sections by the rail's parameter).
+- Still left: Symmetric Fillet, Round and the corner tools (Stage 8).
 
 **Stage 7: fill** (S12).
 
