@@ -1,0 +1,138 @@
+## One operation as a tool (docs/research/POLY-MODELING.md §3): the node of
+## its kind, the Edit step of its verb, and every menu, marking menu,
+## right-click entry, prompt, icon and docs line that reaches it, all from
+## this one record. tool_registry.luc lists the tools; mesh tools are built
+## from their luce-geocore verbs (verb_tools.luc).
+from geometry_data import GeometryData
+from parameter_rows import Parameter
+
+## One selection a tool works on: its first pick is the selection it runs
+## on (a node's Group, a step's group).
+pub class Pick:
+    pub let label: str
+    ## The selection levels it is picked at (edit_types' object_level,
+    ## point_level, …); [] takes every level.
+    pub let levels: list[int]
+    ## What the editor says while it waits for this pick ("" for the
+    ## generated "Select edges first").
+    pub let prompt: str
+
+    pub func init(self, label: str, levels: list[int], prompt: str = ""):
+        self.label = label
+        self.levels = levels
+        self.prompt = prompt
+
+    pub func takes(self, level: int) -> bool:
+        return self.levels.length == 0 or level in self.levels
+
+## What a node and a step both hand a tool's cook: the verb, its numbers
+## and texts, one group per pick and how they were picked.
+pub class Invocation:
+    pub let verb: str
+    pub let numbers: list[float]
+    pub let texts: list[str]
+    ## One group expression per pick slot.
+    pub let picks: list[str]
+    pub let group_type: int
+    ## The connectivity hash of the mesh the groups were picked on (0: none).
+    pub let topology: int
+    pub let symmetry: int
+    pub let keep: bool
+
+    pub func init(self, verb: str, numbers: list[float], picks: list[str], group_type: int, topology: int = 0, symmetry: int = 0, keep: bool = false, texts: list[str] = []):
+        self.verb = verb
+        self.numbers = numbers
+        self.picks = picks
+        self.group_type = group_type
+        self.topology = topology
+        self.symmetry = symmetry
+        self.keep = keep
+        self.texts = texts
+
+    ## The group of the first pick ("" for everything).
+    pub func group(self) -> str:
+        return self.picks[0] if self.picks.length > 0 else ""
+
+pub class Tool:
+    ## The node kind and step verb ("PolyBevel"), and the label menus,
+    ## commands and steps show ("Bevel").
+    pub let name: str
+    pub let label: str
+    ## "Create", "Modify" or "Select", then the family menus group it under
+    ## ("Extrude", "Cut", "Shape", …).
+    pub let section: str
+    pub let family: str
+    pub let icon: str
+    pub let doc: str
+    ## The network contexts it is a node in ("geometry") and the Edit kinds
+    ## it is a step of ("Edit Mesh").
+    pub let contexts: list[str]
+    pub let kinds: list[str]
+    pub let picks: list[Pick]
+    ## Its parameter rows (`in_steps`: on the tool bar after it runs).
+    pub let rows: list[Parameter]
+    ## The row a drag in the viewport sets after it runs (-1: none).
+    pub let drag: int
+    ## Viewport input besides the selection: "" none, "stroke" (the knife),
+    ## "place" (PolyDraw's clicked corners).
+    pub let gesture: str
+    ## Whether it runs on everything with nothing selected.
+    pub let whole: bool
+    ## The run, the same for a node and a step.
+    pub let cook: func(Invocation, GeometryData, str) -> GeometryData!
+
+    pub func init(self, name: str, label: str, section: str, family: str, icon: str, doc: str, contexts: list[str], kinds: list[str], picks: list[Pick],
+                  rows: list[Parameter], drag: int, gesture: str, whole: bool, cook: func(Invocation, GeometryData, str) -> GeometryData!):
+        self.name = name
+        self.label = label
+        self.section = section
+        self.family = family
+        self.icon = icon
+        self.doc = doc
+        self.contexts = contexts
+        self.kinds = kinds
+        self.picks = picks
+        self.rows = rows
+        self.drag = drag
+        self.gesture = gesture
+        self.whole = whole
+        self.cook = cook
+
+    ## The selection it runs on.
+    pub func first_pick(self) -> Pick:
+        return self.picks[0] if self.picks.length > 0 else Pick("", [])
+
+    ## Whether it is offered at selection level `level`.
+    pub func offered(self, level: int) -> bool:
+        return self.first_pick().takes(level)
+
+    ## Its starting numbers: each row's initial value in its slot (a
+    ## vector's in each component's).
+    pub func starting(self) -> list[float]:
+        let result: list[float] = []
+        for row in self.rows:
+            if not row.valued():
+                continue
+            while result.length < row.slot + row.components:
+                result.append(0.0)
+            result[row.slot] = row.initial
+            for component in 1..<row.components:
+                result[row.slot + component] = row.rest[component - 1]
+        return result
+
+    ## Its first pick's levels as words ("edges or faces"), given each
+    ## level's name; "components" at every level.
+    pub func levels_text(self, level_names: list[str]) -> str:
+        let named: list[str] = []
+        for level in self.first_pick().levels:
+            if level < level_names.length:
+                named.append(level_names[level].lower())
+        return named.join(" or ") if named.length > 0 else "components"
+
+    ## What it says with nothing selected: its pick's own prompt, else
+    ## "Select edges for Bevel".
+    pub func waiting(self, level_names: list[str]) -> str:
+        let pick = self.first_pick()
+        if pick.prompt != "":
+            return pick.prompt
+        return f"Select {self.levels_text(level_names)} for {self.label}"

@@ -1,28 +1,31 @@
 ## Edit Mesh: the Edit framework's polygon kind. Its levels are Object
 ## (whole pieces: faces sharing a `path`, else a connected component),
-## Vertices (points), Edges and Polygons; its tools are the
-## luce-geocore modeling verbs, and its primitives (box, sphere, cylinder,
-## cone, torus, grid, plane) are recipe steps that add a named piece.
+## Vertices (points), Edges and Polygons; its tools are the registry's
+## (tool_registry.luc: the luce-geocore modeling verbs), and its primitives
+## (box, sphere, cylinder, cone, torus, grid, plane) are recipe steps that
+## add a named piece.
 from luce_geocore.geocore import Mesh, MeshPrimitives, Groups, Domain, GroupType, Vector3
 from geometry_data import GeometryData
 from edit_operations import EditStep
-from edit_types import EditKind, EditLevel, EditTool, point_level, edge_level, face_level
-from tools import tool_run
+from edit_types import EditKind, EditLevel, EditTool, from_tool
+import tool_registry
+import verb_tools
 from luce_ui import ui
 
 pub let kind_name = "Edit Mesh"
-
-## The modeling tools, in strip order.
-pub func tool_names() -> list[str]:
-    return ["Extrude", "Inset", "Delete", "Reverse", "Triangulate", "Duplicate", "Split", "Fuse", "Merge Points", "Smooth", "Peak", "Flatten",
-            "Snap", "Noise", "Subdivide", "Bevel", "Loop Cut", "Bridge", "Fill", "Dissolve", "Clean",
-            "Knife", "Connect", "Edge Slide", "PolyMirror", "Spin", "Crease", "PolyDraw"]
 
 pub func primitive_names() -> list[str]:
     return ["Box", "Sphere", "Cylinder", "Cone", "Torus", "Grid", "Plane"]
 
 pub func kind() -> EditKind:
-    return EditKind(kind_name, levels(), tool_list(), primitive_names(), start, pick, run, create, draw_tools = ["PolyDraw"], drawn = drawn)
+    let tools = tool_registry.of_kind(kind_name)
+    let result: list[EditTool] = []
+    let placing: list[str] = []
+    for tool in tools:
+        result.append(from_tool(tool))
+        if tool.gesture == "place":
+            placing.append(tool.label)
+    return EditKind(kind_name, levels(), result, primitive_names(), start, pick, run, create, draw_tools = placing, drawn = drawn)
 
 ## Object, Vertices, Edges, Polygons (edit_types' level order; any
 ## displayed mesh selects on these).
@@ -32,32 +35,18 @@ pub func levels() -> list[EditLevel]:
             EditLevel("Edges", "edge-select", Domain.edge, GroupType.edges),
             EditLevel("Polygons", "face-select", Domain.face, GroupType.faces)]
 
-func tool_list() -> list[EditTool]:
-    let result: list[EditTool] = []
-    for name in tool_names():
-        let made = tool_run(name) else continue
-        result.append(EditTool(name, made.verb, tool_levels(name), made.numbers))
-    return result
-
-## The levels a tool is offered on ([] every level): PolyMirror mirrors
-## polygons, Spin sweeps and Crease sharpens edges, PolyDraw makes a face
-## through the selected vertices.
-func tool_levels(tool: str) -> list[int]:
-    if tool == "PolyMirror": return [face_level]
-    if tool == "Spin" or tool == "Crease": return [edge_level]
-    if tool == "PolyDraw": return [point_level]
-    return []
-
-## PolyDraw drawn in the viewport: one step through the placed corners.
-## Corners placed on existing points carry their exact positions, so a tiny
-## snap distance joins them.
-func drawn(tool: str, corners: list[Vector3]) -> EditStep?!:
-    if tool != "PolyDraw" or corners.length < 3:
+## A placing tool's corners (the `place` gesture: clicks on points, the
+## surface or the ground) as its one step, in PolyDraw's numbers: a snap
+## distance, the corner count, then the corners. Corners placed on existing
+## points carry their exact positions, so a tiny snap distance joins them.
+func drawn(label: str, corners: list[Vector3]) -> EditStep?!:
+    let tool = tool_registry.find(label) else return none
+    if tool.gesture != "place" or corners.length < 3:
         return none
     var numbers = [0.00001, float(corners.length)]
     for corner in corners:
         numbers = numbers + [corner.x, corner.y, corner.z]
-    return EditStep("PolyDraw", "", 0, numbers, 0)
+    return EditStep(tool.name, "", 0, numbers, 0)
 
 ## The piece around face `face`: the faces sharing its `path`, or its
 ## connected component when it has none.
@@ -83,11 +72,13 @@ func pick(data: GeometryData, level: int) -> Mesh?!:
 func mesh_of(data: GeometryData) -> Mesh!:
     return data.operand() else Mesh.empty()
 
+## A step: a primitive's, else its verb run as every mesh tool's cook runs
+## it (verb_tools.run: a tool's verb, or a move).
 func run(step: EditStep, at: int, data: GeometryData, tag: str) -> GeometryData!:
     let mesh = mesh_of(data)
     if step.verb.starts_with("Create "):
         return created(step, mesh, data)
-    return data.with_operand(step.evaluate(mesh).mesh())
+    return data.with_operand(verb_tools.run(step.invocation(), mesh))
 
 ## The step adding primitive `name` at the origin. Its numbers: size or
 ## radius, divisions, height or tube radius, then the position.

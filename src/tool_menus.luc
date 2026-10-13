@@ -1,0 +1,100 @@
+## The registry's tools as the menus show them: the viewport's Edit kind's
+## tools (tool_registry.luc's, for Edit Mesh and Geo) by section and
+## family, at the selection level, and the Select section with the
+## selection commands. The S and D marking menus, the right-click menu and
+## Modify › the kind's tools read these, so a tool reaches every surface
+## from its declaration alone.
+from luce_ui.ui import Command
+from workspace import Workspace
+from actions import Actions
+from edit_types import edge_level
+import tool_registry
+
+## A family's commands, in the kind's tool order.
+pub class Family:
+    pub let name: str
+    pub let commands: list[Command]
+
+    pub func init(self, name: str):
+        self.name = name
+        self.commands = []
+
+## Whether the viewport's kind takes its tools from the registry.
+pub func from_registry(w: Workspace) -> bool:
+    for tool in w.strip_kind().tools:
+        if tool.tool != none:
+            return true
+    return false
+
+## The kind's registry tools of `section` offered at level `level` (-1:
+## at any level), each its command, by family in the registry's family
+## order (tool_registry.family_order), each family's tools in their
+## declaration order.
+pub func families(w: Workspace, actions: Actions, section: str, level: int = -1) -> list[Family]:
+    let found: list[Family] = []
+    let commands = actions.modify_commands()
+    for tool in w.strip_kind().tools:
+        let registered = tool.tool else continue
+        if registered.section != section or (level >= 0 and not tool.offered(level)):
+            continue
+        let command = named(commands, tool.name) else continue
+        var family: Family? = none
+        for each in found:
+            if each.name == registered.family:
+                family = each
+        if family == none:
+            let made = Family(registered.family)
+            found.append(made)
+            family = made
+        (family else trap("family")).commands.append(command)
+    let result: list[Family] = []
+    for rank in 0..<tool_registry.family_order().length + 1:
+        for each in found:
+            if tool_registry.family_rank(each.name) == rank:
+                result.append(each)
+    return result
+
+## The commands of `groups` in order, one list.
+pub func flat(groups: list[Family]) -> list[Command]:
+    let result: list[Command] = []
+    for family in groups:
+        result.extend(family.commands)
+    return result
+
+## Repeat, when a registry tool has run.
+pub func repeat(w: Workspace, actions: Actions) -> list[Command]:
+    let result: list[Command] = []
+    if w.last_tool != "":
+        result.append(actions.repeat_tool)
+    return result
+
+## What the Select menus offer at the level: the Select tools there
+## (Select Checker), then selecting all, inverting, growing, shrinking,
+## the border, connected, loops and rings (at Edges) and through the
+## depth.
+pub func select_commands(w: Workspace, actions: Actions) -> list[Command]:
+    let result = flat(families(w, actions, "Select", w.level_index()))
+    result.append(actions.select_all)
+    for at in 0..<actions.selection_tools.length:
+        # Loops and rings (the last two walks) take edges.
+        if at >= actions.selection_tools.length - 2 and w.level_index() != edge_level:
+            continue
+        result.append(actions.selection_tools[at])
+    result.append(actions.through_depth)
+    return result
+
+## Every registry Select tool's command (Modify › Selection lists them,
+## enabled at the levels they take).
+pub func select_tools(actions: Actions) -> list[Command]:
+    let result: list[Command] = []
+    for tool in tool_registry.all():
+        if tool.section == "Select":
+            let command = named(actions.modeling, tool.label) else continue
+            result.append(command)
+    return result
+
+func named(commands: list[Command], name: str) -> Command?:
+    for command in commands:
+        if command.text() == name:
+            return command
+    return none

@@ -302,7 +302,30 @@ started from on screen. That holds locally and on the compute worker.
 
 Edit Mesh's levels are Object, Polygons, Edges, Vertices and Corners. At the
 Object level a pick selects a whole piece, and moves, rotations, scales and
-Delete act on whole pieces. Besides the modeling verbs its tools include
+Delete act on whole pieces. Its tools are the tool registry's
+([TOOLS.md](TOOLS.md), generated): each luce-geocore verb that declares a
+section is a node in Geo and a step of Edit Mesh, from one declaration. A
+tool is offered at the levels its pick takes (Bevel at Edges, Inset at
+Polygons), and the menus follow:
+
+- **S** (held in the viewport): Repeat, then the Modify tools the level
+  takes, by family (Extrude, Bevel, Cut, Fill, Merge, Delete, …).
+- **D**: Select, the Select tools for the level (Select Checker) and the
+  selection commands (select all, invert, grow, shrink, border, connected,
+  loop and ring at Edges, through the depth). D in the Network panel is the
+  display flag.
+- **A**: the primitives and the drawing tools (PolyDraw).
+- **Right-click** with components selected: Repeat, the same Modify tools
+  by family, and a Select submenu; with nothing selected, Create.
+- **Modify ›** Edit Mesh tools: Repeat and a submenu per family; Modify ›
+  Selection holds the Select tools.
+- **Repeat** runs the last tool again on the new selection with its last
+  numbers (as its tool bar left them, or its node's values when it made a
+  node).
+
+A Select tool changes the selection, not the recipe: Select Checker keeps
+runs of selected and deselected elements counted across each island, one
+undo step. Besides the modeling verbs its tools include
 Knife (drag a stroke across the model, Shift snapping it to 15°: the cut is
 the plane through the eye and the stroke, recorded as a Clip with its own
 point and normal, cutting the selection or else every face under the stroke),

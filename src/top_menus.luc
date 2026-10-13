@@ -8,13 +8,15 @@
 ##     level changes.
 ##   Modify: what applies to the selection: the node's flags, Output, grouping,
 ##     renaming, cutting, copying, pasting, duplicating and deletion; the transform
-##     tools; the active Edit kind's modeling tools
-##     (each a new node outside an Edit node); in a CAD node its features on
+##     tools; the active Edit kind's modeling tools (each a new node outside
+##     an Edit node; Edit Mesh's and Geo's are Repeat and a submenu per
+##     family of the registry's Modify tools); in a CAD node its features on
 ##     the selection (Press Pull, Offset Face, Extrude face, Fillet,
 ##     Chamfer, then Fusion's Modify features: Shell, Move/Copy, Combine,
 ##     Split Body, Split Face, Replace Face, Delete, Remove; nodes in a CAD
 ##     network, steps in Edit CAD, which also has Remove Faces); the
-##     selection's edits.
+##     selection's edits; Selection: select all, through the depth, the
+##     registry's Select tools and the selection walks.
 ## Every item is one of Actions' commands, so choosing one is choosing it in
 ## Tab or a marking menu, its shortcut shows, and it is disabled when it
 ## does not apply (Actions.refresh).
@@ -22,6 +24,7 @@ from luce_ui.ui import Menu, Command, Font
 from actions import Actions
 from workspace import Workspace
 import node_catalog
+import tool_menus
 
 pub class TopMenus:
     pub let create: Menu
@@ -38,6 +41,8 @@ pub class TopMenus:
     pub let selecting: Command
     ## CAD features on the selection.
     pub let cad: Command
+    ## The modeling submenu's family submenus, as last built.
+    var families: list[Command]
     ## Create's entries, as last built, and Modify's.
     pub var create_entries: list[Command]
     pub let modify_entries: list[Command]
@@ -54,7 +59,8 @@ pub class TopMenus:
         self.transform.set_items(actions.tools)
         self.modeling = Command("Modeling tools")
         self.selecting = Command("Selection")
-        self.selecting.set_items([actions.select_all, actions.through_depth] + actions.selection_tools)
+        self.selecting.set_items([actions.select_all, actions.through_depth] + tool_menus.select_tools(actions) + actions.selection_tools)
+        self.families = []
         self.cad = Command("CAD features")
         self.cad.set_items([actions.press_pull, actions.offset_face, actions.extrude_face, actions.fillet_edges, actions.chamfer_edges, Command("", divider = true)] + actions.cad_modify.commands + edit_cad_tools(actions))
         self.create_key = self.network_key()
@@ -77,7 +83,7 @@ pub class TopMenus:
             self.create_entries = self.create_items()
             self.create.set_actions(self.create_entries)
         self.update_modeling()
-        for title in [self.primitives, self.drawing, self.transform, self.modeling, self.cad, self.selecting]:
+        for title in self.families + [self.primitives, self.drawing, self.transform, self.modeling, self.cad, self.selecting]:
             var any = false
             for index in 0..<title.item_count():
                 any = any or title.item(index).is_enabled()
@@ -118,7 +124,9 @@ pub class TopMenus:
             result.append(Command("", divider = true))
         return result + node_categories(w, self.actions)
 
-    ## The modeling submenu holds the active Edit kind's tools.
+    ## The modeling submenu holds the active Edit kind's tools: the
+    ## registry's Modify tools as Repeat and a submenu per family (Edit
+    ## Mesh, Geo), else the kind's tools.
     func update_modeling(self) -> unit!:
         let tools = self.actions.modify_commands()
         var key = self.workspace.strip_kind().name
@@ -128,7 +136,17 @@ pub class TopMenus:
             return
         self.modeling_key = key
         self.modeling.set_text(self.workspace.strip_kind().name + " tools")
-        self.modeling.set_items(tools)
+        if not tool_menus.from_registry(self.workspace):
+            self.families = []
+            self.modeling.set_items(tools)
+            return
+        let titles: list[Command] = []
+        for family in tool_menus.families(self.workspace, self.actions, "Modify"):
+            let title = Command(family.name)
+            title.set_items(family.commands)
+            titles.append(title)
+        self.modeling.set_items([self.actions.repeat_tool] + titles)
+        self.families = titles
 
 ## Edit CAD's direct modeling tools that are no Modify feature (Remove
 ## Faces), for Modify › CAD features: enabled while an Edit CAD model is

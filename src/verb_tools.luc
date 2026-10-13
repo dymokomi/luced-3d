@@ -1,0 +1,79 @@
+## Mesh tools: one Tool for each luce-geocore verb that declares a section
+## (its label, family, icon, picks, drag, gesture and rows are the verb's
+## own), a node in Geo and a step of Edit Mesh. Their cook runs the verb, so
+## a node and a step run the same kernel the same way. Adding a mesh tool is
+## its verb in luce-geocore and nothing here.
+from luce_geocore.geocore import Mesh, Verbs
+from geometry_data import GeometryData
+from tool_record import Tool, Pick, Invocation
+from edit_operations import verb_numbers
+from edit_types import object_level, point_level, edge_level, face_level
+import verb_rows
+from luce_ui import ui
+
+## The Edit kind mesh tools are steps of, and the network context they are
+## nodes in.
+pub let edit_kind_name = "Edit Mesh"
+pub let context = "geometry"
+
+## Every mesh verb with a section, as a tool, in the verb registry's order.
+pub func tools() -> list[Tool]:
+    let result: list[Tool] = []
+    for index in 0..<Verbs.count():
+        if Verbs.section(index) != "":
+            result.append(tool_of(index))
+    return result
+
+## Verb `index` as a tool.
+func tool_of(index: int) -> Tool:
+    return Tool(Verbs.name(index), Verbs.label(index), Verbs.section(index), Verbs.family(index), Verbs.icon(index), Verbs.description(index), [context], [edit_kind_name],
+                picks_of(index), verb_rows.rows(index), Verbs.drag(index), Verbs.gesture(index), Verbs.whole(index), cook)
+
+## The verb's picks (one at every level when it declares none).
+func picks_of(index: int) -> list[Pick]:
+    let result: list[Pick] = []
+    for pick in 0..<Verbs.pick_count(index):
+        result.append(Pick(Verbs.pick_label(index, pick), levels_of(Verbs.pick_levels(index, pick)), Verbs.pick_prompt(index, pick)))
+    if result.length == 0:
+        result.append(Pick("Components", []))
+    return result
+
+## A verb's level words ("objects faces") as Edit levels.
+pub func levels_of(words: str) -> list[int]:
+    let result: list[int] = []
+    for word in words.split(" "):
+        if word == "objects": result.append(object_level)
+        elif word == "points": result.append(point_level)
+        elif word == "edges": result.append(edge_level)
+        elif word == "faces": result.append(face_level)
+    return result
+
+## The verb index of the mesh tool labeled `name` (or of verb `name`), or
+## -1: the cheap lookups below need no rows built.
+func index_of(name: str) -> int:
+    for index in 0..<Verbs.count():
+        if Verbs.section(index) != "" and (Verbs.label(index) == name or Verbs.name(index) == name):
+            return index
+    return -1
+
+## The luciaos-assets icon of mesh tool `name`, or "".
+pub func icon_of(name: str) -> str:
+    let index = index_of(name)
+    return Verbs.icon(index) if index >= 0 else ""
+
+## The gesture of mesh tool `name` ("" for none or no tool).
+pub func gesture_of(name: str) -> str:
+    let index = index_of(name)
+    return Verbs.gesture(index) if index >= 0 else ""
+
+## A mesh tool's run: its verb on the operand's polygons (a CAD model is
+## tessellated first; other components pass through), guarded by the
+## topology its group was picked on.
+func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
+    return data.with_operand(run(call, data.operand() else Mesh.empty()))
+
+## Run `call`'s verb on `mesh` (a move as well as a tool's verb).
+pub func run(call: Invocation, mesh: Mesh) -> Mesh!:
+    if call.topology != 0 and call.topology != mesh.topology_hash():
+        error(ui.invalid, "Edit input topology changed. Undo the upstream change or clear this node's edits.")
+    return Verbs.run(call.verb, mesh, call.group(), call.group_type, verb_numbers(call.verb, call.numbers), call.symmetry, call.keep).mesh()

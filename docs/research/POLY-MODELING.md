@@ -743,8 +743,9 @@ the check's overlay are the same pass, shown two ways.
   by family: at Edges, Bevel, Loop Cut, Bridge, Connect, Edge Slide…; at Faces, Extrude, Inset,
   Poke…. Tools that do not apply are left out, as Edit CAD already does.
 - **D: Select.** In Geo contexts, holding D opens the Select tools for the level: Loop, Ring,
-  Connected, Grow, Shrink, Path, Similar, Sharp, Non-manifold, Checker, Invert. Today D opens a
-  menu only in a sketch, and a tap of D is the display flag, which stays.
+  Connected, Grow, Shrink, Path, Similar, Sharp, Non-manifold, Checker, Invert. In a sketch D
+  stays Constraints. D is the marking menu only (owner, §9 question 3): the display flag keeps D
+  in the Network panel alone. Built in Stage 0.
 
 The right-click menu lists the same Modify tools for the selection, then a Select submenu. With
 nothing selected it lists Create.
@@ -807,7 +808,8 @@ needs a preview capture for the docs and docs/TOOLS.md regenerated. Tests drive 
 selection and the result checked. Each kernel is tested in luce-geocore first (its
 `tests/mesh/*_checks.lucb`), on small fixtures with known counts.
 
-**Stage 0: the tool definition, mesh tools** (§3.6 M0–M2). After the CAD Stage 8 work lands.
+**Stage 0: the tool definition, mesh tools** (§3.6 M0–M2). **Done 2026-10-13** (see "Stage 0 as
+built" below).
 - `Tool`, `Pick`, `Invocation`, `tool_registry`, `verb_tools`; luce-geocore `Verb` gains label,
   section, family, icon, picks, drag, gesture, whole, and `ParmSpec.bar`/`more`, filled for all
   30 verbs.
@@ -820,6 +822,53 @@ selection and the result checked. Each kernel is tested in luce-geocore first (i
   - right-click with faces selected lists Extrude;
   - Repeat after Bevel bevels a new edge with the same offset;
   - removing a verb from `makers` removes it from every menu (no other edit).
+
+**Stage 0 as built.**
+- M0: `tool_parity_tests` landed first. It recorded ten tools whose starting numbers were not
+  their node's (`tools.tool_run`'s Extrude 0.5, Bevel 0.5, Crease 0.5, Fuse 0.5…); M1 made the
+  verb's initial value the only one, so a tool now starts where its node does (Extrude 0.2,
+  Bevel 0.1, Crease 10).
+- luce-geocore: `Verb` gained `label`, `section`, `family`, `icon`, `picks` (`PickSpec`: label,
+  levels as `objects points edges faces`, prompt), `drag`, `gesture`, `whole` and `native` (the
+  group kept on its own domain, for Select verbs); `ParmSpec` gained `bar`. `Verbs` reads them.
+  `more` was left out: nothing shows More options yet (Stage 4's Bevel needs it). Every tool
+  verb takes one pick for now; Bridge's two loops come with Stage 5.
+- luced-3d: `tool_record.luc` (`Tool`, `Pick`, `Invocation`), `tool_registry.luc`,
+  `verb_tools.luc`, `verb_rows.luc` (a verb's rows, moved out of `node_catalog` so the registry
+  sits below it), `tool_menus.luc` and `tool_docs.luc`. `tools.tool_run`, `verb_defaults`,
+  `edit_mesh.tool_names`, `tool_levels`, `EditStep.evaluate` and the "Extrude faces" command are
+  gone. `EditStep` hands its tool an `Invocation`; it was not renamed, because Edit CAD's files
+  use it throughout and move in Stage 1.
+- Every surface reads the registry: Edit Mesh's tools (`EditTool` keeps its `Tool`), the node
+  menu (already generated from the verbs), the tool bar (`bar`), Modify › Edit Mesh tools
+  (Repeat and a submenu per family), Modify › Selection, A (primitives and placing tools), S
+  (Repeat, then the level's Modify tools by family), D (Select), the right-click menu (Repeat,
+  the level's tools by family, Select; with nothing selected, Create), Repeat, the prompts
+  ("Select edges for Bevel", "Bevel works on edges"), the icons and docs/TOOLS.md
+  (`tools/tool_docs.py`; a test fails when it is stale). The knife's stroke is found by its
+  gesture, PolyDraw's placing by `gesture = "place"`.
+- Menus order families by `tool_registry.family_order()` (family names, not tool names).
+- A tool node that does not change topology keeps the selection, as its step does; a Select
+  verb's node adopts its cook selection.
+- Edit CAD's Noise, Flatten and Snap on CVs take their verbs and numbers from the registry; the
+  rest of Edit CAD is untouched until Stage 1.
+- Measured on luced-3d `src/` (string mentions of a mesh tool's label or verb name, CAD tools of
+  the same name included): 4.5 files and 6.6 lines per mesh tool before; 1.7 files and 3.0
+  lines after, every one of them a CAD tool, a family or category name, or the knife's
+  Clip-specific stroke step. A mesh-only tool (Inset, Bevel, Loop Cut, Spin…) is named in no
+  luced-3d source file.
+- Adding a mesh tool is its luce-geocore file and one line in `makers` (and ORDER). Select
+  Checker (§5.2) was added that way: `select_verbs.lucb` and one `makers` line; luced-3d
+  needed no source change, and it is a node, a D entry, a right-click Select entry, a Modify ›
+  Selection entry and a docs/TOOLS.md section. With it taken out of `makers`, luced-3d still
+  type-checks: no surface names it.
+- Tests: `tool_parity_tests` (node = step = cook for every tool), `tool_registry_tests`
+  (declarations, docs/TOOLS.md current, S/D/A/right-click/Modify at every level in an Edit Mesh
+  and on a plain node, S at Edges has Bevel not Inset, right-click on faces has Extrude, Repeat
+  as a step and as a node, Select Checker, D in the viewport and the network); luce-geocore's
+  `select_checks`.
+- Not yet: the drag driver (Stage 3; `drag` is declared and documented), More options, multiple
+  picks, the stroke and place gesture modules (M4).
 
 **Stage 1: CAD tools onto the definition** (M3–M5).
 - Family by family, in §3.6's order; `modify_picks` and `edit_cad_picks` become one prompt
@@ -930,6 +979,32 @@ selection and the result checked. Each kernel is tested in luce-geocore first (i
   - one brush stroke is one undo step.
 
 ## 9. Open questions for the owner
+
+The owner's answers (2026-10-13), and how they were applied:
+
+1. **Keep Edit Mesh.** No rename to Edit Geo.
+2. **CAD tools are declared in Luce now** and move into luce-cad later, family by family.
+3. **D is the marking menu only.** In the viewport D opens Select (a sketch keeps
+   Constraints). The display flag lost its window-wide D shortcut. The Network panel takes D
+   itself, so D on a focused network still flips the selected node's display flag; the
+   viewport, the outliner and the parameters no longer do. The status line reads "A / S / D:
+   create, modify, select   D in the network: display flag", and the README says the same.
+4. **Ring is Cmd/Ctrl+double-click on an edge.** Cmd/Ctrl alone still removes, so the
+   gestures are, for Stage 2:
+   - Cmd/Ctrl+click removes one element (as now);
+   - Cmd/Ctrl+double-click on an edge adds its ring (the double-click replaces its first
+     click's removal, one undo step); on a face or point, where there is no ring, it removes
+     the island;
+   - Shift+Cmd/Ctrl+double-click removes the loop (on an edge) or the island;
+   - Shift+Cmd/Ctrl+click is the shortest path (answer 6); a path needs one click, so the
+     double-click forms do not clash with it.
+5. **Double-click a face or point selects its island.**
+6. **Shift+Cmd/Ctrl+click selects the shortest path.**
+7. **Dragging right after a tool runs sets its main value; a click keeps it.** Every tool
+   declares its `drag` row now (docs/TOOLS.md lists it); the driver is Stage 3.
+8. **Selection (Stage 2) comes before the interactive tools (Stage 3).**
+
+The questions as asked:
 
 1. **Rename Edit Mesh to Edit Geo?** The request calls it Edit Geo, the context is Geo, and
    "Mesh" will also hold curves and points later. Recommend: yes, Edit Geo, in Stage 0. Without

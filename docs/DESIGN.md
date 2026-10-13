@@ -361,6 +361,13 @@ for the selection, enabled by `Actions.refresh`.
   metadata. `node_evaluation.luc` dispatches operators; `component_groups.luc`
   resolves component groups; `edit_operations.luc` owns replayable recipes;
   `geometry_sheet.luc` virtualizes the spreadsheet.
+- The tool registry (docs/research/POLY-MODELING.md §3): `tool_record.luc`
+  (`Tool`, `Pick`, `Invocation`), `tool_registry.luc` (every tool, from each
+  home of declarations), `verb_tools.luc` (the luce-geocore verbs as tools)
+  and `verb_rows.luc` (a verb's parameter rows, for its node and its tool).
+  The Edit kinds' tool lists, the menus (`tool_menus.luc`), the marking
+  menus, the right-click menu, Repeat, the icons and docs/TOOLS.md
+  (`tool_docs.luc`) read it.
 - Projects and UI persistence: [PROJECTS.md](PROJECTS.md).
 
 ## Mesh representation

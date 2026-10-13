@@ -1,0 +1,92 @@
+## Stage 0's captures for preview.py (docs/research/POLY-MODELING.md): the
+## tool registry's surfaces in Edit Mesh, on a 2-unit box with a grid
+## beside it.
+##   poly_marking_edges: an edge of the box selected, S held: Repeat (after
+##     a Bevel) and the Modify tools that take edges, by family (Bevel,
+##     Loop Cut, Knife, Connect, Edge Slide, Fill, Bridge, …; no Inset).
+##   poly_menu_faces: the box's top selected and right-clicked: the Modify
+##     tools that take faces by family, then Select.
+##   poly_marking_select: the grid's faces selected, D held: the Select
+##     menu (Select Checker and the selection commands).
+##   poly_checker: Select Checker run on the grid's faces: every other face
+##     selected, the geometry unchanged.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3
+from luce_geocore.geocore import Selection
+from view_projection import project
+from edit_types import edge_level, face_level
+import node_commands
+import modeling_commands
+import selection_commands
+import preview_support
+
+pub func scenes() -> list[str]:
+    return ["poly_marking_edges", "poly_menu_faces", "poly_marking_select", "poly_checker"]
+
+## An Edit Mesh holding a box (faces 0-5) and a 4 by 4 grid beside it
+## (faces 6-21), looked at from above the front.
+func modeled(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Edit Mesh", 40.0, 40.0)
+    # With --background each step waits for the worker's result.
+    preview_support.settle(w)
+    modeling_commands.create(w, "Box")
+    preview_support.settle(w)
+    modeling_commands.create(w, "Grid")
+    preview_support.settle(w)
+    # The grid 3 along X from the box (its step's position, as its tool bar
+    # sets it).
+    modeling_commands.set_last_step(w, 3, 3.0, -100.0, 100.0)
+    preview_support.settle(w)
+
+## Scene `scene` before its first frame.
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    let w = editor.workspace
+    modeled(editor)
+    let mesh = w.geometry else trap("mesh")
+    if scene == "poly_marking_edges":
+        # A Bevel first, so Repeat leads S.
+        selection_commands.set_mode(w, edge_level)
+        w.selection = Selection.of(mesh, "p4-5", 4)
+        modeling_commands.model(w, "Bevel")
+        preview_support.settle(w)
+        selection_commands.set_mode(w, edge_level)
+        w.selection = Selection.of(w.geometry else trap("beveled"), "p0-1", 4)
+    elif scene == "poly_menu_faces":
+        selection_commands.set_mode(w, face_level)
+        w.selection = Selection.of(mesh, "2", 2)
+    elif scene in ["poly_marking_select", "poly_checker"]:
+        selection_commands.set_mode(w, face_level)
+        w.selection = Selection.of(mesh, "6-21", 2)
+        if scene == "poly_checker":
+            modeling_commands.model(w, "Select Checker")
+            preview_support.settle(w)
+    # Looked at once the results are in (the first one frames the view).
+    w.view.yaw = 0.55
+    w.view.pitch = 0.6
+    w.view.distance = 9.0
+    w.view.target = Vector3(1.5, 0.5, 0.0)
+    w.view.update_camera()
+    editor.panels.refresh()
+
+## Frame `frame` of scene `scene` (from 2; `last` is the frame captured).
+pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
+    let w = editor.workspace
+    if frame != last - 1:
+        return
+    let area = editor.panels.view.layout().bounds()
+    let anchor = Vector3(3.0, 0.0, 0.0) if scene == "poly_marking_select" else Vector3(0.0, 2.0, 0.0)
+    let at = project(w, anchor, area.width, area.height)
+    editor.app.focus(editor.panels.view.layout())
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + at[0], y = area.y + at[1]))
+    if scene == "poly_marking_edges":
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.s))
+    elif scene == "poly_marking_select":
+        editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.d))
+    elif scene == "poly_menu_faces":
+        # A right click over the selected top: the menu for the selection.
+        for kind in [EventKind.pointer_down, EventKind.pointer_up]:
+            editor.app.dispatch(Event(kind = kind, x = area.x + at[0], y = area.y + at[1], button = 1))

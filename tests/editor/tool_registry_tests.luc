@@ -1,0 +1,209 @@
+## The tool registry (docs/research/POLY-MODELING.md §3.5): every tool is a
+## node in its contexts and a step of its Edit kinds, every surface reaches
+## it at the levels its first pick takes and not elsewhere (S at Edges has
+## Bevel, not Inset), its rows have docs and starting values in range, its
+## icon exists, docs/TOOLS.md is current; Repeat runs the last tool again
+## with its last numbers; Select Checker changes the selection only; D is
+## the Select marking menu and the Network keeps D for the display flag.
+from app import Luce3D
+from luce_ui.ui import Event, Command
+from luce_ui import ui
+from luce_window.input import EventKind, Key
+from luce_geocore.geocore import Selection
+from luce_std import files, paths, process
+from workspace import Workspace
+from marking_menu import MarkItem
+from tool_icons import asset_name
+from edit_types import object_level, point_level, edge_level, face_level
+import marking_items
+import modeling_commands
+import node_catalog
+import node_commands
+import selection_commands
+import tool_registry
+import tool_docs
+
+pub func tool_registry_tests() -> unit!:
+    declarations()
+    docs_current()
+    surfaces()
+    repeat_checks()
+    select_checks()
+    print("PASS tool registry: every tool a node and an Edit Mesh step with docs, starting values, icons and docs/TOOLS.md; S, D, A, the right-click menu and Modify reach each at its levels only; Repeat with the last numbers; Select Checker; D in the viewport and the network")
+
+## What each declaration gives: a node in Geo, a step of Edit Mesh, rows
+## with docs and starting values in range, a known icon.
+func declarations() -> unit!:
+    let edit = Workspace().kind_of("Edit Mesh") else trap("Edit Mesh")
+    let kinds = node_catalog.kinds()
+    for tool in tool_registry.all():
+        assert(tool.name in kinds and node_catalog.allowed(tool.name, "geometry"), tool.name)
+        let step = edit.tool(tool.label) else trap(tool.label)
+        assert(step.verb == tool.name and step.tool != none)
+        assert(ui.icon_known(tool.icon) and asset_name(tool.label) == tool.icon, tool.label)
+        assert(tool.doc != "" and tool.family != "" and tool.section in ["Create", "Modify", "Select"])
+        for row in tool.rows:
+            if row.valued():
+                assert(row.doc != "" and row.initial >= row.minimum and row.initial <= row.maximum, f"{tool.label} {row.name}")
+        # The step starts where the node does.
+        assert(tool.starting() == node_catalog.starting_values(tool.name)[..<tool.starting().length], tool.label)
+
+## docs/TOOLS.md is what tool_docs makes now (tools/tool_docs.py rewrites it).
+func docs_current() -> unit!:
+    let here = process.variable("LUC_TEST_DIR") else trap("LUC_TEST_DIR")
+    let page = files.read_text(paths.join(paths.directory(paths.directory(here)), "docs/TOOLS.md"))
+    if page.replace("\r\n", "\n") != tool_docs.markdown(tool_registry.all()):
+        print("FAIL docs/TOOLS.md is stale: run tools/tool_docs.py")
+        assert(false)
+
+## An editor showing the 4 by 4 grid in an Edit Mesh (`edit`) or alone.
+func grid_editor(edit: bool) -> Luce3D!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1400.0, 900.0)
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Grid", 0.0, 0.0)
+    if edit:
+        node_commands.add_node(w, "Edit Mesh", 0.0, 100.0)
+    return editor
+
+## Select something at `level` (Object picks the whole grid).
+func pick(w: Workspace, level: int) -> unit!:
+    selection_commands.set_mode(w, level)
+    let grid = w.geometry else trap("grid")
+    let expressions = ["0-15", "6 7 12 11", "p5-6-7", "5 6"]
+    let domains = [2, 0, 4, 2]
+    w.selection = Selection.of(grid, expressions[level], domains[level])
+
+func no_add(kind: str) -> unit!:
+    _ = kind
+
+func names(items: list[MarkItem]) -> list[str]:
+    let result: list[str] = []
+    for item in items:
+        result.append(item.name)
+    return result
+
+## The commands' texts, their submenus' too.
+func texts(commands: list[Command]) -> list[str]!:
+    let result: list[str] = []
+    for command in commands:
+        result.append(command.text())
+        let items: list[Command] = []
+        for at in 0..<command.item_count():
+            items.append(command.item(at))
+        result.extend(texts(items))
+    return result
+
+## At each level, in an Edit Mesh and on a plain Grid: S and the right-click
+## menu list exactly the Modify tools the level takes, D the Select tools,
+## A (in the Edit Mesh) the Create tools.
+func surfaces() -> unit!:
+    for edit in [true, false]:
+        let editor = grid_editor(edit)
+        let w = editor.workspace
+        let actions = editor.panels.actions
+        let sketch = editor.panels.view.sketch.editor
+        # On a plain node the Object level picks objects, not components.
+        for level in ([object_level] if edit else []) + [point_level, edge_level, face_level]:
+            pick(w, level)
+            actions.refresh()
+            let s = names(marking_items.modify_items(w, actions, no_add, sketch))
+            let d = names(marking_items.select_items(w, actions))
+            let a = names(marking_items.create_items(w, actions, no_add, sketch))
+            let right = texts(editor.panels.viewport_menu.entries())
+            for tool in tool_registry.all():
+                let offered = tool.offered(level)
+                if tool.section == "Modify":
+                    assert((tool.label in s) == offered and (tool.label in right) == offered, f"{tool.label} at level {level}")
+                    assert(not (tool.label in d))
+                elif tool.section == "Select":
+                    assert((tool.label in d) == offered and (tool.label in right) == offered and not (tool.label in s), tool.label)
+                elif edit:
+                    assert(tool.label in a, tool.label)
+            # Modify › Edit Mesh tools holds every Modify tool, by family.
+            let modify = texts([editor.panels.menus.modeling])
+            for tool in tool_registry.all():
+                assert((tool.label in modify) == (tool.section == "Modify"), tool.label)
+        # The plan's checks: S at Edges has Bevel, not Inset; the
+        # right-click menu with faces selected has Extrude.
+        pick(w, edge_level)
+        let at_edges = names(marking_items.modify_items(w, actions, no_add, sketch))
+        assert("Bevel" in at_edges and not ("Inset" in at_edges))
+        pick(w, face_level)
+        assert("Extrude" in texts(editor.panels.viewport_menu.entries()))
+        # Nothing selected: the right-click menu offers Create.
+        w.selection = none
+        actions.refresh()
+        assert(texts(editor.panels.viewport_menu.entries())[0] == "Create")
+    # D in the viewport opens Select; in the network D flips the display
+    # flag.
+    let editor = grid_editor(true)
+    let w = editor.workspace
+    editor.app.layout(1400.0, 900.0)
+    pick(w, face_level)
+    editor.panels.refresh()
+    editor.app.focus(editor.panels.view.layout())
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.d))
+    let marking = editor.panels.view.marking
+    assert(marking.is_open() and marking.title == "Select" and "Select Checker" in names(marking.items))
+    editor.app.dispatch(Event(kind = EventKind.key_up, key = Key.d))
+    let shown = w.network.display
+    var grid = -1
+    for node in w.network.nodes:
+        if node.kind == "Grid":
+            grid = node.id
+    node_commands.select_node(w, grid)
+    editor.panels.refresh()
+    editor.app.focus(editor.panels.graph.layout())
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.d))
+    editor.app.dispatch(Event(kind = EventKind.key_up, key = Key.d))
+    assert(w.network.display == grid and shown != grid)
+
+## Repeat: Bevel, its offset changed on the tool bar, then Repeat on
+## another edge bevels it with that offset, as a step; on a plain Grid it
+## adds another node with the first node's values.
+func repeat_checks() -> unit!:
+    let editor = grid_editor(true)
+    let w = editor.workspace
+    let actions = editor.panels.actions
+    pick(w, edge_level)
+    modeling_commands.model(w, "Bevel")
+    let node = w.selected() else trap("edit")
+    modeling_commands.set_last_step(w, 0, 0.05, 0.0, 1.0)
+    assert(w.last_tool == "Bevel" and w.last_tool_numbers[0] == 0.05)
+    selection_commands.set_mode(w, edge_level)
+    let beveled = w.geometry else trap("beveled")
+    w.selection = Selection.of(beveled, "p0-1", 4)
+    actions.refresh()
+    assert(actions.repeat_tool.is_enabled() and actions.repeat_tool.text() == "Repeat Bevel")
+    assert(names(marking_items.modify_items(w, actions, no_add, editor.panels.view.sketch.editor))[0] == "Repeat Bevel")
+    actions.repeat_tool.trigger()
+    assert(node.edits.length == 2 and node.edits[1].verb == "PolyBevel" and node.edits[1].numbers[0] == 0.05)
+    # As nodes: the second Bevel takes the first node's offset.
+    let plain = grid_editor(false)
+    let g = plain.workspace
+    pick(g, edge_level)
+    modeling_commands.model(g, "Bevel")
+    let first = g.network.require(g.network.selected)
+    node_commands.set_parameter(g, 0, 0.07)
+    selection_commands.set_mode(g, edge_level)
+    g.selection = Selection.of(g.geometry else trap("first"), "p0-1", 4)
+    modeling_commands.repeat(g)
+    let second = g.network.require(g.network.selected)
+    assert(second.id != first.id and second.kind == "PolyBevel" and second.values[0] == 0.07 and second.inputs[0] == first.id)
+
+## Select Checker: a selection change, not a step; undone as one.
+func select_checks() -> unit!:
+    let editor = grid_editor(true)
+    let w = editor.workspace
+    selection_commands.set_mode(w, face_level)
+    w.selection = Selection.of(w.geometry else trap("grid"), "0-15", 2)
+    let node = w.selected() else trap("edit")
+    modeling_commands.model(w, "Select Checker")
+    assert(w.selected_count() == 8 and node.edits.length == 0 and w.last_tool == "Select Checker")
+    w.undo()
+    assert(w.selected_count() == 16)
+    # Not at the Object level.
+    selection_commands.set_mode(w, object_level)
+    assert(not w.tool_available("Select Checker"))

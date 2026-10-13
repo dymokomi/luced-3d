@@ -184,7 +184,8 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   Disabling Cube produces empty geometry. Delete/Backspace in Network deletes
   the picked nodes and wires and disconnects the nodes' consumers.
 - Edit tools appear when the selected Edit node (Edit Mesh, Edit CAD, Edit SDF) is enabled and displayed; a selected and displayed Sketch node (inside a CAD node) is drawn and constrained in the viewport.
-  Display it with D before modeling. Incomplete nodes show an error instead of
+  Display it with D in the Network panel before modeling (in the viewport D
+  holds the Select marking menu). Incomplete nodes show an error instead of
   stale geometry; connect their inputs or undo the change.
 
 ## Viewport

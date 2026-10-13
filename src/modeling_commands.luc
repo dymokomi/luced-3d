@@ -11,56 +11,110 @@ from luce_std import math
 from edit_operations import EditStep
 from edit_kinds import is_edit
 from edit_types import symmetry_slot, keep_slot
-from tools import ToolRun, tool_run, verb_defaults
+from tools import ToolRun
+from tool_record import Tool
+from verb_rows import initial_numbers
+import tool_registry
 import node_catalog
 import placing_commands
+import selection_commands
 from edit_steps import append_step, add_tool_node, insert_after_display
 from tool_prompts import start_prompt
 
-## Run `tool` on the selection (see tools.luc): a step of the active Edit
-## node, or a new node after the displayed one, its Group the selection's
+## Run tool `operation` on the selection: a step of the active Edit node,
+## or a new node after the displayed one, its Group the selection's
 ## expression and its guard the topology it was made on. With nothing
-## selected a node waits for its components (Tool → Select).
-pub func model(w: Workspace, operation: str) -> unit!:
+## selected a node waits for its components (Tool → Select). A registry
+## tool (tool_registry.luc) says how: a stroke tool (the knife) waits for
+## its stroke, a Select tool changes the selection, a whole tool runs on
+## everything with nothing selected. `numbers` replace its starting numbers
+## (Repeat's).
+pub func model(w: Workspace, operation: str, numbers: list[float]? = none) -> unit!:
     let mesh = w.geometry else return
-    # The knife is a stroke in the viewport (knife below), not a click.
-    if operation == "Knife":
-        choose_tool(w, "Knife")
-        w.notice = "Drag across the model to cut it; Shift snaps the stroke to 15°"
-        return
+    var registered: Tool? = none
     var run = ToolRun("", [])
     if let kind = w.active_kind():
+        let tool = kind.tool_at(operation, w.level_index()) else return
+        registered = tool.tool
         # A drawing tool with nothing to work on draws instead.
         if operation in kind.draw_tools and kind.drawn != none and w.editing():
             let chosen = w.current_selection() else return
-            let tool = kind.tool_at(operation, w.level_index()) else return
             if chosen.count() == 0 or not tool.offered(w.level_index()):
                 placing_commands.start_placing(w, operation)
                 return
-        # The kind's own tool: its verb and numbers, whether or not
-        # tools.luc knows the name (Edit SDF's Subtract).
-        let tool = kind.tool_at(operation, w.level_index()) else return
         if not tool.offered(w.level_index()):
-            w.notice = f"{operation} does not apply to {w.level().name}"
+            w.notice = refused(w, operation, registered)
             w.revision += 1
             return
+        # The kind's own tool: its verb and numbers (Edit SDF's Subtract).
         run = ToolRun(tool.verb, tool.numbers else node_catalog.starting_values(tool.verb))
     else:
-        run = tool_run(operation) else return
-    let wants_group = not (operation in ["Subdivide", "Clean"])
+        let tool = tool_registry.find(operation) else return
+        registered = tool
+        run = ToolRun(tool.name, tool.starting())
+    if let given = numbers:
+        run = ToolRun(run.verb, given)
+    if let tool = registered:
+        if tool.gesture == "stroke":
+            choose_tool(w, tool.label)
+            w.notice = "Drag across the model to cut it; Shift snaps the stroke to 15°"
+            return
+        if tool.section == "Select":
+            remember(w, tool.label, run.numbers, -1)
+            selection_commands.select_with(w, tool, run.numbers)
+            return
+    let whole = registered != none and (registered else trap("tool")).whole
     let chosen = w.current_selection() else return
-    if wants_group and chosen.count() == 0:
+    if not whole and chosen.count() == 0:
         if w.editing():
-            w.notice = "Select components first"
+            w.notice = waiting(w, registered)
             w.revision += 1
             return
         start_prompt(w, operation, run)
         return
-    let group = chosen.expression(mesh) if wants_group else ""
+    let group = chosen.expression(mesh) if not whole else ""
     if w.editing():
         append_step(w, operation, run.verb, group, run.numbers, mesh)
+        if registered != none:
+            remember(w, operation, run.numbers, -1)
     else:
         add_tool_node(w, operation, run, group, mesh)
+        remember(w, operation, run.numbers, w.network.selected)
+
+## Keep tool `label` and its numbers (and the node it made) for Repeat.
+func remember(w: Workspace, label: str, numbers: list[float], node: int):
+    w.last_tool = label
+    w.last_tool_numbers = numbers.copy()
+    w.last_tool_node = node
+
+## Repeat: the tool run last, with its last numbers (its node's, when it
+## made one that is still there), on what is selected now.
+pub func repeat(w: Workspace) -> unit!:
+    if w.last_tool == "":
+        return
+    var numbers = w.last_tool_numbers
+    if let node = w.network.find(w.last_tool_node):
+        numbers = node.values[..<numbers.length]
+    model(w, w.last_tool, numbers)
+
+## Why a tool does not run at the current level.
+func refused(w: Workspace, operation: str, registered: Tool?) -> str:
+    if let tool = registered:
+        return f"{tool.label} works on {tool.levels_text(level_names(w))}"
+    return f"{operation} does not apply to {w.level().name}"
+
+## What a tool waits for with nothing selected.
+func waiting(w: Workspace, registered: Tool?) -> str:
+    if let tool = registered:
+        return tool.waiting(level_names(w))
+    return "Select components first"
+
+## The selection levels' names (Object, Vertices, Edges, Polygons, …).
+func level_names(w: Workspace) -> list[str]:
+    let result: list[str] = []
+    for level in w.levels():
+        result.append(level.name)
+    return result
 
 ## Create primitive `name` as a step of the displayed Edit node; its
 ## piece becomes the selected Object.
@@ -98,7 +152,7 @@ pub func knife(w: Workspace, x0: float, y0: float, x1: float, y1: float, width: 
             return
         group = under.expression(mesh)
         group_type = 3
-    let numbers = verb_defaults("Clip")
+    let numbers = initial_numbers("Clip")
     numbers[0] = 3.0
     numbers[3] = 2.0
     numbers[4] = plane.point.x
@@ -114,6 +168,7 @@ pub func knife(w: Workspace, x0: float, y0: float, x1: float, y1: float, width: 
             w.network.invalidate(node.id)
             w.adopt_output = true
             w.rebuild())
+        remember(w, "Knife", numbers, -1)
         # A tool is used once.
         w.end_modal_tool()
         return
@@ -124,6 +179,7 @@ pub func knife(w: Workspace, x0: float, y0: float, x1: float, y1: float, width: 
         node.guard = mesh.topology_hash()
         w.adopt_output = true
         w.rebuild())
+    remember(w, "Knife", numbers, -1)
     w.end_modal_tool()
 
 pub func extrude(w: Workspace) -> unit!:
@@ -148,6 +204,10 @@ pub func set_last_step(w: Workspace, slot: int, value: float, minimum: float, ma
         node.edits[-1] = node.edits[-1].with_numbers(numbers)
         w.network.invalidate(node.id)
         w.rebuild())
+    # Repeat runs the tool with what its bar was set to.
+    if let tool = tool_registry.find(w.last_tool):
+        if tool.name == node.edits[-1].verb and w.last_tool_node < 0:
+            w.last_tool_numbers = node.edits[-1].numbers.copy()
 
 ## Choose tool `tool`. Select chosen again while splats are edited cycles
 ## how a drag selects them: box, lasso, brush.
