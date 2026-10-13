@@ -1027,9 +1027,11 @@ a straight edge (a cone along a straight law, the balls' envelope along
 another, its sections turning to a slanted end face) and round closed loops;
 where the law is steep enough that the envelope would fold, the section
 scales instead, as Fusion's does.
-**Corner type** (G1): Rolling ball, or Setback (the fillets stop short of the
-corner, 2 radii, Fusion's, and a patch blends them, as G2 and G3 corners always
-are; where inside and outside fillets meet, a vertex blend). Where an inside and
+**Corner type**: Rolling ball (a ball at G1; G2 and G3 fillets stop where the
+ball's would, r from a square corner, and a three-sided patch joins their end
+sections, Fusion's), or Setback (the fillets stop short of the corner, 2 radii
+or by Fusion's rule where radii differ, and a patch blends them; where inside
+and outside fillets meet, a vertex blend). Where an inside and
 an outside fillet meet with the corner's third edge sharp (a Y corner), or one
 of a kind meets two of the other, the pair's section rolls round the lone one's
 end, Fusion's rolling ball (a torus at G1, the section swept at G2 and G3). Continuity is G1
@@ -1040,11 +1042,12 @@ tighter in the middle, less is flatter; a G1 fillet with a weight is a conic
 (Fusion's), its corners setbacks. Parasolid's sections (Stage 8): **Conic**
 (G1) by Rho, Rho relative (0.5 the circle) or Middle radius; **G2 shape** by
 Depth and Skew or by Softness; **Limits** (with **At overlap**, Parasolid's
-overlap limit: only where the fillet fits its faces); **Setback** (radii); the
-setback corner's **Corner edge shape** (G1, Alias's Corner Blend Edge Shape: its
-curves on the faces as conics, 0.5 the circle) and **Corner fullness** (Alias's
-Pivot Curve Length Ratio: its patch's bulge scaled, 1 the fairest fill, the
-default, 0 as Fusion's corners);
+overlap limit: only where the fillet fits its faces); **Setback** (radii, Setback
+corners); the setback corner's **Corner edge shape** (G1, Alias's Corner Blend
+Edge Shape: its curves on the faces as conics, 0.5 the circle) and, for Setback
+and three-sided corners, **Corner fullness** (Alias's Pivot Curve Length Ratio:
+its patch's bulge scaled, 1 the fairest fill; 0, the default, as Fusion's
+corners);
 **Overflow** with its Smooth, Cliff and Notch behaviours (Smooth rolls an inside
 foot onto a wall's rounded top; Notch trims a fillet where a notch cuts under
 one end, Fusion's). **Selection sets** (Fusion's
