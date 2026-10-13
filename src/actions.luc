@@ -14,6 +14,7 @@ import edit_cad_commands
 from edit_cad_actions import EditCadActions
 from modify_commands import ModifyActions
 from surface_commands import SurfaceActions
+from selection_actions import SelectionActions
 import selection_commands
 import node_commands
 import context_display
@@ -114,8 +115,9 @@ pub class Actions:
     pub let modeling: list[Command]
     ## Create a primitive in the displayed Edit node.
     pub let create: list[Command]
-    ## Selection edits: invert, grow, shrink, border, flood, loop, ring.
-    pub let selection_tools: list[Command]
+    ## Invert, Select none, Hide, Unhide and the selection sets (the Select
+    ## tools are the registry's).
+    pub let selection: SelectionActions
     pub let all: list[Command]
     let connections: list[Connection]
     let workspace: Workspace
@@ -221,15 +223,7 @@ pub class Actions:
                     edit_cad_commands.tool(workspace, name)
                 else:
                     modeling_commands.model(workspace, name)))
-        self.selection_tools = [Command("Invert selection", Shortcut(Key.i, primary = true), id = "select_invert", icon = "invert-selection")]
-        self.connections.append(self.selection_tools[0].on_trigger(func () -> unit!: selection_commands.invert_selection(workspace)))
-        let walks = ["Grow selection", "Shrink selection", "Select border", "Select connected", "Select loop", "Select ring"]
-        let walk_icons = ["add-to-selection", "subtract-from-selection", "frame-selection", "magic-wand-tool", "loop-cut", "distribute-vertical"]
-        for index in 0..<walks.length:
-            let operation = index
-            let command = Command(walks[index], id = "select_walk_" + str(index), icon = walk_icons[index])
-            self.selection_tools.append(command)
-            self.connections.append(command.on_trigger(func () -> unit!: selection_commands.walk_selection(workspace, operation)))
+        self.selection = SelectionActions(workspace)
         # Selection levels 1-7 (Object, Point, Edge, Face, Smart, then Edit
         # CAD's Patch and Curves): their labels follow the Edit kind's levels
         # (Vertices, CVs, …).
@@ -293,7 +287,7 @@ pub class Actions:
                 if workspace.network.context() == "cad" and not workspace.sketching():
                     workspace.last_cad_tool = id
                     workspace.last_cad_name = name))
-        self.all = [self.undo, self.redo, self.frame, self.grid, self.hulls, self.display, self.parent, self.add_node, self.set_output, self.frame_nodes, self.group, self.enabled, self.freeze, self.play, self.play_backwards, self.previous_frame, self.next_frame, self.first_frame, self.last_frame, self.looping, self.delete, self.rename, self.cut, self.copy, self.paste, self.duplicate, self.finish_sketch, self.slice, self.redefine_plane, self.extrude_profiles, self.revolve_profiles, self.sketch_on_face, self.fillet_edges, self.chamfer_edges, self.check_edges, self.extrude_face, self.press_pull, self.offset_face, self.clear_edits, self.repeat_tool, self.select_all, self.smaller_brush, self.larger_brush, self.through_depth] + self.add + self.modes + self.context_modes + self.tools + self.modeling + self.create + self.selection_tools
+        self.all = [self.undo, self.redo, self.frame, self.grid, self.hulls, self.display, self.parent, self.add_node, self.set_output, self.frame_nodes, self.group, self.enabled, self.freeze, self.play, self.play_backwards, self.previous_frame, self.next_frame, self.first_frame, self.last_frame, self.looping, self.delete, self.rename, self.cut, self.copy, self.paste, self.duplicate, self.finish_sketch, self.slice, self.redefine_plane, self.extrude_profiles, self.revolve_profiles, self.sketch_on_face, self.fillet_edges, self.chamfer_edges, self.check_edges, self.extrude_face, self.press_pull, self.offset_face, self.clear_edits, self.repeat_tool, self.select_all, self.smaller_brush, self.larger_brush, self.through_depth] + self.add + self.modes + self.context_modes + self.tools + self.modeling + self.create + self.selection.commands()
         self.all += [self.new_project, self.open_project, self.save, self.save_as, self.project_settings, self.reset_layout, self.four_views, self.full_screen] + self.model.all() + self.cad_modify.commands + self.surfaces.commands
         self.refresh()
 
@@ -391,8 +385,7 @@ pub class Actions:
             command.set_enabled(selecting and w.tool_available(command.text()) and (not w.editing() or w.selected_count() > 0 or runs_whole(w, command.text()) or command.text() in w.strip_kind().draw_tools))
         self.repeat_tool.set_enabled(selecting and w.last_tool != "" and w.tool_available(w.last_tool))
         self.repeat_tool.set_text("Repeat " + w.last_tool if w.last_tool != "" else "Repeat")
-        for command in self.selection_tools:
-            command.set_enabled(selecting and w.selected_count() > 0 and (command is self.selection_tools[0] or w.network.context() == "geometry"))
+        self.selection.refresh(selecting)
         # The arrows nudge picked CVs while the viewport has the keyboard and
         # the Move tool is on (Alias's step size); the timeline keeps them
         # otherwise.
@@ -427,6 +420,7 @@ pub class Actions:
         self.press_pull.set_enabled(sketching or shown or faces or edges)
 
     pub func close(self):
+        self.selection.close()
         self.model.close()
         self.cad_modify.close()
         self.surfaces.close()

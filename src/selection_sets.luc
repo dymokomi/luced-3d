@@ -1,0 +1,94 @@
+## Selection sets (Maya's Quick Select Sets, Houdini's groups): a set is a
+## named group on the mesh, so it is saved with the project, survives undo,
+## rides through later steps and nodes as every group does, and a node's
+## Group can name it. In an Edit Mesh a set is written by a step (edit_mesh's
+## Selection Set step: the selection, added to the set or taken from it);
+## on a plain node by a Selection Group node inserted after it. Recalling a
+## set selects its members on the level's components, alone, added, taken
+## away or intersected.
+from luce_geocore.geocore import Selection
+from workspace import Workspace
+from tools import ToolRun
+from tool_prompts import follow_prompt
+import edit_mesh
+import edit_steps
+
+## The sets of the displayed mesh on the level's components: its named
+## groups there (not the hidden ones starting with ".").
+pub func names(w: Workspace) -> list[str]!:
+    let result: list[str] = []
+    let mesh = w.geometry else return result
+    for index in 0..<mesh.attribute_count():
+        if not mesh.attribute_group(index) or mesh.attribute_domain(index) != w.domain():
+            continue
+        let name = mesh.attribute_name(index)
+        if name != "" and not name.starts_with(".") and not (name in result):
+            result.append(name)
+    return result
+
+## The first of set1, set2, … the mesh has no group of.
+pub func unused_name(w: Workspace) -> str!:
+    let taken = names(w)
+    var number = 1
+    while f"set{number}" in taken:
+        number += 1
+    return f"set{number}"
+
+## Whether sets can be written here: components selected on a mesh in Geo
+## or an Edit Mesh.
+pub func writable(w: Workspace) -> bool:
+    if not w.selecting() or w.network.context() != "geometry" or w.selected_count() == 0:
+        return false
+    return not w.editing() or w.strip_kind().name == edit_mesh.kind_name
+
+## Save the selection as a new set; its name.
+pub func save(w: Workspace) -> str!:
+    let name = unused_name(w)
+    write(w, name, 0)
+    return name
+
+## Write the selection into set `name`: as the set (`mode` 0), added to it
+## (1) or taken from it (2). One undo step.
+pub func write(w: Workspace, name: str, mode: int) -> unit!:
+    if not writable(w):
+        w.notice = "Select components to save a set"
+        w.revision += 1
+        return
+    let mesh = w.geometry else return
+    let chosen = w.current_selection() else return
+    let group = chosen.expression(mesh)
+    let label = ["Save set", "Add to set", "Remove from set"][mode]
+    if w.editing():
+        let node = w.selected() else return
+        let step = edit_steps.edit_step(w, node, edit_mesh.set_step, group, [float(mode)], mesh).with_texts([name])
+        w.perform(f"{label} {name}", func () -> unit!:
+            node.edits.append(step)
+            w.network.invalidate(node.id)
+            w.rebuild())
+        return
+    # On a plain node: a Selection Group node after it, which writes the
+    # group from the selection and, adding or removing, the set itself.
+    let written = [group, f"{name} {group}", f"{name} {edit_mesh.removed(group)}"][mode]
+    w.perform(f"{label} {name}", func () -> unit!:
+        let node = edit_steps.insert_after_display(w, ToolRun("Selection Group", [float(w.domain())]))
+        node.texts[0] = written
+        node.texts[1] = name
+        w.rebuild())
+
+## Select set `name`'s members: alone (`operation` 0), added (1), taken
+## away (2) or intersected (3). One undo step.
+pub func recall(w: Workspace, name: str, operation: int) -> unit!:
+    let mesh = w.geometry else return
+    let chosen = w.current_selection() else return
+    let members = Selection.of(mesh, name, w.domain())
+    var made = members
+    if operation == 1:
+        made = chosen.joined(members, 0)
+    elif operation == 2:
+        made = chosen.joined(members, 1)
+    elif operation == 3:
+        made = chosen.joined(members, 2)
+    let taken = w.kept(made, chosen)
+    w.perform(["Select set", "Add set", "Remove set", "Intersect set"][operation] + " " + name, func () -> unit!:
+        w.selection = taken if taken.count() > 0 else none)
+    follow_prompt(w)

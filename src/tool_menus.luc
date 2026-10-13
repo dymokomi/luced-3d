@@ -31,6 +31,7 @@ pub func from_registry(w: Workspace) -> bool:
 ## order (tool_registry.family_order), each family's tools in their
 ## declaration order.
 pub func families(w: Workspace, actions: Actions, section: str, level: int = -1) -> list[Family]:
+    let order = select_order(level) if section == "Select" else tool_registry.family_order()
     let found: list[Family] = []
     let commands = actions.modify_commands()
     for tool in w.strip_kind().tools:
@@ -48,11 +49,21 @@ pub func families(w: Workspace, actions: Actions, section: str, level: int = -1)
             family = made
         (family else trap("family")).commands.append(command)
     let result: list[Family] = []
-    for rank in 0..<tool_registry.family_order().length + 1:
+    for name in order:
         for each in found:
-            if tool_registry.family_rank(each.name) == rank:
+            if each.name == name:
                 result.append(each)
+    for each in found:
+        if not (each.name in order):
+            result.append(each)
     return result
+
+## The Select families in the order the level reaches for them: loops
+## first at Edges, regions first at Points and Faces.
+pub func select_order(level: int) -> list[str]:
+    if level == edge_level:
+        return ["Loops", "Region", "Find", "Similar", "Pattern", "Symmetry", "Convert"]
+    return ["Region", "Loops", "Similar", "Find", "Pattern", "Symmetry", "Convert"]
 
 ## The commands of `groups` in order, one list.
 pub func flat(groups: list[Family]) -> list[Command]:
@@ -68,30 +79,42 @@ pub func repeat(w: Workspace, actions: Actions) -> list[Command]:
         result.append(actions.repeat_tool)
     return result
 
-## What the Select menus offer at the level: the Select tools there
-## (Select Checker), then selecting all, inverting, growing, shrinking,
-## the border, connected, loops and rings (at Edges) and through the
-## depth.
-pub func select_commands(w: Workspace, actions: Actions) -> list[Command]:
-    let result = flat(families(w, actions, "Select", w.level_index()))
-    result.append(actions.select_all)
-    for at in 0..<actions.selection_tools.length:
-        # Loops and rings (the last two walks) take edges.
-        if at >= actions.selection_tools.length - 2 and w.level_index() != edge_level:
-            continue
-        result.append(actions.selection_tools[at])
-    result.append(actions.through_depth)
+## What the Select menus offer at the level: the Select tools there by
+## family (select_order), then Selection (all, none, invert, through the
+## depth), the sets and Hide. D lists them as columns, the right-click
+## Select submenu with a divider between families.
+pub func select_families(w: Workspace, actions: Actions) -> list[Family]:
+    let result = families(w, actions, "Select", w.level_index())
+    let selection = Family("Selection")
+    selection.commands.extend([actions.select_all, actions.selection.none_selected, actions.selection.invert, actions.through_depth])
+    result.append(selection)
+    let hiding = Family("Hide")
+    hiding.commands.extend([actions.selection.hide, actions.selection.hide_unselected, actions.selection.unhide])
+    result.append(hiding)
     return result
 
-## Every registry Select tool's command (Modify › Selection lists them,
-## enabled at the levels they take).
-pub func select_tools(actions: Actions) -> list[Command]:
+## The Select menus' commands in one list, families apart by dividers and
+## the sets' submenu after Selection.
+pub func select_commands(w: Workspace, actions: Actions) -> list[Command]!:
     let result: list[Command] = []
-    for tool in tool_registry.all():
-        if tool.section == "Select":
-            let command = named(actions.modeling, tool.label) else continue
-            result.append(command)
+    for family in select_families(w, actions):
+        if result.length > 0:
+            result.append(Command("", divider = true))
+        result.extend(family.commands)
+        if family.name == "Selection":
+            result.append(actions.selection.sets)
     return result
+
+## Modify › Selection: Selection's commands, a submenu per Select family
+## (every tool, enabled at the levels it takes), the sets and Hide.
+pub func select_menu(w: Workspace, actions: Actions) -> list[Command]!:
+    let titles: list[Command] = []
+    for family in families(w, actions, "Select"):
+        let title = Command(family.name)
+        title.set_items(family.commands)
+        titles.append(title)
+    let selection = actions.selection
+    return [actions.select_all, selection.none_selected, selection.invert, actions.through_depth, Command("", divider = true)] + titles + [Command("", divider = true), selection.sets, selection.hide, selection.hide_unselected, selection.unhide]
 
 func named(commands: list[Command], name: str) -> Command?:
     for command in commands:

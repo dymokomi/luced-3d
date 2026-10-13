@@ -1,0 +1,50 @@
+## Hide and Unhide (Blender's H, Shift+H, Alt+H): faces of the displayed
+## mesh left out of the viewport, so the ones behind them can be reached.
+## Hidden faces are not drawn or picked, and their edges and points (those
+## every face of which is hidden) are not either; nothing hidden is
+## selected. Hiding is a view state kept with undo (the workspace's
+## `hidden`, in each snapshot), not an edit: the mesh is unchanged and it
+## ends when the mesh's topology changes.
+from workspace import Workspace
+from tool_prompts import follow_prompt
+
+## Whether hiding applies: a mesh's components picked in Geo or an Edit
+## Mesh.
+pub func applies(w: Workspace) -> bool:
+    return w.selecting() and w.network.context() == "geometry" and w.geometry != none
+
+## Hide the faces the selection touches (with `unselected`, every other
+## face); the selection is dropped. One undo step.
+pub func hide(w: Workspace, unselected: bool) -> unit!:
+    let mesh = w.geometry else return
+    let chosen = w.current_selection() else return
+    if not applies(w) or chosen.count() == 0:
+        w.notice = "Select components to hide"
+        w.revision += 1
+        return
+    var faces = chosen.on_domain(mesh, 2, false)
+    if unselected:
+        faces = faces.inverted()
+    var hidden = faces
+    if let before = w.hidden_faces():
+        hidden = before.joined(faces, 0)
+    w.perform("Hide unselected" if unselected else "Hide", func () -> unit!:
+        w.hidden = hidden if hidden.count() > 0 else none
+        w.selection = none)
+    follow_prompt(w)
+
+## Show every hidden face again, the revealed components selected
+## (Blender's Reveal). One undo step.
+pub func unhide(w: Workspace) -> unit!:
+    let mesh = w.geometry else return
+    let faces = w.hidden_faces() else return
+    let revealed = faces.on_domain(mesh, w.domain(), false)
+    w.perform("Unhide", func () -> unit!:
+        w.hidden = none
+        w.selection = revealed)
+    follow_prompt(w)
+
+## How many faces are hidden (0 when none, or when they no longer fit).
+pub func hidden_count(w: Workspace) -> int!:
+    let faces = w.hidden_faces() else return 0
+    return faces.count()

@@ -19,6 +19,7 @@ from network import Network
 from node import Node
 from tools import transform_tools
 import tool_registry
+from select_run import SelectRun
 from snapping import SnapSettings, SnapMark
 from history import History, Snapshot
 from scene_projection import append_bounds
@@ -58,6 +59,9 @@ pub class Workspace:
     ## Components of `geometry` (a luce-geocore Selection), on any displayed
     ## node; none when nothing is selected.
     pub var selection: Selection? = none
+    ## Faces of `geometry` hidden from the viewport (Hide): not drawn, not
+    ## picked, never selected; none when nothing is hidden.
+    pub var hidden: Selection? = none
     ## The pick geometry the selection was last checked on.
     var selected_on: Mesh? = none
     ## The selection level (edit_types: Object, Point, Edge, Face, Smart),
@@ -87,6 +91,8 @@ pub class Workspace:
     ## runs again on a new selection; a node it made, whose values then win
     ## (-1: it was a step, whose tool bar keeps the numbers here).
     pub var last_tool: str = ""
+    ## The Select tool run last, while its rows stay on the tool bar.
+    pub var last_select: SelectRun? = none
     pub var last_tool_numbers: list[float]
     pub var last_tool_node: int = -1
     ## The edited sketch's picked profiles (their keys, sketch_profiles.luc),
@@ -603,6 +609,41 @@ pub class Workspace:
             return [0.0, 0.0, 0.0]
         return [node.values[soft_radius_slot], node.values[falloff_slot], node.values[symmetry_slot]]
 
+    ## The hidden faces, when they fit the displayed mesh.
+    pub func hidden_faces(self) -> Selection?!:
+        let mesh = self.geometry else return none
+        let faces = self.hidden else return none
+        return faces if faces.fits(mesh) else none
+
+    ## What a selection change from `before` to `chosen` keeps: in an Edit
+    ## Mesh with a Symmetry axis, the change mirrored across it (what was
+    ## taken away, its mirror too; then the mirror of the rest added:
+    ## Maya's symmetric selection), less the components hidden with the
+    ## faces (an edge or a point is hidden when every face using it is).
+    pub func kept(self, chosen: Selection, before: Selection? = none) -> Selection!:
+        let mesh = self.geometry else return chosen
+        if not chosen.fits(mesh):
+            return chosen
+        var result = chosen
+        let axis = self.symmetry_axis()
+        if axis > 0:
+            if let previous = before:
+                if previous.domain() == chosen.domain() and previous.fits(mesh):
+                    let removed = previous.joined(chosen, 1)
+                    if removed.count() > 0:
+                        result = chosen.joined(removed.ruled(mesh, "Select Mirror", [float(axis - 1), 0.0]), 1)
+            if result.count() > 0:
+                result = result.ruled(mesh, "Select Mirror", [float(axis - 1), 1.0])
+        let faces = self.hidden_faces() else return result
+        return result.joined(faces.on_domain(mesh, chosen.domain(), true), 1)
+
+    ## The Symmetry axis of the edited Edit Mesh (1 X, 2 Y, 3 Z; 0 none).
+    pub func symmetry_axis(self) -> int:
+        let node = self.selected() else return 0
+        if not self.editing() or node.kind != edit_mesh.kind_name:
+            return 0
+        return int(node.values[symmetry_slot])
+
     ## The selection on the displayed mesh (empty when there is none).
     pub func current_selection(self) -> Selection?!:
         let mesh = self.geometry else return none
@@ -768,7 +809,7 @@ pub class Workspace:
         self.rebuild()
 
     pub func snapshot(self) -> Snapshot!:
-        return Snapshot(self.network, self.selection, self.component_mode)
+        return Snapshot(self.network, self.selection, self.component_mode, self.hidden)
 
     pub func begin(self, label: str) -> unit!:
         if self.pending != none:
@@ -811,6 +852,7 @@ pub class Workspace:
         self.network.frame = math.max(self.network.start, math.min(self.network.end, frame))
         self.network.background = self.compute != none
         self.selection = snapshot.selection
+        self.hidden = snapshot.hidden
         self.component_mode = snapshot.mode
         self.rebuild()
 

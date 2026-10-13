@@ -20,6 +20,8 @@ from object_box import ObjectBox
 from component_box import ComponentBox
 from splat_select import SplatSelect
 import selection_commands
+import selection_gestures
+from luce_geocore.geocore import Selection
 import component_moves
 import edit_cad_nets
 import edit_cad_commands
@@ -58,6 +60,17 @@ pub class ViewportTools:
     var last_y: float = 0.0
     var last_node: int = -1
     var last_level: int = -1
+    ## The component the last click picked, and the undo position after it:
+    ## a double-click takes that click back (selection_gestures.luc).
+    var last_id: int = -1
+    var click_mark: int = -1
+    ## Whether the click just handled finished a double-click (the next
+    ## one starts afresh).
+    var double: bool = false
+    ## What a double-click on the hovered edge would take (its loop, or with
+    ## Cmd/Ctrl its ring), and what it was made for.
+    pub var preview: Selection? = none
+    var preview_for: list[int]
 
     pub func init(self, workspace: Workspace, actions: Actions):
         self.workspace = workspace
@@ -70,6 +83,7 @@ pub class ViewportTools:
         self.objects = ObjectBox(workspace)
         self.components = ComponentBox(workspace)
         self.splats = SplatSelect(workspace)
+        self.preview_for = []
         # The renderer tints selected faces (Renderer.set_face_selection).
         self.overlay.set_fill(false)
 
@@ -96,11 +110,13 @@ pub class ViewportTools:
             let cad_hover = w.picking_brep() and self.hovered >= 0
             self.overlay.set_fill(w.picking_brep())
             self.overlay.show(mesh, w.overlay_mode(), w.selection, self.hovered if own and not cad_hover else -1)
+            self.overlay.set_preview(mesh, self.preview)
+            self.overlay.set_hidden(mesh, w.hidden_faces())
             # A kind whose pick geometry the viewport does not draw (Edit
             # SDF's proxies) shows its selection through surfaces, dimmed.
             let kind = w.selection_kind()
             let through = kind != none and (kind else trap("kind")).see_through
-            self.overlay.draw(w.view.camera, painter.target(), theme.grey(90.0), theme.accent(), theme.text(), wires = false, hidden = theme.grey(150.0) if through else none)
+            self.overlay.draw(w.view.camera, painter.target(), theme.grey(90.0), theme.accent(), theme.text(), wires = false, hidden = theme.grey(150.0) if through else none, preview = theme.preview())
             self.placing.draw(painter)
             if cad_hover:
                 self.picker.draw_cad_hover(painter, w.level_index() if own else self.hover_level, self.hovered)
@@ -168,6 +184,7 @@ pub class ViewportTools:
                     self.hovered = found[1]
                 else:
                     self.hovered = self.pick(event.x, event.y, width, height)
+            self.follow_hover(event.control or event.meta)
         if event.kind == EventKind.pointer_left or event.kind == EventKind.focus_lost or event.cancelled or event.alt:
             self.hovered = -1
             self.chrome.hover_tool = -1
@@ -188,6 +205,17 @@ pub class ViewportTools:
             return true
         return false
 
+    ## The loop (or ring, with Cmd/Ctrl) a double-click on the hovered edge
+    ## would take, made again only when the edge or the modifier changed.
+    func follow_hover(self, command: bool) -> unit!:
+        let w = self.workspace
+        let own = self.hover_level < 0 or self.hover_level == w.level_index()
+        let wanted = [self.hovered if own else -1, 1 if command else 0, w.revision]
+        if wanted == self.preview_for:
+            return
+        self.preview_for = wanted
+        self.preview = selection_gestures.preview(w, wanted[0], command)
+
     ## A press released where it started, at (x, y) of a component level:
     ## the component under it (Smart's level's under Smart), alone (operation
     ## 0), added (1, Shift) or taken away (2, Ctrl or Cmd); a second click on
@@ -198,10 +226,15 @@ pub class ViewportTools:
         let chain = w.network.context() == "cad" and self.last_node == w.network.selected and self.last_level == edge_level and now - self.last_click < 400000000 and math.hypot(x - self.last_x, y - self.last_y) < 5.0
         if w.picking_smart():
             let found = self.picker.smart_pick(x, y, width, height)
+            let twice = now - self.last_click < 400000000 and math.hypot(x - self.last_x, y - self.last_y) < 5.0 and found[1] >= 0 and found[1] == self.last_id and found[0] == self.last_level
             if chain and found[0] == edge_level:
                 selection_commands.choose_component(w, found[1], operation == 1, chain = true, remove = operation == 2)
+            elif selection_gestures.apply(w) and found[0] == w.level_index() and (twice or (self.components.shift and self.components.command)):
+                self.gesture(found[1], twice)
             else:
                 selection_commands.choose_smart(w, found[0], found[1], operation)
+                self.last_id = found[1]
+                self.click_mark = w.history.cursor
         elif component_moves.at_cvs(w):
             # Hull picking: clicks again on one CV take its row along V,
             # then along U, then its net (with Pick hull rows, from the
@@ -223,9 +256,34 @@ pub class ViewportTools:
             if id < 0 and operation == 0 and twice and edit_cad_commands.pick_isoparm(w, x, y, width, height):
                 self.last_click = 0
                 return
-            selection_commands.choose_component(w, id, operation == 1, chain = chain, remove = operation == 2)
-        self.last_click = 0 if chain else now
+            if selection_gestures.apply(w) and not chain:
+                self.gesture(id, twice and id >= 0 and id == self.last_id and self.last_level == w.level_index())
+            else:
+                selection_commands.choose_component(w, id, operation == 1, chain = chain, remove = operation == 2)
+        self.last_click = 0 if chain or self.double else now
+        self.double = false
         self.last_x = x
         self.last_y = y
         self.last_node = w.network.selected
         self.last_level = w.level_index()
+
+    ## A click on component `id` of a mesh (selection_gestures.luc):
+    ## the second of a double-click (`twice`) takes the first back and runs
+    ## the double-click gesture; Shift+Cmd/Ctrl adds the shortest path;
+    ## else Shift adds, Cmd/Ctrl takes away, a plain click selects.
+    func gesture(self, id: int, twice: bool) -> unit!:
+        let w = self.workspace
+        let shift = self.components.shift
+        let command = self.components.command
+        if twice:
+            # The first click is one undo step; the gesture replaces it.
+            if w.prompt == none and w.history.cursor == self.click_mark and self.click_mark > 0:
+                w.undo()
+            selection_gestures.double_click(w, id, shift, command)
+            self.double = true
+        elif shift and command:
+            selection_gestures.path_click(w, id)
+        else:
+            selection_commands.choose_component(w, id, shift, remove = command and not shift)
+        self.last_id = id
+        self.click_mark = w.history.cursor

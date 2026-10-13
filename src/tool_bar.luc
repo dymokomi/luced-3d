@@ -1,4 +1,5 @@
-## The tool bar: the Edit node's last tool step's parameters in a small
+## The tool bar: the Select tool run last while its selection stands
+## (select_run.luc), else the Edit node's last tool step's parameters, in a small
 ## card at the bottom of the viewport (Fillet: its radius, continuity and tangent
 ## chain), the step running again live as they change. What the tool works
 ## on was picked before it ran, so its selection rows are not here: these
@@ -21,6 +22,7 @@ import edit_types
 import edit_cad_nets
 import node_catalog
 import modeling_commands
+import selection_commands
 import units
 
 ## The bar's width.
@@ -64,6 +66,8 @@ pub class ToolBar:
     ## Show the last tool step's rows; hide without one, or while a menu
     ## covers the viewport (`covered`).
     pub func refresh(self, covered: bool = false) -> unit!:
+        if not covered and self.refresh_select():
+            return
         let found = self.last_rows()
         if found == none or covered:
             self.shown = ""
@@ -96,6 +100,33 @@ pub class ToolBar:
                 if slot < step.numbers.length:
                     self.panel.set_component(index, component, step.numbers[slot])
         self.body.layout().set_visible(true)
+
+    ## The Select tool run last, while the selection is still the one it
+    ## made: its rows, a change running it again (Blender's Adjust Last
+    ## Operation). Whether it shows.
+    func refresh_select(self) -> bool!:
+        let run = self.w.last_select else return false
+        if not run.current(self.w.selection) or run.tool.rows.length == 0 or self.w.sketching():
+            return false
+        let key = f"select/{run.tool.name}/{units.document_unit(self.w).suffix}"
+        if key != self.shown:
+            self.shown = key
+            self.rows = run.tool.rows
+            let specs: list[ParameterSpec] = []
+            let shown_unit = units.document_unit(self.w)
+            for row in self.rows:
+                specs.append(row.spec(shown_unit))
+            self.panel.set_specs(specs)
+            self.title.set_text(run.tool.label)
+        self.problem.layout().set_visible(false)
+        for index in 0..<self.rows.length:
+            let row = self.rows[index]
+            for component in 0..<row.components:
+                let slot = row.slot + component
+                if slot < run.numbers.length:
+                    self.panel.set_component(index, component, run.numbers[slot])
+        self.body.layout().set_visible(true)
+        return true
 
     ## Keep it centered along the bottom of the viewport at `area` (the
     ## body's coordinates), its bottom 14 points above the viewport's; a
@@ -175,8 +206,12 @@ pub class ToolBar:
 
     func changed(self, index: int) -> unit!:
         let row = self.rows[index]
+        let selecting = self.shown.starts_with("select/")
         for component in 0..<row.components:
-            modeling_commands.set_last_step(self.w, row.slot + component, self.panel.component(index, component), row.minimum, row.maximum)
+            if selecting:
+                selection_commands.set_last_select(self.w, row.slot + component, self.panel.component(index, component), row.minimum, row.maximum)
+            else:
+                modeling_commands.set_last_step(self.w, row.slot + component, self.panel.component(index, component), row.minimum, row.maximum)
 
     pub func close(self):
         for connection in self.connections:

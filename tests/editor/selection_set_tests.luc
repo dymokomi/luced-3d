@@ -1,0 +1,195 @@
+## Selection sets, Hide and the Select tools' bar (POLY-MODELING.md Stage 2):
+## a set saved in an Edit Mesh is a step writing a named group, recalled
+## alone, added, taken away and intersected, written to again, undone, and
+## kept through a project's save and load; on a plain node a Selection
+## Group node writes it. Hide leaves faces out of selections until Unhide
+## reveals them selected, each one undo step. A Select tool's rows stay on
+## the tool bar, a change running it again on the same seed. A select rule
+## is a node's Group too.
+from app import Luce3D
+from workspace import Workspace
+from luce_geocore.geocore import Selection
+from edit_types import edge_level, face_level, symmetry_slot
+import node_commands
+import modeling_commands
+import selection_commands
+import selection_sets
+import selection_hide
+
+pub func selection_set_tests() -> unit!:
+    sets_in_edit_mesh()
+    sets_on_nodes()
+    hiding()
+    select_bar()
+    symmetry()
+    rule_groups()
+    print("PASS selection sets (Edit Mesh steps, plain-node Selection Groups, recall alone/add/remove/intersect, add and remove, undo, project round trip), Hide/Hide unselected/Unhide, the Select tools' bar, symmetric picks, select rules in a node's Group")
+
+## An editor showing the 4 by 4 grid, in an Edit Mesh when `edit`.
+func grid_editor(edit: bool) -> Luce3D!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1400.0, 900.0)
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Grid", 0.0, 0.0)
+    if edit:
+        node_commands.add_node(w, "Edit Mesh", 0.0, 100.0)
+    editor.panels.refresh()
+    return editor
+
+func faces(w: Workspace, expression: str) -> unit!:
+    selection_commands.set_mode(w, face_level)
+    w.selection = Selection.of(w.geometry else trap("mesh"), expression, 2)
+
+func sets_in_edit_mesh() -> unit!:
+    let editor = grid_editor(true)
+    let w = editor.workspace
+    let node = w.selected() else trap("edit")
+    faces(w, "0-3")
+    assert(selection_sets.save(w) == "set1" and node.edits.length == 1 and node.edits[0].verb == "Selection Set")
+    assert(selection_sets.names(w) == ["set1"] and w.selected_count() == 4)
+    faces(w, "5")
+    selection_sets.recall(w, "set1", 1)
+    assert(w.selected_count() == 5)
+    selection_sets.recall(w, "set1", 2)
+    assert(w.selected_ids() == [5])
+    faces(w, "2-6")
+    selection_sets.recall(w, "set1", 3)
+    assert(w.selected_ids() == [2, 3])
+    # Written to: face 15 added, then faces 0 and 1 taken away.
+    faces(w, "15")
+    selection_sets.write(w, "set1", 1)
+    selection_sets.recall(w, "set1", 0)
+    assert(w.selected_count() == 5)
+    faces(w, "0 1")
+    selection_sets.write(w, "set1", 2)
+    selection_sets.recall(w, "set1", 0)
+    assert(w.selected_ids() == [2, 3, 15])
+    # Undo takes the last write back; the set still recalls.
+    w.undo()
+    w.undo()
+    selection_sets.recall(w, "set1", 0)
+    assert(w.selected_count() == 5)
+    # A second set is set2; the D menu and the sets submenu list both.
+    faces(w, "8 9")
+    assert(selection_sets.save(w) == "set2")
+    editor.panels.actions.refresh()
+    let menu = editor.panels.actions.selection.sets
+    assert(menu.item_count() == 3 and menu.item(1).text() == "set1" and menu.item(2).text() == "set2")
+    # Through a project file: the steps, so the sets.
+    let session = editor.panels.projects
+    session.save_to("selection-sets.prisma")
+    let loaded = Luce3D()
+    loaded.panels.projects.load_from("selection-sets.prisma")
+    let l = loaded.workspace
+    for each in l.network.nodes:
+        if each.kind == "Edit Mesh":
+            node_commands.select_node(l, each.id)
+            node_commands.display_selected(l)
+    selection_commands.set_mode(l, face_level)
+    assert(selection_sets.names(l) == ["set1", "set2"])
+    selection_sets.recall(l, "set1", 0)
+    assert(l.selected_count() == 5)
+    selection_sets.recall(l, "set2", 0)
+    assert(l.selected_ids() == [8, 9])
+
+## On a plain node: a Selection Group node after it, the set on its result.
+func sets_on_nodes() -> unit!:
+    let editor = grid_editor(false)
+    let w = editor.workspace
+    selection_commands.set_mode(w, edge_level)
+    w.selection = Selection.of(w.geometry else trap("grid"), "p0-1-2", 4)
+    let name = selection_sets.save(w)
+    let node = w.selected() else trap("group node")
+    assert(name == "set1" and node.kind == "Selection Group" and node.texts[1] == "set1" and w.network.display == node.id)
+    w.selection = none
+    selection_sets.recall(w, "set1", 0)
+    assert(w.selected_count() == 2)
+
+func hiding() -> unit!:
+    let editor = grid_editor(true)
+    let w = editor.workspace
+    faces(w, "0-3")
+    let steps = w.history.cursor
+    selection_hide.hide(w, false)
+    assert(selection_hide.hidden_count(w) == 4 and w.selected_count() == 0 and w.history.cursor == steps + 1)
+    # Nothing hidden is selected: all, Connected and boxes leave it out.
+    selection_commands.select_all(w)
+    assert(w.selected_count() == 12)
+    faces(w, "5")
+    modeling_commands.model(w, "Connected")
+    assert(w.selected_count() == 12)
+    # Hide unselected adds the rest but face 5; Unhide reveals and selects.
+    faces(w, "5")
+    selection_hide.hide(w, true)
+    assert(selection_hide.hidden_count(w) == 15)
+    selection_hide.unhide(w)
+    assert(selection_hide.hidden_count(w) == 0 and w.selected_count() == 15)
+    w.undo()
+    assert(selection_hide.hidden_count(w) == 15)
+    editor.panels.actions.refresh()
+    assert(editor.panels.actions.selection.unhide.is_enabled())
+
+## A Select tool's rows on the tool bar: Grow Selection's steps changed,
+## the same seed grown again; another selection hides the bar.
+func select_bar() -> unit!:
+    let editor = grid_editor(true)
+    let w = editor.workspace
+    faces(w, "5")
+    modeling_commands.model(w, "Grow Selection")
+    assert(w.selected_count() == 5 and w.last_tool == "Grow Selection")
+    editor.panels.refresh()
+    let bar = editor.panels.tool_bar
+    assert(bar.is_open())
+    w.begin("Change Grow Selection")
+    selection_commands.set_last_select(w, 0, 2.0, 1.0, 100.0)
+    w.commit()
+    assert(w.selected_count() == 11)
+    selection_commands.set_last_select(w, 1, 1.0, 0.0, 1.0)
+    assert(w.selected_count() == 16)
+    # Repeat uses the numbers the bar was set to.
+    assert(w.last_tool_numbers[0] == 2.0)
+    # One undo step for the change, the tool's own step under it.
+    w.undo()
+    w.undo()
+    assert(w.selected_count() == 5)
+    w.undo()
+    assert(w.selected_ids() == [5])
+    faces(w, "0")
+    editor.panels.refresh()
+    assert(not bar.is_open())
+    # A tool of other components: Boundary Loop of faces gives edges.
+    faces(w, "5 6")
+    modeling_commands.model(w, "Boundary Loop")
+    assert(w.level_index() == edge_level and w.selected_count() == 6)
+
+## With the Edit Mesh's Symmetry on X, a pick takes its mirror too, and
+## taking one away takes its mirror away; Select tools follow.
+func symmetry() -> unit!:
+    let editor = grid_editor(true)
+    let w = editor.workspace
+    let node = w.selected() else trap("edit")
+    node.values[symmetry_slot] = 1.0
+    selection_commands.set_mode(w, face_level)
+    selection_commands.choose_component(w, 0, false)
+    assert(w.selected_ids() == [0, 3])
+    selection_commands.choose_component(w, 5, true)
+    assert(w.selected_ids() == [0, 3, 5, 6])
+    selection_commands.choose_component(w, 3, false, remove = true)
+    assert(w.selected_ids() == [5, 6])
+    faces(w, "4")
+    modeling_commands.model(w, "Grow Selection")
+    assert(w.selected_count() == 8)
+
+## A select rule in a node's Group: a Bevel node on `sharp(*, 30)` of the
+## cube bevels its twelve edges (re-evaluated on every cook, so it follows
+## the input).
+func rule_groups() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let cube = w.geometry else trap("cube")
+    assert(Selection.of(cube, "sharp(*, 30)", 4).count() == 12 and Selection.of(cube, "sides(*, 4)", 2).count() == 6)
+    node_commands.add_node(w, "PolyBevel", 0.0, 100.0)
+    node_commands.set_text(w, 0, "sharp(*, 30)")
+    let beveled = w.geometry else trap("beveled")
+    assert(beveled.face_count() == 26)

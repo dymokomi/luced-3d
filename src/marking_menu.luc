@@ -1,11 +1,12 @@
 ## Marking menus: holding A shows what can be created here, S what can
-## modify, D (in a sketch) its constraints, as a grid of icons around the
-## pointer, taller than wide and split left and right of it so the pointer
-## starts on none. It shows while the key is held: click an icon to use
-## it; letting the key go, Esc or a click outside closes it. A family of
-## tools (the rectangles) is one icon, the one used last: a click uses it,
-## a long press shows them all above it to pick from. What the items are is
-## marking_items.luc's.
+## modify, D what can select (in a sketch its constraints), as labeled
+## entries around the pointer: columns of an icon and a name, a family's
+## (a group's) entries under its heading, half the columns left of the
+## pointer and half right so it starts on none. It shows while the key is
+## held: click an entry to use it; letting the key go, Esc or a click
+## outside closes it. A family of tools (the rectangles) is one entry, the
+## one used last: a click uses it, a long press lists them all above it to
+## pick from. What the items are is marking_items.luc's.
 from luce_ui.ui import Painter, Event, Point
 import time
 from luce_gpu.gpu import Rect
@@ -14,29 +15,51 @@ from luce_std import math
 from luce_ui import ui
 import theme
 
-## One icon of a marking menu: its name, icon (a luciaos-assets name),
+## One entry of a marking menu: its name, icon (a luciaos-assets name),
 ## whether it can be used now, and what using it does; or a family's: its
-## `variants`, one used at a time.
+## `variants`, one used at a time. Entries of one `group` (a tool family:
+## "Loops", "Find") stand in a column under its name.
 pub class MarkItem:
     pub let name: str
     pub let icon: str
     pub let enabled: bool
     pub let run: func() -> unit!
     pub let variants: list[MarkItem]
+    pub let group: str
 
-    pub func init(self, name: str, icon: str, enabled: bool, run: func() -> unit!, variants: list[MarkItem] = []):
+    pub func init(self, name: str, icon: str, enabled: bool, run: func() -> unit!, variants: list[MarkItem] = [], group: str = ""):
         self.name = name
         self.icon = icon
         self.enabled = enabled
         self.run = run
         self.variants = variants
+        self.group = group
 
 ## How long a press on a family opens its variants (nanoseconds).
 let long_press = 350000000
 
-## A cell's size and the gap left around the pointer.
-let cell = 44.0
+## An entry's height (a heading's too), the width a label character takes
+## (the UI's monospace font), the room an icon takes left of its label, the
+## gap left around the pointer, and the most rows a column holds with
+## headings and without.
+let row_height = 26.0
+let char_width = 7.2
+let icon_room = 30.0
 let gap = 28.0
+let column_rows = 13
+let plain_rows = 8
+
+## One column of the menu: its entries' rows (an item's index, or -1 for
+## a heading), the headings' texts, its left edge and width.
+class Column:
+    pub let rows: list[int]
+    pub let titles: list[str]
+    pub var x: float = 0.0
+    pub var width: float = 0.0
+
+    pub func init(self):
+        self.rows = []
+        self.titles = []
 
 pub class MarkingMenu:
     pub var title: str = ""
@@ -58,10 +81,20 @@ pub class MarkingMenu:
     var family_hover: int = -1
     ## Each family's variant used last, by the family's name.
     let chosen: map[str, int]
+    ## The columns as last laid out, for a viewport of `laid_out` size, and
+    ## each item's cell.
+    var columns: list[Column]
+    var cells: list[Rect]
+    var laid_out: list[float]
+    var top: float = 0.0
+    var tallest: int = 0
 
     pub func init(self):
         self.items = []
         self.chosen = {}
+        self.columns = []
+        self.cells = []
+        self.laid_out = []
 
     pub func is_open(self) -> bool:
         return self.opened
@@ -75,6 +108,7 @@ pub class MarkingMenu:
         self.y = y
         self.opened = true
         self.hover = -1
+        self.laid_out = []
 
     pub func close(self):
         self.opened = false
@@ -100,14 +134,103 @@ pub class MarkingMenu:
             return true
         return false
 
-    ## Variant `at` of the family shown: its cell, a row centered above the
-    ## family's own.
+    ## Lay the items out for a viewport `width` by `height`: each group's
+    ## run of items under its heading, groups stacked in a column while it
+    ## has room (`column_rows` rows; items without groups in columns of
+    ## `plain_rows`), half the columns left of the pointer and half right,
+    ## the panel kept inside the viewport.
+    func layout(self, width: float, height: float):
+        if self.laid_out == [width, height]:
+            return
+        self.laid_out = [width, height]
+        self.columns = [Column()]
+        var at = 0
+        while at < self.items.length:
+            let group = self.items[at].group
+            var end = at
+            while end < self.items.length and self.items[end].group == group:
+                end += 1
+            let limit = column_rows if group != "" else plain_rows
+            let need = end - at + (1 if group != "" else 0)
+            var column = self.columns[-1]
+            if column.rows.length > 0 and column.rows.length + need > limit:
+                column = Column()
+                self.columns.append(column)
+            if group != "":
+                column.titles.append(group)
+                column.rows.append(-1)
+            for index in at..<end:
+                if column.rows.length >= limit:
+                    column = Column()
+                    self.columns.append(column)
+                column.rows.append(index)
+            at = end
+        self.tallest = 0
+        for column in self.columns:
+            var widest = 0.0
+            for title in column.titles:
+                widest = math.max(widest, float(title.length) * char_width)
+            for index in column.rows:
+                if index >= 0:
+                    widest = math.max(widest, icon_room + float(self.shown(index).name.length) * char_width)
+            column.width = math.max(96.0, widest + 14.0)
+            if column.rows.length > self.tallest:
+                self.tallest = column.rows.length
+        # Columns left of the pointer, then right of it.
+        let left = (self.columns.length + 1) // 2
+        var left_width = 0.0
+        var right_width = 0.0
+        for index in 0..<self.columns.length:
+            if index < left:
+                left_width += self.columns[index].width
+            else:
+                right_width += self.columns[index].width
+        let total_height = float(self.tallest) * row_height
+        let cx = math.max(left_width + gap * 0.5 + 8.0, math.min(width - right_width - gap * 0.5 - 8.0, self.x))
+        self.top = math.max(40.0, math.min(height - total_height - 8.0, self.y - total_height * 0.5))
+        var x = cx - gap * 0.5 - left_width
+        self.cells = []
+        for index in 0..<self.items.length:
+            self.cells.append(Rect(0.0, 0.0, 0.0, 0.0))
+        for index in 0..<self.columns.length:
+            if index == left:
+                x = cx + gap * 0.5
+            let column = self.columns[index]
+            column.x = x
+            for row in 0..<column.rows.length:
+                if column.rows[row] >= 0:
+                    self.cells[column.rows[row]] = Rect(x, self.top + float(row) * row_height, column.width, row_height)
+            x += column.width
+
+    ## Item `at`'s cell.
+    func cell_of(self, at: int, width: float, height: float) -> Rect:
+        self.layout(width, height)
+        return self.cells[at]
+
+    ## Item `at`'s center in the viewport (tests point at it).
+    pub func center_of(self, at: int, width: float, height: float) -> list[float]:
+        let r = self.cell_of(at, width, height)
+        return [r.x + r.width * 0.5, r.y + r.height * 0.5]
+
+    func item_at(self, px: float, py: float, width: float, height: float) -> int:
+        for at in 0..<self.items.length:
+            let r = self.cell_of(at, width, height)
+            if px >= r.x and px < r.x + r.width and py >= r.y and py < r.y + r.height:
+                return at
+        return -1
+
+    ## Variant `at` of the family shown: a column of entries above the
+    ## family's own cell (below it when there is no room above).
     func variant_cell(self, at: int, width: float, height: float) -> Rect:
         let base = self.cell_of(self.family, width, height)
-        let count = self.items[self.family].variants.length
-        let left = base.x + cell * 0.5 - float(count) * cell * 0.5
-        let x = math.max(4.0, math.min(width - float(count) * cell - 4.0, left))
-        return Rect(x + float(at) * cell, base.y - cell - 8.0, cell, cell)
+        let variants = self.items[self.family].variants
+        var widest = base.width
+        for variant in variants:
+            widest = math.max(widest, icon_room + float(variant.name.length) * char_width + 14.0)
+        let room = float(variants.length) * row_height + 8.0
+        let above = base.y - room >= 4.0
+        let y = base.y - room + 4.0 if above else base.y + row_height + 4.0
+        return Rect(math.min(base.x, width - widest - 4.0), y + float(at) * row_height, widest, row_height)
 
     ## Variant `at`'s center (tests point at it).
     pub func variant_center(self, at: int, width: float, height: float) -> list[float]:
@@ -123,44 +246,6 @@ pub class MarkingMenu:
                 return at
         return -1
 
-    ## Columns each side of the pointer: one for up to 8 icons, two for up
-    ## to 24, then three.
-    func side_columns(self) -> int:
-        let n = self.items.length
-        return 1 if n <= 8 else (2 if n <= 24 else 3)
-
-    func rows(self) -> int:
-        let per_row = 2 * self.side_columns()
-        return (self.items.length + per_row - 1) // per_row
-
-    ## Item `at`'s cell, around a center kept far enough inside the
-    ## viewport (`width` by `height`) that the whole grid shows.
-    func cell_of(self, at: int, width: float, height: float) -> Rect:
-        let columns = self.side_columns()
-        let rows = self.rows()
-        let half_width = float(columns) * cell + gap * 0.5
-        let half_height = float(rows) * cell * 0.5
-        let cx = math.max(half_width + 8.0, math.min(width - half_width - 8.0, self.x))
-        let cy = math.max(half_height + 32.0, math.min(height - half_height - 8.0, self.y))
-        # Filled row by row, the left side's columns then the right's.
-        let row = at // (2 * columns)
-        let column = at % (2 * columns)
-        let left = column < columns
-        let x = cx - gap * 0.5 - float(columns - column) * cell if left else cx + gap * 0.5 + float(column - columns) * cell
-        return Rect(x, cy - half_height + float(row) * cell, cell, cell)
-
-    ## Item `at`'s center in the viewport (tests point at it).
-    pub func center_of(self, at: int, width: float, height: float) -> list[float]:
-        let r = self.cell_of(at, width, height)
-        return [r.x + r.width * 0.5, r.y + r.height * 0.5]
-
-    func item_at(self, px: float, py: float, width: float, height: float) -> int:
-        for at in 0..<self.items.length:
-            let r = self.cell_of(at, width, height)
-            if px >= r.x and px < r.x + r.width and py >= r.y and py < r.y + r.height:
-                return at
-        return -1
-
     pub func draw(self, painter: Painter, width: float, height: float) -> unit!:
         if not self.opened:
             return
@@ -168,37 +253,40 @@ pub class MarkingMenu:
             painter.rounded_rectangle(Rect(self.x - 80.0, self.y - 16.0, 160.0, 32.0), theme.surface(), 4.0)
             painter.text(f"Nothing to {self.title.lower()} here", self.x - 72.0, self.y - 8.0, theme.text_muted())
             return
-        let first = self.cell_of(0, width, height)
-        let last = self.cell_of(self.items.length - 1, width, height)
-        let right = self.cell_of(2 * self.side_columns() - 1, width, height)
-        let top = first.y - 30.0
-        painter.rounded_rectangle(Rect(first.x - 6.0, top, right.x + cell - first.x + 12.0, last.y + cell - top + 6.0), theme.surface(), 6.0)
-        let label = self.shown(self.hover).name if self.hover >= 0 else self.title
-        painter.text(label, first.x + 4.0, top + 6.0, theme.text() if self.hover >= 0 else theme.text_muted())
+        self.layout(width, height)
+        let first = self.columns[0]
+        let last = self.columns[-1]
+        let bottom = self.top + float(self.tallest) * row_height
+        let panel_top = self.top - 24.0
+        painter.rounded_rectangle(Rect(first.x - 6.0, panel_top, last.x + last.width - first.x + 12.0, bottom - panel_top + 6.0), theme.surface(), 6.0)
+        painter.text(self.title, first.x + 4.0, panel_top + 5.0, theme.text_muted())
+        for column in self.columns:
+            var title = 0
+            for row in 0..<column.rows.length:
+                if column.rows[row] < 0:
+                    painter.text(column.titles[title], column.x + 6.0, self.top + float(row) * row_height + 8.0, theme.grey(110.0))
+                    title += 1
         for at in 0..<self.items.length:
-            let item = self.shown(at)
-            let r = self.cell_of(at, width, height)
-            if (at == self.hover or at == self.family) and item.enabled:
-                painter.rounded_rectangle(Rect(r.x + 2.0, r.y + 2.0, cell - 4.0, cell - 4.0), theme.accent(), 4.0)
-            let ink = theme.grey(0.0) if (at == self.hover or at == self.family) and item.enabled else (theme.text() if item.enabled else theme.grey(100.0))
-            ui.draw_icon(painter.target(), item.icon, Rect(r.x + 10.0, r.y + 10.0, 24.0, 24.0), ink)
-            # A family: a mark in its corner (press long for the others).
-            if self.items[at].variants.length > 0:
-                painter.mesh([Point(r.x + cell - 5.0, r.y + cell - 13.0), Point(r.x + cell - 5.0, r.y + cell - 5.0), Point(r.x + cell - 13.0, r.y + cell - 5.0)], ink)
-        # A family's variants, in a row above it.
+            self.draw_entry(painter, self.shown(at), self.cell_of(at, width, height), at == self.hover or at == self.family, self.items[at].variants.length > 0)
+        # A family's variants, in a column over it.
         if self.family >= 0:
             let variants = self.items[self.family].variants
-            let first_variant = self.variant_cell(0, width, height)
-            painter.rounded_rectangle(Rect(first_variant.x - 4.0, first_variant.y - 4.0, float(variants.length) * cell + 8.0, cell + 8.0), theme.surface_raised(), 6.0)
+            let top = self.variant_cell(0, width, height)
+            painter.rounded_rectangle(Rect(top.x - 4.0, top.y - 4.0, top.width + 8.0, float(variants.length) * row_height + 8.0), theme.surface_raised(), 6.0)
             for at in 0..<variants.length:
-                let v = variants[at]
-                let r = self.variant_cell(at, width, height)
-                if at == self.family_hover and v.enabled:
-                    painter.rounded_rectangle(Rect(r.x + 2.0, r.y + 2.0, cell - 4.0, cell - 4.0), theme.accent(), 4.0)
-                let ink = theme.grey(0.0) if at == self.family_hover and v.enabled else (theme.text() if v.enabled else theme.grey(100.0))
-                ui.draw_icon(painter.target(), v.icon, Rect(r.x + 10.0, r.y + 10.0, 24.0, 24.0), ink)
-            if self.family_hover >= 0:
-                painter.text(variants[self.family_hover].name, first.x + 4.0, top + 6.0, theme.text())
+                self.draw_entry(painter, variants[at], self.variant_cell(at, width, height), at == self.family_hover, false)
+
+    ## One entry: its icon and name in `r`, lit when `lit`; a family gets a
+    ## mark in its corner (press long for the others).
+    func draw_entry(self, painter: Painter, item: MarkItem, r: Rect, lit: bool, family: bool) -> unit!:
+        let on = lit and item.enabled
+        if on:
+            painter.rounded_rectangle(Rect(r.x + 1.0, r.y + 1.0, r.width - 2.0, r.height - 2.0), theme.accent(), 4.0)
+        let ink = theme.grey(0.0) if on else (theme.text() if item.enabled else theme.grey(100.0))
+        ui.draw_icon(painter.target(), item.icon, Rect(r.x + 6.0, r.y + 4.0, 18.0, 18.0), ink)
+        painter.text(item.name, r.x + icon_room, r.y + 6.0, ink)
+        if family:
+            painter.mesh([Point(r.x + r.width - 4.0, r.y + r.height - 10.0), Point(r.x + r.width - 4.0, r.y + r.height - 4.0), Point(r.x + r.width - 10.0, r.y + r.height - 4.0)], ink)
 
     ## Its events while open (true: taken), and its key's until it is let
     ## go (its repeats must not reach a tool's letter). Opening is the

@@ -1,0 +1,86 @@
+## Marking menus with labels: D in an Edit Mesh lists the Select tools by
+## family in the level's order (Loops first at Edges, Region first at
+## Faces), then Selection, the sets and Hide, each family a column under
+## its name; entries are cells wide enough for their names that never
+## overlap, half the columns left of the pointer and half right; S groups
+## its tools by family too; a click on an entry uses it.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_geocore.geocore import Selection
+from marking_menu import MarkingMenu, MarkItem
+from edit_types import edge_level, face_level
+import node_commands
+import selection_commands
+
+pub func marking_label_tests() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1400.0, 900.0)
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Grid", 0.0, 0.0)
+    node_commands.add_node(w, "Edit Mesh", 0.0, 100.0)
+    editor.panels.refresh()
+    editor.app.focus(editor.panels.view.layout())
+    let area = editor.panels.view.layout().bounds()
+    let marking = editor.panels.view.marking
+    # At Edges, Loops lead; at Faces, Region.
+    selection_commands.set_mode(w, edge_level)
+    w.selection = Selection.of(w.geometry else trap("grid"), "p6-7", 4)
+    open(editor, Key.d)
+    assert(marking.title == "Select" and marking.items[0].group == "Loops" and marking.items[0].name == "Loop")
+    let groups = groups_of(marking.items)
+    assert(groups[0] == "Loops" and "Region" in groups and "Find" in groups and "Selection" in groups and "Sets" in groups and "Hide" in groups)
+    no_overlaps(marking, area.width, area.height)
+    # A click on Ring takes the edge's ring.
+    let ring = index_of(marking.items, "Ring")
+    let point = marking.center_of(ring, area.width, area.height)
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + point[0], y = area.y + point[1]))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = area.x + point[0], y = area.y + point[1], button = 0))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = area.x + point[0], y = area.y + point[1], button = 0))
+    editor.app.dispatch(Event(kind = EventKind.key_up, key = Key.d))
+    assert(not marking.is_open() and w.selected_count() == 5)
+    selection_commands.set_mode(w, face_level)
+    w.selection = Selection.of(w.geometry else trap("grid"), "5", 2)
+    open(editor, Key.d)
+    assert(marking.items[0].group == "Region")
+    # Tools for edges only are not offered at Faces.
+    assert(index_of(marking.items, "Ring") < 0 and index_of(marking.items, "Sharp Edges") < 0 and index_of(marking.items, "By Sides") >= 0)
+    no_overlaps(marking, area.width, area.height)
+    editor.app.dispatch(Event(kind = EventKind.key_up, key = Key.d))
+    # S: the Modify tools at Faces, by family, labeled.
+    open(editor, Key.s)
+    assert(marking.title == "Modify" and index_of(marking.items, "Extrude") >= 0 and "Extrude" in groups_of(marking.items))
+    no_overlaps(marking, area.width, area.height)
+    editor.app.dispatch(Event(kind = EventKind.key_up, key = Key.s))
+    print("PASS labeled marking menus: D by family in the level's order with Selection, sets and Hide; no overlapping cells; a click uses an entry; S grouped by family")
+
+func open(editor: Luce3D, key: Key) -> unit!:
+    let area = editor.panels.view.layout().bounds()
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = area.x + area.width * 0.5, y = area.y + area.height * 0.5))
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = key))
+    assert(editor.panels.view.marking.is_open())
+
+func groups_of(items: list[MarkItem]) -> list[str]:
+    let result: list[str] = []
+    for item in items:
+        if not (item.group in result):
+            result.append(item.group)
+    return result
+
+func index_of(items: list[MarkItem], name: str) -> int:
+    for at in 0..<items.length:
+        if items[at].name == name:
+            return at
+    return -1
+
+## Every entry's cell inside the viewport, as wide as its name, and apart
+## from every other.
+func no_overlaps(marking: MarkingMenu, width: float, height: float) -> unit!:
+    let centers: list[list[float]] = []
+    for at in 0..<marking.items.length:
+        let c = marking.center_of(at, width, height)
+        assert(c[0] > 0.0 and c[0] < width and c[1] > 0.0 and c[1] < height)
+        for other in centers:
+            assert(other[0] != c[0] or other[1] != c[1])
+        centers.append(c)

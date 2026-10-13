@@ -14,6 +14,10 @@ from luce_ui import ui
 
 pub let kind_name = "Edit Mesh"
 
+## The step a selection set is written by (selection_sets.luc): its group
+## the selection, its text the set's name, its number how it writes it.
+pub let set_step = "Selection Set"
+
 pub func primitive_names() -> list[str]:
     return ["Box", "Sphere", "Cylinder", "Cone", "Torus", "Grid", "Plane"]
 
@@ -25,7 +29,7 @@ pub func kind() -> EditKind:
         result.append(from_tool(tool))
         if tool.gesture == "place":
             placing.append(tool.label)
-    return EditKind(kind_name, levels(), result, primitive_names(), start, pick, run, create, draw_tools = placing, drawn = drawn)
+    return EditKind(kind_name, levels(), result, primitive_names(), start, pick, run, create, draw_tools = placing, drawn = drawn, steps = [set_step])
 
 ## Object, Vertices, Edges, Polygons (edit_types' level order; any
 ## displayed mesh selects on these).
@@ -78,7 +82,36 @@ func run(step: EditStep, at: int, data: GeometryData, tag: str) -> GeometryData!
     let mesh = mesh_of(data)
     if step.verb.starts_with("Create "):
         return created(step, mesh, data)
+    if step.verb == set_step:
+        return data.with_operand(with_set(step, mesh))
     return data.with_operand(verb_tools.run(step.invocation(), mesh))
+
+## `mesh` with selection set `step.text(0)` (a named group) holding the
+## step's group (number 0: 0), its members and the group (1), or its
+## members less the group (2).
+func with_set(step: EditStep, mesh: Mesh) -> Mesh!:
+    let name = step.text(0)
+    if name == "" or name.starts_with("."):
+        error(ui.invalid, "A selection set needs a name")
+    if step.topology != 0 and step.topology != mesh.topology_hash():
+        error(ui.invalid, "Edit input topology changed. Undo the upstream change or clear this node's edits.")
+    let domain = [0, 0, 4, 2, 1][step.group_type] if step.group_type > 0 else 2
+    let mode = int(step.numbers[0])
+    var members = step.group
+    if mode == 1:
+        members = f"{name} {step.group}"
+    elif mode == 2:
+        members = f"{name} {removed(step.group)}"
+    return Groups.with_group(mesh, name, domain, members)
+
+## A group expression whose every term is taken away (`^`), so that after a
+## set's name it removes what `group` names.
+pub func removed(group: str) -> str:
+    let terms: list[str] = []
+    for term in group.split(" "):
+        if term != "":
+            terms.append("^" + term)
+    return terms.join(" ")
 
 ## The step adding primitive `name` at the origin. Its numbers: size or
 ## radius, divisions, height or tube radius, then the position.

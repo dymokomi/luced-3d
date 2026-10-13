@@ -878,7 +878,7 @@ built" below).
   - the existing CAD test files pass unchanged in what they assert;
   - the wiring-layer line count is reported in the commit.
 
-**Stage 2: selection.**
+**Stage 2: selection.** **Done 2026-10-13** (see "Stage 2 as built" below).
 - In luce-geocore:
   - a `Selection` active element;
   - loop and ring walkers checked against Blender's rules (§5.2);
@@ -911,6 +911,61 @@ built" below).
   - non-manifold finds a T-junction edge;
   - a saved set recalls after undo and survives a save and load;
   - every Select tool is also reachable as its group function in a node's Group.
+
+**Stage 2 as built.**
+- luce-geocore: a `selecting/` module below the group language and the verbs. Each select tool is
+  a `SelectRule` (name, label, group function, family, icon, levels, picks, `ParmSpec` rows,
+  `whole`, kernel) in a file of its family (`loops`, `regions`, `paths`, `similar`, `traits`,
+  `patterns`, `mirror`, `convert`) and one line in `registry.lucb`'s `rule_makers` (plus ORDER for
+  a new file). `Verbs` lists the rules after `makers` as the Select verbs (`Verb.rule`;
+  `run_verb` runs the rule), and the group parser takes every rule's function name with numeric
+  arguments after the group (`sharp(*, 30)`, `path(0 24, 1)`), so one declaration is a node, a
+  D/right-click/Modify entry, a docs/TOOLS.md section and a group function. `ParmSpec`, `PickSpec`
+  and `filled_parms` moved to `core/verb_specs.lucb`; the conversion kernels and the mirror map
+  moved into `selecting/`. `Selection` gained the active element (`active`, `with_active`, set by
+  `changed`), `joined` and `ruled` (a rule on a selection, as the gestures run them); `walked` is
+  gone.
+- Rules (22): Loop (Blender's walker rules: four- or two-edge points crossed past half their
+  faces over manifold edges; poles end it; on a boundary along the fan, stopping at outer
+  corners and at n-gon sides; the n-gon hub; face loops through quads; point loops; Only between
+  for a run), Ring, Boundary Loop (whole boundaries, or faces' outline), Loop to Region (smaller
+  or bigger side), Grow and Shrink Selection (Face step), Border, Connected (seam, sharp,
+  material, UV, normal-angle delimits), Linked Flat, Shortest Path (Dijkstra on positions with a
+  1% turn cost, Topology mode, Face step, Fill region by two breadth-first searches), Similar
+  (15 measures, Equal/Greater/Less, sorted references and a direction hash), Sharp Edges, By
+  Sides, By Area, By Normal, Non-manifold (boundary, three faces or more, flipped neighbors,
+  pinched points), Loose, Interior Faces, Checker, Random, Mirror Selection, Convert.
+- Not rules: select all, none and invert stay selection commands (their group syntax is `*`,
+  an empty group and `!x`); Convert has no group function (`convert()` is the language's).
+- Labels avoid other surfaces' names: Grow/Shrink/Mirror Selection (CAD's Shrink, the Mirror
+  node).
+- luced-3d: the gestures of §9 in `selection_gestures.luc` (the double-click takes its first
+  click back with one undo, so the gesture is one step); hover previews the loop or ring in
+  amber (luce-3d `EditOverlay.set_preview`); `select_with` runs the rule on the selection
+  (`Selection.ruled`, no mesh rebuilt) and switches level when the rule's output is of another
+  type; the last Select tool's rows stay on the tool bar (`SelectRun`) and a change runs it again
+  on the same seed. Selection sets are named groups written by an Edit Mesh `Selection Set` step
+  (or a Selection Group node on a plain node), named set1, set2, … with Select/Add/Remove/
+  Intersect/Add selection/Remove selection per set. Hide, Hide unselected and Unhide keep the
+  hidden faces in the workspace (in undo snapshots); luce-3d's renderer collapses their
+  triangles and edges in the draw and pick passes, the overlay drops their points' markers, and
+  `Workspace.kept` keeps hidden components out of every selection change and, with the Edit
+  Mesh's Symmetry, mirrors picks and removals.
+- Marking menus show labels for every entry, in columns by family under its name; D follows the
+  level (Loops first at Edges, Region first elsewhere), then Selection, Sets and Hide. The
+  right-click menu has Select with nothing selected too; Modify › Selection has a submenu per
+  family, the sets and Hide.
+- Tests: luce-geocore `select_rule_checks` (loops on a grid, cylinder hub, torus and sphere
+  poles; boundaries and cycling; partial loops; face and point loops; rings; Loop to Region;
+  islands with each delimit; paths and fill; Similar on a box beside a grid; grow and shrink;
+  traits; a T-junction, a flipped face, a pinch, a lone point, a walled box; mirror, convert,
+  random; group functions and Select verbs); luced-3d `select_gesture_tests` (real viewport
+  events: double-click timing, modifiers, undo), `selection_set_tests` (sets through a project
+  file, hide, the bar, symmetry, a Bevel node on `sharp(*, 30)`), `marking_label_tests`, and the
+  registry and parity tests over every new tool.
+- Not yet: renaming or deleting a set (a set is a group: a Group node or Attribute Delete removes
+  it), a face loop's partial run, Side of Active, lasso and paint selection, soft selection by
+  surface distance.
 
 **Stage 3: drag and the interactive core.**
 - The generic drag driver (haul, wheel for counts, Shift snaps).

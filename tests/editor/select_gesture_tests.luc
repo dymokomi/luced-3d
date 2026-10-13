@@ -1,0 +1,180 @@
+## The selection gestures (POLY-MODELING.md §5.2, §9), driven by real
+## viewport events on an Edit Mesh of the 4 by 4 grid (point z*5+x, face
+## z*4+x) seen from above: a double-click on an edge selects its loop as one
+## undo step, two clicks further apart in time are two clicks, Shift adds a
+## loop (on the loop of the edge picked last only the run between),
+## Cmd/Ctrl adds a ring, Shift+Cmd/Ctrl takes a loop away, a double-click
+## again on a boundary edge takes the whole boundary; on faces a
+## double-click selects the island, Cmd/Ctrl takes it away and Shift beside
+## the face picked last adds the face loop through both; Shift+Cmd/Ctrl+click
+## adds the shortest path from the element picked last; hovering an edge
+## previews its loop (its ring with Cmd/Ctrl).
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind
+from luce_3d.graphics import Vector3
+from view_projection import project
+from edit_types import point_level, edge_level, face_level
+import node_commands
+import selection_commands
+import thread
+
+pub func select_gesture_tests() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1400.0, 900.0)
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Grid", 0.0, 0.0)
+    node_commands.add_node(w, "Edit Mesh", 0.0, 100.0)
+    w.view.camera.set_position(Vector3(0.0, 5.0, 0.6))
+    w.view.camera.look_at(Vector3(0.0, 0.0, 0.0))
+    editor.panels.refresh()
+    editor.app.focus(editor.panels.view.layout())
+    edges(editor)
+    faces(editor)
+    paths(editor)
+    print("PASS selection gestures from viewport events: double-click loops as one undo step, slow clicks stay clicks, Shift adds loops and runs between, Cmd/Ctrl rings, Shift+Cmd/Ctrl removes, boundary cycling, face islands and face loops, Shift+Cmd/Ctrl+click paths, hover previews")
+
+## The grid's point `index` (over -1..1 in XZ, a step of 0.5).
+func grid_point(index: int) -> Vector3:
+    return Vector3(-1.0 + 0.5 * float(index % 5), 0.0, -1.0 + 0.5 * float(index // 5))
+
+## Where `p` shows in the window.
+func at(editor: Luce3D, p: Vector3) -> list[float]!:
+    let area = editor.panels.view.layout().bounds()
+    let on = project(editor.workspace, p, area.width, area.height)
+    return [area.x + on[0], area.y + on[1]]
+
+## The middle of the edge between points `a` and `b`, on screen (a
+## little toward the grid's middle, so a boundary edge's face is under it).
+func edge_at(editor: Luce3D, a: int, b: int) -> list[float]!:
+    return at(editor, grid_point(a).add(grid_point(b)).multiply_scalar(0.5 * 0.97))
+
+## Point `index` on screen, a little toward the middle.
+func point_at(editor: Luce3D, index: int) -> list[float]!:
+    return at(editor, grid_point(index).multiply_scalar(0.97))
+
+## Whether component `id` is selected.
+func has(editor: Luce3D, id: int) -> bool:
+    let chosen = editor.workspace.selection else return false
+    return chosen.contains(id)
+
+## The center of face `face`, on screen.
+func face_at(editor: Luce3D, face: int) -> list[float]!:
+    let corner = grid_point(face % 4 + (face // 4) * 5)
+    return at(editor, corner.add(Vector3(0.25, 0.0, 0.25)))
+
+## A click at `point` with the modifiers (Cmd is `meta`).
+func click(editor: Luce3D, point: list[float], shift: bool = false, meta: bool = false) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = point[0], y = point[1], shift = shift, meta = meta))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = point[0], y = point[1], button = 0, shift = shift, meta = meta))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = point[0], y = point[1], button = 0, shift = shift, meta = meta))
+    editor.panels.refresh()
+
+func double_click(editor: Luce3D, point: list[float], shift: bool = false, meta: bool = false) -> unit!:
+    click(editor, point, shift, meta)
+    click(editor, point, shift, meta)
+
+## Let the double-click time pass.
+func pause() -> unit!:
+    thread.sleep(450)
+
+func edges(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    selection_commands.set_mode(w, edge_level)
+    let mesh = w.geometry else trap("grid")
+    let middle = mesh.find_edge(6, 7)
+    # Hovering previews the loop; with Cmd its ring.
+    let row = edge_at(editor, 6, 7)
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = row[0], y = row[1]))
+    let shown = editor.panels.view.tools.preview else trap("no preview")
+    assert(editor.panels.view.tools.hovered == middle and shown.count() == 4)
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = row[0] + 1.0, y = row[1], meta = true))
+    let ring = editor.panels.view.tools.preview else trap("no ring preview")
+    assert(ring.count() == 5)
+    # A double-click: the loop, one undo step back to nothing.
+    pause()
+    let steps = w.history.cursor
+    double_click(editor, row)
+    assert(w.selected_count() == 4 and w.history.cursor == steps + 1)
+    w.undo()
+    assert(w.selected_count() == 0)
+    # Two clicks slower than a double-click: the edge alone.
+    pause()
+    click(editor, row)
+    pause()
+    click(editor, row)
+    assert(w.selected_ids() == [middle])
+    # Shift + double-click another row's edge adds its loop.
+    pause()
+    double_click(editor, edge_at(editor, 16, 17), shift = true)
+    assert(w.selected_count() == 5)
+    # Cmd + double-click a vertical edge adds its ring (five edges, one of
+    # the rows' already in).
+    pause()
+    double_click(editor, edge_at(editor, 11, 16), meta = true)
+    assert(w.selected_count() == 10)
+    # Shift + Cmd + double-click takes a loop away: the row through 16-17.
+    pause()
+    double_click(editor, edge_at(editor, 16, 17), shift = true, meta = true)
+    assert(w.selected_count() == 6 and not has(editor, mesh.find_edge(16, 17)))
+    # On the loop of the edge picked last: only the run between.
+    pause()
+    click(editor, edge_at(editor, 5, 6))
+    pause()
+    double_click(editor, edge_at(editor, 7, 8), shift = true)
+    assert(w.selected_count() == 3 and has(editor, mesh.find_edge(6, 7)) and not has(editor, mesh.find_edge(8, 9)))
+    # A boundary edge: its side, then again the whole boundary.
+    pause()
+    double_click(editor, edge_at(editor, 1, 2))
+    assert(w.selected_count() == 4)
+    pause()
+    double_click(editor, edge_at(editor, 1, 2))
+    assert(w.selected_count() == 16)
+
+func faces(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    selection_commands.set_mode(w, face_level)
+    selection_commands.select_none(w)
+    # A double-click: the island; Cmd + double-click takes it away.
+    pause()
+    double_click(editor, face_at(editor, 5))
+    assert(w.selected_count() == 16)
+    pause()
+    double_click(editor, face_at(editor, 5), meta = true)
+    assert(w.selected_count() == 0)
+    # Shift + double-click beside the face picked last: the face loop.
+    pause()
+    click(editor, face_at(editor, 5))
+    pause()
+    double_click(editor, face_at(editor, 6), shift = true)
+    assert(w.selected_ids() == [4, 5, 6, 7])
+    # Not beside it: the island added.
+    pause()
+    click(editor, face_at(editor, 0))
+    pause()
+    double_click(editor, face_at(editor, 15), shift = true)
+    assert(w.selected_count() == 16)
+
+func paths(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    selection_commands.set_mode(w, point_level)
+    selection_commands.select_none(w)
+    pause()
+    click(editor, point_at(editor, 0))
+    pause()
+    click(editor, point_at(editor, 4), shift = true, meta = true)
+    assert(w.selected_ids() == [0, 1, 2, 3, 4])
+    # From the point picked last on: on to the far corner (eight edges
+    # from 4 to 24 along the side, four of them new).
+    pause()
+    click(editor, point_at(editor, 24), shift = true, meta = true)
+    assert(w.selected_count() == 9)
+    # Faces too: the path from face 0 to face 3 along the row.
+    selection_commands.set_mode(w, face_level)
+    selection_commands.select_none(w)
+    pause()
+    click(editor, face_at(editor, 0))
+    pause()
+    click(editor, face_at(editor, 3), shift = true, meta = true)
+    assert(w.selected_ids() == [0, 1, 2, 3])

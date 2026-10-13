@@ -17,8 +17,12 @@
 ##   elsewhere: primitives, lights, containers and Edit nodes (A), and the
 ##   modeling tools on the displayed mesh's selection at its level, each a
 ##   new node (S, Repeat first);
-##   D outside a sketch: Select, the Select tools for the level and the
-##   selection commands (select_items).
+##   D outside a sketch: Select, as columns by family in the level's order
+##   (tool_menus.select_order: Loops first at Edges), then Selection (all,
+##   none, invert, through the depth), the selection sets (save, and each
+##   set: a click selects it) and Hide (select_items).
+## Entries carry their family as their group, which the menu shows as a
+## column under its name.
 ## Node entries add the node after the selected one (`add`).
 from marking_menu import MarkItem
 from workspace import Workspace
@@ -34,6 +38,7 @@ import edit_cad_commands
 import sketch_node
 import cad_check
 import tool_menus
+import selection_sets
 
 ## Create (A).
 pub func create_items(w: Workspace, actions: Actions, add: func(str) -> unit!, sketch: SketchEditor) -> list[MarkItem]:
@@ -76,7 +81,7 @@ pub func modify_items(w: Workspace, actions: Actions, add: func(str) -> unit!, s
                 offered.append(command)
         return model_repeat(w, actions, add) + pull + command_items(offered)
     if w.editing():
-        return command_items(tools_at_level(w, actions))
+        return tools_at_level(w, actions)
     let context = w.network.context()
     if context == "cad":
         let rest = node_items(["Mirror Body", "Pattern", "Transform", "Edit CAD", cad_check.kind_name], add)
@@ -95,19 +100,37 @@ pub func modify_items(w: Workspace, actions: Actions, add: func(str) -> unit!, s
         return repeat_items(w, actions, add) + pull + blends + faces + command_items(modify) + command_items(surfaces) + rest
     if context == "shading":
         return no_items()
-    return command_items(tools_at_level(w, actions)) + node_items(["Transform", "Mirror", "CopyTransform"], add)
+    return tools_at_level(w, actions) + node_items(["Transform", "Mirror", "CopyTransform"], add, "Nodes")
 
-## Select (D, outside a sketch): the Select tools at the level, then the
-## selection commands.
-pub func select_items(w: Workspace, actions: Actions) -> list[MarkItem]:
-    return command_items(tool_menus.select_commands(w, actions))
+## Select (D, outside a sketch): the Select tools at the level by family,
+## Selection, the sets and Hide; where the kind has no registry tools (CAD),
+## Selection alone.
+pub func select_items(w: Workspace, actions: Actions) -> list[MarkItem]!:
+    let selection = actions.selection
+    if not tool_menus.from_registry(w):
+        return command_items([actions.select_all, selection.none_selected, selection.invert, actions.through_depth])
+    let result = no_items()
+    for family in tool_menus.select_families(w, actions):
+        result.extend(command_items(family.commands, family.name))
+        if family.name != "Selection":
+            continue
+        # The sets: Save as new set, then each set (a click selects it).
+        result.extend(command_items([selection.save_set], "Sets"))
+        for name in selection_sets.names(w):
+            let chosen = name
+            let recall = func () -> unit!: selection_sets.recall(w, chosen, 0)
+            result.append(MarkItem(name, "group", true, recall, group = "Sets"))
+    return result
 
 ## The viewport kind's tools for S: Repeat and the registry's Modify tools
-## the level takes (Edit Mesh, Geo), else every tool of the kind.
-func tools_at_level(w: Workspace, actions: Actions) -> list[Command]:
+## the level takes by family (Edit Mesh, Geo), else every tool of the kind.
+func tools_at_level(w: Workspace, actions: Actions) -> list[MarkItem]:
     if not tool_menus.from_registry(w):
-        return actions.modify_commands()
-    return tool_menus.repeat(w, actions) + tool_menus.flat(tool_menus.families(w, actions, "Modify", w.level_index()))
+        return command_items(actions.modify_commands())
+    let result = command_items(tool_menus.repeat(w, actions))
+    for family in tool_menus.families(w, actions, "Modify", w.level_index()):
+        result.extend(command_items(family.commands, family.name))
+    return result
 
 ## Repeat the CAD tool used last (none yet: no item), under the repeat
 ## icon (its name shows on hover): a node kind is added again; a command is
@@ -165,19 +188,22 @@ func sketch_item(sketch: SketchEditor, tool: SketchTool) -> MarkItem:
     let name = tool.name
     return MarkItem(name, tool.icon, tool.ready, func () -> unit!: sketch.choose(name))
 
-func command_items(commands: list[Command]) -> list[MarkItem]:
+## Commands as entries, in column `group` ("" none).
+func command_items(commands: list[Command], group: str = "") -> list[MarkItem]:
     let result = no_items()
     for command in commands:
         let chosen = command
         let icon = command.icon() if command.icon() != "" else asset_name(command.text())
-        result.append(MarkItem(command.text(), icon, command.is_enabled(), func () -> unit!: chosen.trigger()))
+        let run = func () -> unit!: chosen.trigger()
+        result.append(MarkItem(command.text(), icon, command.is_enabled(), run, group = group))
     return result
 
-func node_items(kinds: list[str], add: func(str) -> unit!) -> list[MarkItem]:
+func node_items(kinds: list[str], add: func(str) -> unit!, group: str = "") -> list[MarkItem]:
     let result = no_items()
     for kind in kinds:
         let chosen = kind
-        result.append(MarkItem(kind, asset_name(kind), true, func () -> unit!: add(chosen)))
+        let run = func () -> unit!: add(chosen)
+        result.append(MarkItem(kind, asset_name(kind), true, run, group = group))
     return result
 
 func no_items() -> list[MarkItem]:

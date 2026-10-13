@@ -1,9 +1,13 @@
 ## Commands on the component selection of the displayed geometry: picking
-## components (whole pieces at a level of pieces), selecting all, inverting,
-## growing and walking it, and switching the selection level (the selection
-## carries over to the new level's domain). During a tool prompt each
-## change goes to the prompted node at once (follow_prompt).
-from luce_geocore.geocore import Selection, Domain, Verbs
+## components (whole pieces at a level of pieces), selecting all or none,
+## inverting, the Select tools (the registry's: loops, Similar, …) with
+## their rows on the tool bar, and switching the selection level (the
+## selection carries over to the new level's domain). During a tool prompt
+## each change goes to the prompted node at once (follow_prompt). The
+## viewport's click gestures are selection_gestures.luc's.
+from luce_geocore.geocore import Selection, Domain
+from select_run import SelectRun
+from luce_std import math
 from workspace import Workspace
 from tool_prompts import follow_prompt
 from tool_record import Tool
@@ -16,36 +20,64 @@ pub func invert_selection(w: Workspace) -> unit!:
     w.perform("Invert selection", func () -> unit!:
         let inverted = chosen.inverted()
         let mesh = w.geometry else return
-        w.selection = inverted.combined(mesh, "@cad_edge>=0", 2) if w.network.context() == "cad" and w.level_index() == edge_level else inverted)
+        w.selection = inverted.combined(mesh, "@cad_edge>=0", 2) if w.network.context() == "cad" and w.level_index() == edge_level else w.kept(inverted, chosen))
     follow_prompt(w)
 
-## Grow (0), shrink (1), border (2), flood (3), loop (4) or ring (5).
-pub func walk_selection(w: Workspace, operation: int) -> unit!:
-    if w.network.context() != "geometry": return
-    let mesh = w.geometry else return
-    let chosen = w.current_selection() else return
-    if operation >= 4 and not w.on_domain(Domain.edge):
-        w.notice = "Loops and rings need the Edges level"
-        w.revision += 1
-        return
-    w.perform("Change selection", func () -> unit!:
-        w.selection = chosen.walked(mesh, operation, 1))
-    follow_prompt(w)
-
-## A Select tool (the registry's Select section: Select Checker) on the
-## selection: its verb's output selection replaces it, one undo step; the
-## geometry stays as it was.
+## A Select tool (the registry's Select section: Loop, Similar, Sharp
+## Edges, …) on the selection, or on everything when nothing is selected
+## and the tool looks at everything: the selection its rule makes replaces
+## the selection, one undo step, on the rule's own level (Boundary Loop of
+## faces gives edges); the geometry stays as it was. Its rows stay on the
+## tool bar while that selection does (set_last_select).
 pub func select_with(w: Workspace, tool: Tool, numbers: list[float]) -> unit!:
     let mesh = w.geometry else return
     let chosen = w.current_selection() else return
+    var seed = chosen
     if chosen.count() == 0:
-        w.notice = f"Select components for {tool.label}"
-        w.revision += 1
-        return
-    let made = Verbs.run(tool.name, mesh, chosen.expression(mesh), w.group_type(), numbers)
-    let picked = made.selection()
+        if not tool.whole:
+            w.notice = f"Select components for {tool.label}"
+            w.revision += 1
+            return
+        seed = chosen.filled(true)
+    let made = w.kept(seed.ruled(mesh, tool.name, numbers), chosen)
     w.perform(tool.label, func () -> unit!:
-        w.selection = picked)
+        adopt(w, made))
+    w.last_select = SelectRun(tool, seed, numbers, made)
+    follow_prompt(w)
+
+## The Select tool run last with row `slot` set to `value` (within
+## `minimum`..`maximum`): run again on the same seed, its selection
+## replacing the one it made, inside the tool bar's transaction.
+pub func set_last_select(w: Workspace, slot: int, value: float, minimum: float, maximum: float) -> unit!:
+    let run = w.last_select else return
+    let mesh = w.geometry else return
+    if not run.current(w.selection) or slot < 0 or slot >= run.numbers.length:
+        return
+    let numbers = run.numbers.copy()
+    numbers[slot] = math.max(minimum, math.min(maximum, value))
+    if numbers == run.numbers:
+        return
+    let made = w.kept(run.seed.ruled(mesh, run.tool.name, numbers), run.seed)
+    w.perform("Change " + run.tool.label, func () -> unit!:
+        adopt(w, made))
+    w.last_select = SelectRun(run.tool, run.seed, numbers, made)
+    # Repeat runs it with what its bar was set to.
+    if w.last_tool == run.tool.label:
+        w.last_tool_numbers = numbers.copy()
+    follow_prompt(w)
+
+## Take `made` as the selection, switching to the level of its components
+## when they are of another type.
+pub func adopt(w: Workspace, made: Selection) -> unit!:
+    if made.domain() != w.domain():
+        w.adopt_level(w.level_of(made.domain()))
+    w.selection = made
+
+pub func select_none(w: Workspace) -> unit!:
+    if w.current_selection() == none:
+        return
+    w.perform("Select none", func () -> unit!:
+        w.selection = none)
     follow_prompt(w)
 
 ## Switching the component type carries the selection over (a face is
@@ -106,7 +138,10 @@ pub func choose_component(w: Workspace, id: int, extend: bool, chain: bool = fal
         elif not extend:
             w.selection = Selection.of(mesh, piece, w.domain())
         else:
-            w.selection = chosen.combined(mesh, piece, 1 if chosen.contains(id) else 0))
+            w.selection = chosen.combined(mesh, piece, 1 if chosen.contains(id) else 0)
+        # Mirrored across the Edit Mesh's Symmetry, hidden faces left out.
+        if let picked = w.selection:
+            w.selection = w.kept(picked, chosen))
     follow_prompt(w)
 
 ## A box over the components: `boxed(current, operation, wholly, through)`
@@ -160,8 +195,9 @@ pub func choose_boxed(w: Workspace, operation: int, crossing: bool, boxed: func(
                 made = made.combined(mesh, piece, 1 if operation == 2 else 0)
             rest = rest.combined(mesh, piece, 1).changed(at, 1)
             at = rest.next(-1)
+    let shown = w.kept(made, chosen)
     w.perform("Select components", func () -> unit!:
-        w.selection = made if made.count() > 0 else none)
+        w.selection = shown if shown.count() > 0 else none)
     follow_prompt(w)
 
 pub func select_all(w: Workspace) -> unit!:
@@ -170,7 +206,7 @@ pub func select_all(w: Workspace) -> unit!:
         if w.network.context() == "cad" and w.level_index() == edge_level:
             w.selection = Selection.of(w.geometry else trap("CAD"), "@cad_edge>=0", w.domain())
         else:
-            w.selection = chosen.filled(true))
+            w.selection = w.kept(chosen.filled(true), chosen))
     follow_prompt(w)
 
 ## Smart's click: component `id` of level `level` (what was under the

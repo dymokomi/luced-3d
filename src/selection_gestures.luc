@@ -1,0 +1,121 @@
+## The viewport's selection gestures on a mesh's components (POLY-MODELING.md
+## §5.2 and the owner's answers in §9), each run by the select rules the
+## Select tools use:
+##
+## | Gesture                      | Edge                         | Face or point        |
+## | Double-click                 | its loop (again on a         | its island           |
+## |                              | boundary: the whole boundary)|                      |
+## | Shift + double-click         | add the loop; on the loop of | add the island; a    |
+## |                              | the edge picked last, only   | face beside the one  |
+## |                              | the run between them         | picked last: the     |
+## |                              |                              | face loop through    |
+## |                              |                              | both                 |
+## | Cmd/Ctrl + double-click      | add its ring                 | remove the island    |
+## | Shift + Cmd/Ctrl + dbl-click | remove the loop              | remove the island    |
+## | Shift + Cmd/Ctrl + click     | the shortest path from the element picked last, added |
+##
+## A double-click's first click was an ordinary click; the viewport takes
+## it back (one undo step for the gesture) before calling double_click.
+## While the pointer is over an edge, `preview` is what a double-click
+## would take: its loop, or with Cmd/Ctrl its ring.
+from luce_geocore.geocore import Selection
+from workspace import Workspace
+from tool_prompts import follow_prompt
+from edit_types import point_level, edge_level, face_level
+import tool_menus
+
+## Whether the gestures apply: a mesh's points, edges or faces picked in a
+## registry kind (Geo, Edit Mesh), not whole pieces, CAD or CVs.
+pub func apply(w: Workspace) -> bool:
+    return w.selecting() and w.network.context() == "geometry" and w.level_index() in [point_level, edge_level, face_level] and tool_menus.from_registry(w)
+
+## No numbers: a rule's starting values.
+func plain() -> list[float]:
+    let result: list[float] = []
+    return result
+
+## Element `id` alone, at the selection's level.
+func alone(w: Workspace, id: int) -> Selection?!:
+    let mesh = w.geometry else return none
+    return Selection.empty(mesh, w.domain()).changed(id, 3)
+
+## A double-click on component `id` with Shift (`shift`) and Cmd/Ctrl
+## (`command`) held, as the table above says.
+pub func double_click(w: Workspace, id: int, shift: bool, command: bool) -> unit!:
+    let mesh = w.geometry else return
+    let chosen = w.current_selection() else return
+    let one = alone(w, id) else return
+    let last = chosen.active()
+    var made = chosen
+    var label = ""
+    if w.level_index() == edge_level:
+        let loop = one.ruled(mesh, "Select Loop", plain())
+        if command and not shift:
+            made = chosen.joined(one.ruled(mesh, "Select Ring", plain()), 0)
+            label = "Select ring"
+        elif command:
+            made = chosen.joined(loop, 1)
+            label = "Deselect loop"
+        elif shift:
+            label = "Select loop"
+            made = chosen.joined(loop, 0)
+            # On the loop of the edge picked last: only the run between.
+            if last >= 0 and last != id and chosen.contains(last) and loop.contains(last):
+                let between = [1.0]
+                made = chosen.joined(one.changed(last, 0).ruled(mesh, "Select Loop", between), 0)
+        else:
+            label = "Select loop"
+            made = loop
+            # Again on a boundary edge whose loop is selected: the whole
+            # boundary (Blender's cycling).
+            let boundary = one.ruled(mesh, "Select Boundary Loop", plain())
+            if boundary.count() > 0 and chosen.joined(loop, 2).count() == loop.count() and boundary.count() > loop.count():
+                made = boundary
+                label = "Select boundary"
+    else:
+        let island = one.ruled(mesh, "Select Connected", plain())
+        if command:
+            made = chosen.joined(island, 1)
+            label = "Deselect island"
+        elif shift:
+            made = chosen.joined(island, 0)
+            label = "Select island"
+            # A face beside the face picked last: the face loop through both.
+            if w.level_index() == face_level and last >= 0 and last != id and chosen.contains(last):
+                let around = Selection.empty(mesh, w.domain()).changed(last, 3).ruled(mesh, "Select Grow", plain())
+                if around.contains(id):
+                    made = chosen.joined(one.changed(last, 0).ruled(mesh, "Select Loop", plain()), 0)
+                    label = "Select face loop"
+        else:
+            made = island
+            label = "Select island"
+    let taken = w.kept(made, chosen).with_active(id)
+    w.perform(label, func () -> unit!:
+        w.selection = taken if taken.count() > 0 else none)
+    follow_prompt(w)
+
+## Shift + Cmd/Ctrl + click on component `id`: the shortest path from the
+## element picked last to it is added (with none picked last, `id` alone).
+pub func path_click(w: Workspace, id: int) -> unit!:
+    let mesh = w.geometry else return
+    let chosen = w.current_selection() else return
+    if id < 0:
+        return
+    let last = chosen.active()
+    var made = chosen.changed(id, 0)
+    if last >= 0 and last != id and chosen.contains(last):
+        let ends = Selection.empty(mesh, w.domain()).changed(last, 0).changed(id, 0)
+        made = chosen.joined(ends.ruled(mesh, "Select Shortest Path", plain()), 0)
+    let taken = w.kept(made, chosen).with_active(id)
+    w.perform("Select path", func () -> unit!:
+        w.selection = taken)
+    follow_prompt(w)
+
+## What a double-click on edge `id` would take: its loop, or its ring with
+## Cmd/Ctrl (`command`); none off an edge.
+pub func preview(w: Workspace, id: int, command: bool) -> Selection?!:
+    if id < 0 or not apply(w) or w.level_index() != edge_level:
+        return none
+    let mesh = w.geometry else return none
+    let one = alone(w, id) else return none
+    return one.ruled(mesh, "Select Ring" if command else "Select Loop", plain())

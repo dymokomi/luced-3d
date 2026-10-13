@@ -310,22 +310,48 @@ Polygons), and the menus follow:
 
 - **S** (held in the viewport): Repeat, then the Modify tools the level
   takes, by family (Extrude, Bevel, Cut, Fill, Merge, Delete, …).
-- **D**: Select, the Select tools for the level (Select Checker) and the
-  selection commands (select all, invert, grow, shrink, border, connected,
-  loop and ring at Edges, through the depth). D in the Network panel is the
-  display flag.
+- **D**: Select, labeled columns of the Select tools the level takes, by
+  family in the level's order (Loops first at Edges, Region first at
+  Polygons and Vertices), then Selection (select all or none, invert,
+  through the depth), the selection sets and Hide. D in the Network panel
+  is the display flag. Every marking menu shows labels, a family per
+  column under its name.
 - **A**: the primitives and the drawing tools (PolyDraw).
 - **Right-click** with components selected: Repeat, the same Modify tools
-  by family, and a Select submenu; with nothing selected, Create.
+  by family, and a Select submenu; with nothing selected, Create and Select.
 - **Modify ›** Edit Mesh tools: Repeat and a submenu per family; Modify ›
-  Selection holds the Select tools.
+  Selection holds selecting all or none, inverting, a submenu per Select
+  family, the sets and Hide.
 - **Repeat** runs the last tool again on the new selection with its last
   numbers (as its tool bar left them, or its node's values when it made a
   node).
 
-A Select tool changes the selection, not the recipe: Select Checker keeps
-runs of selected and deselected elements counted across each island, one
-undo step. Besides the modeling verbs its tools include
+A Select tool changes the selection, not the recipe, one undo step: loops,
+rings, face loops, boundaries, Loop to Region, Grow and Shrink, Connected
+(with seam, sharp, material, UV and angle delimits), Shortest Path, Similar,
+Sharp Edges, By Sides, By Area, By Normal, Non-manifold, Loose, Interior
+Faces, Checker, Random, Mirror Selection and Convert (TOOLS.md lists their
+rows). Its rows stay on the tool bar while its selection does, and a change
+runs it again on the same selection (Blender's Adjust Last Operation). Each
+is a group function too, so a node's Group can be a rule re-run on every
+cook: `sharp(*, 30)`, `loop(p6-7)`, `sides(*, 4)`. The click gestures: a
+double-click on an edge selects its loop (again on a boundary, the whole
+boundary), on a face or point its island; Shift adds (a loop's run between
+it and the edge picked last; the face loop beside the face picked last);
+Cmd/Ctrl adds an edge's ring or takes an island away; Shift+Cmd/Ctrl takes
+the loop or island away; Shift+Cmd/Ctrl+click adds the shortest path from
+the element picked last. Hovering an edge shows, in amber, the loop a
+double-click would take (its ring with Cmd/Ctrl).
+
+Selection sets are named groups: Save as new set writes the selection as
+`set1`, `set2`, … (in an Edit Mesh a Selection Set step, on a plain node a
+Selection Group node after it), so they are kept in the project, survive
+undo and ride through later steps; each set's submenu selects it alone,
+adds, removes or intersects it, or writes the selection into it. Hide and
+Hide unselected leave faces out of the viewport (not drawn, not picked,
+never selected) until Unhide shows them selected; hiding is kept with undo
+and ends when the mesh's topology changes. Besides the modeling verbs its
+tools include
 Knife (drag a stroke across the model, Shift snapping it to 15°: the cut is
 the plane through the eye and the stroke, recorded as a Clip with its own
 point and normal, cutting the selection or else every face under the stroke),

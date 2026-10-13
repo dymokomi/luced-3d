@@ -377,18 +377,306 @@ Flip the winding of the group's faces.
 
 ## Select
 
+A Select tool changes the selection only: from D, the right-click Select submenu or Modify ›
+Selection it runs on what is selected (a tool that looks at everything runs on everything when
+nothing is), its rows stay on the tool bar while its selection does, and a change runs it again.
+As a node it is a Select node whose output selection the viewport adopts. Its group function is
+the same rule in a node's Group, run on every cook: `sharp(*, 30)`, `loop(p6-7)`.
+
+Click gestures on a mesh's components:
+
+| Gesture | Edge | Face or point |
+| --- | --- | --- |
+| Double-click | Its loop; again on a boundary edge, the whole boundary | Its island |
+| Shift + double-click | Add the loop; on the loop of the edge picked last, only the run between | Add the island; beside the face picked last, the face loop through both |
+| Cmd/Ctrl + double-click | Add its ring | Remove the island |
+| Shift + Cmd/Ctrl + double-click | Remove the loop | Remove the island |
+| Shift + Cmd/Ctrl + click | The shortest path from the element picked last, added | The same |
+
+Hovering an edge shows the loop a double-click would take (its ring with Cmd/Ctrl held).
+
+### Loops
+
+#### Loop
+
+Edge loops through the selected edges, face loops through faces side by side, point loops through points along an edge.
+
+- Node `Select Loop` in Geo; a step of Edit Mesh.
+- Works on edges or faces or points.
+- With nothing selected: "Select edges, two faces side by side, or two points on a loop".
+- Group function: `loop(group, only_between)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Only between | off | yes | With two edges on one loop selected: only the run between them, the shorter way round. |
+
+#### Ring
+
+Edge rings through the selected edges: across each quad to its opposite edge.
+
+- Node `Select Ring` in Geo; a step of Edit Mesh.
+- Works on edges.
+- With nothing selected: "Select edges for Ring".
+- Group function: `ring(group)`.
+
+#### Boundary Loop
+
+Each selected boundary edge's whole boundary; selected faces' outline as edges.
+
+- Node `Select Boundary Loop` in Geo; a step of Edit Mesh.
+- Works on edges or faces.
+- With nothing selected: "Select boundary edges, or faces for their outline".
+- Group function: `boundary(group)`.
+
+#### Loop to Region
+
+The faces a closed loop of selected edges encloses (its smaller side, or bigger).
+
+- Node `Select Loop to Region` in Geo; a step of Edit Mesh.
+- Works on edges.
+- With nothing selected: "Select a closed edge loop".
+- Group function: `region(group, side)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Side | Smaller | yes | Which side of each closed loop: the one with fewer faces, or more. |
+
+### Region
+
+#### Grow Selection
+
+The selection and its neighbors, a ring at a time.
+
+- Node `Select Grow` in Geo; a step of Edit Mesh.
+- Works on points or edges or faces.
+- Group function: `grow(group, steps, face_step)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Steps | 1 | yes | How many rings of neighbors to add or take away. |
+| Face step | off | yes | Faces reach faces that share a point, points and edges reach across faces; off: faces across edges, points and edges along edges. |
+
+#### Shrink Selection
+
+The selection without its outer ring, a ring at a time.
+
+- Node `Select Shrink` in Geo; a step of Edit Mesh.
+- Works on points or edges or faces.
+- Group function: `shrink(group, steps, face_step)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Steps | 1 | yes | How many rings of neighbors to add or take away. |
+| Face step | off | yes | Faces reach faces that share a point, points and edges reach across faces; off: faces across edges, points and edges along edges. |
+
+#### Border
+
+The selected elements next to an unselected one.
+
+- Node `Select Border` in Geo; a step of Edit Mesh.
+- Works on points or edges or faces.
+- Group function: `border(group)`.
+
+#### Connected
+
+Whole islands touching the selection, optionally kept inside seams, sharp edges, materials, UV islands or face angles.
+
+- Node `Select Connected` in Geo; a step of Edit Mesh.
+- Works on points or edges or faces.
+- Group function: `connected(group, seams, sharp, materials, uv_seams, normals, angle)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Seams | off | yes | Stop at seam edges (the edge group or attribute `seam`). |
+| Sharp | off | yes | Stop at edges marked sharp (the edge group or attribute `sharp`). |
+| Materials | off | yes | Stop between faces of different materials (the face attribute `material`). |
+| UV seams | off | yes | Stop where the faces' `uv` values part along an edge. |
+| Normals | off | yes | Stop at edges whose faces meet at more than Angle. |
+| Angle | 30.0 | yes | The face angle Normals stops at, in degrees. |
+
+#### Linked Flat
+
+Faces reached from the selection across edges flatter than an angle.
+
+- Node `Select Linked Flat` in Geo; a step of Edit Mesh.
+- Works on faces.
+- Group function: `flat(group, angle)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Angle | 1.0 | yes | The largest angle between two faces still counted flat, in degrees. |
+
+#### Shortest Path
+
+The shortest path between the selected elements, taken in order; with Fill region every element on a shortest path.
+
+- Node `Select Shortest Path` in Geo; a step of Edit Mesh.
+- Works on points or edges or faces.
+- With nothing selected: "Select two components to join".
+- Group function: `path(group, distance, fill_region, face_step)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Distance | Length | yes | What a path measures: its length, or its steps. |
+| Fill region | off | yes | Every element on any shortest path in steps between the two, not one path. |
+| Face step | off | yes | Points and faces step across faces (diagonals), edges around their faces. |
+
+### Similar
+
+#### Similar
+
+Every element like a selected one by normal, area, perimeter, sides, plane, material, group, length, direction, face angle, crease, seam, sharpness or valence.
+
+- Node `Select Similar` in Geo; a step of Edit Mesh.
+- Works on points or edges or faces.
+- Group function: `similar(group, by, compare, threshold)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| By | Normal | yes | What is compared. Faces: Normal, Area, Perimeter, Sides, Coplanar, Material, Group. Edges: Length, Direction, Face angle, Crease, Seam, Sharp, Faces, Group. Points: Normal, Edges, Faces, Group. |
+| Compare | Equal | yes | Equal within the threshold, or at least, or at most, a selected element's value. |
+| Threshold | 0.01 | yes | How far apart values still count as equal: in the value's units, degrees for Normal, Direction and Face angle. |
+
+### Find
+
+#### Sharp Edges
+
+Edges whose faces meet at more than an angle.
+
+- Node `Select Sharp Edges` in Geo; a step of Edit Mesh.
+- Works on edges, or everything when nothing is selected.
+- Group function: `sharp(group, angle)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Angle | 30.0 | yes | Edges whose two faces meet at more than this, in degrees. |
+
+#### By Sides
+
+Faces by their number of sides: triangles, quads, n-gons.
+
+- Node `Select By Sides` in Geo; a step of Edit Mesh.
+- Works on faces, or everything when nothing is selected.
+- Group function: `sides(group, sides, compare)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Sides | 4 | yes | The number of sides compared with. |
+| Compare | Equal | yes | How a face's sides compare with Sides. |
+
+#### By Area
+
+Faces smaller or larger than an area.
+
+- Node `Select By Area` in Geo; a step of Edit Mesh.
+- Works on faces, or everything when nothing is selected.
+- Group function: `area(group, area, compare)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Area | 0.01 | yes | The area compared with, in square units. |
+| Compare | Less | yes | Faces smaller than Area, or larger. |
+
+#### By Normal
+
+Faces facing a direction within a spread.
+
+- Node `Select By Normal` in Geo; a step of Edit Mesh.
+- Works on faces, or everything when nothing is selected.
+- Group function: `facing(group, direction_x, direction_y, direction_z, spread)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Direction | 0.0, 0.0, 0.0 | yes | The direction faces should face (a zero vector takes +Y). |
+| Spread | 30.0 | yes | How far a face's normal may lean from Direction, in degrees. |
+
+#### Non-manifold
+
+Boundary edges, edges of three faces or more, flipped neighbors and pinched points.
+
+- Node `Select Non-manifold` in Geo; a step of Edit Mesh.
+- Works on edges or points, or everything when nothing is selected.
+- Group function: `nonmanifold(group, boundary, multiple_faces, non_contiguous, pinched_points)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Boundary | on | yes | Edges with one face. |
+| Multiple faces | on | yes | Edges with three faces or more (a T-junction). |
+| Non contiguous | on | yes | Edges whose two faces wind opposite ways (a flipped neighbor). |
+| Pinched points | on | yes | Points where faces meet only at the point (at the Points level). |
+
+#### Loose
+
+Points no face uses.
+
+- Node `Select Loose` in Geo; a step of Edit Mesh.
+- Works on points, or everything when nothing is selected.
+- Group function: `loose(group)`.
+
+#### Interior Faces
+
+Faces all of whose edges have more than two faces (walls inside a solid).
+
+- Node `Select Interior Faces` in Geo; a step of Edit Mesh.
+- Works on faces, or everything when nothing is selected.
+- Group function: `interior(group)`.
+
 ### Pattern
 
-#### Select Checker
+#### Checker
 
 Keep a checker pattern of the group: runs of selected and deselected elements across each island.
 
 - Node `Select Checker` in Geo; a step of Edit Mesh.
 - Works on points or edges or faces.
 - With nothing selected: "Select the region to thin out".
+- Group function: `checker(group, selected, deselected, offset)`.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
 | Selected | 1 | yes | Elements kept selected in a row. |
 | Deselected | 1 | yes | Elements deselected in a row, after each selected run. |
 | Offset | 0 | yes | Shift the pattern along by this many elements. |
+
+#### Random
+
+A random share of the group: each element kept with the Ratio's chance, the same for the same seed.
+
+- Node `Select Random` in Geo; a step of Edit Mesh.
+- Works on points or edges or faces.
+- With nothing selected: "Select the region to thin out".
+- Group function: `random(group, ratio, seed)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Ratio | 0.5 | yes | The share of the group kept selected. |
+| Seed | 0 | yes | Another seed, another pattern. |
+
+### Symmetry
+
+#### Mirror Selection
+
+The selection's mirror across X, Y or Z (elements with nothing at their mirror drop out).
+
+- Node `Select Mirror` in Geo; a step of Edit Mesh.
+- Works on points or edges or faces.
+- Group function: `mirror(group, axis, extend)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Axis | X | yes | The plane through the origin the selection is mirrored across. |
+| Extend | off | yes | Keep the selection and add its mirror; off: only the mirror. |
+
+### Convert
+
+#### Convert
+
+The selection as points, edges or faces: those it touches, or only those it contains (Maya's Convert Selection).
+
+- Node `Select Convert` in Geo; a step of Edit Mesh.
+- Works on points or edges or faces.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| To | Faces | yes | The component type the selection becomes. |
+| Rule | Touching | yes | Touching: every element the selection touches. Contained: only those all of whose points, edges or faces are selected. |

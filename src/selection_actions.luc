@@ -1,0 +1,110 @@
+## The selection commands beside the Select tools (which are the
+## registry's): Invert and Select none, Hide, Hide unselected and Unhide,
+## and the selection sets (Save as new set, then each set's submenu:
+## Select, Add, Remove, Intersect, Add selection to it, Remove selection
+## from it). D, the right-click Select submenu and Modify › Selection list
+## them (tool_menus.select_commands); the sets' submenus follow the
+## displayed mesh's groups.
+from luce_ui.ui import Command, Shortcut
+from luce_window.input import Key
+from interop import Connection
+from workspace import Workspace
+import selection_commands
+import selection_hide
+import selection_sets
+
+pub class SelectionActions:
+    let workspace: Workspace
+    pub let invert: Command
+    pub let none_selected: Command
+    pub let hide: Command
+    pub let hide_unselected: Command
+    pub let unhide: Command
+    pub let save_set: Command
+    ## The sets' submenu: Save as new set, then one submenu per set.
+    pub let sets: Command
+    let connections: list[Connection]
+    ## The sets' commands as last built, for the names in `sets_key`.
+    var set_connections: list[Connection]
+    var sets_key: str = ""
+
+    pub func init(self, workspace: Workspace) -> unit!:
+        self.workspace = workspace
+        self.invert = Command("Invert selection", Shortcut(Key.i, primary = true), id = "select_invert", icon = "invert-selection")
+        self.none_selected = Command("Select none", id = "select_none", icon = "deselect")
+        self.hide = Command("Hide", id = "select_hide", icon = "hidden")
+        self.hide_unselected = Command("Hide unselected", id = "select_hide_unselected", icon = "ghosted")
+        self.unhide = Command("Unhide", id = "select_unhide", icon = "visible")
+        self.save_set = Command("Save as new set", id = "select_save_set", icon = "save")
+        self.sets = Command("Selection sets", id = "select_sets", icon = "group")
+        self.set_connections = []
+        self.connections = [self.invert.on_trigger(func () -> unit!: selection_commands.invert_selection(workspace)),
+                            self.none_selected.on_trigger(func () -> unit!: selection_commands.select_none(workspace)),
+                            self.hide.on_trigger(func () -> unit!: selection_hide.hide(workspace, false)),
+                            self.hide_unselected.on_trigger(func () -> unit!: selection_hide.hide(workspace, true)),
+                            self.unhide.on_trigger(func () -> unit!: selection_hide.unhide(workspace)),
+                            self.save_set.on_trigger(func () -> unit!: save_set(workspace))]
+        self.sets.set_items([self.save_set])
+
+    ## Every command, for the window's shortcuts.
+    pub func commands(self) -> list[Command]:
+        return [self.invert, self.none_selected, self.hide, self.hide_unselected, self.unhide, self.save_set]
+
+    ## Enable what applies to the selection now; rebuild the sets' submenus
+    ## when the mesh's sets changed.
+    pub func refresh(self, selecting: bool) -> unit!:
+        let w = self.workspace
+        let any = selecting and w.selected_count() > 0
+        self.invert.set_enabled(any)
+        self.none_selected.set_enabled(any)
+        let hiding = selecting and selection_hide.applies(w)
+        self.hide.set_enabled(hiding and any)
+        self.hide_unselected.set_enabled(hiding and any)
+        self.unhide.set_enabled(hiding and selection_hide.hidden_count(w) > 0)
+        self.save_set.set_enabled(selection_sets.writable(w))
+        var names: list[str] = []
+        if hiding:
+            names = selection_sets.names(w)
+        let key = f"{names.join(",")}/{self.save_set.is_enabled()}"
+        if key == self.sets_key:
+            return
+        self.sets_key = key
+        self.rebuild_sets(names)
+
+    ## The sets' submenu for `names`.
+    func rebuild_sets(self, names: list[str]) -> unit!:
+        for connection in self.set_connections:
+            connection.disconnect()
+        self.set_connections.clear()
+        let w = self.workspace
+        let items = [self.save_set]
+        let writable = selection_sets.writable(w)
+        for name in names:
+            let chosen = name
+            let title = Command(name, icon = "group")
+            let entries: list[Command] = []
+            let labels = ["Select", "Add to selection", "Remove from selection", "Intersect with selection"]
+            for operation in 0..<labels.length:
+                let at = operation
+                let entry = Command(labels[operation])
+                self.set_connections.append(entry.on_trigger(func () -> unit!: selection_sets.recall(w, chosen, at)))
+                entries.append(entry)
+            for mode in [1, 2]:
+                let written = mode
+                let entry = Command("Add selection to set" if mode == 1 else "Remove selection from set")
+                entry.set_enabled(writable)
+                self.set_connections.append(entry.on_trigger(func () -> unit!: selection_sets.write(w, chosen, written)))
+                entries.append(entry)
+            title.set_items(entries)
+            items.append(title)
+        self.sets.set_items(items)
+
+    pub func close(self):
+        for connection in self.connections + self.set_connections:
+            connection.disconnect()
+        self.connections.clear()
+        self.set_connections.clear()
+
+## Save the selection as a new set.
+func save_set(w: Workspace) -> unit!:
+    _ = selection_sets.save(w)
