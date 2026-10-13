@@ -2302,6 +2302,36 @@ Captures (`tools/preview.py --scene`): `kernel_y_boss`, `kernel_y_boss_g2` (`--m
 `kernel_y_ell`, `kernel_mixed_g2` (`--mode 7`, `--background`), `kernel_vertex_blend` (its rows),
 `kernel_inside_rolled`, `kernel_notch_end`.
 
+**Stage 8, fourth round** (2026-10-13; luce-cad MODELING.md, Fillets meeting at corners, Variable
+radius at corners, Shell; probes 17 and 18, `luce_work/cad/fusion/FINDINGS.md` 40–43):
+
+- **Fusion's default corners**: three G2 or G3 fillets under Rolling ball stop through the ball's center
+  and three quads join their end sections (`three_sided.lucb`; Fusion's 7845.406289 and 7960.487036
+  for a 20 cube's corner rounded 4 and 2, within 0.01; G2 all round at a square corner); Setback
+  keeps the setback corner. Corner fullness 0 (Fusion's) is the default; the G2-rounded box's shell,
+  which had blocked it, closes (B-spline offsets fitted to a quarter of the tolerance over each span).
+- **Setback reach for unequal radii** (probe 17, nineteen radius mixes, G1 and G2, both corner types):
+  past the farther crossing by the mean contact distance, the one smallest half its gap to the next
+  more; every case exact. Volumes within 0.3 to 3.6 (Fusion's face curves for unequal legs are fitted
+  cubics, no conic or superellipse within 1%).
+- **Fill**: setback holes fill G2 exactly at any reach (a middle knot a rounding off 0.5 had split a
+  span of no length).
+- **Variable radius into corners** (probe 18): a straight law runs in as Fusion's, a cone cut by the
+  corner, its stops by the same rule on the true contact lines (Fusion's to 1e-3); the patch's rows
+  along the rulings, G1 within thousandths of a degree (Fusion's own 0.4), G2 within 3% (Fusion's
+  150%); volumes within 5 (0.06%). Not built: Fusion's ball-like corner where the law's radius at the
+  crossing reaches the others'.
+- **Shell by the cells of the planes** (`shell_cells.lucb`): an L rounded 1 on every edge shelled 2
+  closed, open and at G2 (Fusion's 3423.3006, 3107.4377, 3436.1456: ours within 0.005, 0.005, 0.2),
+  an L with a chamfer swallowed at 3 (4646 exactly); an inner G2 round is its strip's offset section.
+
+Not done this round: laws on chains round faces and loops between curved faces meeting corners; the
+five-sided wall corners' rate conflicts (exact sweep rows beside walls holding the sweep were tried:
+the miss at the hole's corners rose to 100%, so the stations stay).
+
+Captures (`tools/preview.py --scene`): `kernel_three_sided` (`--mode 7`, also `--background`),
+`kernel_ell_shell`, `cad_variable_corner` (`--mode 7`).
+
 ## 9. Notes for the build
 
 - **Parity checks without the apps.** Alias, Plasticity and Rhino are not installed here. A
