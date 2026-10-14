@@ -144,7 +144,13 @@ The UI never shares Luce objects with it.
   rebuilt only when the displayed keys change.
 
 Progress shows on nodes, including per-face CAD progress. The UI keeps the
-previous scene visible while cooking; a 16 ms timer polls completion while idle.
+previous scene visible while cooking. Nothing polls on a timer: the worker
+wakes the UI loop through a luce-ui notifier when it has a result, progress or
+has taken a request (`ComputeService.wake_with`), the panels catch up each
+frame, and a wait the panels time (a long press, a tooltip's delay, a pause in
+typing) asks for one turn when it is due (`Panels.wake`). The one exception is a
+Script check, whose process and job say nothing when they end: the inspector
+looks every 50 ms while one runs.
 Shutdown joins the worker.
 
 ## Edit recipes and undo

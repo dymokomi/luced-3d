@@ -22,6 +22,7 @@ from overlay_lines import OverlayLines, line_points, check_label_pairs
 from luce_cad.measure import CadCheck, check_lines
 from luce_cad.cad_curves import curve_lines
 from luce_cad.cad_geometry import set_models
+from luce_ui import ui
 
 pub type ComputeHandler = interop.Callback[str, unit]
 
@@ -100,6 +101,13 @@ struct State:
     var held_count: usize = 0
     var handle: thread.Handle
     let entry: interop.WorkerEntry[i64, str, unit]
+    ## Wakes the UI loop when there is something for it (a result, progress,
+    ## a request taken): the UI never polls the worker on a timer.
+    var waker: ui.NotifyHandle? = none
+
+    ## Wake the UI loop (its notifier's callback polls the service once).
+    func wake():
+        if let handle = self.waker: handle.notify()
 
     ## Drop the current result; untaken fresh copies are freed.
     func clear():
@@ -204,6 +212,7 @@ pub struct ComputeChannel:
         self.state.node = node
         self.state.fraction = fraction
         self.state.sequence += 1
+        self.state.wake()
 
     ## True when the UI already holds this product key from the last result.
     pub func holds(key: i64) -> bool:
@@ -464,6 +473,16 @@ pub struct ComputeService:
         defer state.lock.unlock()
         return (i64)state.queued
 
+    ## Wake `notifier`'s callback on the UI loop whenever the worker has
+    ## something for it: a result, progress, a request taken.
+    pub func wake_with(notifier: interop.Reference[ui.Notifier]) -> !:
+        let state = self.state else error(invalid, "Compute service closed")
+        let handle = try ui.notify_handle(notifier)
+        state.lock.lock()
+        defer state.lock.unlock()
+        if let old = state.waker: old.release()
+        state.waker = handle
+
     pub func sequence() -> i64:
         let state = self.state else return 0
         state.lock.lock()
@@ -694,6 +713,8 @@ pub struct ComputeService:
         state.changed.broadcast()
         state.lock.unlock()
         state.handle.join() catch failure: trap(failure.message)
+        if let handle = state.waker: handle.release()
+        state.waker = none
         state.clear()
         for request in state.queue[..<state.queued]:
             request.message.release()
@@ -766,6 +787,8 @@ func run(raw: void*?):
         memory.move(state.queue, state.queue[1..], state.queued)
         state.active = request.generation
         state.depth = 0
+        # The UI may send the request it kept back (compute_session.luc).
+        state.wake()
         state.lock.unlock()
         let result = handler.invoke(request.message.value)
         result.get() catch failure:
@@ -783,4 +806,5 @@ func run(raw: void*?):
         else:
             state.clear()
         state.sequence += 1
+        state.wake()
         state.lock.unlock()

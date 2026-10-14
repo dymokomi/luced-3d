@@ -485,10 +485,17 @@ Mesh, Edit CAD and Edit SDF take part by setting `EditKind.holds`):
   held the UI thread 124–149 ms; with the worker the command returns in ~6 ms and the UI's
   longest turn while it runs is under 1 ms. Moving an Edit CAD box's top face held it 17 ms;
   with the worker the command returns in 1 ms. In the real window (`tools/preview.py --scene
-  held_heavy --background`, two 1M-face spheres, Subtract): frames keep coming every 16.7 ms
-  while the worker runs the 0.6 s Boolean; the frame the result first shows takes ~80 ms (the
-  new 1M-face mesh's overlay and upload; its edges and shading normals are made on the worker
-  before it is published). Captures: `held_heavy_running`, `held_heavy`.
+  held_heavy --background`, two 1M-face spheres, Subtract, a frame asked for every 4 ms as a
+  turning camera would): no frame interval longer than 9 ms while the worker runs the 0.6 s
+  Boolean; the frame that first draws the result takes ~25 ms (the UI's poll and adoption ~3 ms,
+  the draw ~20 ms: the new mesh's GPU buffers and selection overlay; its edges and shading
+  normals are made on the worker before it is published); with two 100k-face spheres,
+  none longer than 8 ms. Before, each action's start and end rebuilt the top menus (55 ms each):
+  the shown Edit node stopped counting as edited while its node was dirty
+  (`Workspace.editing`), which it now does while an action runs on the worker. The UI's own
+  part of the command is ~29 ms for 2M faces, nearly all luce-geocore's `boolean_wants` finding
+  the pieces (face islands) to decide whether a second pick is wanted. Captures:
+  `held_heavy_running`, `held_heavy`.
 - **Adjust last action** (owner answer 7, Blender's redo panel): the node keeps the result before
   its last action (`Held.base`) and that action as its one step (`Node.edits`), so the tool bar,
   a drag after the tool and Repeat's numbers run it again from the base. The next action bakes it:
@@ -1760,10 +1767,9 @@ below).
 - Benchmarks (1M faces, docs/API.md): Soft Transform of 1,000 points, radius 40: 23.6 ms;
   Corrective Smooth, 5 rounds: 73.4 ms; Edge Transport from one point: 117 ms (Distance),
   17 ms (Hops).
-- Icons: stand-ins (Bend `stretch-curve`, Lattice `grid`, Mesh Check `surface-analysis`,
-  Poles `vertex-select`, Degenerate `select-by-area`, Intersecting `boolean-intersect`, Soft
-  Transform `transform-gizmo`, Corrective Smooth `smooth-tool`, Edge Transport
-  `edge-select`).
+- Icons: their own, from luciaos-assets 2a67c6f (`bend`, `lattice`, `mesh-check`,
+  `select-poles`, `select-degenerate`, `select-intersecting`, `soft-transform`,
+  `corrective-smooth`, `edge-transport`), embedded in luce-ui; the stand-ins are gone.
 
 ## 9. Open questions for the owner
 

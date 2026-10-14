@@ -172,6 +172,13 @@ pub class Workspace:
     ## What a drag's last frame showed of each Edit node holding its result
     ## (edit_held.settle makes the next frame over it); empty between drags.
     pub var drag_shown: map[int, GeometryData] = {}
+    ## What keep_held last walked for (its key), and how many times the
+    ## graph was replaced (undo, a project opened).
+    var kept_key: int = 0
+    var graph_swaps: int = 0
+    ## The held keys the undo history reaches, as of its version.
+    var history_keys: list[int] = []
+    var history_keys_version: int = -1
     ## The sculpt brush's radius on screen, in points (sculpt_gesture.luc).
     pub var sculpt_radius: float = 50.0
     pub var splat_footprint: float = 0.1
@@ -253,9 +260,11 @@ pub class Workspace:
         for node in graph.nodes:
             node.source_revision = self.project_epoch
         self.network = graph
+        self.graph_swaps += 1
         self.network.background = self.compute != none
         self.network.sources = self.sources
         self.history.changes.clear()
+        self.history.version += 1
         self.history.cursor = 0
         self.selection = none
         self.prompt = none
@@ -777,9 +786,12 @@ pub class Workspace:
             return "Select"
         return self.edit_tool
 
+    ## Whether the shown, selected Edit node is being edited: also while an
+    ## action of its runs on the worker (it shows what it held till then),
+    ## so menus and tools do not change and change back around each action.
     pub func editing(self) -> bool:
         let node = self.selected() else return false
-        return is_edit(node.kind) and node.enabled and (not node.dirty or self.pending != none) and node.id == self.network.display and self.geometry != none
+        return is_edit(node.kind) and node.enabled and (not node.dirty or self.pending != none or edit_held.waiting(node)) and node.id == self.network.display and self.geometry != none
 
     pub func transforming(self) -> bool:
         let node = self.selected() else return false
@@ -878,6 +890,7 @@ pub class Workspace:
         # The frame is where the user is looking, not an edit: it stays.
         let frame = self.network.frame
         self.network = snapshot.graph.copy()
+        self.graph_swaps += 1
         self.network.frame = math.max(self.network.start, math.min(self.network.end, frame))
         self.network.background = self.compute != none
         self.selection = snapshot.selection
@@ -940,13 +953,25 @@ pub class Workspace:
     ## Release the held results nothing can reach any more: not the graph,
     ## the gesture's starting state or the undo history.
     func keep_held(self) -> unit!:
-        let alive: list[int] = []
+        # Something can have become unreachable only if a result was added,
+        # the undo history changed, a transaction began or ended, or the
+        # graph was replaced.
+        let key = (HeldStore.generation(), self.history.version, self.pending != none, self.graph_swaps).hash()
+        if key == self.kept_key:
+            return
+        self.kept_key = key
+        # The history's keys, gathered again only when it changed: a drag's
+        # frames walk no history.
+        if self.history_keys_version != self.history.version:
+            self.history_keys_version = self.history.version
+            self.history_keys = []
+            for change in self.history.changes:
+                edit_held.held_keys(change.before.graph, self.history_keys)
+                edit_held.held_keys(change.after.graph, self.history_keys)
+        let alive: list[int] = self.history_keys.copy()
         edit_held.held_keys(self.network, alive)
         if let before = self.pending:
             edit_held.held_keys(before.graph, alive)
-        for change in self.history.changes:
-            edit_held.held_keys(change.before.graph, alive)
-            edit_held.held_keys(change.after.graph, alive)
         HeldStore.keep(alive)
 
     pub func undo(self) -> unit!:

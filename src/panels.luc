@@ -3,7 +3,7 @@
 ## the node search, the shading menu, the sketch's value and text boxes,
 ## the tool bar and the viewport's tool shelf (its panel's footer); it
 ## routes refreshes and the frame's poll to them.
-from luce_ui.ui import VStack, HStack, Text, TextField, Font, Button, ButtonStyle, Spacer, DStack, Panel, DockPosition, Size, ScrollView, Menu, TextPrompt, ContextMenu, Point
+from luce_ui.ui import Application, VStack, HStack, Text, TextField, Font, Button, ButtonStyle, Spacer, DStack, Panel, DockPosition, Size, ScrollView, Menu, TextPrompt, ContextMenu, Point
 from dock_layout import DockLayout
 from project_session import ProjectSession
 from node_menu import NodeMenu
@@ -34,12 +34,17 @@ from icon_shelf import IconShelf
 from cad_timeline import CadTimeline
 from node_path_picker import NodePathPicker
 import take_commands
+import time
 from top_menus import TopMenus
 from node_context_menu import NodeContextMenu
 from viewport_menu import ViewportMenu
 import selection_commands
 
 pub class Panels:
+    ## The application, for a turn asked at a time (`wake`): none headless.
+    pub var app: Application? = none
+    ## When the turn asked last is due (0: none asked).
+    var wake_at: int = 0
     pub let body: VStack
     pub let view: SceneViewport
     pub let graph: NetworkView
@@ -505,6 +510,29 @@ pub class Panels:
             self.render_view.layout().invalidate()
         if self.view.rendering():
             self.view.layout().invalidate()
+        if self.timeline.bar.playing:
+            # Playing moves on each frame: draw the next.
+            self.view.layout().invalidate()
+        self.wake()
+
+    ## Ask the loop for one more turn when the earliest wait the panels time
+    ## is due (a press held, a tooltip's delay, a pause in typing): nothing
+    ## polls on a timer, and a quiet editor sleeps.
+    func wake(self) -> unit!:
+        let app = self.app else return
+        let now = time.now()
+        var soon = -1
+        for left in [self.view.waits(now), self.network_tools.waits(now), self.timeline.waits(now), self.inspector.waits(now)]:
+            if left >= 0 and (soon < 0 or left < soon): soon = left
+        if soon < 0:
+            return
+        let due = now + soon
+        if self.wake_at != 0 and self.wake_at <= due and self.wake_at > now:
+            return
+        self.wake_at = due
+        _ = app.after(float(soon) / 1000000000.0, func () -> unit!:
+            self.wake_at = 0
+            self.poll(0.0))
 
     ## The viewport filling the window (Space with F, Window › Full screen
     ## viewport): every other panel and the timeline hidden, their layout

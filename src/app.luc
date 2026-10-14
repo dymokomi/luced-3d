@@ -1,6 +1,10 @@
 ## The application: the window and its panels, settings kept between
-## runs, the compute worker's poll every frame, and the error handler.
-from luce_ui.ui import Application, Font
+## runs, and the error handler. Nothing polls on a timer: the panels catch
+## up each frame, the compute worker wakes the loop through a notifier when
+## it has something (a result, progress), and a wait the panels need (a
+## long press, a tooltip's delay) asks for one turn when it is due
+## (Panels.poll).
+from luce_ui.ui import Application, Font, Notifier
 from luce_cad.cad_geometry import CadGeometry
 import theme
 from workspace import Workspace
@@ -15,8 +19,9 @@ pub class Luce3D:
     pub let workspace: Workspace
     pub let panels: Panels
     let ticking: Connection
-    let compute_timer: int
     let settings: UIState
+    ## Runs a panels' poll when the compute worker wakes the loop.
+    var computed: Notifier? = none
 
     pub func init(self, persist: bool = false, width: int = 1400, height: int = 900) -> unit!:
         # Geometry files carry CAD models too (the Cache node).
@@ -33,10 +38,10 @@ pub class Luce3D:
         self.app.set_close_handler(self.panels.projects.can_quit)
         self.app.focus(self.panels.view.layout())
         self.app.set_commands(self.panels.actions.all)
-        self.ticking = self.app.on_frame(self.panels.poll)
-        self.compute_timer = self.app.every(0.016, func () -> unit!:
-            self.panels.poll(0.016)
-            self.settings.poll(self.panels, 0.016))
+        self.panels.app = self.app
+        self.ticking = self.app.on_frame(func (elapsed: float) -> unit!:
+            self.panels.poll(elapsed)
+            self.settings.poll(self.panels, elapsed))
         self.app.set_error_handler(self.panels.report_error)
         self.panels.inspector.on_browse = self.browse_geometry
         self.panels.inspector.on_render = self.panels.render
@@ -57,8 +62,19 @@ pub class Luce3D:
             node_commands.set_text(self.workspace, slot, path)
             self.panels.refresh()
 
+    ## The compute worker wakes the loop when it has a result or progress:
+    ## the panels poll it then (and only then, between frames).
+    pub func wake_on_compute(self) -> unit!:
+        let session = self.workspace.compute else return
+        if self.computed != none:
+            return
+        let notifier = self.app.notifier(func () -> unit!: self.panels.poll(0.0))
+        session.service.wake_with(notifier)
+        self.computed = notifier
+
     pub func run(self, arguments: list[str]) -> unit!:
         self.workspace.enable_compute()
+        self.wake_on_compute()
         # A project named on the command line that cannot be opened is
         # reported, and the editor opens without it.
         for argument in arguments:
@@ -74,7 +90,9 @@ pub class Luce3D:
     pub func close(self):
         self.settings.save(self.panels) catch failure:
             _ = failure
-        self.app.cancel(self.compute_timer)
+        if let notifier = self.computed:
+            notifier.close()
+        self.computed = none
         if let compute = self.workspace.compute:
             compute.close()
         self.ticking.disconnect()
