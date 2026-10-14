@@ -10,7 +10,8 @@
 ## once into .luc/deps by a child process (`luc lock` when the set has no lock
 ## yet, as `luc build` would, else `luc sync`), then checked once on a thread of
 ## its own (ScriptCheckJob), which reads and keeps its packages
-## (about 0.1 s). Until then the set is not `ready`: a pause's check waits
+## (about 0.1 s). Both wake the editor's loop when they end (`waker`, a
+## notifier's), which then polls; nothing looks on a timer. Until then the set is not `ready`: a pause's check waits
 ## for it, and completion and hover answer nothing (the editor asks again once
 ## it is ready). Once warm, a check takes about 0.4 ms and runs at once.
 ## Checks run one at a time in the process (luce-kernel's check lock), so
@@ -22,6 +23,7 @@
 ## cannot be found or does not check, is its failure (with no line: the text goes
 ## on, and the build says the same on the node).
 from luce_std.process import Command
+from luce_std.wake import Waker
 from luce_std import files, paths
 from luce_geocore.geocore import ScriptHelp, ScriptCheckJob, CodeCheck
 from script_build import plan, tool
@@ -29,6 +31,9 @@ from script_packages import editor_packages, manifest_dependencies, is_package, 
 import time
 
 pub class ScriptChecker:
+    ## Woken from the sync's and the check's threads when they end (the
+    ## editor's loop then polls); none: the owner polls on its own.
+    pub var waker: Waker? = none
     ## The packages the editor was built with (found once).
     var editor: map[str, str]? = none
     ## The check package of the last package set (its packages, lock and
@@ -84,7 +89,7 @@ pub class ScriptChecker:
         # resolved first when the set has no lock (`luc sync` needs one).
         if not synced(made.work, made.manifest):
             let locked = files.exists(paths.join(made.work, "luc.lock"))
-            self.syncing = Command(tool("luc"), ["sync" if locked else "lock"], directory = made.work, output_limit = 1048576)
+            self.syncing = Command(tool("luc"), ["sync" if locked else "lock"], directory = made.work, output_limit = 1048576, waker = self.waker)
             self.waiting = code
         else:
             self.warm_up(code)
@@ -123,10 +128,11 @@ pub class ScriptChecker:
     ## The set's first check, of `code`, on a thread of its own.
     func warm_up(self, code: str) -> unit!:
         self.warm_started = time.now()
-        self.job = ScriptCheckJob.start(self.file, code)
+        self.job = ScriptCheckJob.start(self.file, code, self.waker)
 
     ## Whether a check has finished since the last call: its result is in
-    ## `failure`. Polled each frame: it moves the set's warming along.
+    ## `failure`. Polled when the loop runs (the waker runs it when the sync
+    ## or the job ends): it moves the set's warming along.
     pub func poll(self) -> bool!:
         self.release_left()
         if let command = self.syncing:

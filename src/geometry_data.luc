@@ -4,7 +4,7 @@
 ## adds is Luce-side caching: the CAD preview meshes, and wrappers of the
 ## instances' sets so their previews persist too. CAD stays analytic until a
 ## Tessellate node.
-from luce_geocore.geocore import Mesh, GeometrySet, Fields
+from luce_geocore.geocore import Mesh, GeometrySet, Fields, InstanceBuilder
 from luce_3d.graphics import Vector3, Matrix4
 from luce_cad.model import CadModel
 from luce_cad.cad_geometry import CadGeometry
@@ -145,6 +145,43 @@ pub class GeometryData:
             kept.append(self.instance(index))
         kept.append(child)
         result.children = kept
+        return result
+
+    ## Every one of `children` added as an instance, in order, in one pass
+    ## (luce-geocore's InstanceBuilder: no copy of the growing collection per
+    ## child); each child keeps serving as its instance's data (and preview).
+    pub func with_instances(self, children: list[GeometryData]) -> GeometryData!:
+        if children.length == 0:
+            return self
+        let builder = InstanceBuilder.of(self.geometry)
+        let one = Vector3(1.0, 1.0, 1.0)
+        for child in children:
+            builder.add(child.geometry, Vector3(), Vector3(), one)
+        let result = GeometryData(geometry = builder.finish())
+        let kept: list[GeometryData] = []
+        for index in 0..<self.instance_count():
+            kept.append(self.instance(index))
+        for child in children:
+            kept.append(child)
+        result.children = kept
+        return result
+
+    ## `copies`, this data placed `count` times by luce-geocore in one pass
+    ## (GeometrySet.copies_at_points, copies_along), each copy's instances
+    ## wrapped in one instance as `transformed` wraps them: the wrappers keep
+    ## this data's instance wrappers (and their previews).
+    pub func with_copies(self, copies: GeometrySet, count: int) -> GeometryData!:
+        let result = GeometryData(geometry = copies)
+        if self.instance_count() > 0:
+            let kept: list[GeometryData] = []
+            for index in 0..<self.instance_count():
+                kept.append(self.instance(index))
+            let wrapped: list[GeometryData] = []
+            for copy in 0..<count:
+                let inner = GeometryData(geometry = copies.instance(copy))
+                inner.children = kept
+                wrapped.append(inner)
+            result.children = wrapped
         return result
 
     # -- Whole-data operations.
