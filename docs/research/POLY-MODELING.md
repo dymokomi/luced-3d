@@ -803,13 +803,13 @@ Status as in §5.1. "Drag" is the row a viewport drag sets.
 | Tool | What it does, options | Best reference | Today |
 | --- | --- | --- | --- |
 | Transform components | Move, rotate, scale with soft selection and symmetry | Maya, Blender | N E |
-| Bend, Twist, Taper, Squash | About an axis and an origin, limits along it; one node with a mode | Houdini Bend [doc]; Blender Simple Deform [src] | — |
-| Lattice | Points moved by a cage | Houdini Lattice Deform, Blender Lattice | — |
-| Soft Transform node | A transform with a falloff, as a node | Houdini Soft Transform | ~ Edit node's soft radius |
-| Shrinkwrap / Ray | Points projected onto another mesh | Houdini Ray, Blender Shrinkwrap | — |
-| Corrective smooth | Smooth that keeps the rest shape's detail | Blender Corrective Smooth [src] | — |
-| Sculpt-lite brushes | Grab, smooth, inflate, flatten, pinch; radius and strength by drag; symmetry; on the Edit node as a step per stroke | Houdini Sculpt SOP; Blender sculpt; C4D Brush and Magnet | — |
-| Edge Transport, Edge Relax | Values or positions moved along edges | Houdini | — |
+| Bend, Twist, Taper, Squash | About an axis and an origin, limits along it; one node with a mode | Houdini Bend [doc]; Blender Simple Deform [src] | N E |
+| Lattice | Points moved by a cage | Houdini Lattice Deform, Blender Lattice | N E |
+| Soft Transform node | A transform with a falloff, as a node | Houdini Soft Transform | N E |
+| Shrinkwrap / Ray | Points projected onto another mesh | Houdini Ray, Blender Shrinkwrap | N E |
+| Corrective smooth | Smooth that keeps the rest shape's detail | Blender Corrective Smooth [src] | N E |
+| Sculpt-lite brushes | Grab, smooth, inflate, flatten, pinch; radius and strength by drag; symmetry; on the Edit node as a step per stroke | Houdini Sculpt SOP; Blender sculpt; C4D Brush and Magnet | N E |
+| Edge Transport, Edge Relax | Values or positions moved along edges | Houdini | N E (Edge Transport's distance; Relax) |
 
 Sculpt-lite is a stroke gesture whose result is a displacement attribute or a point list stored
 in the step. That keeps it a recipe step and keeps strokes undoable one at a time.
@@ -1648,7 +1648,7 @@ below).
   region whose outline is not star-shaped or that has more than two outlines (the outlines
   become circles, the inner points stay, with a warning); Straighten on loops.
 
-**Stage 8: deformers, Mesh Check, sculpt-lite.** **In part 2026-10-13** (see "Stage 8 as built so far" below).
+**Stage 8: deformers, Mesh Check, sculpt-lite.** **Done 2026-10-14** (see "Stage 8 as built" below).
 - Bend/Twist/Taper/Squash as one node; Lattice; Shrinkwrap.
 - Mesh Check overlay sharing the Select passes.
 - Sculpt-lite brushes as stroke steps.
@@ -1657,8 +1657,7 @@ below).
   - Mesh Check counts on a fixture with each defect;
   - one brush stroke is one undo step.
 
-**Stage 8 as built so far** (paused 2026-10-13 for the held-mesh Edit Mesh; the rest follows
-it).
+**Stage 8 as built** (paused 2026-10-13 for the held-mesh Edit Mesh, finished after it).
 - Every tool is a luce-geocore verb and a line in `makers` (or a select rule), as in Stages 5–7.
   Blender's Simple Deform, Lattice and sculpt brushes and Houdini's Bend, Lattice and
   PolyDoctor were read for behavior; nothing was copied.
@@ -1677,7 +1676,7 @@ it).
 - **Sculpt** (`sculpt.lucb`, `sculpt_brush.lucb`, Modify › Sculpt): Draw, Grab, Smooth,
   Inflate, Flatten, Pinch; Radius, Strength, Falloff (Smooth, Sphere, Linear, Constant,
   Sharp), Invert; the group alone moves; the Edit node's symmetry mirrors each dab. A stroke's
-  dabs (center and direction each) follow the parameters. luce-geocore remembers the last
+  dabs (center, direction and pressure each) follow the parameters. luce-geocore remembers the last
   stroke cooked, so a stroke sent again with more dabs runs only the new ones and makes its
   mesh over the last one (normals and GPU copies refreshed around what moved): 3 ms per
   pointer move on 1M faces. `sculpt_gesture.luc`: the brush circle (and its half-strength
@@ -1716,10 +1715,31 @@ it).
   symmetry, the brush hovering), `sculpt_drag` (the 1M grid), `mesh_check` (an open
   boundary, two triangles, poles, the panel), `hard_marks` (marked edges, two of them
   selected: the mark shows round the selection).
-- Not built yet: Shrinkwrap was Stage 6's; corrective smooth, a Soft Transform node, edge
-  transport; tablet pressure; icons (stand-ins: Bend `stretch-curve`, Lattice `grid`, Mesh
-  Check `surface-analysis`, Poles `vertex-select`, Degenerate `select-by-area`, Intersecting
-  `boolean-intersect`).
+- **Soft Transform** (`point_verbs.lucb`, Modify › Deform; Houdini's Soft Transform):
+  Transform Components with its falloff on (Soft radius 1 to start), a node and a tool of
+  its own; the Edit node's soft radius stays for gizmo moves.
+- **Corrective Smooth** (`corrective_smooth.lucb`, Modify › Deform; Blender's Corrective
+  Smooth): the group smoothed (Factor, Iterations), then given back the detail the rest
+  shape (its second input; an Edit Mesh's Reference) has over its own smoothing, measured
+  in the frame of the smoothed rest surface (normal and first edge) and put back in the
+  smoothed deformed one's (Scale). An undeformed shape comes back exactly; a rigid move or
+  turn comes back as that move or turn.
+- **Edge Transport** (`edge_transport.lucb`, Modify › Shape; Houdini's Edge Transport):
+  each point's distance from the group along the edges (Distance: Dijkstra over edge
+  lengths; Hops: breadth first), in the point attribute `dist`, -1 where unreached;
+  Normalize gives 0..1. Relax (Stage 6) is the edge relax.
+- **Pen pressure**: each sculpt dab carries the pen's pressure (a seventh number; 1 from a
+  mouse), which scales its strength; Grab's dabs carry points by the move alone. luce-ui's
+  `Application.dispatch` (the path tests and synthetic input take) drops the pen's fields,
+  so the pressure test hands its events to the gesture as the viewport does; native events
+  keep them.
+- Benchmarks (1M faces, docs/API.md): Soft Transform of 1,000 points, radius 40: 23.6 ms;
+  Corrective Smooth, 5 rounds: 73.4 ms; Edge Transport from one point: 117 ms (Distance),
+  17 ms (Hops).
+- Icons: stand-ins (Bend `stretch-curve`, Lattice `grid`, Mesh Check `surface-analysis`,
+  Poles `vertex-select`, Degenerate `select-by-area`, Intersecting `boolean-intersect`, Soft
+  Transform `transform-gizmo`, Corrective Smooth `smooth-tool`, Edge Transport
+  `edge-select`).
 
 ## 9. Open questions for the owner
 

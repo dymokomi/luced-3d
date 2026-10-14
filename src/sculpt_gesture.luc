@@ -8,11 +8,12 @@
 ## remembered stroke), so the surface follows the pointer. Ctrl inverts the
 ## stroke, Shift smooths instead; [ and ] size the brush, which keeps its
 ## size on screen (its radius in the step is the world size under the
-## stroke's start). The brush, strength and falloff come from the last
+## stroke's start). A pen's pressure weighs each dab's strength (a mouse
+## presses fully). The brush, strength and falloff come from the last
 ## Sculpt step (the tool bar sets them), and the Edit node's symmetry
 ## mirrors each dab. Only the selection moves when something is selected.
 from luce_ui.ui import Painter, Event
-from luce_window.input import EventKind, Key
+from luce_window.input import EventKind, Key, PointerKind
 from luce_3d.graphics import Vector3, WireRenderer
 from workspace import Workspace
 from edit_operations import EditStep
@@ -34,6 +35,8 @@ let grab_brush = 1.0
 let smooth_brush = 2.0
 ## Dabs a tenth of the radius apart.
 let spacing = 0.1
+## Numbers per dab: its center, its direction, its pressure.
+let dab_numbers = 7
 
 ## A point on the surface under the pointer and the way it faces.
 pub class SurfaceHit:
@@ -97,12 +100,12 @@ pub class SculptGesture:
                 return self.stroking
             self.hit = self.surface(event.x, event.y, width, height)
             if self.stroking:
-                self.follow(event.x, event.y, width, height)
+                self.follow(event.x, event.y, width, height, pressure_of(event))
                 return true
             return false
         if event.kind == EventKind.pointer_down and event.inside and event.button == 0:
             let found = self.surface(event.x, event.y, width, height) else return false
-            self.begin(found, event.control or event.meta, event.shift, event.x, event.y, width, height)
+            self.begin(found, event.control or event.meta, event.shift, event.x, event.y, width, height, pressure_of(event))
             return true
         if event.kind == EventKind.pointer_up and event.button == 0 and self.stroking:
             self.stroking = false
@@ -153,7 +156,7 @@ pub class SculptGesture:
         return initial_numbers("Sculpt")[..<head]
 
     ## A press on the surface: the stroke's step, its first dab.
-    func begin(self, found: SurfaceHit, invert: bool, smooth: bool, x: float, y: float, width: float, height: float) -> unit!:
+    func begin(self, found: SurfaceHit, invert: bool, smooth: bool, x: float, y: float, width: float, height: float, pressure: float) -> unit!:
         let node = self.w.selected() else return
         let mesh = self.w.geometry else return
         self.settings = self.current()
@@ -163,10 +166,10 @@ pub class SculptGesture:
             self.settings[invert_slot] = 1.0 - self.settings[invert_slot]
         if smooth:
             self.settings[brush_slot] = smooth_brush
-        self.dabs = [found.point.x, found.point.y, found.point.z, found.normal.x, found.normal.y, found.normal.z]
+        self.dabs = [found.point.x, found.point.y, found.point.z, found.normal.x, found.normal.y, found.normal.z, pressure]
         if self.settings[brush_slot] == grab_brush:
             # Grab's first dab takes the points; it moves nothing.
-            self.dabs = [found.point.x, found.point.y, found.point.z, 0.0, 0.0, 0.0]
+            self.dabs = [found.point.x, found.point.y, found.point.z, 0.0, 0.0, 0.0, 1.0]
             self.grab_normal = gm.ray(self.w, x, y, width, height).normalized()
         self.last = found.point
         self.grab_from = found.point
@@ -184,16 +187,16 @@ pub class SculptGesture:
 
     ## The step's numbers: the settings, the count, the dabs.
     func numbers(self) -> list[float]:
-        return self.settings + [float(self.dabs.length // 6)] + self.dabs
+        return self.settings + [float(self.dabs.length // dab_numbers)] + self.dabs
 
     ## The pointer moved while stroking: the dabs it reached.
-    func follow(self, x: float, y: float, width: float, height: float) -> unit!:
+    func follow(self, x: float, y: float, width: float, height: float, pressure: float) -> unit!:
         var added = false
         if self.settings[brush_slot] == grab_brush:
             let at = gm.plane(self.w, x, y, width, height, self.grab_from, self.grab_normal)
             let delta = at.subtract(self.last)
             if delta.length() > 0.0:
-                self.dabs = self.dabs + [self.grab_from.x, self.grab_from.y, self.grab_from.z, delta.x, delta.y, delta.z]
+                self.add_dab(self.grab_from, delta, 1.0)
                 self.last = at
                 added = true
         else:
@@ -205,11 +208,16 @@ pub class SculptGesture:
                 let along = way.multiply_scalar(1.0 / left)
                 while left >= step:
                     self.last = self.last.add(along.multiply_scalar(step))
-                    self.dabs = self.dabs + [self.last.x, self.last.y, self.last.z, found.normal.x, found.normal.y, found.normal.z]
+                    self.add_dab(self.last, found.normal, pressure)
                     left -= step
                 added = true
         if added:
             self.w.preview_step(self.numbers())
+
+    ## One more dab of the stroke.
+    func add_dab(self, center: Vector3, direction: Vector3, pressure: float):
+        for value in [center.x, center.y, center.z, direction.x, direction.y, direction.z, pressure]:
+            self.dabs.append(value)
 
     ## The brush's circle on the surface under the pointer, and the half
     ## strength ring its falloff reaches.
@@ -247,3 +255,9 @@ pub class SculptGesture:
         if falloff == 4:
             return 1.0 - math.sqrt(0.5)
         return 0.5
+
+## A pen's pressure under `event` (0..1); a mouse presses fully.
+pub func pressure_of(event: Event) -> float:
+    if event.pointer_kind == PointerKind.pen or event.pointer_kind == PointerKind.eraser:
+        return math.max(0.0, math.min(1.0, event.pressure))
+    return 1.0

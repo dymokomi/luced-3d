@@ -935,6 +935,18 @@ Move the group's points onto the reference surface (its second input).
 | Strength | 1.0 | yes | The share of the way each point moves. |
 | Direction | 0.0, -1.0, 0.0 | yes | Along vector: the line each point moves along, either way. |
 
+##### Edge Transport
+
+Each point's distance from the group along the edges, as the point attribute dist.
+
+- Node `Edge Transport` in Geo; an action in Edit Mesh.
+- Works on points or edges or faces.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Measure | Distance | yes | Distance: the shortest path along the edges' lengths. Hops: the fewest edges. |
+| Normalize | off | yes | Divide by the farthest point reached, so `dist` runs 0..1. |
+
 ##### Noise
 
 Deterministic noise displacement.
@@ -1073,6 +1085,37 @@ Deform the group by moving the points of a cage round it.
 | Points | 3.0, 3.0, 3.0 | yes | Cage points along X, Y and Z. |
 | Interpolation | Smooth | yes | Smooth: every cage point pulls the whole group, most near it (Bernstein weights); Linear: a point follows the eight cage points of its cell. |
 | Padding | 0.0 | yes | How far the cage stands outside the group's bounds, as a share of their size. |
+
+##### Soft Transform
+
+Move, turn and scale the group, the points near it following with a falloff.
+
+- Node `Soft Transform` in Geo; an action in Edit Mesh.
+- Works on components.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Translate | 0.0, 0.0, 0.0 | yes | Moves the group, after rotating and scaling; the points near it follow. |
+| Rotate | 0.0, 0.0, 0.0 | yes | Rotation about X, then Y, then Z, in degrees, about the pivot. |
+| Scale | 1.0, 1.0, 1.0 | yes | Scale along each axis about the pivot. |
+| Pivot | Centroid | yes | Rotate and scale about the group's centroid, the origin or the custom point. |
+| Soft radius | 1.0 | yes | Points within this distance of the group follow it, less the farther they are. |
+| Falloff | Smooth | yes | How the soft weight falls off with distance. |
+| Custom pivot | 0.0, 0.0, 0.0 | yes | The point rotation and scale happen about when Pivot is Custom. |
+
+##### Corrective Smooth
+
+Smooth the group and give back the rest shape's detail (its second input).
+
+- Node `Corrective Smooth` in Geo; an action in Edit Mesh.
+- Works on objects or points or edges or faces, or everything when nothing is selected.
+- After it runs, a drag in the viewport sets Factor (rightward, its range over 300 points); a click keeps it, the wheel steps Iterations.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Factor | 0.5 | yes | How far each round moves a point toward the mean of its neighbors. |
+| Iterations | 5 | yes | Rounds of smoothing, the same on the rest shape and on the deformed one. |
+| Scale | 1.0 | yes | How much of the rest shape's detail comes back (1: all of it; 0: smoothing alone). |
 
 #### Sculpt
 

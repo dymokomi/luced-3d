@@ -16,13 +16,13 @@
 ## - Bend, Lattice and Sculpt as nodes give the same points as their steps.
 from app import Luce3D
 from luce_ui.ui import Event
-from luce_window.input import EventKind, Key
+from luce_window.input import EventKind, Key, PointerKind
 from luce_3d.graphics import Vector3
 from luce_geocore.geocore import Mesh
 from edit_types import edge_level, symmetry_slot
 from tool_drag_tests import editor_on, at, drag, last, near, move, press, release, key
 from tools import ToolRun
-from edit_steps import add_tool_node, edit_step
+from edit_steps import add_tool_node, edit_step, insert_after_display
 import modeling_commands
 import node_commands
 from luce_std import math
@@ -34,7 +34,8 @@ pub func deform_tool_tests() -> unit!:
     sculpt_symmetry()
     mesh_check_panel()
     node_parity()
-    print("PASS Stage 8 tools from viewport events: Bend's drag and Twist; a Lattice cage point dragged, one undo step; a Sculpt stroke is one step and one undo, Draw raises under it with falloff, Ctrl inverts, X symmetry mirrors, Escape drops it, [ ] size the brush; the Mesh Check reports the boundary and selects it; Bend, Lattice and Sculpt nodes equal their steps")
+    corrective_reference()
+    print("PASS Stage 8 tools from viewport events: Bend's drag and Twist; a Lattice cage point dragged, one undo step; a Sculpt stroke is one step and one undo, Draw raises under it with falloff, Ctrl inverts, X symmetry mirrors, Escape drops it, [ ] size the brush, a pen's pressure weighs it; the Mesh Check reports the boundary and selects it; Bend, Lattice and Sculpt nodes equal their steps; Corrective Smooth against the Edit Mesh's Reference, as a step and as a node")
 
 func mesh_of(editor: Luce3D) -> Mesh!:
     return editor.workspace.geometry else trap("no mesh")
@@ -122,6 +123,20 @@ func stroke(editor: Luce3D, a: list[float], b: list[float], steps: int, invert: 
         let t = float(at_step) / float(steps)
         editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t, control = invert))
     editor.app.dispatch(Event(kind = EventKind.pointer_up, x = b[0], y = b[1], button = 0, control = invert))
+
+## The same with a pen pressing `pressure`, its events handed to the
+## gesture in the viewport's own coordinates.
+func pen_stroke(editor: Luce3D, a: list[float], b: list[float], steps: int, pressure: float) -> unit!:
+    let gesture = editor.panels.view.tools.sculpt
+    let area = editor.panels.view.layout().bounds()
+    let kinds = [EventKind.pointer_moved, EventKind.pointer_down]
+    for kind in kinds:
+        _ = gesture.event(Event(kind = kind, x = a[0] - area.x, y = a[1] - area.y, button = 0, inside = true, pointer_kind = PointerKind.pen, pressure = pressure), area.width, area.height)
+    for at_step in 1..<steps + 1:
+        let t = float(at_step) / float(steps)
+        _ = gesture.event(Event(kind = EventKind.pointer_moved, x = a[0] + (b[0] - a[0]) * t - area.x, y = a[1] + (b[1] - a[1]) * t - area.y, inside = true, pointer_kind = PointerKind.pen, pressure = pressure), area.width, area.height)
+    _ = gesture.event(Event(kind = EventKind.pointer_up, x = b[0] - area.x, y = b[1] - area.y, button = 0, inside = true, pointer_kind = PointerKind.pen, pressure = pressure), area.width, area.height)
+    editor.panels.refresh()
     editor.panels.refresh()
 
 func sculpt_stroke() -> unit!:
@@ -158,6 +173,20 @@ func sculpt_stroke() -> unit!:
     w.undo()
     editor.panels.refresh()
     assert((w.selected() else trap("edit")).edits.length == steps)
+    # A pen pressing a quarter: each dab carries it, and the ridge stands a
+    # quarter as high. (Application.dispatch carries no pen fields, so the
+    # pen's events go to the gesture as the viewport hands them on.)
+    pen_stroke(editor, at(editor, Vector3(-0.5, 0.0, 0.0)), at(editor, Vector3(0.5, 0.0, 0.0)), 12, 0.25)
+    let pen = (w.selected() else trap("edit")).edits[-1].numbers
+    assert(pen[6 + 6] == 0.25 and pen[6 + 13] == 0.25, f"{pen[6 + 6]} {pen[6 + 13]}")
+    var light = 0.0
+    for point in 0..<mesh_of(editor).point_count():
+        let p = mesh_of(editor).point(point)
+        if math.abs(p.x) < 0.3 and math.abs(p.z) < 0.03:
+            light = math.max(light, p.y)
+    near(light, middle * 0.25, middle * 0.05)
+    w.undo()
+    editor.panels.refresh()
     # Ctrl inverts: the stroke digs.
     stroke(editor, at(editor, Vector3(-0.5, 0.0, 0.0)), at(editor, Vector3(0.5, 0.0, 0.0)), 12, true)
     var lowest = 0.0
@@ -229,7 +258,7 @@ func node_parity() -> unit!:
     let grid = mesh_of(editor)
     let cases: list[(str, list[float])] = [("Bend", [1.0, 60.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
                                             ("Lattice", [3.0, 3.0, 3.0, 0.0, 0.0, 1.0, 13.0, 0.0, 0.4, 0.0]),
-                                            ("Sculpt", [0.0, 0.4, 0.8, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.1, 0.0, 0.1, 0.0, 1.0, 0.0, 0.2, 0.0, 0.2, 0.0, 1.0, 0.0])]
+                                            ("Sculpt", [0.0, 0.4, 0.8, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.1, 0.0, 0.1, 0.0, 1.0, 0.0, 1.0, 0.2, 0.0, 0.2, 0.0, 1.0, 0.0, 1.0])]
     for (name, numbers) in cases:
         let edit = w.network.display
         # As a step of the Edit Mesh.
@@ -252,4 +281,42 @@ func node_parity() -> unit!:
         assert(moved > 0.01, name)
         w.undo()
         node_commands.select_node(w, edit)
+    editor.close()
+
+## Corrective Smooth in an Edit Mesh whose Reference is its own input (the
+## rest shape): after a Twist it smooths the twisted grid and gives the
+## rest's detail back; as a node with the Reference wired second it makes
+## the same points; without a Reference it says why.
+func corrective_reference() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    finer(editor, 12)
+    let edit = w.network.require(w.network.display)
+    let grid = edit.inputs[0]
+    modeling_commands.model(w, "Corrective Smooth")
+    assert((w.selected() else trap("edit")).warning.contains("second input"), (w.selected() else trap("edit")).warning)
+    w.undo()
+    w.perform("Reference", func () -> unit!:
+        w.network.connect(grid, edit.id, 1)
+        w.rebuild())
+    modeling_commands.model(w, "Bend", [1.0, 90.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+    let twisted = mesh_of(editor)
+    modeling_commands.model(w, "Corrective Smooth", [0.5, 5.0, 1.0])
+    let node = w.selected() else trap("edit")
+    assert(node.warning == "" and node.edits[-1].verb == "Corrective Smooth", node.warning)
+    let corrected = mesh_of(editor)
+    var moved = 0.0
+    for point in 0..<corrected.point_count():
+        moved = math.max(moved, corrected.point(point).subtract(twisted.point(point)).length())
+    assert(moved > 0.0 and moved < 0.5, f"{moved}")
+    w.undo()
+    let reference = w.network.require(edit.id).inputs[1]
+    w.perform("Corrective node", func () -> unit!:
+        let made = insert_after_display(w, ToolRun("Corrective Smooth", [0.5, 5.0, 1.0]))
+        made.texts[0] = ""
+        w.network.connect(reference, made.id, 1)
+        w.rebuild())
+    let noded = mesh_of(editor)
+    for point in 0..<noded.point_count():
+        near(noded.point(point).subtract(corrected.point(point)).length(), 0.0)
     editor.close()
