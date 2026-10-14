@@ -213,6 +213,14 @@ and picking live in `node_gizmos`/`gizmo_math`, independent of evaluation.
   own view's controls on one row in its top right corner, the camera menu
   beside the shading button, with the navigation gizmo under them, smaller
   in a small pane (26 to 44 points across its radius).
+- The tool shelf (`tool_shelf.luc`, `shelf_tabs.luc`, `shelf_context.luc`,
+  `shelf_state.luc`) is the viewport panel's footer, not drawn over the
+  panes: open, it takes its height from them, so picks above it stay the
+  viewport's and its clicks never change the active pane; it is not
+  focusable, and a tile's click hands the keyboard back to the viewport.
+  Its button is chrome (button 700, right of snapping), docked once among
+  four panes. Its tabs are rebuilt from the registry as the editor
+  refreshes (MODELING.md, Selection and tools).
 - As the four panes appear (and as a project opens) each orthographic pane
   frames the model alone, centered and whole, once its size is known (its
   next draw; `ViewState.fit_model`); Camera and Light glyphs count only when
@@ -368,6 +376,8 @@ for the selection, enabled by `Actions.refresh`.
   The Edit kinds' tool lists, the menus (`tool_menus.luc`), the marking
   menus, the right-click menu, Repeat, the icons and docs/TOOLS.md
   (`tool_docs.luc`) read it.
+- `tool_shelf.luc`: the viewport's tool shelf, its tiles the menus'
+  commands (`shelf_tabs.luc`).
 - Projects and UI persistence: [PROJECTS.md](PROJECTS.md).
 
 ## Mesh representation

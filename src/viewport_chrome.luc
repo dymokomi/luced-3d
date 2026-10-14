@@ -4,7 +4,9 @@
 ## them whether boxes select through the depth (V), the transform tools
 ## (left center, Q, W, E, R, T; Select alone while nothing is selected)
 ## with the tool in use below them, a tool prompt's hint, the snapping
-## button and its options (bottom left), and where the pointer snapped.
+## button and its options (bottom left), the tool shelf's button beside it
+## (where the context has a shelf: tool_shelf.luc), and where the pointer
+## snapped.
 ##
 ## With four panes it is docked: drawn once over the whole viewport (as
 ## Maya's and Blender's one tool palette), in the viewport's coordinates
@@ -29,6 +31,8 @@ from tool_prompt import hint
 import component_moves
 import edit_cad_nets
 import node_commands
+from shelf_state import ShelfState
+from shelf_context import context_of
 
 pub class ViewportChrome:
     let workspace: Workspace
@@ -36,7 +40,8 @@ pub class ViewportChrome:
     ## The button under the pointer: 100 + a view button, 200 + a level,
     ## 300 + a transform tool (the slot below them: 300 + their count), 400
     ## the snapping button, 410 + one of its options, 500 through the
-    ## depth, 600 + an Edit CAD CV move mode, 620 + a CV falloff (-1: none).
+    ## depth, 600 + an Edit CAD CV move mode, 620 + a CV falloff, 700 the
+    ## tool shelf's button (-1: none).
     pub var hover_tool: int = -1
     ## The snapping options shown (the snapping button opened them).
     pub var snaps_open: bool = false
@@ -46,10 +51,26 @@ pub class ViewportChrome:
     ## Whether the sketch edited has entities selected (the view says; in
     ## a sketch the transform tools show only then).
     pub var sketch_selected: (func() -> bool)? = none
+    ## The tool shelf: open or not, its tab per context (its button here
+    ## opens and closes it; the shelf, the viewport panel's footer, reads it).
+    pub let shelf: ShelfState
+    ## The shelf opened or closed: the editor shows or hides it.
+    pub var on_shelf: func() -> unit!? = none
 
     pub func init(self, workspace: Workspace, actions: Actions):
         self.workspace = workspace
         self.actions = actions
+        self.shelf = ShelfState()
+
+    ## Whether the viewport's context has a tool shelf (its button shows).
+    pub func shelved(self) -> bool:
+        return context_of(self.workspace) != ""
+
+    ## Open the tool shelf, or close it.
+    pub func toggle_shelf(self) -> unit!:
+        self.shelf.open = not self.shelf.open
+        if let changed = self.on_shelf:
+            changed()
 
     ## Whether the chrome is docked over four panes (see the top).
     pub func docked(self) -> bool:
@@ -211,6 +232,13 @@ pub class ViewportChrome:
         ui.draw_icon(painter.target(), "snap", Rect(22.0, height - 35.0, 20.0, 20.0), theme.grey(0.0) if snapping_on else (theme.accent() if self.hover_tool == 400 else theme.text()))
         if self.hover_tool == 400 and not self.snaps_open:
             tip(painter, "Snapping (Cmd held: free)", 54.0, height - 40.0)
+        # Beside it, the tool shelf's button, lit while the shelf is open.
+        if self.shelved():
+            let open = self.shelf.open
+            painter.rounded_rectangle(Rect(shelf_x, height - 40.0, 32.0, 30.0), theme.accent() if open else theme.surface(), 4.0)
+            ui.draw_icon(painter.target(), "align-bottom", Rect(shelf_x + 6.0, height - 35.0, 20.0, 20.0), theme.grey(0.0) if open else (theme.accent() if self.hover_tool == 700 else theme.text()))
+            if self.hover_tool == 700 and not self.snaps_open:
+                tip(painter, "Close the tool shelf (Esc)" if open else "Tool shelf", shelf_x + 38.0, height - 40.0)
         if self.snaps_open:
             let names = snap_names()
             let icons = snap_icons()
@@ -328,6 +356,8 @@ pub class ViewportChrome:
             return 300 + shown_tools[int((y - top) / 36.0)]
         if y >= height - 40.0 and y <= height - 10.0 and x >= 16.0 and x <= 48.0:
             return 400
+        if y >= height - 40.0 and y <= height - 10.0 and x >= shelf_x and x <= shelf_x + 32.0 and self.shelved():
+            return 700
         if self.snaps_open:
             let options = snap_names().length
             let rows = snap_menu_top(height, options)
@@ -340,7 +370,9 @@ pub class ViewportChrome:
 
     ## A click on button `button` (see hover_tool).
     pub func press(self, button: int) -> unit!:
-        if button >= 600:
+        if button == 700:
+            self.toggle_shelf()
+        elif button >= 600:
             let slot = edit_cad_nets.move_mode_slot if button < 620 else edit_cad_nets.falloff_kind_slot
             node_commands.set_parameter(self.workspace, slot, float(button - (600 if button < 620 else 620)))
         elif button == 500:
@@ -415,9 +447,12 @@ func tool_asset(w: Workspace, name: str) -> str:
     let sketched = sketch_tools.icon_of(name)
     return sketched if sketched != "" else context_icon(w, name)
 
-## Where the snapping button ends along the bottom.
+## The tool shelf button's left, right of the snapping button.
+let shelf_x = 54.0
+
+## Where the snapping and tool shelf buttons end along the bottom.
 pub func snap_row_end() -> float:
-    return 54.0
+    return shelf_x + 38.0
 
 ## The snapping options' rows: their height, the list's width, its top.
 let snap_row = 28.0

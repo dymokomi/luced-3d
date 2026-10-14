@@ -1,0 +1,207 @@
+## What the viewport's tool shelf (tool_shelf.luc) shows, by context: its
+## tabs and their tiles, all from the tool registry through the menus'
+## views (tool_menus.luc), so a new tool appears on the shelf as it
+## appears in the menus, and a tile runs the very command a menu entry
+## runs (its Repeat and its drag after it run with it).
+##   Edit Mesh (and a geometry network): Create (the kind's primitives,
+##     then the registry's Create families), Select (every Select tool,
+##     Selection and Hide), Modify;
+##   Edit CAD: Create (Sketch on face and on the origin planes, the
+##     primitives, then the registry's) and Modify; a CAD network: Create
+##     and Modify;
+##   a sketch being edited: its Create, Modify and Constraints tools.
+## A section longer than `long_section` tiles splits into tabs of its
+## families, neighbours packed together up to `packed_tiles` tiles
+## (Extrude / Bevel, Merge / Delete). Every tool of the context is a tile
+## whatever the selection, so the layout stays still; one that does not
+## apply now is drawn pale and says why in its tooltip.
+from workspace import Workspace
+from actions import Actions, context_icon
+from sketch_editor import SketchEditor
+from tool_record import Tool
+import sketch_tools
+import tool_menus
+
+## A section with more tiles than this splits into its families' tabs.
+let long_section = 32
+## Families packed into one tab hold at most this many tiles together.
+let packed_tiles = 12
+
+## One tool on the shelf: its label and icon, the family it is drawn in,
+## whether a click runs it now, its tooltip and what a click does.
+pub class ShelfTile:
+    pub let label: str
+    pub let icon: str
+    pub let family: str
+    pub let enabled: bool
+    pub let tip: str
+    pub let run: func() -> unit!
+
+    pub func init(self, label: str, icon: str, family: str, enabled: bool, tip: str, run: func() -> unit!):
+        self.label = label
+        self.icon = icon
+        self.family = family
+        self.enabled = enabled
+        self.tip = tip
+        self.run = run
+
+## A tab: its name and its tiles, family after family.
+pub class ShelfTab:
+    pub let name: str
+    pub let tiles: list[ShelfTile]
+
+    pub func init(self, name: str):
+        self.name = name
+        self.tiles = []
+
+## The shelf's tabs for context `context` (context_of's).
+pub func tabs(w: Workspace, actions: Actions, editor: SketchEditor, context: str) -> list[ShelfTab]!:
+    if context == "sketch":
+        return sketch_tabs(editor)
+    if context == "":
+        return no_tabs()
+    let result = no_tabs()
+    # In a CAD network with nothing picked, every node tool is offered
+    # (each asks for its pick): the menus' level -1.
+    let level = -1 if context == "cad" and w.selected_count() == 0 else w.level_index()
+    for section in ["Create", "Select", "Modify"]:
+        if section == "Select" and not tool_menus.selects(w):
+            continue
+        let all = tool_menus.select_families_at(w, actions, -1) if section == "Select" else tool_menus.families(w, actions, section)
+        let here = tool_menus.select_families_at(w, actions, level) if section == "Select" else tool_menus.families(w, actions, section, level)
+        let families: list[tool_menus.Family] = []
+        if section == "Create" and context == "edit cad":
+            # Edit CAD's sketches lead, as Create Sketch leads its A menu:
+            # on the face picked, or on an origin plane.
+            let sketches = tool_menus.Family("Sketch")
+            for command in [actions.sketch_on_face] + actions.model.planes:
+                sketches.add(command)
+            families.append(sketches)
+        if section == "Create" and w.editing():
+            # The Edit kind's primitives (Box, Sphere, …) next, as in the
+            # A menu.
+            let primitives = tool_menus.Family("Primitives")
+            for command in actions.create_commands():
+                primitives.add(command)
+            if primitives.commands.length > 0:
+                families.append(primitives)
+        # A registry family of a name already there joins it.
+        for family in all:
+            var joined = false
+            for each in families:
+                if each.name == family.name:
+                    for at in 0..<family.commands.length:
+                        each.add(family.commands[at], family.tools[at])
+                    joined = true
+            if not joined:
+                families.append(family)
+        result.extend(section_tabs(w, section, families, labels_of(here)))
+    return result
+
+## Section `section`'s tabs: one, or its families' when it is long. A
+## tile is enabled when its command is and its tool is among `offered`.
+func section_tabs(w: Workspace, section: str, families: list[tool_menus.Family], offered: list[str]) -> list[ShelfTab]!:
+    var count = 0
+    for family in families:
+        count += family.commands.length
+    let result = no_tabs()
+    if count == 0:
+        return result
+    if count <= long_section:
+        let tab = ShelfTab(section)
+        for family in families:
+            add_family(w, tab, family, offered)
+        result.append(tab)
+        return result
+    # Long: neighbouring families share a tab while they fit together.
+    var at = 0
+    while at < families.length:
+        var names = [families[at].name]
+        var tiles = families[at].commands.length
+        var next = at + 1
+        while next < families.length and tiles + families[next].commands.length <= packed_tiles and names.length < 2:
+            names.append(families[next].name)
+            tiles += families[next].commands.length
+            next += 1
+        let tab = ShelfTab(packed_name(names))
+        for k in at..<next:
+            add_family(w, tab, families[k], offered)
+        result.append(tab)
+        at = next
+    return result
+
+## A tab named after the families it packs: "Extrude / Bevel"; a shared
+## first word said once ("Surface Blends / Structure").
+pub func packed_name(names: list[str]) -> str:
+    if names.length == 1:
+        return names[0]
+    let first = names[0].split(" ")
+    let second = names[1].split(" ")
+    if first.length > 1 and second.length > 1 and first[0] == second[0]:
+        return names[0] + " / " + second[1..<second.length].join(" ")
+    return names.join(" / ")
+
+## Family `family`'s commands as tiles of `tab`.
+func add_family(w: Workspace, tab: ShelfTab, family: tool_menus.Family, offered: list[str]) -> unit!:
+    for at in 0..<family.commands.length:
+        let command = family.commands[at]
+        let tool = family.tools[at]
+        let label = command.text()
+        let enabled = command.is_enabled() and (tool == none or label in offered)
+        let icon = command.icon() if command.icon() != "" else context_icon(w, label)
+        let chosen = command
+        tab.tiles.append(ShelfTile(label, icon, family.name, enabled, tip_of(w, label, tool, enabled), func () -> unit!: chosen.trigger()))
+
+## What a tile's tooltip says: its tool's description (its label is on
+## the tile); when it does not
+## apply, why (the level it takes, or the selection it waits for).
+func tip_of(w: Workspace, label: str, tool: Tool?, enabled: bool) -> str:
+    let registered = tool else return label if enabled else f"{label}: nothing to act on here"
+    if enabled:
+        return registered.doc if registered.doc != "" else label
+    let names: list[str] = []
+    for level in w.levels():
+        names.append(level.name)
+    let level = w.level_index()
+    if not registered.offered(level) and registered.offered_levels().length > 0:
+        let here = names[level].lower() if level < names.length else "this level"
+        return f"{label} takes {registered.levels_text(names)}, not {here}"
+    return registered.waiting(names)
+
+## A sketch's tabs: its Create, Modify and Constraints tools, a tool's
+## variants each a tile (the 3-Point Arc, the Tangent Arc).
+func sketch_tabs(editor: SketchEditor) -> list[ShelfTab]:
+    let result = no_tabs()
+    let names = ["Create", "Modify", "Constraints"]
+    for menu in 0..<names.length:
+        let tab = ShelfTab(names[menu])
+        var family = 0
+        for tool in sketch_tools.tools(menu):
+            if tool.group_start:
+                family += 1
+            if tool.variants.length == 0:
+                tab.tiles.append(sketch_tile(editor, tool, f"{family}"))
+                continue
+            family += 1
+            for variant in tool.variants:
+                tab.tiles.append(sketch_tile(editor, variant, f"{family}"))
+            family += 1
+        result.append(tab)
+    return result
+
+func sketch_tile(editor: SketchEditor, tool: sketch_tools.SketchTool, family: str) -> ShelfTile:
+    let name = tool.name
+    let tip = (name + (f"  ({tool.key})" if tool.key != "" else "")) if tool.ready else f"{name}: not available yet"
+    return ShelfTile(name, tool.icon, family, tool.ready, tip, func () -> unit!: editor.choose(name))
+
+## The labels of `families`' commands.
+func labels_of(families: list[tool_menus.Family]) -> list[str]:
+    let result: list[str] = []
+    for family in families:
+        for command in family.commands:
+            result.append(command.text())
+    return result
+
+func no_tabs() -> list[ShelfTab]:
+    let result: list[ShelfTab] = []
+    return result

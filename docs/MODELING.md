@@ -223,6 +223,26 @@ selection changes (Enter finishes, Esc restores the old group); **Keep IDs** cle
 applies the numbers as they are (Houdini's behaviour). Typed groups are never
 guarded. Very large selections show as a summary in the Group field.
 
+**The tool shelf** (`tool_shelf.luc`, Alias's shelves and Cinema 4D's
+palettes with icon and text) is one more way to pick a tool, handy in full
+screen. Its button sits beside the snapping magnet in the viewport's bottom
+left corner (in the docked chrome among four panes) in Edit Mesh, Edit CAD,
+a CAD or geometry network and a sketch. It opens a strip of tabs along the
+bottom of the viewport panel, the viewport's full width, above which the
+panes keep working. Tabs come from the registry (`shelf_tabs.luc`): Edit
+Mesh's Create (primitives first), Select (with Selection and Hide) and
+Modify; Edit CAD's Create (Sketch on face and on the origin planes,
+primitives, then the registry's) and Modify; a sketch's Create, Modify and
+Constraints. A section longer than 32 tiles splits into tabs of its
+families, two neighbours sharing a tab while they hold at most 12 tiles
+(Extrude / Bevel, Surface Blends / Structure). A tile runs the menus'
+command (Repeat and the drag after it included); one that does not apply
+at the level or selection is drawn pale, takes no click and says why in its
+tooltip ("Inset takes polygons, not vertices"), so the layout never moves.
+Esc (when nothing else in the viewport wants it) or the button closes it;
+open or closed and each context's last tab are kept in
+`~/.luced-3d/ui.prisma`.
+
 ## Edit tools and important limits
 
 - PolyExtrude moves face regions (or each face, with Individual faces) along

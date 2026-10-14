@@ -1,0 +1,327 @@
+## The viewport's tool shelf (tool_shelf.luc), driven by real events: the
+## chrome's button opens and closes it, Esc closes it; its tabs hold every
+## registry tool of Edit Mesh, Edit CAD and a CAD network and a sketch's
+## tools, Modify split by
+## family; a tile clicked runs its tool as the menus do, one undo step,
+## and the active pane stays; a pale tile takes no click but keeps its
+## tooltip; it works among four panes and in full screen; open and the
+## tab per context come back from the UI settings.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_geocore.geocore import Selection
+from edit_types import point_level, face_level
+from shelf_context import context_of
+from shelf_tabs import ShelfTab, packed_name
+from tool_shelf import ToolShelf, shelf_height
+from ui_state import UIState
+from sketch_support import render, open_sketch
+import modeling_commands
+import node_commands
+import selection_commands
+import tool_registry
+
+pub func tool_shelf_tests() -> unit!:
+    packed_names()
+    toggled()
+    mesh_tabs()
+    cad_tabs()
+    sketch_tabs()
+    tile_runs()
+    pale_tile()
+    four_and_full_screen()
+    kept()
+    print("PASS tool shelf: the chrome's button and Esc open and close it, every registry tool of Edit Mesh, Edit CAD and a CAD network on its tabs, a sketch's tools (Modify split by family), a tile runs its tool as one undo step leaving the active pane, a pale tile ignores clicks and keeps its tooltip, four panes and full screen, open and tabs kept in the UI settings")
+
+## Packed families' tab names.
+func packed_names():
+    assert(packed_name(["Extrude"]) == "Extrude")
+    assert(packed_name(["Extrude", "Bevel"]) == "Extrude / Bevel")
+    assert(packed_name(["Surface Blends", "Surface Structure"]) == "Surface Blends / Structure")
+
+## An editor editing an Edit Mesh holding a box.
+func mesh_editor() -> Luce3D!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Edit Mesh", 40.0, 40.0)
+    modeling_commands.create(w, "Box")
+    render(editor)
+    return editor
+
+## A click (moved there, down, up) at window point (`x`, `y`).
+func click(editor: Luce3D, x: float, y: float) -> unit!:
+    for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+        editor.app.dispatch(Event(kind = kind, x = x, y = y, button = 0))
+    render(editor)
+
+## The shelf button, in the window: right of the snapping button in the
+## viewport's bottom left corner (the pane's, or the docked chrome's).
+func button_point(editor: Luce3D) -> list[float]:
+    let area = editor.panels.view.layout().bounds()
+    return [area.x + 70.0, area.y + area.height - 25.0]
+
+func press_button(editor: Luce3D) -> unit!:
+    let at = button_point(editor)
+    click(editor, at[0], at[1])
+
+## Tile `label`'s place in the current tab (-1: not there).
+func tile_of(shelf: ToolShelf, label: str) -> int:
+    let tab = shelf.shown[shelf.current()]
+    for at in 0..<tab.tiles.length:
+        if tab.tiles[at].label == label:
+            return at
+    return -1
+
+## Show the tab holding tile `label` by clicking it; its place there.
+func show_tile(editor: Luce3D, label: str) -> int!:
+    let shelf = editor.panels.shelf
+    let bounds = shelf.layout().bounds()
+    for (at, r) in shelf.tab_rects():
+        for tile in shelf.shown[at].tiles:
+            if tile.label == label:
+                click(editor, bounds.x + r.x + 6.0, bounds.y + r.y + 6.0)
+                assert(shelf.current() == at, f"tab {shelf.shown[at].name} not shown")
+                return tile_of(shelf, label)
+    trap(f"no tile {label}")
+
+## Tile `index`'s center in the window.
+func tile_point(shelf: ToolShelf, index: int) -> list[float]:
+    let bounds = shelf.layout().bounds()
+    let r = shelf.tile_rect(index)
+    return [bounds.x + r.x + r.width * 0.5, bounds.y + r.y + r.height * 0.5]
+
+## The button opens the shelf under the viewport (the panes give it the
+## room), again closes it; Esc in the viewport closes it too.
+func toggled() -> unit!:
+    let editor = mesh_editor()
+    let w = editor.workspace
+    let shelf = editor.panels.shelf
+    let chrome = editor.panels.view.tools.chrome
+    assert(context_of(w) == "edit mesh" and chrome.shelved() and not shelf.is_open())
+    let before = editor.panels.view.layout().bounds()
+    let at = button_point(editor)
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = at[0], y = at[1]))
+    assert(chrome.hover_tool == 700, f"the pointer is on {chrome.hover_tool}, not the shelf button")
+    press_button(editor)
+    assert(chrome.shelf.open and shelf.is_open())
+    let after = editor.panels.view.layout().bounds()
+    let bounds = shelf.layout().bounds()
+    assert(bounds.height == shelf_height() and bounds.width == before.width and bounds.y >= after.y + after.height - 0.5, f"the shelf at {bounds.y} {bounds.width}x{bounds.height}")
+    assert(after.height < before.height - shelf_height() + 1.0, "the viewport did not give the shelf its room")
+    press_button(editor)
+    assert(not chrome.shelf.open and not shelf.is_open())
+    press_button(editor)
+    assert(shelf.is_open())
+    editor.app.focus(editor.panels.view.layout())
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.escape))
+    editor.app.dispatch(Event(kind = EventKind.key_up, key = Key.escape))
+    render(editor)
+    assert(not shelf.is_open(), "Esc did not close the shelf")
+    # Outside a context with tools (a scene network) there is no button.
+    node_commands.leave_group(w)
+    render(editor)
+    let area = editor.panels.view.layout().bounds()
+    assert(not chrome.shelved() and not shelf.is_open() and chrome.button_at(70.0, area.height - 25.0, area.width, area.height) != 700)
+    editor.close()
+
+## Every label of `tabs`' tiles.
+func tile_labels(tabs: list[ShelfTab]) -> list[str]:
+    let result: list[str] = []
+    for tab in tabs:
+        for tile in tab.tiles:
+            result.append(tile.label)
+    return result
+
+## Every registry tool of `kind` (its sections `sections`) is a tile once,
+## in a tab of its section, or of its family when the section is split.
+func registry_tiles(tabs: list[ShelfTab], kind: str, sections: list[str]) -> unit!:
+    let labels = tile_labels(tabs)
+    var count = 0
+    let tools = tool_registry.of_kind(kind)
+    let all: list[str] = []
+    for tool in tools:
+        all.append(tool.label)
+    for tool in tools:
+        if not (tool.section in sections):
+            continue
+        count += 1
+        # A label two tools share (Edit CAD's Delete of faces and of
+        # curves) is one command, on the first one's family.
+        let shared = all.count(tool.label) > 1
+        var found = 0
+        for tab in tabs:
+            for tile in tab.tiles:
+                if tile.label == tool.label:
+                    found += 1
+                    let words = tool.family.split(" ")
+                    assert(shared or tile.family == tool.family and (tab.name == tool.section or tab.name.contains(words[words.length - 1])), f"{tool.label} is on {tab.name}")
+        assert(found >= 1, f"{tool.label} ({kind}) is not on the shelf: {labels}")
+    assert(count > 10)
+
+## Edit Mesh: Create (primitives first), Select, then Modify by family.
+func mesh_tabs() -> unit!:
+    let editor = mesh_editor()
+    let shelf = editor.panels.shelf
+    press_button(editor)
+    let names: list[str] = []
+    for tab in shelf.shown:
+        names.append(tab.name)
+    assert(names[0] == "Create" and names[1] == "Select" and names[2] == "Extrude / Bevel", f"{names}")
+    assert(not ("Modify" in names), "Modify was not split by family")
+    assert(shelf.shown[0].tiles[0].label == "Box" and shelf.shown[0].tiles[0].family == "Primitives")
+    registry_tiles(shelf.shown, "Edit Mesh", ["Create", "Select", "Modify"])
+    # The Select tab ends with Selection and Hide.
+    assert("Select all" in tile_labels([shelf.shown[1]]) and "Unhide" in tile_labels([shelf.shown[1]]), f"{tile_labels([shelf.shown[1]])}")
+    editor.close()
+
+## Edit CAD: Create, then Modify by family (Blends, Surface…); a CAD
+## network's tabs hold its node tools.
+func cad_tabs() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 40.0, 40.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+    render(editor)
+    assert(context_of(w) == "cad")
+    press_button(editor)
+    let shelf = editor.panels.shelf
+    assert(shelf.is_open() and shelf.shown[0].name == "Create")
+    let network = tile_labels(shelf.shown)
+    for entry in tool_registry.cad_nodes():
+        assert(entry.label in network, f"{entry.label} is not on the CAD network's shelf")
+    node_commands.add_node(w, "Edit CAD", 40.0, 120.0)
+    render(editor)
+    assert(context_of(w) == "edit cad" and shelf.is_open(), "the shelf did not stay open in Edit CAD")
+    let names: list[str] = []
+    for tab in shelf.shown:
+        names.append(tab.name)
+    assert(names[0] == "Create" and names[1].contains("Blends"), f"{names}")
+    registry_tiles(shelf.shown, "Edit CAD", ["Create", "Modify"])
+    editor.close()
+
+## In a sketch: its Create, Modify and Constraints tools; a tile picks
+## the editor's tool.
+func sketch_tabs() -> unit!:
+    let editor = Luce3D()
+    _ = open_sketch(editor, 0.0, 0.0, 200.0)
+    render(editor)
+    assert(context_of(editor.workspace) == "sketch")
+    press_button(editor)
+    let shelf = editor.panels.shelf
+    let names: list[str] = []
+    for tab in shelf.shown:
+        names.append(tab.name)
+    assert(names == ["Create", "Modify", "Constraints"], f"{names}")
+    let tile = show_tile(editor, "3-Point Arc")
+    let at = tile_point(shelf, tile)
+    click(editor, at[0], at[1])
+    assert(editor.panels.view.sketch.editor.tool == "3-Point Arc", editor.panels.view.sketch.editor.tool)
+    editor.close()
+
+## A face picked; Inset's tile clicked: an Inset step, one undo step, the
+## active pane as it was; undone, gone.
+func tile_runs() -> unit!:
+    let editor = mesh_editor()
+    let w = editor.workspace
+    selection_commands.set_mode(w, face_level)
+    w.selection = Selection.of(w.geometry else trap("mesh"), "2", 2)
+    render(editor)
+    press_button(editor)
+    let shelf = editor.panels.shelf
+    let tile = show_tile(editor, "Inset")
+    assert(shelf.shown[shelf.current()].tiles[tile].enabled)
+    let node = w.selected() else trap("node")
+    let steps = node.edits.length
+    let cursor = w.history.cursor
+    let active = w.panes.active
+    let at = tile_point(shelf, tile)
+    click(editor, at[0], at[1])
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    render(editor)
+    let edited = w.selected() else trap("node")
+    assert(edited.edits.length == steps + 1 and edited.edits[-1].verb == "Inset", f"{edited.edits.length} steps, last {edited.edits[-1].verb}")
+    assert(w.history.cursor == cursor + 1, f"the click made {w.history.cursor - cursor} undo steps")
+    assert(w.last_tool == "Inset" and w.panes.active == active)
+    w.undo()
+    render(editor)
+    assert((w.selected() else trap("node")).edits.length == steps)
+    editor.close()
+
+## At Points with a point picked, Inset (faces) is pale: hovered it says
+## why, clicked it does nothing.
+func pale_tile() -> unit!:
+    let editor = mesh_editor()
+    let w = editor.workspace
+    selection_commands.set_mode(w, point_level)
+    w.selection = Selection.of(w.geometry else trap("mesh"), "0", 0)
+    render(editor)
+    press_button(editor)
+    let shelf = editor.panels.shelf
+    let tile = show_tile(editor, "Inset")
+    let shown = shelf.shown[shelf.current()].tiles[tile]
+    assert(not shown.enabled and shown.tip == "Inset takes polygons, not vertices", shown.tip)
+    let at = tile_point(shelf, tile)
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = at[0], y = at[1]))
+    assert(shelf.hover_tile == tile, "a pale tile shows no tooltip")
+    let steps = (w.selected() else trap("node")).edits.length
+    let cursor = w.history.cursor
+    click(editor, at[0], at[1])
+    assert((w.selected() else trap("node")).edits.length == steps and w.history.cursor == cursor)
+    assert(shelf.hover_tile == tile)
+    editor.close()
+
+## Four panes: the docked button opens it the viewport's width; a tile
+## clicked leaves the active pane; full screen keeps it.
+func four_and_full_screen() -> unit!:
+    let editor = mesh_editor()
+    let w = editor.workspace
+    w.toggle_four()
+    render(editor)
+    selection_commands.set_mode(w, face_level)
+    w.selection = Selection.of(w.geometry else trap("mesh"), "2", 2)
+    render(editor)
+    press_button(editor)
+    let shelf = editor.panels.shelf
+    assert(shelf.is_open() and shelf.layout().bounds().width == editor.panels.view.layout().bounds().width)
+    w.panes.active = 3
+    let tile = show_tile(editor, "Inset")
+    let at = tile_point(shelf, tile)
+    let steps = (w.selected() else trap("node")).edits.length
+    click(editor, at[0], at[1])
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.enter))
+    render(editor)
+    assert((w.selected() else trap("node")).edits.length == steps + 1 and w.panes.active == 3)
+    w.toggle_four()
+    w.toggle_full_screen()
+    render(editor)
+    assert(editor.panels.dock_layout.is_solo() and shelf.is_open())
+    let view = editor.panels.view.layout().bounds()
+    let bounds = shelf.layout().bounds()
+    assert(bounds.width == view.width and bounds.y >= view.y + view.height - 0.5)
+    press_button(editor)
+    assert(not shelf.is_open())
+    press_button(editor)
+    assert(shelf.is_open())
+    editor.close()
+
+## Open and the tab per context through the UI settings.
+func kept() -> unit!:
+    let editor = mesh_editor()
+    press_button(editor)
+    _ = show_tile(editor, "Inset")
+    let shelf = editor.panels.shelf
+    let tab = shelf.shown[shelf.current()].name
+    editor.app.layout(1600.0, 1000.0)
+    let settings = UIState("shelf-ui.prisma")
+    settings.save(editor.panels)
+    editor.close()
+    let other = mesh_editor()
+    assert(not other.panels.shelf.is_open())
+    UIState("shelf-ui.prisma").restore(other.panels)
+    render(other)
+    let restored = other.panels.shelf
+    assert(restored.is_open() and restored.shown[restored.current()].name == tab, f"{restored.shown[restored.current()].name} is not {tab}")
+    other.close()

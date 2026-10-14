@@ -1,0 +1,134 @@
+## The viewport tool shelf's captures (tool_shelf.luc), opened by its
+## button in the chrome:
+##   shelf_mesh: Edit Mesh, a box's top face picked, the shelf on Modify's
+##     first tab (Extrude / Bevel), the pointer on Inset with its tooltip.
+##   shelf_cad: Edit CAD on a box, an edge picked, the Blends tab.
+##   shelf_full_screen: shelf_mesh with the viewport filling the window
+##     (Space and F).
+##   shelf_quad: shelf_mesh in four panes, the button in the docked chrome.
+##   shelf_disabled: Edit Mesh at Points, a point picked: Modify's tools
+##     that take polygons or edges drawn pale, the pointer on Inset saying
+##     why.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind
+from luce_3d.graphics import Vector3
+from luce_geocore.geocore import Selection
+from edit_types import point_level, face_level
+import node_commands
+import modeling_commands
+import selection_commands
+import preview_support
+from luce_std import math
+
+pub func scenes() -> list[str]:
+    return ["shelf_mesh", "shelf_cad", "shelf_full_screen", "shelf_quad", "shelf_disabled"]
+
+## An Edit Mesh holding a box (setup looks at it from above the front
+## once its selection is set, as the first result frames the view).
+func mesh(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Edit Mesh", 40.0, 40.0)
+    preview_support.settle(w)
+    modeling_commands.create(w, "Box")
+    preview_support.settle(w)
+
+## A CAD node's box, then an Edit CAD node edited, an edge of the box's
+## top picked.
+func cad(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 40.0, 40.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Solid Box", 40.0, 40.0)
+    preview_support.settle(w)
+    node_commands.add_node(w, "Edit CAD", 40.0, 120.0)
+    preview_support.settle(w)
+    editor.panels.refresh()
+    selection_commands.set_mode(w, w.level_of(4))
+    let shown = preview_support.shown(w) else trap("no edges")
+    let owners = shown.find_attribute("cad_edge", 4)
+    # The box's top front edge.
+    var top = -1.0e9
+    var front = -1.0e9
+    for point in 0..<shown.point_count():
+        top = math.max(top, shown.point(point).y)
+        front = math.max(front, shown.point(point).z)
+    for at in 0..<shown.edge_count():
+        let a = shown.point(shown.edge_point(at, 0))
+        let b = shown.point(shown.edge_point(at, 1))
+        if int(shown.attribute_value(owners, at)) >= 0 and a.y > top - 1e-6 and b.y > top - 1e-6 and a.z > front - 1e-6 and b.z > front - 1e-6:
+            selection_commands.choose_component(w, at, false)
+            break
+    w.view.yaw = 0.5
+    w.view.pitch = 0.5
+    w.view.distance = 60.0
+    w.view.target = Vector3(0.0, 0.0, 0.0)
+    w.view.update_camera()
+
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    let w = editor.workspace
+    if scene == "shelf_cad":
+        cad(editor)
+    else:
+        mesh(editor)
+        if scene == "shelf_disabled":
+            selection_commands.set_mode(w, point_level)
+            w.selection = Selection.of(w.geometry else trap("mesh"), "0", 0)
+        else:
+            selection_commands.set_mode(w, face_level)
+            w.selection = Selection.of(w.geometry else trap("mesh"), "2", 2)
+    if scene != "shelf_cad":
+        look(editor)
+    if scene == "shelf_quad":
+        w.toggle_four()
+    if scene == "shelf_full_screen":
+        w.toggle_full_screen()
+    editor.panels.refresh()
+
+## The box looked at from above the front.
+func look(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    w.view.yaw = 0.6
+    w.view.pitch = 0.5
+    w.view.distance = 7.0
+    w.view.target = Vector3(0.0, 0.5, 0.0)
+    w.view.update_camera()
+
+## The shelf opened by its button at frame 2, its tab clicked at 3, the
+## pointer on a tile at 4.
+pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
+    let w = editor.workspace
+    preview_support.settle(w)
+    let shelf = editor.panels.shelf
+    if frame == 2:
+        # With --background the first result framed the view (a lone
+        # point picked: very close); look again.
+        if scene in ["shelf_mesh", "shelf_full_screen", "shelf_disabled"]:
+            look(editor)
+        let area = editor.panels.view.layout().bounds()
+        click(editor, area.x + 70.0, area.y + area.height - 25.0)
+    elif frame == 3:
+        let wanted = "Blends" if scene == "shelf_cad" else "Extrude"
+        let bounds = shelf.layout().bounds()
+        var done = false
+        for (at, r) in shelf.tab_rects():
+            if not done and shelf.shown[at].name.contains(wanted):
+                click(editor, bounds.x + r.x + 6.0, bounds.y + r.y + 6.0)
+                done = true
+    elif frame == 4:
+        let label = "Fillet" if scene == "shelf_cad" else "Inset"
+        let tab = shelf.shown[shelf.current()]
+        for at in 0..<tab.tiles.length:
+            if tab.tiles[at].label == label:
+                let bounds = shelf.layout().bounds()
+                let r = shelf.tile_rect(at)
+                editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = bounds.x + r.x + 20.0, y = bounds.y + r.y + 16.0))
+    editor.panels.refresh()
+    editor.panels.view.layout().invalidate()
+    shelf.layout().invalidate()
+
+func click(editor: Luce3D, x: float, y: float) -> unit!:
+    for kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+        editor.app.dispatch(Event(kind = kind, x = x, y = y, button = 0))

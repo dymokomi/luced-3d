@@ -1,0 +1,322 @@
+## The viewport's tool shelf (Alias's shelves, Cinema 4D's palettes with
+## icons and text): a strip along the bottom of the viewport panel, the
+## viewport's full width, opened and closed by the shelf button in the
+## viewport's chrome (viewport_chrome.luc) or closed by Esc. Its tabs and
+## tiles come from the tool registry for the viewport's context
+## (shelf_tabs.luc); a click on a tile runs the tool as the menus run it.
+## A tile that does not apply now is drawn pale and takes no click, its
+## tooltip saying why. A tab with more tiles than fit scrolls.
+##
+## The shelf is the viewport panel's footer, not drawn over the panes: the
+## panes give it the room it takes, every pick above it stays the
+## viewport's, and its clicks leave the active pane as it is. It never
+## takes the keyboard: a click hands it back to the viewport, where a tool
+## run from the shelf takes its typed values.
+from luce_ui.ui import Widget, Layout, Constraints, Size, Event, Painter
+from luce_ui import ui
+from luce_gpu.gpu import RenderTarget, Rect
+from luce_window.input import EventKind, ScrollUnit
+from workspace import Workspace
+from actions import Actions
+from sketch_editor import SketchEditor
+from shelf_state import ShelfState
+from shelf_tabs import ShelfTab, tabs
+from shelf_context import context_of
+from luce_std import math
+import theme
+
+## The tab row's height, the tiles' height and the gap between them, the
+## padding around the grid, and the rows shown before it scrolls.
+let tab_row = 30.0
+let tile_height = 32.0
+let tile_gap = 4.0
+let padding = 8.0
+let shown_rows = 3
+## The room between two families, a rule in its middle.
+let family_gap = 14.0
+## A label's characters shown at most (longer ones end in "…").
+let label_chars = 22
+## The monospace font's advance.
+let advance = 7.5
+## A tooltip's characters a line.
+let tip_chars = 64
+
+pub class ToolShelf: Widget:
+    let box: Layout
+    let w: Workspace
+    let actions: Actions
+    let editor: SketchEditor
+    pub let state: ShelfState
+    ## The viewport's layout, which keeps the keyboard.
+    let viewport: Layout
+    ## The context shown and its tabs (rebuilt by refresh).
+    pub var context: str = ""
+    pub var shown: list[ShelfTab]
+    ## The tab or tile under the pointer (-1: none), and how far the tiles
+    ## are scrolled.
+    pub var hover_tab: int = -1
+    pub var hover_tile: int = -1
+    pub var scroll: float = 0.0
+
+    pub func init(self, w: Workspace, actions: Actions, editor: SketchEditor, state: ShelfState, viewport: Layout) -> unit!:
+        self.w = w
+        self.actions = actions
+        self.editor = editor
+        self.state = state
+        self.viewport = viewport
+        self.shown = []
+        self.box = Layout()
+        self.box.set_flex(1.0, 0.0)
+        self.box.set_interactive(true)
+        self.box.set_visible(false)
+
+    pub func layout(self) -> Layout:
+        return self.box
+
+    pub func measure(self, available: Constraints) -> Size!:
+        return Size(320.0, shelf_height())
+
+    pub func is_open(self) -> bool:
+        return self.box.is_visible()
+
+    ## Shown while it is open where the viewport has a shelf context, its
+    ## tabs the context's; called as the editor refreshes (the selection,
+    ## the level or the context changed).
+    pub func refresh(self) -> unit!:
+        let context = context_of(self.w)
+        let visible = self.state.open and context != ""
+        if visible != self.box.is_visible():
+            self.box.set_visible(visible)
+        if context != self.context:
+            self.context = context
+            self.scroll = 0.0
+            self.hover_tile = -1
+            self.hover_tab = -1
+        self.shown = tabs(self.w, self.actions, self.editor, context) if visible else []
+        self.box.invalidate()
+
+    ## The tab shown: the context's last one, else the first.
+    pub func current(self) -> int:
+        let name = self.state.tab(self.context)
+        for at in 0..<self.shown.length:
+            if self.shown[at].name == name:
+                return at
+        return 0
+
+    ## Show tab `index`, remembered for the context.
+    pub func select(self, index: int):
+        if index < 0 or index >= self.shown.length:
+            return
+        self.state.set_tab(self.context, self.shown[index].name)
+        self.scroll = 0.0
+        self.hover_tile = -1
+        self.box.invalidate()
+
+    pub func draw(self, target: RenderTarget) -> unit!:
+        let size = target.size()
+        let p = Painter(target)
+        p.rectangle(Rect(0.0, 0.0, size.width, size.height), theme.surface_raised())
+        p.rectangle(Rect(0.0, 0.0, size.width, tab_row), theme.tab_strip())
+        p.rectangle(Rect(0.0, tab_row - 1.0, size.width, 1.0), theme.border())
+        let chosen = self.current()
+        for (at, r) in self.tab_rects():
+            let on = at == chosen
+            if on:
+                p.rectangle(r, theme.accent())
+            elif at == self.hover_tab:
+                p.rectangle(r, theme.grey(60.0))
+            p.text(self.shown[at].name, r.x + 12.0, r.y + 7.0, theme.grey(0.0) if on else (theme.accent() if at == self.hover_tab else theme.text()))
+        let said = "Esc closes"
+        p.text(said, size.width - float(said.length) * advance - 12.0, 7.0, theme.text_muted())
+        p.close()
+        if self.shown.length == 0:
+            return
+        let tab = self.shown[chosen]
+        let grid = Rect(0.0, tab_row, size.width, size.height - tab_row)
+        let inside = target.region(grid)
+        let g = Painter(inside)
+        let (places, rules, extent) = places_of(tab, size.width)
+        for (x, top) in rules:
+            g.rectangle(Rect(x, top - self.scroll + 4.0, 1.0, tile_height - 8.0), theme.border())
+        let width = tile_width(tab)
+        for at in 0..<tab.tiles.length:
+            let tile = tab.tiles[at]
+            let r = Rect(places[at].x, places[at].y - self.scroll, width, tile_height)
+            if r.y + r.height < 0.0 or r.y > grid.height:
+                continue
+            let hovered = at == self.hover_tile
+            g.rounded_rectangle(r, theme.grey(72.0) if hovered and tile.enabled else theme.surface(), 4.0)
+            let ink = theme.disabled(theme.text()) if not tile.enabled else (theme.accent() if hovered else theme.text())
+            ui.draw_icon(g.target(), tile.icon, Rect(r.x + 8.0, r.y + 6.0, 20.0, 20.0), ink)
+            g.text(clipped(tile.label), r.x + 36.0, r.y + 8.0, ink)
+        # A tab longer than the grid: where it is scrolled, on the right.
+        let room = grid.height
+        if extent > room:
+            let bar = room * room / extent
+            g.rectangle(Rect(size.width - 4.0, (room - bar) * self.scroll / (extent - room), 3.0, bar), theme.accent())
+        # The hovered tile's tooltip over the tiles, beside it.
+        if self.hover_tile >= 0 and self.hover_tile < tab.tiles.length:
+            let r = Rect(places[self.hover_tile].x, places[self.hover_tile].y - self.scroll, width, tile_height)
+            tooltip(g, wrapped(tab.tiles[self.hover_tile].tip), r, grid.width, grid.height)
+        g.close()
+
+    ## Pointer events: hover, a tab or tile clicked, the wheel.
+    pub func event(self, event: Event) -> unit!:
+        if event.kind == EventKind.pointer_moved or event.kind == EventKind.pointer_left or event.cancelled:
+            let outside = event.kind == EventKind.pointer_left or event.cancelled or not event.inside
+            let tab = -1 if outside else self.tab_at(event.x, event.y)
+            let tile = -1 if outside else self.tile_at(event.x, event.y)
+            if tab != self.hover_tab or tile != self.hover_tile:
+                self.hover_tab = tab
+                self.hover_tile = tile
+                self.box.invalidate()
+            return
+        if event.kind == EventKind.scroll:
+            let step = tile_height if event.scroll_unit == ScrollUnit.lines else 1.0
+            self.scroll_to(self.scroll - event.scroll_y * step)
+            self.hover_tile = self.tile_at(event.x, event.y)
+            return
+        if event.kind != EventKind.pointer_down or event.button != 0 or not event.inside:
+            return
+        let tab = self.tab_at(event.x, event.y)
+        if tab >= 0:
+            self.select(tab)
+            return
+        let tile = self.tile_at(event.x, event.y)
+        if tile < 0:
+            return
+        let chosen = self.shown[self.current()].tiles[tile]
+        # A pale tile keeps its tooltip and does nothing.
+        if not chosen.enabled:
+            return
+        # The viewport keeps the keyboard: a tool's typed value goes there.
+        self.viewport.request_focus()
+        let run = chosen.run
+        run()
+        self.box.invalidate()
+
+    ## The tiles scrolled to `offset`, within the tab.
+    pub func scroll_to(self, offset: float):
+        if self.shown.length == 0:
+            return
+        let (places, rules, extent) = places_of(self.shown[self.current()], self.box.bounds().width)
+        _ = places
+        _ = rules
+        self.scroll = math.clamp(offset, 0.0, math.max(0.0, extent - (self.box.bounds().height - tab_row)))
+        self.box.invalidate()
+
+    ## Each tab's place along the tab row.
+    pub func tab_rects(self) -> list[(int, Rect)]:
+        let result: list[(int, Rect)] = []
+        var x = 0.0
+        for at in 0..<self.shown.length:
+            let width = float(self.shown[at].name.length) * advance + 24.0
+            result.append((at, Rect(x, 0.0, width, tab_row - 1.0)))
+            x += width + 1.0
+        return result
+
+    ## The tab at (x, y) of the shelf (-1: none).
+    pub func tab_at(self, x: float, y: float) -> int:
+        if y < 0.0 or y >= tab_row:
+            return -1
+        for (at, r) in self.tab_rects():
+            if x >= r.x and x < r.x + r.width:
+                return at
+        return -1
+
+    ## The current tab's tile at (x, y) of the shelf (-1: none).
+    pub func tile_at(self, x: float, y: float) -> int:
+        if y < tab_row or self.shown.length == 0:
+            return -1
+        let tab = self.shown[self.current()]
+        let (places, rules, extent) = places_of(tab, self.box.bounds().width)
+        _ = rules
+        _ = extent
+        let width = tile_width(tab)
+        let at_y = y - tab_row + self.scroll
+        for at in 0..<places.length:
+            if x >= places[at].x and x < places[at].x + width and at_y >= places[at].y and at_y < places[at].y + tile_height:
+                return at
+        return -1
+
+    ## Tile `index` of the current tab, in the shelf's coordinates as it
+    ## is scrolled now (tests and captures click it).
+    pub func tile_rect(self, index: int) -> Rect:
+        let tab = self.shown[self.current()]
+        let (places, rules, extent) = places_of(tab, self.box.bounds().width)
+        _ = rules
+        _ = extent
+        return Rect(places[index].x, tab_row + places[index].y - self.scroll, tile_width(tab), tile_height)
+
+## The shelf's height: the tab row and shown_rows rows of tiles.
+pub func shelf_height() -> float:
+    return tab_row + 2.0 * padding + float(shown_rows) * tile_height + float(shown_rows - 1) * tile_gap
+
+## A tab's tiles' width: its longest label's (at most label_chars).
+func tile_width(tab: ShelfTab) -> float:
+    var longest = 6.0
+    for tile in tab.tiles:
+        longest = math.max(longest, float(tile.label.length))
+    return math.min(longest, float(label_chars)) * advance + 48.0
+
+## Where tab `tab`'s tiles lie in a grid `width` wide (their tops from the
+## grid's, unscrolled): left to right, wrapping, a rule between two
+## families; with the rules' places and how tall the tiles stand.
+func places_of(tab: ShelfTab, width: float) -> (list[Rect], list[(float, float)], float):
+    let places: list[Rect] = []
+    let rules: list[(float, float)] = []
+    let tile = tile_width(tab)
+    var x = padding
+    var y = padding
+    var family = ""
+    for at in 0..<tab.tiles.length:
+        let next = tab.tiles[at].family
+        if at > 0 and next != family and x > padding:
+            # A new family: the rule, unless the row ends here.
+            if x + family_gap + tile <= width - padding:
+                rules.append((x + family_gap * 0.5 - tile_gap * 0.5, y))
+                x += family_gap
+        family = next
+        if x > padding and x + tile > width - padding:
+            x = padding
+            y += tile_height + tile_gap
+        places.append(Rect(x, y, tile, tile_height))
+        x += tile + tile_gap
+    return (places, rules, y + tile_height + padding)
+
+## `label`, ending in "…" past label_chars.
+func clipped(label: str) -> str:
+    return label if label.length <= label_chars else label[0..<label_chars - 1] + "…"
+
+## `text` in lines of at most tip_chars, broken at spaces.
+func wrapped(text: str) -> list[str]:
+    let lines: list[str] = []
+    var line = ""
+    for word in text.split(" "):
+        if line != "" and line.length + 1 + word.length > tip_chars:
+            lines.append(line)
+            line = word
+        else:
+            line = word if line == "" else line + " " + word
+    if line != "":
+        lines.append(line)
+    return lines
+
+## A tooltip of `lines` beside tile `r`: above it, or below where there is
+## no room above, kept inside a grid `width` by `height`.
+func tooltip(p: Painter, lines: list[str], r: Rect, width: float, height: float) -> unit!:
+    var longest = 0.0
+    for line in lines:
+        longest = math.max(longest, float(line.length))
+    let w = longest * advance + 16.0
+    let h = float(lines.length) * 17.0 + 10.0
+    var y = r.y - h - 4.0
+    if y < 0.0:
+        y = r.y + r.height + 4.0
+    if y + h > height:
+        y = math.max(0.0, height - h)
+    let x = math.max(0.0, math.min(r.x + 12.0, width - w))
+    p.rounded_rectangle(Rect(x, y, w, h), theme.surface(), 4.0)
+    p.rectangle(Rect(x, y, 2.0, h), theme.accent())
+    for at in 0..<lines.length:
+        p.text(lines[at], x + 8.0, y + 5.0 + float(at) * 17.0, theme.text())

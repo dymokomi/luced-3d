@@ -31,7 +31,9 @@ Prism writes through a synchronized temporary file and atomic replacement.
 `ui_state` writes a separate small Prism preference document at
 `~/.luced-3d/ui.prisma`, at most twice per second and only on change. `dock_layout`
 validates then restores DStack's native layout text using stable panel IDs, with
-splits, tab order/selection and floating rectangles. All panels may float. Invalid
+splits, tab order/selection and floating rectangles. All panels may float.
+Version 7 adds the tool shelf: `shelf_open`, and `shelf_tabs`, each
+context's last tab as `context=tab` pairs joined by `;`. Invalid
 settings fall back to the default workspace with a warning and are preserved for
 inspection rather than silently overwritten. Absolute OS window position and
 monitor assignment are not persisted yet.
