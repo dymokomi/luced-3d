@@ -162,7 +162,7 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   click it again to resume cooking from its inputs.
 - **Tab** follows the current network. At `/ scene` it offers **Geo, CAD, SDF,
   Volumes, GSplats, Materials, Group, Camera, Light, Render**. Startup and File →
-  New open at Scene with one Geo container; double-click Geo to reach its Cube.
+  New open at Scene with one Geo container; double-click Geo to reach its Box.
   The popup title names the active context; press **U** to return to Scene.
   Mesh primitives live in Geo; CAD features, SDF operations,
   volume operations and splat operations live in their corresponding containers.
@@ -181,7 +181,7 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   wires on its two inputs, read inside by **Input** nodes.
   See [context rules](docs/OUTLINER.md) and [network levels](docs/NETWORK-LEVELS.md).
 - Disabling Transform, an Edit node or Merge passes its first input through.
-  Disabling Cube produces empty geometry. Delete/Backspace in Network deletes
+  Disabling Box produces empty geometry. Delete/Backspace in Network deletes
   the picked nodes and wires and disconnects the nodes' consumers.
 - Edit tools appear when the selected Edit node (Edit Mesh, Edit CAD, Edit SDF) is enabled and displayed; a selected and displayed Sketch node (inside a CAD node) is drawn and constrained in the viewport.
   Display it with D in the Network panel before modeling (in the viewport D
@@ -244,7 +244,7 @@ commands and tools stay in this project; the viewport is `luce-ui`'s
 `SceneView` widget.
 
 This is an experimental modeling foundation. Transform/Group gizmos support Move, Rotate, Scale and compensated Pivot;
-Cube supports corner resizing. Shift snaps and +/- changes gizmo size.
+A Box node supports corner resizing (Manipulator, T). Shift snaps and +/- changes gizmo size.
 Limits include 128 nodes, 8,388,608 points/faces and 33,554,432 corners per mesh;
 individual operators and importers can have tighter safety budgets. General
 typed attribute sockets are not implemented. CAD tessellation

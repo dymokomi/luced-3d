@@ -3,10 +3,11 @@
 ## graph that wires nodes together and decides what each level yields is
 ## network.luc's Network.
 from luce_3d.graphics import Vector3, Matrix4
+from luce_geocore.geocore import Mesh
 from geometry_data import GeometryData
 from edit_operations import EditStep
 import node_catalog
-from node_evaluation import source_geometry, evaluate_verb, load_geometry, SourceCache
+from node_evaluation import evaluate_verb, load_geometry, SourceCache
 from geometry_nodes import evaluate_set_verb, is_placement, evaluate_placement, evaluate_attributes, points_deleted
 from cache_node import reads_file, cook_cache, load_frozen
 from usd_nodes import is_usd_path, load_usd, cook_export
@@ -254,6 +255,11 @@ pub class Node:
             if not self.enabled:
                 return data
             return cad_nodes.evaluate_cad(self.kind, v, data, cad_nodes.tag_of(self.id), second, self.texts, self.memo, sketch)
+        # A primitive: its verb run on nothing.
+        if node_catalog.is_mesh_verb(self.kind) and node_catalog.input_count(self.kind) == 0:
+            if not self.enabled:
+                return GeometryData()
+            return evaluate_verb(self.kind, v, self.texts, Mesh.empty())
         if self.kind in node_catalog.sources():
             if not self.enabled:
                 return GeometryData()
@@ -269,7 +275,7 @@ pub class Node:
                 if let cache = sources:
                     return cache.load(self.texts[0].trim(), v[0])
                 return load_geometry(self.texts[0].trim(), v[0])
-            return GeometryData(source_geometry(self.kind, v))
+            error(ui.invalid, f"{self.kind} makes nothing")
         # An Import's source was read and placed by its network, and a
         # Render's camera checked there (Network.render_result).
         if not self.enabled or self.kind in ["Switch", "Null", "Output", "Import", "Render"]:
@@ -329,7 +335,7 @@ pub class Node:
             let tag = f"#{self.id}"
             var result = kind.start(data, tag)
             for at in 0..<self.edits.length:
-                let (next, built) = run_step(kind, self.edits[at], at, result, tag, gesture and at == self.edits.length - 1)
+                let (next, built) = run_step(kind, self.edits[at], at, result, tag, gesture and at == self.edits.length - 1, second)
                 result = next
                 if not built:
                     break
@@ -345,7 +351,10 @@ pub class Node:
             let mesh = operand else return data.passed("The input has no polygons; it passes through")
             if self.guard != 0 and self.guard != mesh.topology_hash():
                 error(ui.invalid, "Group was selected on different topology. Reselect, or Keep IDs.")
-            let result = evaluate_verb(self.kind, v, self.texts, mesh)
+            var reference: Mesh? = none
+            if let wired = second:
+                reference = wired.operand()
+            let result = evaluate_verb(self.kind, v, self.texts, mesh, reference)
             let kept = data.with_operand(result.mesh else mesh)
             kept.warning = result.warning
             return kept

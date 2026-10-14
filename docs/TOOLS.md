@@ -14,6 +14,278 @@ Edit Mesh and the Geo context's nodes.
 
 ### Create
 
+#### Primitives
+
+##### Box
+
+A box of divisions along each axis, its edges rounded by a bevel.
+
+- Node `Box` in Geo; a step of Edit Mesh.
+- Works on components.
+- Gesture: create.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Size | 2.0, 2.0, 2.0 | yes | Width (X), height (Y) and depth (Z). |
+| X divisions | 1 | yes | Faces across the width. |
+| Y divisions | 1 | yes | Faces up the height. |
+| Z divisions | 1 | yes | Faces across the depth. |
+| Bevel | 0.0 | yes | Round every edge to this radius (0: sharp edges). |
+| Bevel segments | 3 | yes | Faces across each rounded edge. |
+| Position | 0.0, 0.0, 0.0 | yes | Where the base's center sits: the shape stands on it along Up. |
+| Up | 0.0, 1.0, 0.0 | yes | The way the shape stands; placed on a surface, its normal there. |
+| Turn | 0.0 | yes | Degrees the shape is turned about Up. |
+| Name piece | off | no | Name its faces' path /box1, /box2, …: a piece of its own (Edit Mesh's steps name theirs). |
+
+##### Grid
+
+A flat grid of rows and columns of quads.
+
+- Node `Grid` in Geo; a step of Edit Mesh.
+- Works on components.
+- Gesture: create.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Width | 2.0 | yes | Its size along X. |
+| Depth | 2.0 | yes | Its size along Z. |
+| Columns | 4 | yes | Faces across the width (up to 2048: 4.2 million points with the rows). |
+| Rows | 4 | yes | Faces across the depth. |
+| Position | 0.0, 0.0, 0.0 | yes | Where the base's center sits: the shape stands on it along Up. |
+| Up | 0.0, 1.0, 0.0 | yes | The way the shape stands; placed on a surface, its normal there. |
+| Turn | 0.0 | yes | Degrees the shape is turned about Up. |
+| Name piece | off | no | Name its faces' path /box1, /box2, …: a piece of its own (Edit Mesh's steps name theirs). |
+
+##### Plane
+
+One flat quad.
+
+- Node `Plane` in Geo; a step of Edit Mesh.
+- Works on components.
+- Gesture: create.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Width | 2.0 | yes | Its size along X. |
+| Depth | 2.0 | yes | Its size along Z. |
+| Position | 0.0, 0.0, 0.0 | yes | Where the base's center sits: the shape stands on it along Up. |
+| Up | 0.0, 1.0, 0.0 | yes | The way the shape stands; placed on a surface, its normal there. |
+| Turn | 0.0 | yes | Degrees the shape is turned about Up. |
+| Name piece | off | no | Name its faces' path /box1, /box2, …: a piece of its own (Edit Mesh's steps name theirs). |
+
+##### Sphere
+
+A UV sphere: rings of quads between two poles of triangles.
+
+- Node `Sphere` in Geo; a step of Edit Mesh.
+- Works on components.
+- Gesture: create.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Radius | 1.0 | yes | Distance from the center to the surface. |
+| Columns | 24 | yes | Points round each ring (Blender's segments). |
+| Rows | 12 | yes | Bands from pole to pole (Blender's rings). |
+| Position | 0.0, 0.0, 0.0 | yes | Where the base's center sits: the shape stands on it along Up. |
+| Up | 0.0, 1.0, 0.0 | yes | The way the shape stands; placed on a surface, its normal there. |
+| Turn | 0.0 | yes | Degrees the shape is turned about Up. |
+| Name piece | off | no | Name its faces' path /box1, /box2, …: a piece of its own (Edit Mesh's steps name theirs). |
+
+##### Icosphere
+
+A sphere of even triangles: the icosahedron subdivided.
+
+- Node `Icosphere` in Geo; a step of Edit Mesh.
+- Works on components.
+- Gesture: create.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Radius | 1.0 | yes | Distance from the center to the surface. |
+| Subdivisions | 2 | yes | Times each triangle of the icosahedron is split into four (0: the icosahedron; 9: 5.2 million triangles). |
+| Position | 0.0, 0.0, 0.0 | yes | Where the base's center sits: the shape stands on it along Up. |
+| Up | 0.0, 1.0, 0.0 | yes | The way the shape stands; placed on a surface, its normal there. |
+| Turn | 0.0 | yes | Degrees the shape is turned about Up. |
+| Name piece | off | no | Name its faces' path /box1, /box2, …: a piece of its own (Edit Mesh's steps name theirs). |
+
+##### Quad Sphere
+
+A sphere of quads with no poles: a divided cube on the sphere.
+
+- Node `Quad Sphere` in Geo; a step of Edit Mesh.
+- Works on components.
+- Gesture: create.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Radius | 1.0 | yes | Distance from the center to the surface. |
+| Divisions | 6 | yes | Quads along each edge of the cube it is made from. |
+| Position | 0.0, 0.0, 0.0 | yes | Where the base's center sits: the shape stands on it along Up. |
+| Up | 0.0, 1.0, 0.0 | yes | The way the shape stands; placed on a surface, its normal there. |
+| Turn | 0.0 | yes | Degrees the shape is turned about Up. |
+| Name piece | off | no | Name its faces' path /box1, /box2, …: a piece of its own (Edit Mesh's steps name theirs). |
+
+##### Cylinder
+
+A cylinder of sides and rows, its caps n-gons, fans or grids.
+
+- Node `Cylinder` in Geo; a step of Edit Mesh.
+- Works on components.
+- Gesture: create.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Radius | 1.0 | yes | Distance from the axis to the side. |
+| Height | 2.0 | yes | Length along Up. |
+| Sides | 24 | yes | Points round each ring. |
+| Rows | 1 | yes | Bands up the side. |
+| Caps | N-gon | yes | How the ends are closed: None leaves them open; Fan makes triangles round a center; Grid, quads (the sides in fours). |
+| Cap rings | 1 | yes | Bands of each cap, from the rim in. |
+| Position | 0.0, 0.0, 0.0 | yes | Where the base's center sits: the shape stands on it along Up. |
+| Up | 0.0, 1.0, 0.0 | yes | The way the shape stands; placed on a surface, its normal there. |
+| Turn | 0.0 | yes | Degrees the shape is turned about Up. |
+| Name piece | off | no | Name its faces' path /box1, /box2, …: a piece of its own (Edit Mesh's steps name theirs). |
+
+##### Cone
+
+A cone, or with a top radius a frustum.
+
+- Node `Cone` in Geo; a step of Edit Mesh.
+- Works on components.
+- Gesture: create.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Radius | 1.0 | yes | The base's radius. |
+| Top radius | 0.0 | yes | The top's radius: 0 closes it to a point, more makes a frustum. |
+| Height | 2.0 | yes | Length along Up. |
+| Sides | 24 | yes | Points round each ring. |
+| Rows | 1 | yes | Bands up the side. |
+| Caps | N-gon | yes | How the base (and a frustum's top) is closed. |
+| Cap rings | 1 | yes | Bands of each cap, from the rim in. |
+| Position | 0.0, 0.0, 0.0 | yes | Where the base's center sits: the shape stands on it along Up. |
+| Up | 0.0, 1.0, 0.0 | yes | The way the shape stands; placed on a surface, its normal there. |
+| Turn | 0.0 | yes | Degrees the shape is turned about Up. |
+| Name piece | off | no | Name its faces' path /box1, /box2, …: a piece of its own (Edit Mesh's steps name theirs). |
+
+##### Pipe
+
+A tube of a wall: an outer and an inner wall joined by rims, or one open wall.
+
+- Node `Pipe` in Geo; a step of Edit Mesh.
+- Works on components.
+- Gesture: create.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Radius | 1.0 | yes | The outer wall's radius. |
+| Thickness | 0.2 | yes | The wall's thickness (below the radius); 0 leaves one open wall. |
+| Height | 2.0 | yes | Length along Up. |
+| Sides | 24 | yes | Points round each ring. |
+| Rows | 1 | yes | Bands up the walls. |
+| Position | 0.0, 0.0, 0.0 | yes | Where the base's center sits: the shape stands on it along Up. |
+| Up | 0.0, 1.0, 0.0 | yes | The way the shape stands; placed on a surface, its normal there. |
+| Turn | 0.0 | yes | Degrees the shape is turned about Up. |
+| Name piece | off | no | Name its faces' path /box1, /box2, …: a piece of its own (Edit Mesh's steps name theirs). |
+
+##### Disc
+
+A flat circle filled by an n-gon, a fan or a grid.
+
+- Node `Disc` in Geo; a step of Edit Mesh.
+- Works on components.
+- Gesture: create.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Radius | 1.0 | yes | Distance from the center to the rim. |
+| Sides | 24 | yes | Points round the rim. |
+| Fill | N-gon | yes | One n-gon, triangles round a center, or a quad grid (the sides in fours). |
+| Rings | 1 | yes | Bands from the rim in. |
+| Position | 0.0, 0.0, 0.0 | yes | Where the base's center sits: the shape stands on it along Up. |
+| Up | 0.0, 1.0, 0.0 | yes | The way the shape stands; placed on a surface, its normal there. |
+| Turn | 0.0 | yes | Degrees the shape is turned about Up. |
+| Name piece | off | no | Name its faces' path /box1, /box2, …: a piece of its own (Edit Mesh's steps name theirs). |
+
+##### Torus
+
+A ring: a tube swept round a circle, resting on its base.
+
+- Node `Torus` in Geo; a step of Edit Mesh.
+- Works on components.
+- Gesture: create.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Radius | 1.0 | yes | From the center to the middle of the tube (the major radius). |
+| Tube radius | 0.3 | yes | The tube's own radius (the minor radius), below the radius. |
+| Segments | 24 | yes | Rings round the torus (major segments). |
+| Sides | 12 | yes | Points round each ring (minor segments). |
+| Twist | 0 | yes | Points each ring turns by over the whole way round (below Sides). |
+| Position | 0.0, 0.0, 0.0 | yes | Where the base's center sits: the shape stands on it along Up. |
+| Up | 0.0, 1.0, 0.0 | yes | The way the shape stands; placed on a surface, its normal there. |
+| Turn | 0.0 | yes | Degrees the shape is turned about Up. |
+| Name piece | off | no | Name its faces' path /box1, /box2, …: a piece of its own (Edit Mesh's steps name theirs). |
+
+##### Capsule
+
+A cylinder with round ends, closed.
+
+- Node `Capsule` in Geo; a step of Edit Mesh.
+- Works on components.
+- Gesture: create.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Radius | 0.5 | yes | The radius of its body and its round ends. |
+| Height | 2.0 | yes | From end to end, the round ends included (at least twice the radius). |
+| Sides | 24 | yes | Points round each ring. |
+| Cap rows | 6 | yes | Bands from each pole to its round end's equator. |
+| Rows | 1 | yes | Bands along the straight body. |
+| Position | 0.0, 0.0, 0.0 | yes | Where the base's center sits: the shape stands on it along Up. |
+| Up | 0.0, 1.0, 0.0 | yes | The way the shape stands; placed on a surface, its normal there. |
+| Turn | 0.0 | yes | Degrees the shape is turned about Up. |
+| Name piece | off | no | Name its faces' path /box1, /box2, …: a piece of its own (Edit Mesh's steps name theirs). |
+
+##### Platonic Solid
+
+A Platonic solid: tetrahedron, cube, octahedron, dodecahedron or icosahedron.
+
+- Node `Platonic` in Geo; a step of Edit Mesh.
+- Works on components.
+- Gesture: create.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Type | Tetrahedron | yes | Which solid. |
+| Radius | 1.0 | yes | From its center to its corners. |
+| Position | 0.0, 0.0, 0.0 | yes | Where the base's center sits: the shape stands on it along Up. |
+| Up | 0.0, 1.0, 0.0 | yes | The way the shape stands; placed on a surface, its normal there. |
+| Turn | 0.0 | yes | Degrees the shape is turned about Up. |
+| Name piece | off | no | Name its faces' path /box1, /box2, …: a piece of its own (Edit Mesh's steps name theirs). |
+
+##### Helix
+
+A spring: a wire swept along a helix.
+
+- Node `Helix` in Geo; a step of Edit Mesh.
+- Works on components.
+- Gesture: create.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Radius | 1.0 | yes | From the axis to the wire's middle. |
+| Wire | 0.1 | yes | The wire's radius. |
+| Turns | 4.0 | yes | Times the wire goes round. |
+| Height | 2.0 | yes | How far it rises from the first turn's start to the last's end (0: a flat spiral of turns on one another). |
+| Steps | 24 | yes | Rings of the wire in each turn. |
+| Sides | 8 | yes | Points round the wire. |
+| Caps | on | yes | Close the wire's two ends. |
+| Position | 0.0, 0.0, 0.0 | yes | Where the base's center sits: the shape stands on it along Up. |
+| Up | 0.0, 1.0, 0.0 | yes | The way the shape stands; placed on a surface, its normal there. |
+| Turn | 0.0 | yes | Degrees the shape is turned about Up. |
+| Name piece | off | no | Name its faces' path /box1, /box2, …: a piece of its own (Edit Mesh's steps name theirs). |
+
 #### Draw
 
 ##### PolyDraw
@@ -29,6 +301,21 @@ Add a polygon through drawn positions, or through the group's points.
 | --- | --- | --- | --- |
 | Snap distance | 0.0 | yes | Drawn corners this close to an existing point use it (0: only where they coincide). |
 | Corners | 0 | no | How many drawn positions follow (x, y, z each); 0 makes the face through the group's points. |
+
+##### Poly Pen
+
+Grow faces from boundary edges and corners, or split edges, at drawn positions.
+
+- Node `Poly Pen` in Geo; a step of Edit Mesh.
+- Works on edges or points.
+- With nothing selected: "Click a boundary edge to extend, a corner point to fill, or an edge to split".
+- Gesture: pen.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Action | Extend | yes | Extend a boundary edge into a face, fill the corner at a point between two boundary edges, or split an edge. |
+| Snap distance | 0.00001 | no | Positions this close to an existing point use it. |
+| Positions | 0 | no | How many positions follow (x, y, z each). |
 
 ### Modify
 
@@ -618,7 +905,7 @@ Laplacian smoothing of the group's points.
 
 ##### Relax
 
-Even out the group's points along the surface, keeping its shape.
+Even out the group's points along the surface, keeping its shape (on the reference surface, given one).
 
 - Node `Relax` in Geo; a step of Edit Mesh.
 - Works on components.
@@ -629,6 +916,21 @@ Even out the group's points along the surface, keeping its shape.
 | Amount | 0.5 | yes | How far each point moves along the surface toward the mean of its neighbors in a round. |
 | Iterations | 5 | yes | Rounds of relaxing. |
 | Keep boundary | on | yes | Hold the points on the mesh's boundary. |
+
+##### Shrinkwrap
+
+Move the group's points onto the reference surface (its second input).
+
+- Node `Shrinkwrap` in Geo; a step of Edit Mesh.
+- Works on objects or points or edges or faces, or everything when nothing is selected.
+- After it runs, a drag in the viewport sets Strength (rightward, its range over 300 points); a click keeps it.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Mode | Nearest | yes | Where each point goes: the nearest place on the surface, or where its normal (or Direction) meets it. |
+| Offset | 0.0 | yes | How far off the surface the points stay, along its normal. |
+| Strength | 1.0 | yes | The share of the way each point moves. |
+| Direction | 0.0, -1.0, 0.0 | yes | Along vector: the line each point moves along, either way. |
 
 ##### Noise
 

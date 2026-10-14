@@ -1351,13 +1351,86 @@ built" below).
   weights; Bridge's loop pairs mode; Grid Fill between two open runs; Extrude to cursor, Matrix
   extrude, Offset Edge Loops' slide (as before).
 
-**Stage 6: primitives in full, and Poly Pen.**
+**Stage 6: primitives in full, and Poly Pen.** **Done 2026-10-13** (see "Stage 6 as built"
+below).
 - Box divisions; ico and quad spheres; caps and rows; Disc; Tube; Capsule; platonic solids;
   interactive placement on surfaces.
 - Poly Pen: extrude an edge by dragging, split, delete under the pointer.
 - Retopology on a reference mesh.
 - Tests: counts per primitive option; Poly Pen dragging a boundary edge adds one quad; a
   retopology quad's points lie on the reference within tolerance.
+
+**Stage 6 as built.**
+- Primitives are luce-geocore verbs like every tool (one `verbs/create_*.lucb` declaration each
+  and a `makers` line; their kernels in a new `primitives/` module, built in place on the pool:
+  `arrays`, `placement`, `boxes`, `lathe`, `round`, `torus`, `polyhedra`). The hand-written
+  Cube, Grid, Sphere, Cylinder, Cone and Torus nodes and Edit Mesh's `Create …` steps are gone:
+  the verbs are the nodes (`Verb.inputs` 0: no input, no group), the Edit Mesh steps and the
+  registry's Create › Primitives tools.
+  - **Box**: size and divisions per axis; Bevel and Bevel segments round every outer edge with
+    PolyBevel (its grid corners); one division each way is `Mesh.cube` point for point.
+  - **Grid** (width, depth, columns, rows) and **Plane**.
+  - **Sphere** (UV: columns, rows), **Icosphere** (0–9 subdivisions, Blender's counts),
+    **Quad Sphere** (a box lattice mapped onto the sphere, no poles), **Capsule** (cap rows,
+    body rows; a sphere at twice its radius).
+  - **Cylinder** and **Cone** (top radius 0: an apex; else a frustum), rows, caps None, N-gon,
+    Fan or Grid (the Coons patch of the circle's four quarters, sides in fours) in Cap rings
+    bands; **Pipe** (Houdini's thick tube: "Tube" is CAD's sweep) and **Disc**.
+  - **Torus** (major and minor segments, Twist by whole points), **Platonic Solid** (the five,
+    the dodecahedron as the icosahedron's dual, resting on a face), **Helix** (a spring).
+  - Every primitive stands on its base at Position along Up, turned by Turn; Name piece (on in
+    Edit Mesh's steps, off for a node) names its faces' path /box1, /box2, …. Text was not in
+    the plan and is not built.
+- Interactive creation: the `create` gesture (`create_gesture.luc`), Modo's and Maya's. A
+  primitive chosen (A, Create, the shelf) waits for a press on the ground or a surface (the
+  surface's normal is Up); a drag draws the base (corner to corner, or out from the center), the
+  release keeps it, and a primitive with a rise takes it from the pointer (`height` along Up,
+  exact under the pointer, or `radius` off the base's circle for a torus's tube) until a click.
+  A click without a drag lets the base follow the pointer. The value box by the pointer shows
+  the value and takes typing (units, arithmetic, "w, d"; Enter keeps it and goes on), the wheel
+  steps the tool's count row, sizes snap to a tenth of the grid's step (Cmd/Ctrl frees them,
+  Shift squares a rectangle), Escape or a right click takes it back. The primitive shows live
+  and is one undo step: a step of the edited Edit Mesh (a piece selected at Object), else a node
+  of its own, shown; the tool stays chosen; Enter before a press makes one at the origin. The
+  verb's `PlaceSpec` names the rows; nothing in the gesture names a primitive.
+- Poly Pen: the `pen` gesture (`pen_gesture.luc`) inside an Edit Mesh (one is added after the
+  displayed node when none is edited), Blender's Poly Build and Maya's Quad Draw. Clicks place
+  corners on the mesh's points, the snap target or any surface, else the grid; every four make a
+  quad, three a triangle, N-gon closes on Enter or the first corner, Strip makes a quad of the
+  first four and another of each next pair (M steps the modes: no shortcut takes M). Ctrl+click
+  extends the boundary edge nearest the click into a quad reaching it, Ctrl+drag an edge drags
+  its quad out and Ctrl+drag a corner point fills the corner (Blender's quad from an edge pair);
+  a drag on a point moves it; Shift+click deletes the face (dissolves the point or edge) under
+  the pointer; Ctrl+Shift+click splits the edge under it, there. Free faces face the viewer.
+  Each action is one step: PolyDraw, the new **Poly Pen** verb (Extend, Fill corner, Split:
+  positions after its parameters, so a node replays it), Delete, Dissolve or Transform
+  Components; a refused action says why and adds nothing.
+- Retopology: Snap Target… (Modify, the right-click menu in an Edit Mesh) waits for a click on an
+  object, the rest of the scene included; placing (the create gesture, Poly Pen, PolyDraw) then
+  lands on it alone (`Workspace.landing_at`), and the edited Edit Mesh gets it as its
+  **Reference**, a second input (an Import of the object into this object's frame). Steps of a
+  reference verb read it: **Shrinkwrap** (Nearest, Along normals, Along vector; Offset, Strength;
+  points whose line misses stay, with a warning) and **Relax**, which then keeps its points on
+  it. As nodes they take the reference as their second input (Shrinkwrap requires it). Clear
+  Snap Target lets every surface count again.
+- Not built: Text; a relax brush in Poly Pen; Poly Pen's edge-loop insertion; turning the base
+  by the pointer while it is drawn (Turn is a row); a choice of drawing a base from its corner or
+  its center.
+- Tests: luce-geocore `primitive_checks` (closed forms: every count per option, every sphere's
+  points on its sphere, Box (1, 1, 1) = Mesh.cube, divided and rounded boxes, caps of each kind
+  and rings by the polygon volume, cone and frustum volumes, pipe walls, disc areas, tori on
+  their tube with twist, closed capsules within their radius of the axis, Platonic counts and
+  resting faces, the helix closed, placement by Position, Up and Turn, pieces) and
+  `retopology_checks` (Shrinkwrap nearest, offset, strength, along a vector with misses, along
+  normals; refused without a reference; Relax on a reference; Poly Pen's quad and triangle, an
+  inner edge refused, a corner filled back, an edge split), both under the allocation-failure
+  sweep; luced-3d `create_gesture_tests`, `poly_pen_tests` and `retopology_tests` from real
+  viewport events, and `tool_parity_tests` (every primitive as a step on nothing, as a node and
+  through its cook; Poly Pen's actions as nodes in `poly_pen_tests`; the Shrinkwrap node with
+  its second input in `retopology_tests`).
+- Benchmarks (luce-geocore docs/API.md): about a million faces of each primitive in 24–32 ms.
+- Preview scenes `tools/preview_create.luc`: create_gallery, create_box, create_surface,
+  pen_strip, retopo_sphere, retopo_shrinkwrap.
 
 **Stage 7: shape, topology and normals tools.**
 - Circularize, Straighten, Space Evenly, Relax, Make Planar.

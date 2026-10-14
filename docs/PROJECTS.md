@@ -46,4 +46,4 @@ captures now accept `--width`, `--height` and `--viewport-only`; actual pixel si
 are reported, since the window system may constrain the requested dimensions.
 
 Context containers, Input and Import nodes use the same v1 schema. Startup and
-File → New open at Scene, with Cube inside Geo.
+File → New open at Scene, with a Box inside Geo.

@@ -1,0 +1,123 @@
+## Poly Pen (POLY-MODELING.md Stage 6) from real viewport events, in an Edit
+## Mesh with nothing wired, seen from straight above (the grid's corners at
+## whole numbers): a strip of two quads drawn in Strip mode (six clicks,
+## six points shared), a quad in Quads mode, Ctrl+click extending the edge
+## nearest the click into a quad, Shift+click deleting a face, Ctrl+Shift+
+## click splitting an edge, a point dragged to a new place, Backspace and
+## Escape on the corners, each action one step and one undo; and every
+## Poly Pen action as a node gives what its step gives.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3
+from luce_geocore.geocore import Mesh, Verbs
+import node_commands
+import modeling_commands
+from tools import ToolRun
+from edit_steps import insert_after_display
+from tool_drag_tests import at, move, press, release, click, drag, key, near
+from create_gesture_tests import empty_on
+
+pub func poly_pen_tests() -> unit!:
+    strip_drawn()
+    node_parity()
+    print("PASS Poly Pen from viewport events: a strip of two quads, a quad, Ctrl+click extends the nearest edge, Shift+click deletes a face, Ctrl+Shift+click splits an edge, a point dragged, Backspace and Escape, one step each; every action as a node gives what its step gives")
+
+func mesh_of(editor: Luce3D) -> Mesh!:
+    return editor.workspace.geometry else trap("no mesh")
+
+func steps(editor: Luce3D) -> int!:
+    return (editor.workspace.selected() else trap("node")).edits.length
+
+## A click at world point `p` with Shift (and Cmd with `command`).
+func shift_click(editor: Luce3D, p: Vector3, command: bool = false) -> unit!:
+    let point = at(editor, p)
+    move(editor, point)
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = point[0], y = point[1], button = 0, shift = true, meta = command))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = point[0], y = point[1], button = 0, shift = true, meta = command))
+    editor.panels.refresh()
+
+## A click at world point `p` with Cmd.
+pub func command_click(editor: Luce3D, p: Vector3) -> unit!:
+    let point = at(editor, p)
+    move(editor, point, meta = true)
+    press(editor, point, meta = true)
+    release(editor, point, meta = true)
+
+func strip_drawn() -> unit!:
+    let editor = empty_on(Vector3(0.5, 8.0, 1.0))
+    let w = editor.workspace
+    modeling_commands.model(w, "Poly Pen")
+    assert(w.edit_tool == "Poly Pen")
+    # M three times: Strip.
+    for _ in 0..<3:
+        key(editor, Key.m)
+    assert(editor.workspace.notice.contains("Strip"))
+    # Across the strip, pair by pair: two quads sharing their middle edge.
+    for p in [Vector3(0.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0), Vector3(0.0, 0.0, 1.0), Vector3(1.0, 0.0, 1.0), Vector3(0.0, 0.0, 2.0), Vector3(1.0, 0.0, 2.0)]:
+        click(editor, at(editor, p))
+    assert(steps(editor) == 2)
+    var mesh = mesh_of(editor)
+    assert(mesh.face_count() == 2 and mesh.point_count() == 6 and mesh.edge_count() == 7)
+    assert(mesh.face_normal(0).y > 0.99 and mesh.face_normal(1).y > 0.99)
+    # Quads (M again): four clicks, one face; Backspace takes a corner
+    # back first.
+    key(editor, Key.m)
+    for p in [Vector3(-2.0, 0.0, 0.0), Vector3(-1.0, 0.0, 0.0), Vector3(-1.0, 0.0, 3.0)]:
+        click(editor, at(editor, p))
+    key(editor, Key.backspace)
+    for p in [Vector3(-1.0, 0.0, 1.0), Vector3(-2.0, 0.0, 1.0)]:
+        click(editor, at(editor, p))
+    assert(steps(editor) == 3 and mesh_of(editor).face_count() == 3 and mesh_of(editor).point_count() == 10)
+    # Escape drops corners placed, the tool stays.
+    click(editor, at(editor, Vector3(2.5, 0.0, 1.0)))
+    key(editor, Key.escape)
+    assert(w.edit_tool == "Poly Pen" and steps(editor) == 3)
+    # Ctrl+click beside the edge x = 1, z 0..1: its quad reaches x = 2.
+    command_click(editor, Vector3(2.0, 0.0, 0.5))
+    mesh = mesh_of(editor)
+    assert(steps(editor) == 4 and mesh.face_count() == 4 and mesh.point_count() == 12)
+    near(mesh.bounds().maximum.x, 2.0, 0.00001)
+    assert(mesh.face_normal(3).y > 0.99)
+    # Shift+click on the first quad deletes it.
+    shift_click(editor, Vector3(0.5, 0.0, 0.5))
+    assert(steps(editor) == 5 and mesh_of(editor).face_count() == 3)
+    # Ctrl+Shift+click on the strip's far edge (z = 2) splits it.
+    let points = mesh_of(editor).point_count()
+    shift_click(editor, Vector3(0.5, 0.0, 2.0), command = true)
+    assert(steps(editor) == 6 and mesh_of(editor).point_count() == points + 1)
+    # A point dragged: the corner at (0, 0, 2) moves to (-0.5, 0, 2.5).
+    drag(editor, at(editor, Vector3(0.0, 0.0, 2.0)), at(editor, Vector3(-0.5, 0.0, 2.5)))
+    assert(steps(editor) == 7)
+    near(mesh_of(editor).bounds().maximum.z, 2.5, 0.00001)
+    # One undo each.
+    w.undo()
+    assert(steps(editor) == 6)
+    near(mesh_of(editor).bounds().maximum.z, 2.0, 0.00001)
+
+## Each Poly Pen action as a node after the Edit Mesh's quad (points 0 to 3
+## in click order: edge p0-1 runs along z = 0) gives what the step gives.
+func node_parity() -> unit!:
+    let editor = empty_on(Vector3(0.5, 8.0, 1.0))
+    let w = editor.workspace
+    modeling_commands.model(w, "Poly Pen")
+    for p in [Vector3(0.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0), Vector3(1.0, 0.0, 1.0), Vector3(0.0, 0.0, 1.0)]:
+        click(editor, at(editor, p))
+    let quad = mesh_of(editor)
+    let edit = w.network.display
+    let actions: list[list[float]] = [[0.0, 0.00001, 2.0, 0.0, 0.0, -1.0, 1.0, 0.0, -1.0], [0.0, 0.00001, 1.0, 0.5, 0.0, -1.0], [2.0, 0.00001, 1.0, 0.5, 0.0, 0.0]]
+    let faces = [2, 2, 1]
+    let points = [6, 5, 5]
+    for at_action in 0..<actions.length:
+        let numbers = actions[at_action]
+        let step = Verbs.run("Poly Pen", quad, "p0-1", 2, numbers).mesh()
+        assert(step.face_count() == faces[at_action] and step.point_count() == points[at_action])
+        w.perform("Poly Pen node", func () -> unit!:
+            let made = insert_after_display(w, ToolRun("Poly Pen", numbers))
+            made.texts[0] = "p0-1"
+            made.values[15] = 2.0
+            w.rebuild())
+        let shown = w.geometry else trap("node")
+        assert(shown.point_count() == step.point_count() and shown.face_count() == step.face_count())
+        w.undo()
+        node_commands.select_node(w, edit)

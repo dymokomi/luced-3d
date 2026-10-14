@@ -1,0 +1,83 @@
+## Retopology (POLY-MODELING.md Stage 6): a snap target, the object new
+## points land on alone (a scan to draw clean faces over), after Blender's
+## face-project snapping and Houdini's TopoBuild reference. Snap Target
+## waits for a click on an object in the viewport (the rest of the scene
+## around a context counts); while an Edit Mesh is edited the target is also
+## wired into its Reference input (the object itself beside it, else an
+## Import of it, carried into this object's frame), so its Shrinkwrap and
+## Relax steps keep to it and replay without the viewport. Placing (the
+## create gesture, Poly Pen, PolyDraw) lands on the target alone
+## (Workspace.landing_at); Clear Snap Target lets every surface count again.
+from workspace import Workspace
+from node import Node
+import import_node
+import node_paths
+import view_projection as gm
+
+## Snap Target chosen: the next click in the viewport picks the object.
+pub func pick(w: Workspace) -> unit!:
+    w.picking_target = true
+    w.notice = "Snap Target: click the object to snap to (Esc cancels)"
+    w.revision += 1
+
+## The click picking the target at (x, y); whether it took one.
+pub func picked(w: Workspace, x: float, y: float, width: float, height: float) -> bool!:
+    w.picking_target = false
+    let id = object_under(w, x, y, width, height)
+    if id < 0:
+        w.notice = "Snap Target: nothing there"
+        w.revision += 1
+        return false
+    choose(w, id)
+    return true
+
+## The node whose drawn mesh the ray through (x, y) meets first, in the
+## context or around it (-1: none).
+pub func object_under(w: Workspace, x: float, y: float, width: float, height: float) -> int!:
+    let origin = gm.origin(w, x, y, width, height)
+    let direction = gm.ray(w, x, y, width, height).normalized()
+    var nearest = -1.0
+    var found = -1
+    for node in w.network.nodes:
+        for mesh in w.meshes_of(node.id):
+            let distance = mesh.ray_distance(origin, direction)
+            if distance >= 0.0 and (nearest < 0.0 or distance < nearest):
+                nearest = distance
+                found = node.id
+    return found
+
+## Node `id` as the snap target, wired into the edited Edit Mesh's
+## Reference (one undo step).
+pub func choose(w: Workspace, id: int) -> unit!:
+    let target = w.network.find(id) else return
+    w.snap_target = id
+    w.notice = f"Snap target: {target.name}"
+    w.revision += 1
+    if not w.editing():
+        return
+    let edit = w.selected() else return
+    if edit.kind != "Edit Mesh" or edit.id == id or edit.inputs.length < 2:
+        return
+    w.perform("Snap target", func () -> unit!:
+        if target.parent == edit.parent:
+            w.network.connect(id, edit.id, 1)
+        else:
+            w.network.connect(imported(w, edit, target).id, edit.id, 1)
+        w.network.invalidate(edit.id)
+        w.rebuild())
+
+## An Import of `target` beside `edit`, carried into its object's frame.
+func imported(w: Workspace, edit: Node, target: Node) -> Node!:
+    let made = w.network.add(import_node.kind_name, edit.x + 180.0, edit.y - 90.0)
+    made.parent = edit.parent
+    made.texts[import_node.object_slot] = node_paths.absolute(w.network.nodes, target)
+    made.values[import_node.transform_slot] = import_node.into_this_object
+    return made
+
+## Clear Snap Target: every surface counts again (the Reference stays
+## wired).
+pub func clear(w: Workspace) -> unit!:
+    w.snap_target = -1
+    w.picking_target = false
+    w.notice = "Snap target cleared"
+    w.revision += 1

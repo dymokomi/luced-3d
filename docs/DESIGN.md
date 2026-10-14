@@ -159,7 +159,7 @@ cancels. Undo never recooks when the target state is in the result store.
 
 ## Gizmos
 
-Cube corner handles resize dimensions while holding the opposite corner.
+A Box node's corner handles resize it in its own frame while holding the opposite corner.
 Transform and Group offer Move, Rotate, Scale and Pivot through viewport icons or
 W/E/R/P. Move and Pivot use world axes and XY/XZ/YZ plane handles; Scale follows
 the node's rotation; Rotate edits Euler components. Center handles give free

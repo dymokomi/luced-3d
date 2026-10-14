@@ -1,0 +1,521 @@
+## The `create` gesture (POLY-MODELING.md Stage 6): a primitive drawn in the
+## viewport, after Modo's, Maya's and Plasticity's interactive primitives.
+## With a primitive chosen (A, Create, the shelf), a press on the ground or
+## on a surface starts its base there (standing along the surface's normal;
+## on the ground, +Y), a drag draws the base (two corners: a box's or a
+## grid's width and depth; else out from the center: its radius) and the
+## release keeps it; a primitive with a rise (a box's height, a cylinder's,
+## a torus's tube) then takes it from the pointer, no button held, until a
+## click. A click without a drag lets the base follow the pointer until the
+## next click. While it is drawn:
+## - the primitive itself shows, live (its step's or node's values change);
+## - a box by the pointer shows the value being set and takes typing (units
+##   and arithmetic; a base of two sizes takes "width, depth"); Enter keeps
+##   it and goes on;
+## - the wheel steps the tool's count row (sides, columns, subdivisions);
+## - sizes snap to a tenth of the grid's step, Cmd or Ctrl frees them; Shift
+##   makes a rectangle square;
+## - Escape or a right click takes the primitive back.
+## A primitive is one undo step: a step of the edited Edit Mesh (its own
+## piece, selected at the Object level), else a node of its own, shown. The
+## tool stays chosen for the next one; Enter before a press makes one at the
+## origin; Escape leaves the tool. Nothing here names a primitive: the
+## tool's `place` (luce-geocore's PlaceSpec) says which rows a drag sets.
+from luce_ui.ui import Painter, Event
+from luce_ui import ui
+from luce_gpu.gpu import Rect
+from luce_window.input import EventKind, Key, ScrollUnit
+from luce_3d.graphics import Vector3, EditOverlay, Renderer, WireRenderer
+from luce_geocore.geocore import Verbs
+from workspace import Workspace
+from tool_record import Tool, ToolPlace
+from edit_operations import EditStep
+from snapping import grid_step, stepped
+from surface_snap import land
+import tool_registry
+import edit_mesh
+import node_commands
+import node_room
+import view_projection as gm
+import theme
+import units
+import text as characters
+from luce_std import math
+
+## Trackpad points to one wheel step, and the smallest size a drag makes.
+let scroll_step = 40.0
+let smallest = 0.001
+
+pub class CreateGesture:
+    let w: Workspace
+    let overlay: EditOverlay
+    ## 0 waiting for a press, 1 drawing the base, 2 raising it.
+    pub var stage: int = 0
+    ## Whether the base is drawn with the button held (else it follows the
+    ## pointer after a click), and whether the press moved yet.
+    var held: bool = false
+    var moved: bool = false
+    var press_x: float = 0.0
+    var press_y: float = 0.0
+    pub var pointer_x: float = -1.0
+    pub var pointer_y: float = 0.0
+    ## The base's first point, the way it stands and its frame's X and Z.
+    var start: Vector3
+    var up: Vector3
+    var x_axis: Vector3
+    var z_axis: Vector3
+    ## The primitive's node (an Edit node when it is a step) and its values.
+    var node: int = -1
+    var step: bool = false
+    var values: list[float]
+    ## What was typed, and whether it reads.
+    var typed: str = ""
+    var valid: bool = true
+    var scrolled: float = 0.0
+    ## Whether the last event moved what is drawn (a frame is due).
+    pub var changed: bool = false
+
+    pub func init(self, w: Workspace, overlay: EditOverlay):
+        self.w = w
+        self.overlay = overlay
+        self.start = Vector3()
+        self.up = Vector3(0.0, 1.0, 0.0)
+        self.x_axis = Vector3(1.0, 0.0, 0.0)
+        self.z_axis = Vector3(0.0, 0.0, 1.0)
+        self.values = []
+
+    ## The primitive chosen, if one is.
+    pub func tool(self) -> Tool?:
+        if tool_registry.gesture_of(self.w.edit_tool) != "create":
+            return none
+        let tool = tool_registry.find(self.w.edit_tool) else return none
+        return tool if tool.place != none else none
+
+    ## Whether a primitive is being drawn (typing goes to it).
+    pub func live(self) -> bool:
+        return self.stage > 0 and self.tool() != none
+
+    ## What the notice line says.
+    func hint(self, tool: Tool) -> str:
+        let place = tool.place else return ""
+        if self.stage == 0:
+            return f"{tool.label}: drag on the ground or a surface for its base; Enter makes one at the origin, Esc leaves"
+        if self.stage == 1:
+            let what = "corner to corner" if place.base == "rect" else "out from the center"
+            return f"{tool.label}: draw the base {what} (type a size, Enter keeps it; Shift square, Cmd free, the wheel {self.wheel_name(tool)})"
+        let rise = "the tube" if place.rise_mode == "radius" else "the height"
+        return f"{tool.label}: move for {rise}, click to finish (type a value, Enter keeps it; Esc takes it back)"
+
+    func wheel_name(self, tool: Tool) -> str:
+        let row = tool.row_at(tool.wheel) else return "does nothing"
+        return f"sets {row.name.lower()}"
+
+    ## Pointer, wheel and key events while a primitive is chosen; whether
+    ## one was used.
+    pub func event(self, event: Event, width: float, height: float, renderer: Renderer?) -> bool!:
+        self.changed = false
+        let tool = self.tool() else return self.idle()
+        let place = tool.place else return false
+        if event.kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up]:
+            self.pointer_x = event.x
+            self.pointer_y = event.y
+        if event.kind == EventKind.key_down:
+            if event.key == Key.escape:
+                if self.stage > 0:
+                    self.cancel(tool)
+                else:
+                    self.w.end_modal_tool()
+                    self.w.notice = ""
+                    self.w.revision += 1
+                return true
+            if event.key == Key.enter:
+                if self.stage == 0:
+                    self.at_origin(tool)
+                else:
+                    self.accept(tool, place)
+                return true
+            return false
+        if event.kind == EventKind.scroll and self.stage > 0 and tool.wheel >= 0:
+            self.wheel(tool, event)
+            return true
+        if event.cancelled or event.kind == EventKind.focus_lost:
+            if self.stage > 0:
+                self.cancel(tool)
+            return false
+        if event.alt:
+            return false
+        let free = event.meta or event.control
+        if event.kind == EventKind.pointer_moved:
+            if not event.inside:
+                return false
+            self.changed = true
+            if self.stage == 0:
+                _ = land(self.w, self.overlay, renderer, event.x, event.y, width, height, free)
+                return false
+            if self.stage == 1:
+                if self.held and not self.moved and math.hypot(event.x - self.press_x, event.y - self.press_y) < 4.0:
+                    return true
+                self.moved = true
+                self.draw_base(place, event.x, event.y, width, height, free, event.shift)
+            else:
+                self.raise(place, event.x, event.y, width, height, free)
+            return true
+        if event.kind == EventKind.pointer_down and event.inside:
+            if event.button == 1 and self.stage > 0:
+                self.cancel(tool)
+                return true
+            if event.button != 0:
+                return false
+            self.changed = true
+            if self.stage == 0:
+                let landing = land(self.w, self.overlay, renderer, event.x, event.y, width, height, free)
+                self.begin(tool, place, landing.point, landing.normal)
+                self.held = true
+                self.moved = false
+                self.press_x = event.x
+                self.press_y = event.y
+                return true
+            # A click following the base, or setting the rise, keeps it.
+            self.held = false
+            self.next_stage(tool, place)
+            return true
+        if event.kind == EventKind.pointer_up and event.button == 0 and self.stage == 1 and self.held:
+            self.held = false
+            if self.moved:
+                self.next_stage(tool, place)
+            else:
+                self.w.notice = self.hint(tool)
+            self.changed = true
+            return true
+        return false
+
+    ## No primitive chosen: anything begun is taken back.
+    func idle(self) -> bool!:
+        if self.stage > 0:
+            if self.w.in_transaction():
+                self.w.cancel()
+            self.stage = 0
+        return false
+
+    ## The base's first point at `point`, standing along `normal`: the
+    ## primitive's step or node, its values live from here on.
+    func begin(self, tool: Tool, place: ToolPlace, point: Vector3, normal: Vector3) -> unit!:
+        self.start = point
+        self.up = normal.normalized()
+        self.typed = ""
+        self.valid = true
+        self.frame_axes()
+        self.values = tool.starting()
+        self.put_vector(place.up, self.up)
+        self.put_vector(place.position, point)
+        self.size_to(place, smallest, smallest)
+        self.w.begin(f"Create {tool.label}")
+        self.step = self.w.editing()
+        if self.step:
+            # An Edit Mesh's primitive is a piece of its own.
+            self.values = edit_mesh.named(self.values, place)
+            let node = self.w.selected() else return
+            self.node = node.id
+            node.edits.append(EditStep(tool.name, "", 0, self.values, 0))
+            self.w.network.invalidate(node.id)
+            self.w.adopt_output = true
+            self.w.pending_level = 0
+            self.w.rebuild()
+        else:
+            var x = 40.0
+            var y = 70.0
+            if let near = self.w.selected():
+                x = near.x
+                y = near.y + node_room.row
+            node_commands.add_node(self.w, tool.name, x, y)
+            let made = self.w.selected() else return
+            self.node = made.id
+            # A node keeps every value slot: the primitive's numbers in its.
+            for at in 0..<self.values.length:
+                made.values[at] = self.values[at]
+            self.values = made.values.copy()
+            self.w.network.invalidate(made.id)
+            # Adding a node leaves modal tools: the primitive stays chosen.
+            self.w.edit_tool = tool.label
+            self.w.rebuild()
+        self.w.pending_changed = true
+        self.stage = 1
+        self.w.notice = self.hint(tool)
+
+    ## The frame the base is drawn in: the primitive's own (Turn 0).
+    func frame_axes(self) -> unit!:
+        self.x_axis = Verbs.placement_axis(self.up, 0.0, 0)
+        self.z_axis = Verbs.placement_axis(self.up, 0.0, 2)
+
+    func put_vector(self, slot: int, value: Vector3):
+        if slot < 0:
+            return
+        self.values[slot] = value.x
+        self.values[slot + 1] = value.y
+        self.values[slot + 2] = value.z
+
+    ## The base's sizes: a rectangle's width and depth, or the radius
+    ## (`depth` unused).
+    func size_to(self, place: ToolPlace, width: float, depth: float):
+        self.values[place.size] = width
+        if place.base == "rect":
+            self.values[place.depth] = depth
+
+    ## Show the values live.
+    func show(self) -> unit!:
+        if not self.w.in_transaction():
+            return
+        if self.step:
+            self.w.preview_step(self.values)
+            return
+        # The node is new in this transaction: its values change in place.
+        let node = self.w.network.find(self.node) else return
+        node.values = self.values.copy()
+        self.w.dragging = true
+        self.w.pending_changed = true
+        self.w.network.invalidate(node.id)
+        self.w.rebuild()
+
+    ## The step a size snaps to.
+    func snap_step(self) -> float:
+        return grid_step(self.w.view.distance) / 10.0
+
+    ## The base drawn to the pointer at (x, y): on the base's plane.
+    func draw_base(self, place: ToolPlace, x: float, y: float, width: float, height: float, free: bool, square: bool) -> unit!:
+        if self.typed != "":
+            return
+        let p = gm.plane(self.w, x, y, width, height, self.start, self.up)
+        let d = p.subtract(self.start)
+        let step = self.snap_step()
+        if place.base == "rect":
+            var du = stepped(d.dot(self.x_axis), step, not free)
+            var dv = stepped(d.dot(self.z_axis), step, not free)
+            if square:
+                let side = math.max(math.abs(du), math.abs(dv))
+                du = side if du >= 0.0 else -side
+                dv = side if dv >= 0.0 else -side
+            self.rect(place, du, dv)
+        else:
+            self.size_to(place, math.max(smallest, stepped(d.length(), step, not free)), 0.0)
+        self.show()
+
+    ## A rectangle from the first corner by `du` along X and `dv` along Z:
+    ## its center is the base's Position.
+    func rect(self, place: ToolPlace, du: float, dv: float):
+        self.size_to(place, math.max(smallest, math.abs(du)), math.max(smallest, math.abs(dv)))
+        self.put_vector(place.position, self.start.add(self.x_axis.multiply_scalar(du * 0.5)).add(self.z_axis.multiply_scalar(dv * 0.5)))
+
+    ## The base's center (Position).
+    func center(self, place: ToolPlace) -> Vector3:
+        let at = place.position
+        return Vector3(self.values[at], self.values[at + 1], self.values[at + 2])
+
+    ## The rise from the pointer at (x, y): a height where the view ray
+    ## passes nearest the line up from the base's center (exact under the
+    ## pointer, as an arrow handle is); a tube off the base's circle.
+    func raise(self, place: ToolPlace, x: float, y: float, width: float, height: float, free: bool) -> unit!:
+        if self.typed != "" or place.rise < 0:
+            return
+        let center = self.center(place)
+        let step = self.snap_step()
+        if place.rise_mode == "radius":
+            let p = gm.plane(self.w, x, y, width, height, center, self.up)
+            let major = self.values[place.size]
+            let off = math.abs(p.subtract(center).length() - major)
+            self.values[place.rise] = math.max(smallest, math.min(major * 0.999, stepped(off, step, not free)))
+            self.show()
+            return
+        let origin = gm.origin(self.w, x, y, width, height)
+        let ray = gm.ray(self.w, x, y, width, height).normalized()
+        # The closest points of the axis line and the ray: the axis's t.
+        let r = center.subtract(origin)
+        let b = self.up.dot(ray)
+        let d = self.up.dot(r)
+        let e = ray.dot(r)
+        let denominator = 1.0 - b * b
+        if denominator < 0.000001:
+            return
+        let t = stepped((b * e - d) / denominator, step, not free)
+        self.set_height(place, t)
+        self.show()
+
+    ## Height `h` along the base's Up; below the base it stands the other
+    ## way.
+    func set_height(self, place: ToolPlace, h: float):
+        self.values[place.rise] = math.max(smallest, math.abs(h))
+        self.put_vector(place.up, self.up.multiply_scalar(-1.0) if h < 0.0 else self.up)
+
+    ## The base kept: on to the rise, or done.
+    func next_stage(self, tool: Tool, place: ToolPlace) -> unit!:
+        self.typed = ""
+        self.valid = true
+        if self.stage == 1 and place.rise >= 0:
+            self.stage = 2
+            self.w.notice = self.hint(tool)
+            return
+        self.finish(tool)
+
+    ## Enter: what was typed, then the next stage.
+    func accept(self, tool: Tool, place: ToolPlace) -> unit!:
+        if self.typed != "" and not self.valid:
+            return
+        self.held = false
+        self.next_stage(tool, place)
+
+    ## The primitive made: one undo step; the tool stays for the next one.
+    func finish(self, tool: Tool) -> unit!:
+        self.stage = 0
+        self.typed = ""
+        if self.w.in_transaction():
+            self.w.commit()
+        self.w.last_tool = tool.label
+        self.w.notice = self.hint(tool)
+        self.w.revision += 1
+
+    ## Escape or a right click: the primitive taken back.
+    func cancel(self, tool: Tool) -> unit!:
+        self.stage = 0
+        self.typed = ""
+        if self.w.in_transaction():
+            self.w.cancel()
+        self.w.edit_tool = tool.label
+        self.w.notice = self.hint(tool)
+        self.w.revision += 1
+
+    ## Enter before a press: one at the origin, at its starting values.
+    func at_origin(self, tool: Tool) -> unit!:
+        let place = tool.place else return
+        self.begin(tool, place, Vector3(), Vector3(0.0, 1.0, 0.0))
+        var starting = tool.starting()
+        if self.step:
+            starting = edit_mesh.named(starting, place)
+        for at in 0..<starting.length:
+            self.values[at] = starting[at]
+        self.show()
+        self.finish(tool)
+
+    ## The wheel steps the tool's count row.
+    func wheel(self, tool: Tool, event: Event) -> unit!:
+        var steps = 0
+        if event.scroll_unit == ScrollUnit.points:
+            self.scrolled += event.scroll_y
+            while self.scrolled >= scroll_step:
+                self.scrolled -= scroll_step
+                steps += 1
+            while self.scrolled <= -scroll_step:
+                self.scrolled += scroll_step
+                steps -= 1
+        else:
+            steps = 1 if event.scroll_y > 0.0 else (-1 if event.scroll_y < 0.0 else 0)
+        let row = tool.row_at(tool.wheel) else return
+        self.values[row.slot] = math.max(row.minimum, math.min(row.maximum, math.round(self.values[row.slot]) + float(steps)))
+        self.changed = true
+        self.show()
+
+    ## A key or typed character while a primitive is drawn: it goes into the
+    ## value box (Enter and Escape are left to `event`); whether it was used.
+    pub func typing(self, event: Event) -> bool!:
+        let tool = self.tool() else return false
+        let place = tool.place else return false
+        if self.stage == 0:
+            return false
+        if event.kind == EventKind.key_down:
+            if event.meta or event.control:
+                return false
+            if event.key == Key.backspace:
+                self.typed = self.typed[0..<self.typed.length - 1] if self.typed.length > 0 else ""
+                self.read(place)
+                return true
+            return not (event.key in [Key.escape, Key.enter, Key.tab])
+        if event.kind == EventKind.text_input:
+            if event.codepoint < 32 or event.codepoint == 127:
+                return true
+            self.typed = self.typed + characters.from_code(event.codepoint)
+            self.read(place)
+            return true
+        return false
+
+    ## The typed text as the stage's values, shown live when it reads: the
+    ## base's size ("w" or "w, d" for a rectangle), else the rise.
+    func read(self, place: ToolPlace) -> unit!:
+        self.changed = true
+        if self.typed == "":
+            self.valid = true
+            return
+        let shown_in = units.document_unit(self.w)
+        let parts = self.typed.split(",")
+        let numbers: list[float] = []
+        for part in parts:
+            let reading = ui.evaluate_number(part.trim(), 0.0, shown_in) else return self.invalid()
+            numbers.append(reading)
+        if self.stage == 1:
+            if place.base == "rect":
+                if numbers.length > 2:
+                    return self.invalid()
+                let depth = numbers[1] if numbers.length == 2 else numbers[0]
+                self.rect(place, numbers[0], depth)
+            elif numbers.length == 1:
+                self.size_to(place, math.max(smallest, math.abs(numbers[0])), 0.0)
+            else:
+                return self.invalid()
+        else:
+            if numbers.length != 1 or place.rise < 0:
+                return self.invalid()
+            if place.rise_mode == "radius":
+                self.values[place.rise] = math.max(smallest, math.min(self.values[place.size] * 0.999, math.abs(numbers[0])))
+            else:
+                self.set_height(place, numbers[0])
+        self.valid = true
+        self.show()
+
+    func invalid(self) -> unit:
+        self.valid = false
+
+    ## The base's outline and the value box by the pointer.
+    pub func draw(self, p: Painter, width: float, height: float) -> unit!:
+        let tool = self.tool() else return
+        let place = tool.place else return
+        if self.stage == 0:
+            return
+        let center = self.center(place)
+        let lines: list[Vector3] = []
+        if place.base == "rect":
+            let a = self.x_axis.multiply_scalar(self.values[place.size] * 0.5)
+            let b = self.z_axis.multiply_scalar(self.values[place.depth] * 0.5)
+            let corners = [center.subtract(a).subtract(b), center.add(a).subtract(b), center.add(a).add(b), center.subtract(a).add(b)]
+            for at in 0..<4:
+                lines.append(corners[at])
+                lines.append(corners[(at + 1) % 4])
+        else:
+            let radius = self.values[place.size]
+            for at in 0..<48:
+                for end in [at, at + 1]:
+                    let angle = float(end) * math.pi / 24.0
+                    lines.append(center.add(self.x_axis.multiply_scalar(math.cos(angle) * radius)).add(self.z_axis.multiply_scalar(math.sin(angle) * radius)))
+        WireRenderer.lines(lines, self.w.view.camera, p.target(), theme.accent(), 2.0)
+        if self.pointer_x < 0.0:
+            return
+        let text = f"{self.label(place)}  {self.shown(place)}"
+        let r = Rect(self.pointer_x + 18.0, self.pointer_y + 14.0, math.max(110.0, float(text.length) * 7.5 + 14.0), 22.0)
+        p.rounded_rectangle(r, theme.surface_raised() if self.typed != "" else theme.surface(), 3.0)
+        let edge = theme.warning() if not self.valid else theme.accent()
+        p.rectangle(Rect(r.x, r.y, r.width, 1.5), edge)
+        p.rectangle(Rect(r.x, r.y + r.height - 1.5, r.width, 1.5), edge)
+        p.text(text, r.x + 6.0, r.y + 3.0, theme.text())
+
+    ## The value being set's name.
+    func label(self, place: ToolPlace) -> str:
+        if self.stage == 2:
+            return "Tube" if place.rise_mode == "radius" else "Height"
+        return "Size" if place.base == "rect" else "Radius"
+
+    ## The box's text: what was typed, else the values.
+    func shown(self, place: ToolPlace) -> str!:
+        if self.typed != "":
+            return self.typed
+        let shown_in = units.document_unit(self.w)
+        if self.stage == 2:
+            return units.length_text(self.values[place.rise], shown_in)
+        if place.base == "rect":
+            return f"{units.length_text(self.values[place.size], shown_in)} × {units.length_text(self.values[place.depth], shown_in)}"
+        return units.length_text(self.values[place.size], shown_in)

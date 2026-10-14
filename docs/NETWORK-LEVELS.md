@@ -155,7 +155,7 @@ Renaming a node, or a container on a path, and grouping a source, a
 container above it or the Import itself rewrite every exact Object and
 Transform Object path in the same undo step, absolute as absolute and
 relative as relative; wildcard paths stay as typed, and a deleted source
-leaves the path and the Import's error ("Nothing at /Geo 2/Cube 1"). The
+leaves the path and the Import's error ("Nothing at /Geo 2/Box 1"). The
 node path system does this for every node path row alike
 ([NODE-PATHS.md](NODE-PATHS.md#following-renames-and-regrouping)).
 

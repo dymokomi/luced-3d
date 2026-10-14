@@ -1,0 +1,165 @@
+## Primitives drawn in the viewport (POLY-MODELING.md Stage 6), from real
+## viewport events in an Edit Mesh with nothing wired, seen from above and
+## in front (the grid's step 0.5 there, sizes snapping to its tenth):
+## - Box: a drag on the ground from the origin to (1, 0, 0.6) draws its
+##   base, the pointer then raises it to 1.5, a click makes it, one undo
+##   step, its own piece selected; Escape halfway takes it back;
+## - Sphere: a click lets the radius follow, typed 0.75 and Enter keep it;
+## - Cylinder: typed 2, Enter, typed 3, Enter: radius and height; the wheel
+##   steps its sides while it is drawn;
+## - Torus: the tube from the pointer's distance off the base's circle;
+## - on a surface: a cylinder drawn on a box's top stands on it, one on its
+##   side stands along +X;
+## - Enter before a press makes one at the origin;
+## - outside an Edit node the primitive is a node of its own, shown.
+from app import Luce3D
+from luce_window.input import Key
+from luce_3d.graphics import Vector3
+import node_commands
+import modeling_commands
+from tool_drag_tests import at, move, click, drag, key, type_text, wheel, last, near
+
+pub func create_gesture_tests() -> unit!:
+    box_drawn()
+    sphere_typed()
+    cylinder_typed()
+    torus_tube()
+    on_surfaces()
+    as_node()
+    print("PASS primitives drawn from viewport events: a box's base dragged on the ground and raised by the pointer, one undo step, Escape takes it back; a sphere's radius typed; a cylinder's radius and height typed, the wheel's sides; a torus's tube; cylinders standing on a box's top and side; Enter at the origin; a node of its own outside an Edit node")
+
+## An editor showing an Edit Mesh with nothing wired (or nothing at all
+## when not `edit`), seen from `eye`.
+pub func empty_on(eye: Vector3, edit: bool = true) -> Luce3D!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1400.0, 900.0)
+    node_commands.delete_selected(w)
+    if edit:
+        node_commands.add_node(w, "Edit Mesh", 0.0, 0.0)
+    w.view.camera.set_position(eye)
+    w.view.camera.look_at(Vector3(0.0, 0.0, 0.0))
+    editor.panels.refresh()
+    editor.app.focus(editor.panels.view.layout())
+    return editor
+
+func edits(editor: Luce3D) -> int!:
+    return (editor.workspace.selected() else trap("node")).edits.length
+
+func box_drawn() -> unit!:
+    let editor = empty_on(Vector3(0.0, 6.0, 5.0))
+    let w = editor.workspace
+    modeling_commands.model(w, "Box")
+    assert(w.edit_tool == "Box")
+    let before = w.history.cursor
+    drag(editor, at(editor, Vector3()), at(editor, Vector3(1.0, 0.0, 0.6)))
+    var numbers = last(editor)
+    near(numbers[0], 1.0)
+    near(numbers[2], 0.6)
+    let center = Vector3(numbers[8], numbers[9], numbers[10])
+    near(center.x, 0.5)
+    near(center.z, 0.3)
+    # The pointer over the point 1.5 above the base's center: its height.
+    move(editor, at(editor, center.add(Vector3(0.0, 1.5, 0.0))))
+    near(last(editor)[1], 1.5)
+    click(editor, at(editor, center.add(Vector3(0.0, 1.5, 0.0))))
+    assert(w.history.cursor == before + 1 and edits(editor) == 1)
+    let bounds = (w.geometry else trap("box")).bounds()
+    near(bounds.minimum.x, 0.0, 0.00001)
+    near(bounds.maximum.x, 1.0, 0.00001)
+    near(bounds.maximum.y, 1.5, 0.00001)
+    near(bounds.maximum.z, 0.6, 0.00001)
+    # Its piece, selected at the Object level; the tool stays.
+    assert(w.level_index() == 0 and w.selected_count() > 0 and w.edit_tool == "Box")
+    # Escape halfway: nothing more.
+    drag(editor, at(editor, Vector3(-1.0, 0.0, 0.0)), at(editor, Vector3(-2.0, 0.0, 1.0)))
+    assert(edits(editor) == 2)
+    key(editor, Key.escape)
+    assert(edits(editor) == 1 and w.history.cursor == before + 1)
+    # Escape again leaves the tool; undo takes the box away.
+    key(editor, Key.escape)
+    assert(w.edit_tool != "Box")
+    w.undo()
+    assert(edits(editor) == 0)
+
+func sphere_typed() -> unit!:
+    let editor = empty_on(Vector3(0.0, 6.0, 5.0))
+    let w = editor.workspace
+    modeling_commands.model(w, "Sphere")
+    click(editor, at(editor, Vector3()))
+    type_text(editor, "0.75")
+    near(last(editor)[0], 0.75)
+    key(editor, Key.enter)
+    assert(edits(editor) == 1 and not w.in_transaction())
+    near(last(editor)[0], 0.75)
+    near((w.geometry else trap("sphere")).bounds().maximum.y, 1.5, 0.00001)
+
+func cylinder_typed() -> unit!:
+    let editor = empty_on(Vector3(0.0, 6.0, 5.0))
+    let w = editor.workspace
+    modeling_commands.model(w, "Cylinder")
+    # A click: the base follows the pointer until a value or a click.
+    let middle = at(editor, Vector3())
+    click(editor, middle)
+    # The wheel steps the sides while it is drawn.
+    wheel(editor, middle, 1.0)
+    wheel(editor, middle, 1.0)
+    near(last(editor)[2], 26.0)
+    type_text(editor, "2")
+    key(editor, Key.enter)
+    near(last(editor)[0], 2.0)
+    assert(w.in_transaction())
+    type_text(editor, "3")
+    key(editor, Key.enter)
+    assert(not w.in_transaction() and edits(editor) == 1)
+    near(last(editor)[1], 3.0)
+    near((w.geometry else trap("cylinder")).bounds().maximum.y, 3.0, 0.00001)
+
+func torus_tube() -> unit!:
+    let editor = empty_on(Vector3(0.0, 6.0, 5.0))
+    let w = editor.workspace
+    modeling_commands.model(w, "Torus")
+    drag(editor, at(editor, Vector3()), at(editor, Vector3(1.0, 0.0, 0.0)))
+    near(last(editor)[0], 1.0)
+    let off = at(editor, Vector3(1.25, 0.0, 0.0))
+    move(editor, off)
+    click(editor, off)
+    near(last(editor)[0], 1.0)
+    near(last(editor)[1], 0.25)
+    assert(edits(editor) == 1 and not w.in_transaction())
+
+func on_surfaces() -> unit!:
+    let editor = empty_on(Vector3(6.0, 5.0, 4.0))
+    let w = editor.workspace
+    # Enter before a press: a 2 by 2 by 2 box standing on the origin.
+    modeling_commands.model(w, "Box")
+    key(editor, Key.enter)
+    assert(edits(editor) == 1)
+    near((w.geometry else trap("box")).bounds().maximum.y, 2.0, 0.00001)
+    # On its top: standing up from y = 2.
+    modeling_commands.model(w, "Cylinder")
+    drag(editor, at(editor, Vector3(0.0, 2.0, 0.0)), at(editor, Vector3(0.5, 2.0, 0.0)))
+    var numbers = last(editor)
+    near(numbers[7], 2.0, 0.0001)
+    near(numbers[10], 1.0, 0.0001)
+    click(editor, at(editor, Vector3(0.0, 3.0, 0.0)))
+    assert(edits(editor) == 2)
+    # On its +X side: standing along +X from x = 1.
+    drag(editor, at(editor, Vector3(1.0, 1.0, 0.0)), at(editor, Vector3(1.0, 1.0, 0.5)))
+    numbers = last(editor)
+    near(numbers[6], 1.0, 0.0001)
+    near(numbers[9], 1.0, 0.0001)
+    near(numbers[10], 0.0, 0.0001)
+    click(editor, at(editor, Vector3(2.0, 1.0, 0.0)))
+    assert(edits(editor) == 3)
+
+func as_node() -> unit!:
+    let editor = empty_on(Vector3(0.0, 6.0, 5.0), edit = false)
+    let w = editor.workspace
+    modeling_commands.model(w, "Sphere")
+    drag(editor, at(editor, Vector3()), at(editor, Vector3(0.0, 0.0, 0.8)))
+    let node = w.selected() else trap("no node")
+    assert(node.kind == "Sphere" and w.network.display == node.id)
+    near(node.values[0], 0.8)
+    assert(not w.in_transaction())
+    near((w.geometry else trap("sphere node")).bounds().maximum.y, 1.6, 0.00001)

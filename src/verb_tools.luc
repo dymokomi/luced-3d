@@ -5,7 +5,7 @@
 ## its verb in luce-geocore and nothing here.
 from luce_geocore.geocore import Mesh, Verbs
 from geometry_data import GeometryData
-from tool_record import Tool, Pick, Invocation, ToolKey
+from tool_record import Tool, Pick, Invocation, ToolKey, ToolPlace
 from edit_operations import verb_numbers, second_of
 from edit_types import object_level, point_level, edge_level, face_level
 import verb_rows
@@ -27,9 +27,22 @@ pub func tools() -> list[Tool]:
 
 ## Verb `index` as a tool.
 func tool_of(index: int) -> Tool:
-    return Tool(Verbs.name(index), Verbs.label(index), Verbs.section(index), Verbs.family(index), Verbs.icon(index), Verbs.description(index), [context], [edit_kind_name],
-                picks_of(index), verb_rows.rows(index), Verbs.drag(index), Verbs.gesture(index), Verbs.whole(index), cook, Verbs.function(index),
-                Verbs.drag_mode(index), Verbs.follows(index), Verbs.wheel(index), Verbs.axis(index), Verbs.axis_choice(index), keys_of(index))
+    let tool = Tool(Verbs.name(index), Verbs.label(index), Verbs.section(index), Verbs.family(index), Verbs.icon(index), Verbs.description(index), [context], [edit_kind_name],
+                    picks_of(index), verb_rows.rows(index), Verbs.drag(index), Verbs.gesture(index), Verbs.whole(index), cook, Verbs.function(index),
+                    Verbs.drag_mode(index), Verbs.follows(index), Verbs.wheel(index), Verbs.axis(index), Verbs.axis_choice(index), keys_of(index), inputs = Verbs.inputs(index))
+    if Verbs.place_base(index) != "":
+        tool.place = place_of(index, tool)
+    return tool
+
+## A primitive's creation slots (Verbs' place_*), from its rows: a vector
+## size's X and Z, else two numbers, width then depth.
+func place_of(index: int, tool: Tool) -> ToolPlace:
+    let size = Verbs.place_size(index)
+    let row = tool.row_at(size) else trap("a primitive's size row")
+    let depth = row.slot + 2 if row.components == 3 else tool.slot_of(size + 1)
+    let rise = Verbs.place_rise(index)
+    let rise_slot = tool.slot_of(rise) + Verbs.place_rise_component(index) if rise >= 0 else -1
+    return ToolPlace(Verbs.place_base(index), row.slot, depth, rise_slot, Verbs.place_rise_mode(index), tool.slot_of(Verbs.place_position(index)), tool.slot_of(Verbs.place_up(index)), tool.slot_of(Verbs.place_piece(index)))
 
 ## The keys that change verb `index`'s tool while its drag lasts.
 func keys_of(index: int) -> list[ToolKey]:
@@ -44,6 +57,9 @@ func keys_of(index: int) -> list[ToolKey]:
 ## step in its text k - 1.
 func picks_of(index: int) -> list[Pick]:
     let result: list[Pick] = []
+    # A primitive works on nothing.
+    if Verbs.inputs(index) == 0:
+        return result
     for pick in 0..<Verbs.pick_count(index):
         let levels = levels_of(Verbs.pick_levels(index, pick))
         let prompt = Verbs.pick_prompt(index, pick)
@@ -90,8 +106,12 @@ func cook(call: Invocation, data: GeometryData, tag: str) -> GeometryData!:
     return data.with_operand(run(call, data.operand() else Mesh.empty()))
 
 ## Run `call`'s verb on `mesh` (a move as well as a tool's verb); a verb of
-## two picks reads its second from the step's first text.
+## two picks reads its second from the step's first text, a verb of a
+## reference surface (Shrinkwrap) the invocation's second input's mesh.
 pub func run(call: Invocation, mesh: Mesh) -> Mesh!:
     if call.topology != 0 and call.topology != mesh.topology_hash():
         error(ui.invalid, "Edit input topology changed. Undo the upstream change or clear this node's edits.")
-    return Verbs.run(call.verb, mesh, call.group(), call.group_type, verb_numbers(call.verb, call.numbers), call.symmetry, call.keep, second_of(call.verb, call.texts)).mesh()
+    var reference: Mesh? = none
+    if let second = call.second:
+        reference = second.operand()
+    return Verbs.run(call.verb, mesh, call.group(), call.group_type, verb_numbers(call.verb, call.numbers), call.symmetry, call.keep, second_of(call.verb, call.texts), reference).mesh()

@@ -3,7 +3,7 @@
 ## workspace's tool picks the gizmo: Move, Rotate and Scale act on a
 ## transforming node (Transform, Group, CAD) or on the selected components
 ## (a Transform Components step or node); Manipulator shows the selected
-## node's own handles (a Cube's corners). P toggles moving a transforming
+## node's own handles (a Box node's corners, in its placed frame). P toggles moving a transforming
 ## node's pivot.
 import node_catalog
 from workspace import Workspace
@@ -18,6 +18,7 @@ from tools import gizmo_tool
 from snapping import SnapMark, grid_step, on_grid, stepped
 from angles import radians, degrees
 import component_moves
+from luce_geocore.geocore import Verbs
 import edit_cad_nets
 
 pub class NodeGizmos:
@@ -59,7 +60,7 @@ pub class NodeGizmos:
             return false
         let tool = self.w.tool_in_use()
         if tool == "Manipulator":
-            return node.kind == "Cube"
+            return node.kind == box_kind
         if not gizmo_tool(tool):
             return false
         if node.kind in ["Camera", "Light"]:
@@ -82,11 +83,11 @@ pub class NodeGizmos:
         # Drawn every frame: the selection's center is a Base pass.
         return self.w.selection_center()
 
-    func corner(self, id: int, values: list[float]) -> Vector3:
-        let v = values
-        return Vector3(v[1] + v[0] * v[7] * (0.5 if id % 2 == 1 else -0.5),
-                       v[2] + v[0] * v[8] * float((id // 2) % 2),
-                       v[3] + v[0] * v[9] * (0.5 if id // 4 == 1 else -0.5))
+    ## Box corner `id` (bit 1 +X, 2 the top, 4 +Z) of a Box node's values:
+    ## its frame's (Position, Up, Turn) point of the corner of its Size.
+    func corner(self, id: int, values: list[float]) -> Vector3!:
+        let local = Vector3(values[0] * (0.5 if id % 2 == 1 else -0.5), values[1] * float((id // 2) % 2), values[2] * (0.5 if id // 4 == 1 else -0.5))
+        return box_point(values, local)
 
     func axis(self, id: int) -> Vector3!:
         let node = self.w.selected() else return gm.axis(id)
@@ -121,7 +122,7 @@ pub class NodeGizmos:
         if not self.available():
             return -1
         let node = self.w.selected() else return -1
-        if node.kind == "Cube":
+        if node.kind == box_kind:
             var best = 11.0
             var found = -1
             for id in 0..<8:
@@ -167,7 +168,7 @@ pub class NodeGizmos:
         if not self.available():
             return
         let node = self.w.selected() else return
-        if node.kind == "Cube":
+        if node.kind == box_kind:
             for id in 0..<8:
                 let p = gm.project(self.w, self.corner(id, node.values), width, height)
                 if p[2] <= 0.0:
@@ -271,7 +272,7 @@ pub class NodeGizmos:
         let p = gm.project(self.w, self.center, width, height)
         self.start_angle = math.atan2(event.y - p[1], event.x - p[0])
         self.rotation = 0.0
-        self.w.begin("Resize Cube" if node.kind == "Cube" else self.mode() + " gizmo")
+        self.w.begin("Resize Box" if node.kind == box_kind else self.mode() + " gizmo")
         self.dragging = true
         # A CV drag keeps its frame and shows the hulls as they were.
         if self.components() and component_moves.at_cvs(self.w):
@@ -309,17 +310,22 @@ pub class NodeGizmos:
             delta = self.axis(self.handle).multiply_scalar(amount)
         if (self.mode() == "Move" or self.mode() == "Pivot") and self.w.cv_frame == none and component_moves.cv_axes(self.w) == none:
             delta = self.grid_moved(delta, event.meta or event.control)
-        if node.kind == "Cube":
+        if node.kind == box_kind:
+            # The corner dragged against the one across from it, in the
+            # box's own frame: its size, and its base's center as Position.
             let id = self.handle - 10
-            let fixed = self.corner(7 - id, self.original)
-            let moved = self.corner(id, self.original).add(delta)
+            let fixed = box_local(self.original, self.corner(7 - id, self.original))
+            let moved = box_local(self.original, self.corner(id, self.original).add(delta))
             let a = [fixed.x, fixed.y, fixed.z]
             let b = [moved.x, moved.y, moved.z]
             for axis in 0..<3:
                 let positive = (id // (1 if axis == 0 else (2 if axis == 1 else 4))) % 2 == 1
                 b[axis] = math.max(a[axis] + 0.001, b[axis]) if positive else math.min(a[axis] - 0.001, b[axis])
-                values[7 + axis] = math.abs(b[axis] - a[axis]) / values[0]
-                values[1 + axis] = math.min(a[axis], b[axis]) if axis == 1 else (a[axis] + b[axis]) * 0.5
+                values[axis] = math.abs(b[axis] - a[axis])
+            let base = box_point(self.original, Vector3((a[0] + b[0]) * 0.5, math.min(a[1], b[1]), (a[2] + b[2]) * 0.5))
+            values[box_position] = base.x
+            values[box_position + 1] = base.y
+            values[box_position + 2] = base.z
         elif self.components():
             # The selection's Transform Components: translate, rotate in
             # degrees, scale (about its centroid).
@@ -397,3 +403,27 @@ pub class NodeGizmos:
 ## Nodes the gizmo transforms by their own values.
 pub func transforming_kinds() -> list[str]:
     return node_catalog.transforming_kinds()
+
+## The Box node (luce-geocore's Box verb) and its Position's and Up's value
+## slots (Turn follows Up).
+let box_kind = "Box"
+let box_position = 8
+let box_up = 11
+
+## A Box node's frame: its X, Y and Z.
+func box_axes(values: list[float]) -> list[Vector3]!:
+    let up = Vector3(values[box_up], values[box_up + 1], values[box_up + 2])
+    let turn = values[box_up + 3]
+    return [Verbs.placement_axis(up, turn, 0), Verbs.placement_axis(up, turn, 1), Verbs.placement_axis(up, turn, 2)]
+
+## Point `local` of a Box node's frame, in the world.
+func box_point(values: list[float], local: Vector3) -> Vector3!:
+    let axes = box_axes(values)
+    let origin = Vector3(values[box_position], values[box_position + 1], values[box_position + 2])
+    return origin.add(axes[0].multiply_scalar(local.x)).add(axes[1].multiply_scalar(local.y)).add(axes[2].multiply_scalar(local.z))
+
+## World point `p` in a Box node's frame.
+func box_local(values: list[float], p: Vector3) -> Vector3!:
+    let axes = box_axes(values)
+    let offset = p.subtract(Vector3(values[box_position], values[box_position + 1], values[box_position + 2]))
+    return Vector3(offset.dot(axes[0]), offset.dot(axes[1]), offset.dot(axes[2]))

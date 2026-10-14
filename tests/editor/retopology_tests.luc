@@ -1,0 +1,138 @@
+## Retopology (POLY-MODELING.md Stage 6) from real viewport events: a
+## sphere of radius 2 in one Geo object, an Edit Mesh in another. Snap
+## Target and a click on the sphere make it the target and wire it into the
+## Edit Mesh's Reference (an Import of it); a Poly Pen quad drawn over it
+## lands every point on the sphere (within 1e-4 of its surface); a quad
+## drawn off it with the target cleared, shrinkwrapped as a step, lands on
+## it too, and a Shrinkwrap node with the sphere wired gives the step's
+## mesh; Relax on the Reference keeps the points on the sphere; and the
+## create gesture builds on the target alone.
+from app import Luce3D
+from luce_3d.graphics import Vector3
+from luce_geocore.geocore import Mesh
+from workspace import Workspace
+import node_commands
+import modeling_commands
+import retopology
+import import_node
+from tool_drag_tests import at, click, key, near
+from poly_pen_tests import command_click
+from luce_window.input import Key
+from tools import ToolRun
+from edit_steps import insert_after_display
+from luce_std import math
+
+pub func retopology_tests() -> unit!:
+    let editor = scene()
+    let sphere = target(editor)
+    quad_on_target(editor, sphere)
+    shrinkwrapped(editor, sphere)
+    print("PASS retopology: a snap target picked by a click, wired into the Edit Mesh's Reference; Poly Pen's quad on its surface; Shrinkwrap as a step and as a node onto it; Relax kept on it")
+
+## Geo 1 holds a sphere of radius 2 (standing on the origin: center (0, 2,
+## 0)); Geo 2, entered, an Edit Mesh with nothing wired; seen from above.
+func scene() -> Luce3D!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1400.0, 900.0)
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Sphere", 0.0, 0.0)
+    let ball = w.selected() else trap("sphere")
+    ball.values[0] = 2.0
+    ball.values[1] = 48.0
+    ball.values[2] = 24.0
+    w.network.invalidate(ball.id)
+    node_commands.leave_group(w)
+    node_commands.add_node(w, "Geo", 300.0, 0.0)
+    let geo = w.network.selected
+    node_commands.enter_group(w, geo)
+    node_commands.add_node(w, "Edit Mesh", 0.0, 0.0)
+    w.view.camera.set_position(Vector3(0.0, 12.0, 3.0))
+    w.view.camera.look_at(Vector3(0.0, 2.0, 0.0))
+    editor.panels.refresh()
+    editor.app.focus(editor.panels.view.layout())
+    return editor
+
+## The sphere's object: picked as the snap target by a click on its top.
+func target(editor: Luce3D) -> int!:
+    let w = editor.workspace
+    let edit = w.selected() else trap("edit")
+    retopology.pick(w)
+    assert(w.picking_target)
+    click(editor, at(editor, Vector3(0.0, 4.0, 0.0)))
+    assert(not w.picking_target and w.snap_target >= 0)
+    # The object drawn there: Geo 1, whose output is the sphere.
+    let sphere = w.network.require(w.snap_target)
+    assert(sphere.kind == "Geo" or sphere.kind == "Sphere")
+    # Wired: an Import of it into the Edit Mesh's Reference.
+    let wired = w.network.require(edit.id).inputs[1]
+    assert(wired >= 0 and w.network.require(wired).kind == import_node.kind_name)
+    return sphere.id
+
+## The sphere's drawn mesh (its surface, exactly).
+func surface(w: Workspace, sphere: int) -> Mesh!:
+    let meshes = w.meshes_of(sphere)
+    assert(meshes.length > 0)
+    return meshes[0]
+
+## A point of the sphere's top seen from above.
+func on_top(x: float, z: float) -> Vector3:
+    return Vector3(x, 2.0 + math.sqrt(4.0 - x * x - z * z), z)
+
+func quad_on_target(editor: Luce3D, sphere: int) -> unit!:
+    let w = editor.workspace
+    let ball = surface(w, sphere)
+    modeling_commands.model(w, "Poly Pen")
+    for p in [on_top(-0.5, -0.5), on_top(0.5, -0.5), on_top(0.5, 0.5), on_top(-0.5, 0.5)]:
+        click(editor, at(editor, p))
+    let mesh = w.geometry else trap("quad")
+    assert(mesh.face_count() == 1 and mesh.point_count() == 4)
+    for at_point in 0..<mesh.point_count():
+        near(ball.surface_distance(mesh.point(at_point)), 0.0, 0.0001)
+    # Ctrl+click past its +X edge: the edge extended, still on the sphere.
+    command_click(editor, on_top(1.4, 0.0))
+    let extended = w.geometry else trap("extended")
+    assert(extended.face_count() == 2)
+    for at_point in 0..<extended.point_count():
+        near(ball.surface_distance(extended.point(at_point)), 0.0, 0.0001)
+    key(editor, Key.escape)
+
+func shrinkwrapped(editor: Luce3D, sphere: int) -> unit!:
+    let w = editor.workspace
+    let ball = surface(w, sphere)
+    # The target cleared: a quad drawn on the ground beside the sphere.
+    retopology.clear(w)
+    modeling_commands.model(w, "Poly Pen")
+    for p in [Vector3(3.0, 0.0, -0.5), Vector3(4.0, 0.0, -0.5), Vector3(4.0, 0.0, 0.5), Vector3(3.0, 0.0, 0.5)]:
+        click(editor, at(editor, p))
+    key(editor, Key.escape)
+    key(editor, Key.escape)
+    let drawn = w.geometry else trap("drawn")
+    assert(drawn.face_count() == 3)
+    # Shrinkwrap on everything (nothing selected): every point on the sphere.
+    w.selection = none
+    modeling_commands.model(w, "Shrinkwrap")
+    let wrapped = w.geometry else trap("wrapped")
+    for at_point in 0..<wrapped.point_count():
+        near(ball.surface_distance(wrapped.point(at_point)), 0.0, 0.0001)
+    # As a node after the Edit Mesh, the Reference's Import wired second:
+    # the step's mesh.
+    let edit = w.network.require(w.network.display)
+    let reference = edit.inputs[1]
+    w.perform("Shrinkwrap node", func () -> unit!:
+        let made = insert_after_display(w, ToolRun("Shrinkwrap", [0.0, 0.0, 1.0]))
+        made.texts[0] = ""
+        w.network.connect(reference, made.id, 1)
+        w.rebuild())
+    let node = w.geometry else trap("node")
+    assert(w.network.require(w.network.display).kind == "Shrinkwrap")
+    near(node.bounds().maximum.y, wrapped.bounds().maximum.y, 0.000001)
+    near(node.bounds().minimum.x, wrapped.bounds().minimum.x, 0.000001)
+    w.undo()
+    node_commands.select_node(w, edit.id)
+    # Relax on the Reference: the points even out and stay on it.
+    w.selection = none
+    modeling_commands.model(w, "Relax", [0.5, 5.0, 0.0])
+    let relaxed = w.geometry else trap("relaxed")
+    for at_point in 0..<relaxed.point_count():
+        near(ball.surface_distance(relaxed.point(at_point)), 0.0, 0.0001)

@@ -1,13 +1,14 @@
 ## Edit Mesh: the Edit framework's polygon kind. Its levels are Object
 ## (whole pieces: faces sharing a `path`, else a connected component),
 ## Vertices (points), Edges and Polygons; its tools are the registry's
-## (tool_registry.luc: the luce-geocore modeling verbs), and its primitives
-## (box, sphere, cylinder, cone, torus, grid, plane) are recipe steps that
-## add a named piece.
-from luce_geocore.geocore import Mesh, MeshPrimitives, Groups, Domain, GroupType, Vector3
+## (tool_registry.luc: the luce-geocore modeling verbs), its primitives
+## among them (Box, Sphere, …: verbs whose step adds a piece of its own
+## `path` to the edited mesh).
+from luce_geocore.geocore import Mesh, Groups, Domain, GroupType, Vector3
 from geometry_data import GeometryData
 from edit_operations import EditStep
 from edit_types import EditKind, EditLevel, EditTool, from_tool
+from tool_record import ToolPlace
 import tool_registry
 import verb_tools
 from luce_ui import ui
@@ -18,9 +19,6 @@ pub let kind_name = "Edit Mesh"
 ## the selection, its text the set's name, its number how it writes it.
 pub let set_step = "Selection Set"
 
-pub func primitive_names() -> list[str]:
-    return ["Box", "Sphere", "Cylinder", "Cone", "Torus", "Grid", "Plane"]
-
 pub func kind() -> EditKind:
     let tools = tool_registry.of_kind(kind_name)
     let result: list[EditTool] = []
@@ -29,7 +27,7 @@ pub func kind() -> EditKind:
         result.append(from_tool(tool))
         if tool.gesture == "place":
             placing.append(tool.label)
-    return EditKind(kind_name, levels(), result, primitive_names(), start, pick, run, create, draw_tools = placing, drawn = drawn, steps = [set_step])
+    return EditKind(kind_name, levels(), result, [], start, pick, run, create, draw_tools = placing, drawn = drawn, steps = [set_step])
 
 ## Object, Vertices, Edges, Polygons (edit_types' level order; any
 ## displayed mesh selects on these).
@@ -76,15 +74,14 @@ func pick(data: GeometryData, level: int) -> Mesh?!:
 func mesh_of(data: GeometryData) -> Mesh!:
     return data.operand() else Mesh.empty()
 
-## A step: a primitive's, else its verb run as every mesh tool's cook runs
-## it (verb_tools.run: a tool's verb, or a move).
-func run(step: EditStep, at: int, data: GeometryData, tag: str) -> GeometryData!:
+## A step: its verb run as every mesh tool's cook runs it (verb_tools.run:
+## a tool's verb, a primitive's, or a move), a verb of a reference surface
+## (Shrinkwrap, Relax) reading the node's Reference input.
+func run(step: EditStep, at: int, data: GeometryData, tag: str, reference: GeometryData?) -> GeometryData!:
     let mesh = mesh_of(data)
-    if step.verb.starts_with("Create "):
-        return created(step, mesh, data)
     if step.verb == set_step:
         return data.with_operand(with_set(step, mesh))
-    return data.with_operand(verb_tools.run(step.invocation(), mesh))
+    return data.with_operand(verb_tools.run(step.invocation(reference), mesh))
 
 ## `mesh` with selection set `step.text(0)` (a named group) holding the
 ## step's group (number 0: 0), its members and the group (1), or its
@@ -113,46 +110,18 @@ pub func removed(group: str) -> str:
             terms.append("^" + term)
     return terms.join(" ")
 
-## The step adding primitive `name` at the origin. Its numbers: size or
-## radius, divisions, height or tube radius, then the position.
+## The step adding primitive `name` (a registry tool made from nothing:
+## Box, Sphere, …) at its starting numbers: standing on the origin, a piece
+## of its own.
 func create(name: str) -> EditStep?!:
-    if not (name in primitive_names()):
-        return none
-    var numbers = [2.0, 1.0, 0.0]
-    if name in ["Sphere", "Cylinder", "Cone", "Torus"]:
-        numbers = [1.0, 16.0, 0.3 if name == "Torus" else 2.0]
-    elif name == "Grid":
-        numbers = [2.0, 4.0, 0.0]
-    return EditStep("Create " + name, "", 0, numbers + [0.0, 0.0, 0.0], 0)
+    let tool = tool_registry.find(name) else return none
+    let place = tool.place else return none
+    return EditStep(tool.name, "", 0, named(tool.starting(), place), 0)
 
-## `mesh` with the primitive of `step` added as a piece of its own `path`
-## (/box1, /box2, …), whose faces come back as the `.selection`.
-func created(step: EditStep, mesh: Mesh, data: GeometryData) -> GeometryData!:
-    let name = step.verb[7..]
-    let v = step.numbers
-    if v.length < 6:
-        error(ui.invalid, f"{step.verb} needs six numbers")
-    var shape = Mesh.cube(v[0])
-    if name == "Sphere":
-        shape = MeshPrimitives.sphere(v[0], int(v[1]))
-    elif name == "Cylinder" or name == "Cone":
-        shape = MeshPrimitives.cylinder(v[0], v[2], int(v[1]), name == "Cone")
-    elif name == "Torus":
-        shape = MeshPrimitives.torus(v[0], v[2], int(v[1]))
-    elif name == "Grid" or name == "Plane":
-        shape = MeshPrimitives.grid(v[0], 1 if name == "Plane" else int(v[1]))
-    elif name != "Box":
-        error(ui.invalid, f"Edit Mesh cannot create {name}")
-    let placed = shape.transformed(Vector3(v[3], v[4], v[5]), Vector3(), Vector3(1.0, 1.0, 1.0))
-    let named = placed.with_text("path", 2, unused_path(mesh, name.lower()))
-    let first = mesh.face_count()
-    let result = named if mesh.point_count() == 0 else mesh.merged(named)
-    return data.with_operand(Groups.with_group(result, ".selection", 2, f"{first}-{result.face_count() - 1}"))
-
-## The first of /<stem>1, /<stem>2, … that no face of `mesh` has.
-func unused_path(mesh: Mesh, stem: str) -> str!:
-    var number = 1
-    if mesh.find_attribute("path", 2) >= 0:
-        while Groups.count(mesh, f"@path=\"/{stem}{number}\"", 2) > 0:
-            number += 1
-    return f"/{stem}{number}"
+## Primitive numbers `numbers` with Name piece on: a step's piece.
+pub func named(numbers: list[float], place: ToolPlace) -> list[float]:
+    let result = numbers.copy()
+    while result.length <= place.piece:
+        result.append(0.0)
+    result[place.piece] = 1.0
+    return result

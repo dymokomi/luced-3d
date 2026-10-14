@@ -9,7 +9,7 @@ No placeholder nodes are listed: every registered node evaluates geometry.
 
 | Family | Nodes |
 | --- | --- |
-| Sources | Cube, Grid, Sphere, Cylinder, Cone, Torus, File |
+| Sources | The primitives (Box, Grid, Plane, Sphere, Icosphere, Quad Sphere, Cylinder, Cone, Pipe, Disc, Torus, Capsule, Platonic Solid, Helix: docs/TOOLS.md), File |
 | Graph | Edit Mesh, Edit CAD, Edit SDF, Merge, Null, Switch, Tessellate, Group, Blast, Cache, Export |
 | Transforms/copies | Transform, Mirror, CopyTransform, CopyToPoints, MatchSize |
 | Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Loop Cut, Bridge, Fill, Dissolve, Merge Points; Subdivision (display) and Crease |

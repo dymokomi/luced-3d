@@ -4,7 +4,7 @@
 ## node after a plain node, and through its own cook; a Select tool's
 ## selection is its node's cook selection.
 from workspace import Workspace
-from luce_geocore.geocore import Selection, Mesh, Vector3
+from luce_geocore.geocore import Selection, Mesh, Vector3, Verbs
 from view_projection import project
 from geometry_data import GeometryData
 from tool_record import Tool
@@ -100,8 +100,32 @@ func same_mesh(x: Mesh, y: Mesh) -> bool:
             return false
     return true
 
+## A primitive: a step of an Edit Mesh with nothing wired gives what its
+## node gives, and so does its cook on nothing.
+func primitive_parity(tool: Tool) -> unit!:
+    let step = Workspace()
+    node_commands.delete_selected(step)
+    node_commands.add_node(step, "Edit Mesh", 0.0, 0.0)
+    modeling_commands.create(step, tool.label)
+    let node = Workspace()
+    node_commands.delete_selected(node)
+    node_commands.add_node(node, tool.name, 0.0, 0.0)
+    let made = step.geometry else trap(tool.label)
+    assert(same_mesh(made, node.geometry else trap(tool.label)), tool.label)
+    let edit = step.selected() else trap("edit")
+    let cooked = tool.cook(edit.edits[0].invocation(), GeometryData(mesh = Mesh.empty()), "")
+    assert(same_mesh(cooked.operand() else trap(tool.label), made), tool.label)
+
 pub func tool_parity_tests() -> unit!:
     for tool in tool_registry.of_kind("Edit Mesh"):
+        # Primitives start from nothing; Poly Pen's steps and the verbs of a
+        # reference surface are checked with theirs (poly_pen_tests,
+        # retopology_tests).
+        if tool.inputs == 0:
+            primitive_parity(tool)
+            continue
+        if tool.gesture == "pen" or Verbs.second_required(Verbs.index_of(tool.name)):
+            continue
         let step = ran(tool, true)
         let node = selected(tool) if tool.section == "Select" else ran(tool, false)
         if tool.section != "Select":
@@ -116,4 +140,4 @@ pub func tool_parity_tests() -> unit!:
             let input = picked(tool, false).geometry else trap("grid")
             let cooked = tool.cook(edit.edits[0].invocation(), GeometryData(mesh = input), "")
             assert(same_mesh(cooked.operand() else trap(tool.label), step.geometry else trap("step")), tool.label)
-    print("PASS tool parity: every Edit Mesh tool gives the same mesh and selection as a step, as a node and through its cook, from the node's starting values")
+    print("PASS tool parity: every Edit Mesh tool gives the same mesh and selection as a step, as a node and through its cook, from the node's starting values; every primitive as a step on nothing, as a node and through its cook")

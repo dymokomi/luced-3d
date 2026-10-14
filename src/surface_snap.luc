@@ -1,0 +1,68 @@
+## Where a click lands for the tools that place points in the scene (the
+## create gesture's base, Poly Pen's corners and moves): a point of the
+## edited mesh within reach (snapping's Points), else the snap target's
+## surface or, with none picked, the nearest visible surface (Surfaces),
+## else the ground plane through `base`, square to +Y, on the grid (Grid).
+## Cmd or Ctrl held lands freely: the surface or the ground, no points, no
+## grid. What it found shows as the workspace's snap mark. Hit tests are
+## Base calls: the edited mesh's points by screen distance (EditOverlay),
+## the surfaces by their spatial indexes.
+from luce_3d.graphics import Vector3, EditOverlay, Renderer, SurfaceHits
+from workspace import Workspace
+from snapping import SnapMark, grid_step, on_grid
+import view_projection as gm
+
+## Screen pixels within which a click lands on a mesh point.
+pub let reach = 11.0
+
+pub class Landing:
+    pub let point: Vector3
+    ## The way the surface it landed on faces (+Y on the ground).
+    pub let normal: Vector3
+    ## "Point", "Surface", "Grid" or "Ground" (free on the ground plane).
+    pub let kind: str
+    ## The edited mesh's point it landed on (-1: none).
+    pub let index: int
+
+    pub func init(self, point: Vector3, normal: Vector3, kind: str, index: int = -1):
+        self.point = point
+        self.normal = normal
+        self.kind = kind
+        self.index = index
+
+## Where (x, y) of a pane `width` by `height` lands (`free`: Cmd or Ctrl
+## held; `points`: the edited mesh's points may be landed on).
+pub func land(w: Workspace, overlay: EditOverlay, renderer: Renderer?, x: float, y: float, width: float, height: float, free: bool, base: Vector3? = none, points: bool = true) -> Landing!:
+    let through = base else Vector3()
+    let snaps = w.snaps
+    let origin = gm.origin(w, x, y, width, height)
+    let direction = gm.ray(w, x, y, width, height).normalized()
+    if points and not free and snaps.points():
+        if let mesh = w.geometry:
+            if mesh.point_count() > 0:
+                var face = -2
+                if let drawn = renderer:
+                    face = drawn.pick_face(mesh, w.view.camera, x, y, width, height) catch failure:
+                        recover -2
+                overlay.show(mesh, 0, none, -1)
+                let point = overlay.pick(w.view.camera, x, y, width, height, face)
+                if point >= 0:
+                    let p = gm.project(w, mesh.point(point), width, height)
+                    if (p[0] - x) * (p[0] - x) + (p[1] - y) * (p[1] - y) <= reach * reach:
+                        w.snap_mark = SnapMark(mesh.point(point), "Point")
+                        return Landing(mesh.point(point), Vector3(0.0, 1.0, 0.0), "Point", point)
+    if free or snaps.surfaces() or w.snap_target >= 0:
+        let hit = w.landing_at(origin, direction)
+        if hit.found:
+            if not free:
+                w.snap_mark = SnapMark(hit.point, "Surface")
+            return Landing(hit.point, hit.normal, "Surface")
+    let ground = SurfaceHits.plane(origin, direction, through, Vector3(0.0, 1.0, 0.0))
+    if not ground.found:
+        return Landing(through, Vector3(0.0, 1.0, 0.0), "Ground")
+    if not free and snaps.grid():
+        let step = grid_step(w.view.distance)
+        let on = Vector3(on_grid(ground.point.x, step), ground.point.y, on_grid(ground.point.z, step))
+        w.snap_mark = SnapMark(on, "Grid")
+        return Landing(on, Vector3(0.0, 1.0, 0.0), "Grid")
+    return Landing(ground.point, Vector3(0.0, 1.0, 0.0), "Ground")

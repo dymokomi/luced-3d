@@ -222,7 +222,8 @@ class Computation:
                 return self.own(node, ui.invalid, "Connect a geometry input")
             if not unconnected:
                 input = self.upstream(node, graph.require(node.inputs[port]), depth)
-            if not unconnected and node.enabled and node.inputs.length == 2 and not (node.kind in ["Switch", "Null"]):
+            # An Edit node's Reference is read though nothing is wired first.
+            if (not unconnected or is_edit(node.kind)) and node.enabled and node.inputs.length == 2 and not (node.kind in ["Switch", "Null"]):
                 if node.inputs[1] >= 0:
                     second = self.upstream(node, graph.require(node.inputs[1]), depth)
                 elif node_catalog.requires_second(node.kind):
@@ -231,7 +232,7 @@ class Computation:
         self.cooks[node.id] = (self.cooks[node.id] else 0) + 1
         var result = GeometryData()
         if is_edit(node.kind) and node.enabled and node.frozen == "":
-            result = self.edit(node, input) catch failure:
+            result = self.edit(node, input, second) catch failure:
                 return self.own(node, failure.code, failure.message)
         else:
             let progress = func (fraction: float) -> unit!:
@@ -253,7 +254,7 @@ class Computation:
     ## checkpoints (the last eight, every sixteenth) are stored as they are
     ## made: undo inside that window, a gizmo drag and the next recipe start
     ## from a stored result. The node's Edit kind runs each step.
-    func edit(self, node: Node, input: GeometryData) -> GeometryData!:
+    func edit(self, node: Node, input: GeometryData, reference: GeometryData?) -> GeometryData!:
         let kind = edit_kind(node.kind) else error(ui.invalid, f"{node.kind} is not an Edit node")
         var base = 0
         if let upstream = self.graph.find(node.inputs[0]):
@@ -269,7 +270,7 @@ class Computation:
                     start = count
             count -= 1
         for at in start..<node.edits.length:
-            let (next, built) = run_step(kind, node.edits[at], at, result, tag, self.graph.gesture and at == node.edits.length - 1)
+            let (next, built) = run_step(kind, node.edits[at], at, result, tag, self.graph.gesture and at == node.edits.length - 1, reference)
             result = next
             self.recipes += 1
             self.channel.check()

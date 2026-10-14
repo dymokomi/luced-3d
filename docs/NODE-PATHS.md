@@ -54,8 +54,8 @@ at the node holding the row: `..` is the network it sits in, so
 an object beside the holder's own. `.` is the holder itself.
 
 `node_paths.normalize` keeps a typed path tidy: blank space around it, empty
-and `.` steps, and a name followed by `..` go (`/Geo 2//./Box/../Cube 1/`
-is `/Geo 2/Cube 1`); a relative path that ends where it starts is `.`.
+and `.` steps, and a name followed by `..` go (`/Geo 2//./Box/../Box 1/`
+is `/Geo 2/Box 1`); a relative path that ends where it starts is `.`.
 `node_commands.set_text` stores node path rows normalized.
 
 In a row that allows wildcards (Import's Object), `*` (any run of
@@ -100,7 +100,7 @@ run inside `Network.keeping_paths`:
 All of it is one undo step: undo brings back the names and every path.
 Wildcard paths are left as typed, as Houdini leaves them, and so are blank
 and `.`. Deleting a target leaves the path and the holder's error ("Nothing
-at /Geo 2/Cube 1", "No camera at /Camera 3"); undo brings both back.
+at /Geo 2/Box 1", "No camera at /Camera 3"); undo brings both back.
 
 The active take's state is the nodes', so its paths are rewritten there; an
 inactive take keeps its own copy of the Render camera, which is rewritten

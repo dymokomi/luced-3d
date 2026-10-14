@@ -11,7 +11,7 @@ flags and Output nodes, after Houdini: see [NETWORK-LEVELS.md](NETWORK-LEVELS.md
 In short, the root (and a Group made there) renders every flagged node; Geo,
 CAD, SDF, Volumes, GSplats and Groups inside them yield one output node (an
 Output node, else the node with the display flag); Materials yields every
-material. New projects open at Scene with a Geo containing a Cube, which holds
+material. New projects open at Scene with a Geo containing a Box, which holds
 the Geo's display flag. Double-click Geo to model.
 
 ## Contexts and navigation

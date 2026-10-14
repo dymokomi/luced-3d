@@ -42,6 +42,12 @@ pub func is_verb(kind: str) -> bool:
 pub func is_mesh_verb(kind: str) -> bool:
     return Verbs.index_of(kind) >= 0
 
+## The primitives (luce-geocore's mesh verbs made from nothing: Box,
+## Sphere, …).
+pub func is_primitive(kind: str) -> bool:
+    let index = Verbs.index_of(kind)
+    return index >= 0 and Verbs.inputs(index) == 0
+
 ## Verbs that run on the whole geometry set (curves, fields, conversions).
 pub func is_set_verb(kind: str) -> bool:
     let index = VerbCatalog.index_of(kind)
@@ -69,10 +75,12 @@ pub func requires_second(kind: str) -> bool:
         return VerbCatalog.second_required(index)
     if let tool = tool_registry.cad_node(kind):
         return false
+    if is_edit(kind):
+        return false
     return not (kind in ["Switch", "Null", "Output", code_cook.kind_name, script_cook.kind_name])
 
 pub func sources() -> list[str]:
-    return ["Cube", "Grid", "Sphere", "Cylinder", "Cone", "Torus", "File", "Input"] + context_kinds() + generators() + solid_kinds()
+    return ["File", "Input"] + context_kinds() + generators() + solid_kinds()
 
 ## Scene-level networks. Material is a shader container within Materials.
 pub func context_kinds() -> list[str]:
@@ -94,10 +102,10 @@ pub func transforming_kinds() -> list[str]:
     return ["Transform", "Group", "CAD", "Geo", "SDF", "Volumes", "GSplats"]
 
 ## Whether the viewport's gizmo moves a node of kind `kind` itself (its
-## values: a transforming node, a Camera or Light, a Cube's handles), not
+## values: a transforming node, a Camera or Light, a Box's handles), not
 ## the selected components.
 pub func moves_itself(kind: str) -> bool:
-    return kind in transforming_kinds() or kind in ["Cube", "Camera", "Light"]
+    return kind in transforming_kinds() or kind in ["Box", "Camera", "Light"]
 
 ## Group inherits its enclosing context; the other containers introduce one.
 pub func child_context(kind: str) -> str:
@@ -228,6 +236,9 @@ pub func kinds() -> list[str]:
 
 pub func input_count(kind: str) -> int:
     if collects_children(kind): return 2
+    # Edit Mesh's second input is its Reference: the surface its snapping,
+    # Shrinkwrap and Relax keep to (a retopology's scan).
+    if kind == "Edit Mesh": return 2
     # Render renders the root's flagged objects, Import reads a node by path,
     # and a Camera or Light is just its object: none has an input.
     if kind in ["Render", "Import", "Camera", "Light"]: return 0
@@ -541,19 +552,6 @@ func value_fields(kind: str) -> list[Parameter]:
     if kind == "Tessellate":
         return [whole("Surface divisions", 0, 16.0, 1.0, 64.0, "Subdivisions per CAD surface span.", true),
                 number("Target edge", 1, 0.0, 0.0, 100000.0, 0.5, "Longest triangle edge in model units; 0 leaves it to the divisions.", soft = 10.0)]
-    if kind == "Cube":
-        return [number("Size", 0, 2.0, 0.001, 100.0, 0.1, "Edge length before the size factors.", true, 10.0),
-                vector("Position", 1, [0.0, 0.0, 0.0], "Where the cube's center sits."),
-                vector("Size factors", 7, [1.0, 1.0, 1.0], "Width, height and depth as factors of Size.", 0.001, 1000.0)]
-    if kind in ["Grid", "Sphere", "Cylinder", "Cone", "Torus"]:
-        let grid = kind == "Grid"
-        let result = [number("Size" if grid else "Radius", 0, 2.0 if grid else 1.0, 0.001, 100.0, 0.1, "Overall size." if grid else "Distance from the center to the surface.", true, 10.0),
-                      whole("Divisions", 1, 4.0 if grid else 16.0, 1.0 if grid else 4.0, 2048.0 if grid else 64.0, "Rows and columns (up to 2048: 4.2 million points)." if grid else "Segments around.", true)]
-        if kind == "Torus":
-            result.append(number("Tube radius", 2, 0.3, 0.001, 100.0, 0.1, "Radius of the ring's cross section.", true, 2.0))
-        elif kind in ["Cylinder", "Cone"]:
-            result.append(number("Height", 2, 2.0, 0.001, 100.0, 0.1, "Length along Y.", true, 10.0))
-        return result
     if kind == "Input":
         return [menu("Input", 0, "First|Second", 0.0, "Read this input of the containing network node.")]
     if kind == "Import":

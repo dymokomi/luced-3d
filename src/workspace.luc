@@ -82,6 +82,12 @@ pub class Workspace:
     ## (snapping.luc).
     pub let snaps: SnapSettings
     pub var snap_mark: SnapMark? = none
+    ## The object placing lands on alone (a retopology's scan: -1 none),
+    ## picked with Snap Target (retopology.luc); an Edit Mesh edited then
+    ## reads it as its Reference input.
+    pub var snap_target: int = -1
+    ## Whether the next viewport click picks the snap target.
+    pub var picking_target: bool = false
     pub var last_sketch_tool: str = ""
     ## The registry tool run last (its label) and its numbers, which Repeat
     ## runs again on a new selection; a node it made, whose values then win
@@ -186,6 +192,8 @@ pub class Workspace:
     var local_nodes: list[int]
     var local_meshes: list[Mesh]
     var local_around: list[Mesh]
+    var local_outside: list[Mesh]
+    var local_outside_nodes: list[int]
     ## The scope the worker's lines were split for (context_view.luc).
     var batches_scope: int = -2
     let sources: SourceCache
@@ -208,6 +216,8 @@ pub class Workspace:
         self.network = Network()
         self.network.sources = self.sources
         self.history = History()
+        self.local_outside = []
+        self.local_outside_nodes = []
         self.scene = Scene()
         self.objects = Group()
         self.publisher = DisplayPublisher(self.objects)
@@ -921,6 +931,8 @@ pub class Workspace:
         self.local_nodes = cooked.nodes
         self.local_meshes = cooked.meshes
         self.local_around = cooked.around
+        self.local_outside = cooked.outside
+        self.local_outside_nodes = cooked.outside_nodes
         self.geometry = none
         if let node = cooked.node:
             self.geometry = self.picked(node, cooked.data else trap("display"))
@@ -1008,6 +1020,38 @@ pub class Workspace:
     ## The nearest visible surface along a view ray (the displayed scene).
     pub func surface_at(self, origin: Vector3, direction: Vector3) -> SurfaceHit!:
         return SurfaceHits.cast(self.objects, origin, direction)
+
+    ## Where placing lands along a view ray: on the snap target alone when
+    ## one is picked, else on the nearest visible surface.
+    pub func landing_at(self, origin: Vector3, direction: Vector3) -> SurfaceHit!:
+        if self.snap_target < 0:
+            return self.surface_at(origin, direction)
+        var best = SurfaceHit(false, Vector3(), Vector3(0.0, 1.0, 0.0), -1.0)
+        for mesh in self.meshes_of(self.snap_target):
+            let face = mesh.ray_face(origin, direction)
+            if face < 0:
+                continue
+            let distance = mesh.ray_distance(origin, direction)
+            if not best.found or distance < best.distance:
+                var normal = mesh.face_normal(face)
+                # Two-sided: the side the ray comes from.
+                if normal.dot(direction) > 0.0:
+                    normal = normal.multiply_scalar(-1.0)
+                best = SurfaceHit(true, origin.add(direction.multiply_scalar(distance)), normal, distance)
+        return best
+
+    ## The meshes drawn for node `id`, in the context or around it.
+    pub func meshes_of(self, id: int) -> list[Mesh]:
+        let result: list[Mesh] = []
+        if self.compute == none:
+            for at in 0..<self.local_nodes.length:
+                if self.local_nodes[at] == id: result.append(self.local_meshes[at])
+            for at in 0..<self.local_outside_nodes.length:
+                if self.local_outside_nodes[at] == id: result.append(self.local_outside[at])
+            return result
+        for at in 0..<self.publisher.nodes.length:
+            if self.publisher.nodes[at] == id: result.append(self.publisher.meshes[at])
+        return result
 
     pub func cancel_placing(self) -> unit!:
         if self.placing == none:

@@ -1,0 +1,351 @@
+## The `pen` gesture: Poly Pen (POLY-MODELING.md Stage 6), after Blender's
+## Poly Build, Cinema 4D's Polygon Pen and Maya's Quad Draw. Inside an Edit
+## Mesh, faces are built under the pointer with no selection first; the
+## point, edge or face under the pointer shows (Smart's hover). Every
+## action is one step of the node (one undo):
+## - a click places a corner (on a point of the mesh, the snap target's
+##   surface or any surface, else the grid: surface_snap.luc); every four
+##   corners make a quad, every three a triangle (Triangles); in N-gon mode
+##   Enter or the first corner again closes the face; in Strip mode the
+##   first four make a quad and every two more the next quad along (a
+##   PolyDraw step each); M steps through the modes (a key no shortcut
+##   takes);
+## - Ctrl+click extends the boundary edge nearest the click into a quad
+##   reaching it; Ctrl+drag a boundary edge drags its quad out, Ctrl+drag a
+##   point between two boundary edges fills that corner (Poly Pen steps);
+## - a drag on a point moves it (onto the surface, with a snap target);
+## - Shift+click deletes the face under the pointer, or dissolves the point
+##   or edge (Delete, Dissolve);
+## - Ctrl+Shift+click splits the edge under the pointer there.
+## Backspace takes the last corner back; Escape drops the corners, again
+## leaves the tool. With a snap target (retopology.luc) every new point
+## lands on it: corners, extended edges, moved points.
+from luce_ui.ui import Painter, Event
+from luce_gpu.gpu import Rect
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3, EditOverlay, WireRenderer
+from luce_geocore.geocore import Mesh, Verbs
+from workspace import Workspace
+from edit_operations import EditStep, move_step
+from edit_types import point_level, edge_level, face_level
+from component_pick import ComponentPicker, draw_hover
+from surface_snap import land, Landing
+import tool_registry
+import view_projection as gm
+import theme
+from luce_std import math
+
+## Drawing mode `mode`'s name (M steps through them).
+func mode_name(mode: int) -> str:
+    return ["Quads", "Triangles", "N-gon", "Strip"][mode]
+
+pub class PenGesture:
+    let w: Workspace
+    let overlay: EditOverlay
+    let picker: ComponentPicker
+    ## The corners placed so far, and the drawing mode (mode_names).
+    pub var corners: list[Vector3]
+    pub var mode: int = 0
+    ## The component under the pointer (Smart: point, edge or face) and
+    ## where a click would land.
+    pub var hovered_level: int = -1
+    pub var hovered: int = -1
+    var cursor: Vector3? = none
+    ## A press: where, on what, with which keys, and whether it became a drag.
+    var pressing: bool = false
+    var press_x: float = 0.0
+    var press_y: float = 0.0
+    var press_level: int = -1
+    var press_id: int = -1
+    var press_point: Vector3
+    var control: bool = false
+    var shift: bool = false
+    var dragging: bool = false
+    ## Whether the last event changed what is drawn.
+    pub var changed: bool = false
+
+    pub func init(self, w: Workspace, overlay: EditOverlay, picker: ComponentPicker):
+        self.w = w
+        self.overlay = overlay
+        self.picker = picker
+        self.corners = []
+        self.press_point = Vector3()
+
+    ## Whether Poly Pen is chosen in an edited Edit Mesh.
+    pub func active(self) -> bool:
+        return tool_registry.gesture_of(self.w.edit_tool) == "pen" and self.w.editing()
+
+    ## What the notice line says.
+    pub func hint(self) -> str:
+        return f"Poly Pen ({mode_name(self.mode)}): click corners (M: quads, triangles, n-gon, strip); Ctrl+click extends the nearest edge, Ctrl+drag an edge or corner; drag a point to move it; Shift+click deletes; Ctrl+Shift+click splits an edge; Backspace, Esc"
+
+    ## Pointer events while Poly Pen is chosen; whether one was used.
+    pub func event(self, event: Event, width: float, height: float) -> bool!:
+        self.changed = false
+        if not self.active():
+            if self.corners.length > 0 or self.pressing:
+                self.corners = []
+                self.pressing = false
+            return false
+        if event.alt or event.cancelled:
+            self.pressing = false
+            self.dragging = false
+            return false
+        if event.kind == EventKind.key_down:
+            return self.key(event)
+        if event.kind == EventKind.pointer_moved:
+            if not event.inside:
+                return false
+            self.changed = true
+            if self.pressing and not self.dragging and math.hypot(event.x - self.press_x, event.y - self.press_y) >= 4.0:
+                self.dragging = self.press_level == point_level or (self.control and self.press_level == edge_level)
+            self.follow(event.x, event.y, width, height, event.meta or event.control)
+            return self.pressing
+        if event.kind == EventKind.pointer_down and event.inside and event.button == 0:
+            self.pressing = true
+            self.dragging = false
+            self.press_x = event.x
+            self.press_y = event.y
+            self.control = event.meta or event.control
+            self.shift = event.shift
+            let found = self.picker.smart_pick(event.x, event.y, width, height)
+            self.press_level = found[0]
+            self.press_id = found[1]
+            self.press_point = self.landing(event.x, event.y, width, height, false, self.press_level != point_level).point
+            return true
+        if event.kind == EventKind.pointer_up and event.button == 0 and self.pressing:
+            self.pressing = false
+            self.changed = true
+            if self.dragging:
+                self.dragging = false
+                self.dropped(event.x, event.y, width, height)
+            else:
+                self.clicked(event.x, event.y, width, height)
+            return true
+        return false
+
+    ## Where (x, y) lands: points of the mesh first unless `points` is off.
+    func landing(self, x: float, y: float, width: float, height: float, free: bool, points: bool = true) -> Landing!:
+        let base = self.corners[0] if self.corners.length > 0 else Vector3()
+        return land(self.w, self.overlay, self.picker.renderer, x, y, width, height, free, base, points)
+
+    ## The pointer moved: what it is over, and where a corner would go.
+    func follow(self, x: float, y: float, width: float, height: float, free: bool) -> unit!:
+        if not self.pressing:
+            let found = self.picker.smart_pick(x, y, width, height)
+            self.hovered_level = found[0]
+            self.hovered = found[1]
+        let moving = self.dragging and self.press_level == point_level and not self.control
+        self.cursor = self.landing(x, y, width, height, free, not moving).point
+
+    ## A click (no drag): Shift deletes, Ctrl+Shift splits, Ctrl extends,
+    ## else a corner.
+    func clicked(self, x: float, y: float, width: float, height: float) -> unit!:
+        let mesh = self.w.geometry else return
+        if self.shift and self.control:
+            if self.press_level == edge_level and self.press_id >= 0:
+                self.split(mesh, self.press_id, x, y, width, height)
+            return
+        if self.shift:
+            self.delete(mesh)
+            return
+        if self.control:
+            let landing = self.landing(x, y, width, height, false, false)
+            let edge = Verbs.nearest_boundary_edge(mesh, landing.point)
+            if edge < 0:
+                self.say("Poly Pen: no boundary edge to extend")
+                return
+            let a = mesh.point(mesh.edge_point(edge, 0))
+            let b = mesh.point(mesh.edge_point(edge, 1))
+            self.extend(mesh, edge, landing.point.subtract(a.add(b).multiply_scalar(0.5)), width, height)
+            return
+        self.corner(self.landing(x, y, width, height, false))
+
+    ## A drag let go: a point moved, an edge's quad dragged out, a corner
+    ## filled.
+    func dropped(self, x: float, y: float, width: float, height: float) -> unit!:
+        let mesh = self.w.geometry else return
+        if self.press_level == point_level and not self.control:
+            let to = self.landing(x, y, width, height, false, false).point
+            let delta = to.subtract(mesh.point(self.press_id))
+            self.add("Move point", move_step(f"{self.press_id}", 1, delta, mesh.topology_hash()), mesh)
+            return
+        let landing = self.landing(x, y, width, height, false)
+        if self.press_level == point_level:
+            self.pen(mesh, 1.0, f"{self.press_id}", 1, [landing.point], "Fill corner")
+            return
+        self.extend(mesh, self.press_id, landing.point.subtract(self.press_point), width, height)
+
+    ## Boundary edge `edge` extended by `offset`: its two new points landed
+    ## afresh where they show (onto the snap target, or existing points).
+    func extend(self, mesh: Mesh, edge: int, offset: Vector3, width: float, height: float) -> unit!:
+        let ends: list[Vector3] = []
+        for end in 0..<2:
+            let moved = mesh.point(mesh.edge_point(edge, end)).add(offset)
+            let at = gm.project(self.w, moved, width, height)
+            var place = moved
+            if at[2] > 0.0:
+                place = self.landing(at[0], at[1], width, height, false, true).point
+            ends.append(place)
+        self.pen(mesh, 0.0, f"p{mesh.edge_point(edge, 0)}-{mesh.edge_point(edge, 1)}", 2, ends, "Extend edge")
+
+    ## Edge `edge` split where the view ray through (x, y) passes nearest it.
+    func split(self, mesh: Mesh, edge: int, x: float, y: float, width: float, height: float) -> unit!:
+        let a = mesh.point(mesh.edge_point(edge, 0))
+        let b = mesh.point(mesh.edge_point(edge, 1))
+        let origin = gm.origin(self.w, x, y, width, height)
+        let ray = gm.ray(self.w, x, y, width, height).normalized()
+        let along = b.subtract(a)
+        let r = a.subtract(origin)
+        let p = along.dot(along)
+        let q = along.dot(ray)
+        let denominator = p - q * q
+        var t = 0.5
+        if denominator > 0.000000001:
+            t = math.max(0.0, math.min(1.0, (q * ray.dot(r) - r.dot(along)) / denominator))
+        self.pen(mesh, 2.0, f"p{mesh.edge_point(edge, 0)}-{mesh.edge_point(edge, 1)}", 2, [a.add(along.multiply_scalar(t))], "Split edge")
+
+    ## Shift+click: the face under the pointer deleted, the point or edge
+    ## dissolved.
+    func delete(self, mesh: Mesh) -> unit!:
+        if self.press_id < 0:
+            return
+        if self.press_level == face_level:
+            _ = self.run(mesh, "Delete", f"{self.press_id}", 3, [0.0], "Delete face")
+        elif self.press_level == point_level:
+            _ = self.run(mesh, "Dissolve", f"{self.press_id}", 1, [0.0], "Dissolve point")
+        elif self.press_level == edge_level:
+            _ = self.run(mesh, "Dissolve", f"p{mesh.edge_point(self.press_id, 0)}-{mesh.edge_point(self.press_id, 1)}", 2, [0.0], "Dissolve edge")
+
+    ## A corner placed; a face when the mode has enough.
+    func corner(self, landing: Landing) -> unit!:
+        if self.mode == 2 and self.corners.length >= 3 and landing.point.subtract(self.corners[0]).length() < 0.0000001:
+            self.finish()
+            return
+        self.corners.append(landing.point)
+        let wanted = [4, 3, 0, 4][self.mode]
+        if wanted > 0 and self.corners.length >= wanted:
+            self.finish()
+        self.w.revision += 1
+
+    ## The corners as one face (a PolyDraw step); a strip keeps its last
+    ## two for the next quad.
+    pub func finish(self) -> unit!:
+        if self.corners.length < 3:
+            return
+        let mesh = self.w.geometry else return
+        var ring = self.corners.copy()
+        # A strip's corners come in pairs across it: the quad runs round.
+        if self.mode == 3 and ring.length == 4:
+            ring = [ring[0], ring[1], ring[3], ring[2]]
+        # A face of its own faces the viewer (one beside others winds as
+        # they do: PolyDraw turns it).
+        var normal = Vector3()
+        for at in 0..<ring.length:
+            normal = normal.add(ring[at].cross(ring[(at + 1) % ring.length]))
+        if normal.dot(self.w.view.camera.projection(1.0).backward) < 0.0:
+            let turned: list[Vector3] = []
+            for at in 0..<ring.length:
+                turned.append(ring[ring.length - 1 - at])
+            ring = turned
+        var numbers = [0.00001, float(ring.length)]
+        for p in ring:
+            numbers = numbers + [p.x, p.y, p.z]
+        let kept = self.corners[self.corners.length - 2..] if self.mode == 3 else []
+        if self.run(mesh, "PolyDraw", "", 0, numbers, "Draw face"):
+            self.corners = kept
+
+    ## A Poly Pen step: action `action` on `group` with `positions`.
+    func pen(self, mesh: Mesh, action: float, group: str, group_type: int, positions: list[Vector3], label: str) -> unit!:
+        var numbers = [action, 0.00001, float(positions.length)]
+        for p in positions:
+            numbers = numbers + [p.x, p.y, p.z]
+        _ = self.run(mesh, "Poly Pen", group, group_type, numbers, label)
+
+    ## Verb `verb` as the edited node's next step, tried on the mesh first
+    ## so a refusal (an inner edge to extend) says why and adds nothing.
+    func run(self, mesh: Mesh, verb: str, group: str, group_type: int, numbers: list[float], label: str) -> bool!:
+        let result = Verbs.run(verb, mesh, group, group_type, numbers) catch failure:
+            self.say(f"Poly Pen: {failure.message}")
+            return false
+        if result.warning() != "":
+            self.say(f"Poly Pen: {result.warning()}")
+            return false
+        self.add(label, EditStep(verb, group, group_type, numbers, mesh.topology_hash()), mesh)
+        return true
+
+    ## `step` appended to the edited node (one undo step).
+    func add(self, label: str, step: EditStep, mesh: Mesh) -> unit!:
+        let node = self.w.selected() else return
+        self.w.perform(label, func () -> unit!:
+            node.edits.append(step)
+            self.w.network.invalidate(node.id)
+            self.w.rebuild())
+        self.w.notice = self.hint()
+
+    func say(self, text: str):
+        self.w.notice = text
+        self.w.revision += 1
+
+    ## Keys while Poly Pen is chosen (from the view's typing path, before
+    ## the shortcuts): the modes, Enter, Backspace, Escape.
+    pub func key(self, event: Event) -> bool!:
+        if not self.active():
+            return false
+        if event.kind == EventKind.text_input:
+            return event.codepoint in [109, 77]
+        if event.kind != EventKind.key_down or event.meta or event.control or event.alt:
+            return false
+        if event.key == Key.m:
+            self.mode = (self.mode + 1) % 4
+            self.corners = []
+            self.say(self.hint())
+            return true
+        if event.key == Key.enter:
+            self.finish()
+        elif event.key == Key.backspace:
+            if self.corners.length > 0:
+                self.corners = self.corners[..<self.corners.length - 1]
+        elif event.key == Key.escape:
+            if self.corners.length > 0:
+                self.corners = []
+            else:
+                self.w.end_modal_tool()
+                self.w.notice = ""
+        else:
+            return false
+        self.changed = true
+        self.w.revision += 1
+        return true
+
+    ## The hovered component, the corners and the band to the pointer, and
+    ## a drag's preview.
+    pub func draw(self, p: Painter, width: float, height: float) -> unit!:
+        if not self.active():
+            return
+        let mesh = self.w.geometry else return
+        if self.hovered >= 0 and not self.dragging:
+            draw_hover(p, self.w, mesh, self.hovered_level, self.hovered, width, height)
+        let lines: list[Vector3] = []
+        for at in 1..<self.corners.length:
+            lines.append(self.corners[at - 1])
+            lines.append(self.corners[at])
+        if let cursor = self.cursor:
+            if self.corners.length > 0 and not self.dragging:
+                lines.append(self.corners[-1])
+                lines.append(cursor)
+            if self.dragging and self.press_id >= 0:
+                if self.press_level == point_level:
+                    lines.append(mesh.point(self.press_id))
+                    lines.append(cursor)
+                elif self.press_level == edge_level:
+                    let offset = cursor.subtract(self.press_point)
+                    let a = mesh.point(mesh.edge_point(self.press_id, 0))
+                    let b = mesh.point(mesh.edge_point(self.press_id, 1))
+                    lines.extend([a, a.add(offset), a.add(offset), b.add(offset), b.add(offset), b])
+        if lines.length > 0:
+            WireRenderer.lines(lines, self.w.view.camera, p.target(), theme.accent(), 2.0)
+        for corner in self.corners:
+            let at = gm.project(self.w, corner, width, height)
+            if at[2] > 0.0:
+                p.rectangle(Rect(at[0] - 3.5, at[1] - 3.5, 7.0, 7.0), theme.accent())

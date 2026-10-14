@@ -5,11 +5,13 @@
 ## (component_box.luc), splat selection (splat_select.luc) and the node
 ## gizmos
 ## (node_gizmos.luc), a tool's drag after it runs (tool_drag.luc) and the
-## hover gesture's preview and click (hover_gesture.luc). Topology and
+## hover gesture's preview and click (hover_gesture.luc), primitives drawn
+## (create_gesture.luc) and Poly Pen (pen_gesture.luc). Topology and
 ## intersections remain in luce-3d.
 from luce_ui.ui import Painter, Event
 from luce_3d.graphics import EditOverlay
-from luce_window.input import EventKind
+from luce_window.input import EventKind, Key
+import retopology
 from workspace import Workspace
 from actions import Actions
 import theme
@@ -23,6 +25,8 @@ from component_box import ComponentBox
 from splat_select import SplatSelect
 from tool_drag import ToolDrag
 from hover_gesture import HoverGesture
+from create_gesture import CreateGesture
+from pen_gesture import PenGesture
 import selection_commands
 import selection_gestures
 from luce_geocore.geocore import Selection
@@ -48,6 +52,9 @@ pub class ViewportTools:
     ## The drag of the tool run last, and a hover tool's preview.
     pub let drag: ToolDrag
     pub let hovering: HoverGesture
+    ## A primitive drawn in the viewport, and Poly Pen.
+    pub let creating: CreateGesture
+    pub let pen: PenGesture
     ## The hovered component, and under Smart its level (-1: the
     ## selection's).
     pub var hovered: int = -1
@@ -92,6 +99,8 @@ pub class ViewportTools:
         self.splats = SplatSelect(workspace)
         self.drag = ToolDrag(workspace)
         self.hovering = HoverGesture(workspace)
+        self.creating = CreateGesture(workspace, self.overlay)
+        self.pen = PenGesture(workspace, self.overlay, self.picker)
         self.preview_for = []
         # The renderer tints selected faces (Renderer.set_face_selection).
         self.overlay.set_fill(false)
@@ -133,6 +142,7 @@ pub class ViewportTools:
             let through = kind != none and (kind else trap("kind")).see_through
             self.overlay.draw(w.view.camera, painter.target(), theme.grey(90.0), theme.accent(), theme.text(), wires = false, hidden = theme.grey(150.0) if through else none, preview = theme.preview())
             self.placing.draw(painter)
+            self.pen.draw(painter, width, height)
             if cad_hover:
                 self.picker.draw_cad_hover(painter, w.level_index() if own else self.hover_level, self.hovered)
             elif not own and self.hovered >= 0:
@@ -144,6 +154,7 @@ pub class ViewportTools:
             self.bisect.draw(painter)
             self.drag.draw(painter, width, height)
             self.hovering.draw(painter)
+            self.creating.draw(painter, width, height)
         self.gizmos.draw(painter, width, height)
         self.chrome.draw_snap(painter, width, height)
 
@@ -160,7 +171,7 @@ pub class ViewportTools:
         let handled = self.handle(event, width, height)
         # The splat brush's circle follows the pointer.
         let brushing = event.kind == EventKind.pointer_moved and self.workspace.splat_shape == 2 and self.splats.applies()
-        self.hover_changed = before != [self.hovered, self.chrome.hover_tool, self.gizmos.hovered] or self.placing.moved or brushing
+        self.hover_changed = before != [self.hovered, self.chrome.hover_tool, self.gizmos.hovered] or self.placing.moved or brushing or self.creating.changed or self.pen.changed
         return handled
 
     func handle(self, event: Event, width: float, height: float) -> bool!:
@@ -178,6 +189,17 @@ pub class ViewportTools:
         if button < 0 and self.drag.event(event, width, height):
             return true
         if self.hovering.event(event):
+            return true
+        if w.picking_target:
+            if event.kind == EventKind.pointer_down and event.inside and event.button == 0 and not event.alt:
+                _ = retopology.picked(w, event.x, event.y, width, height)
+                return true
+            if event.kind == EventKind.key_down and event.key == Key.escape:
+                retopology.clear(w)
+                return true
+        if button < 0 and self.creating.event(event, width, height, self.picker.renderer):
+            return true
+        if button < 0 and self.pen.event(event, width, height):
             return true
         if self.bisect.event(event, width, height, button >= 0):
             return true
