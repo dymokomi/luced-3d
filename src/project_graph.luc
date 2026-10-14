@@ -10,7 +10,7 @@ import sketch_node
 from luce_cad.sketch import CadSketch
 import project_values as values
 from luce_ui import ui
-from edit_kinds import is_edit, edit_kind
+from edit_kinds import is_edit, EditKinds
 from take import Take
 import takes
 import node_catalog
@@ -168,7 +168,7 @@ func checked_text(kind: str, slot: int, text: str) -> str!:
     return values.line(text)
 
 ## `shared` resolves group keys (worker requests); projects inline them.
-pub func read_body(doc: Document, path: str, node: Node, shared: map[int, str]?) -> unit!:
+pub func read_body(doc: Document, path: str, node: Node, shared: map[int, str]?, kinds: EditKinds) -> unit!:
     node.enabled = values.flag(doc, path, "enabled")
     node.values = values.numbers(doc, path, "parameters", node.values.length, node.values.length)
     let texts = doc.get(path, "texts")
@@ -190,15 +190,15 @@ pub func read_body(doc: Document, path: str, node: Node, shared: map[int, str]?)
     if count != doc.child_count(path + "/edits") or (not is_edit(node.kind) and count != 0):
         error(ui.invalid, "Invalid Edit recipe collection")
     node.edits = []
+    # Each Edit kind's own steps (a sketch's Create Rectangle, an SDF's
+    # SDF Mode), not only geometry verbs.
+    let kind = (kinds.of(node.kind) else error(ui.invalid, "Unknown Edit operation")) if count > 0 else none
     for at in 0..<count:
         let recipe = path + f"/edits/e{at}"
         if doc.type_at(recipe) != "step":
             error(ui.invalid, "Unknown Edit recipe")
         let verb = values.text(doc, recipe, "verb")
-        # Each Edit kind's own steps (a sketch's Create Rectangle, an SDF's
-        # SDF Mode), not only geometry verbs.
-        let kind = edit_kind(node.kind) else error(ui.invalid, "Unknown Edit operation")
-        if not kind.knows(verb):
+        if not (kind else error(ui.invalid, "Unknown Edit operation")).knows(verb):
             error(ui.invalid, "Unknown Edit operation")
         var group = ""
         if let groups = shared:
@@ -228,7 +228,7 @@ pub func read_graph(doc: Document) -> Network!:
         let path = doc.child_at("/scene/nodes", index) else error(ui.invalid, "Missing project node")
         let node = read_header(doc, path)
         if graph.find(node.id) != none: error(ui.invalid, "Duplicate project node ID")
-        read_body(doc, path, node, none)
+        read_body(doc, path, node, none, graph.kinds)
         graph.nodes.append(node)
     graph.next_id = values.integer(doc, "/scene", "next_id", 1, 2147483647)
     for node in graph.nodes:
