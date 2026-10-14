@@ -41,7 +41,7 @@ DRAG_SCENES = ["drag_extrude", "drag_extrude_lock", "drag_bevel", "loopcut_hover
 # Bevel in full in Edit Mesh (tools/preview_bevel.luc).
 BEVEL_SCENES = ["bevel_box", "bevel_corner", "bevel_vertex", "bevel_miter", "bevel_custom", "bevel_keys"]
 # The everyday modify tools in Edit Mesh (tools/preview_modify.luc).
-MODIFY_SCENES = ["modify_knife", "modify_knife_cut", "modify_bridge", "modify_bridge_pick", "modify_grid_fill", "modify_solidify", "modify_poke", "modify_rip", "modify_symmetrize", "modify_screw", "modify_decimate"]
+MODIFY_SCENES = ["modify_knife", "modify_knife_cut", "modify_bridge", "modify_bridge_pick", "modify_bridge_runs", "modify_grid_fill", "modify_solidify", "modify_poke", "modify_rip", "modify_symmetrize", "modify_screw", "modify_decimate", "modify_subdivide"]
 # Icon review: the A/S/D marking menus per place, networks of many node kinds (tools/preview_icons.luc).
 ICON_SCENES = [f"icons_{p}_{k}" for p in ["mesh", "cad", "sketch", "direct"] for k in "asd"] + ["icons_direct_none_s", "icons_net_geo", "icons_net_cad", "icons_net_scene", "icons_net_shader", "icons_net_fields"]
 # The viewport's panes and cameras (tools/preview_viewport.luc).

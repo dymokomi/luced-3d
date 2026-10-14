@@ -102,6 +102,8 @@ Give the group's faces a thickness: a second sheet behind them, joined at the ri
 | Even thickness | off | yes | Keep every face's sheets Thickness apart where faces meet at an angle. |
 | Fill rim | on | yes | Join the two sheets along the group's outline. |
 | Flip | off | yes | Turn the shell's faces over. |
+| Clamp | 0.0 | yes | Keep each point from moving farther than this times its shortest edge (0: off). |
+| Angle clamp | off | yes | Clamp: let points where the faces meet flatter move farther. |
 
 #### Bevel
 
@@ -558,14 +560,14 @@ Join pairs of the group's triangles into quads, the squarest first.
 
 ##### Subdivide
 
-Split faces into quads, optionally with Catmull-Clark smoothing.
+Split the group's faces into quads (or its edges), optionally with Catmull-Clark smoothing; the faces around stay joined.
 
 - Node `Subdivide` in Geo; a step of Edit Mesh.
-- Works on objects or faces, or everything when nothing is selected.
+- Works on objects or faces or edges, or everything when nothing is selected.
 
 | Row | Starts at | On the tool bar | What it does |
 | --- | --- | --- | --- |
-| Levels | 1 | yes | Each level splits every face into quads. |
+| Levels | 1 | yes | Each level splits the faces into quads again. |
 | Method | Catmull-Clark | yes | Catmull-Clark smooths as it splits; Linear keeps the shape. |
 | Smoothness | 0.0 | yes | Linear: round the new points out along the surface's curve (1: onto the circle the normals describe). |
 

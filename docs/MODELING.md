@@ -264,8 +264,10 @@ guarded. Very large selections show as a summary in the Group field.
   edits the cage while the viewport shows the smooth surface. Crease sets USD
   edge sharpness for it. Picking selects cage faces (picked on the cage's
   shape, not the smooth surface).
-- Subdivide operates on the whole mesh, Catmull–Clark or linear, with edges used
-  by more than two faces kept as creases. There are no crease weights yet.
+- Subdivide splits the selected faces (or edges), Catmull–Clark or linear, as
+  Blender's does: the faces around take the new points (Straight Cut), and with
+  nothing selected it splits everything. Edges used by more than two faces are
+  kept as creases. There are no crease weights yet.
 - Fill caps each closed loop of the group's boundary edges with one face, or
   (Fan) triangles around a new center point. Dissolve joins the faces across
   the group's interior edges, one face per region; a point group dissolves

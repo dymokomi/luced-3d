@@ -596,7 +596,7 @@ Status as in §5.1. "Drag" is the row a viewport drag sets.
 | Edge Slide | Edges slid along the faces beside them; even, flip, clamp | Blender (G G) | slide | N E: an amount, no slide gesture |
 | Vertex Slide | One point slid along a chosen edge | Blender (Shift V) | slide | — |
 | Rotate Edge (spin) | An edge turned within its two faces, CW/CCW | Blender; C4D Spin Edge | — | — |
-| Subdivide edges | n cuts on each selected edge, faces patterned | Blender Subdivide (quad corner modes) | — | ~ Subdivide works on faces |
+| Subdivide edges | n cuts on each selected edge, faces patterned | Blender Subdivide (quad corner modes) | — | ~ Subdivide splits the selected faces or edges (Straight Cut around), levels not cuts |
 
 **Delete, dissolve, merge**
 
@@ -1303,7 +1303,7 @@ built" below).
   24 ms; Triangulate (Beauty) of everything 71 ms; Tris to Quads of the grid in triangles
   137 ms (518 ms before its pricing ran in parallel); Decimate of 100k triangles to half 88 ms
   (1.86 s before the tie-break and the compact lists), Un-subdivide of 836 × 836 quads 76 ms;
-  Subdivide with Smoothness 745 ms (2.8M faces).
+  Subdivide with Smoothness 725 ms (2.8M faces; 599 ms without, 555 before it worked on selections).
 - Tests: luce-geocore `face_tool_checks`, `symmetry_checks`, `fill_checks`, `split_checks`,
   `dissolve_tool_checks`, `merge_checks`, `sweep_checks`, `knife_checks`, `reduce_checks`,
   `shape_checks`, all under the allocation-failure sweep (Grid Fill's 4×4 on a 16-gon hole and
@@ -1317,10 +1317,39 @@ built" below).
 - Preview scenes `tools/preview_modify.luc` (modify_knife, modify_knife_cut, modify_bridge,
   modify_bridge_pick, modify_grid_fill, modify_solidify, modify_poke, modify_rip,
   modify_symmetrize, modify_screw, modify_decimate).
+- Fixes after review (screenshots of the first round):
+  - Bridge's Blend path had handles twice Blender's length (the whole gap, not half of it, times
+    the factor), bunching the cut rows toward the middle, and a straight run's plane normal was
+    rounding noise above an absolute threshold, so two straight runs of a flat grid could arch out
+    of the plane (the "ridge" between the two grids). Handles now follow Blender's
+    `bezier_handle_calc_length_v3` (half the gap across the normals' plane), a nearly straight
+    run counts as straight against its size and takes Blender's aligned normal (square to the
+    run, toward the other), loop centers are weighed by edge length, and each loop's shape is
+    carried along the curve with the turn that keeps it from twisting (Blender's
+    `bm_edgering_pair_interpolate`). Linear's Profile swells about the straight line. Profile
+    on open runs still widens them along the run (the earlier "wings"): Blender does the same.
+    Checks: two parallel square loops bridge into a straight tube, rows at y = 2 B(t) (Blend
+    path) or evenly (Linear), swelled by the profile; straight runs of a turned grid bridge
+    flat with the middle row halfway.
+  - Solidify's kernel was right for reasonable input; the crumpled preview came from the scene
+    (white Noise near the cell size folds the grid's own quads, and Even thickness then
+    multiplies the move up to ten times at the folds; the grid also lay in the floor plane, whose
+    lines showed through). The scene is now a roughened bowl. Solidify gains Blender's
+    modifier Clamp and Angle clamp (off by default, as in Blender). Checks: the preview's noisy
+    grid and a smoothly raised grid give closed shells, every inner point within 1.2× (1.6×)
+    the thickness and no inner face turned; Clamp and Angle clamp limits by closed form.
+  - Subdivide works on the selection as Blender's does: the group's faces (or an edge group's
+    edges and the faces they close) split; other faces keep the mesh joined with Straight Cut
+    (a split edge's point becomes a corner, two split edges are joined across, a quad with three
+    is cut as `quad_3edge`); Catmull-Clark moves only points every face of which splits. The
+    editor ran every `whole` tool on everything even with a selection; now only with nothing
+    selected. Checks: `subdivide_select_checks` (one face, an L, a smoothed block, an edge group,
+    two levels) and `modify_tool_tests`.
+  - New preview scenes modify_bridge_runs (the two grid runs bridged flat) and modify_subdivide
+    (an L of faces subdivided).
 - Not yet: Knife's crossing paths in one face and holes inside a face; Decimate's symmetry and
-  weights; Bridge's loop pairs mode; Grid Fill between two open runs; Subdivide by selection
-  (it subdivides the whole mesh); Extrude to cursor, Matrix extrude, Offset Edge Loops' slide
-  (as before).
+  weights; Bridge's loop pairs mode; Grid Fill between two open runs; Extrude to cursor, Matrix
+  extrude, Offset Edge Loops' slide (as before).
 
 **Stage 6: primitives in full, and Poly Pen.**
 - Box divisions; ico and quad spheres; caps and rows; Disc; Tube; Capsule; platonic solids;

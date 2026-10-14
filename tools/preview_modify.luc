@@ -5,16 +5,21 @@
 ##   modify_knife_cut: that stroke cut (Enter): the box's faces split along
 ##     it, the cut edges selected.
 ##   modify_bridge: a sphere's middle band gone, its loops bridged with 3
-##     cuts and a swelling sphere Profile.
+##     cuts and a slight sphere Profile (0.15) closing it round again.
 ##   modify_bridge_pick: Bridge run on one run: it waits for the second
 ##     loop, the prompt on the notice line.
+##   modify_bridge_runs: a grid without its two middle rows, its two runs
+##     bridged with 3 cuts along Blend path: a flat strip, rows even.
 ##   modify_grid_fill: a cylinder's top cap gone, the hole grid-filled.
-##   modify_solidify: a bent grid made a shell with Even thickness.
+##   modify_solidify: a noisy bowl (a sphere's lower half, roughened),
+##     made a shell inside it with Even thickness.
 ##   modify_poke: a box's faces poked out.
 ##   modify_rip: a row of a grid's edges ripped open.
 ##   modify_symmetrize: a lopsided sphere symmetrized, -X over +X.
 ##   modify_screw: a short run screwed into a spring.
 ##   modify_decimate: a sphere decimated to a third of its triangles.
+##   modify_subdivide: an L of a grid's faces subdivided: only they split,
+##     the faces around take the new points (the inner corner's cut).
 from app import Luce3D
 from luce_ui.ui import Event
 from luce_window.input import EventKind
@@ -30,8 +35,8 @@ import preview_support
 from luce_std import math
 
 pub func scenes() -> list[str]:
-    return ["modify_knife", "modify_knife_cut", "modify_bridge", "modify_bridge_pick", "modify_grid_fill", "modify_solidify", "modify_poke", "modify_rip",
-            "modify_symmetrize", "modify_screw", "modify_decimate"]
+    return ["modify_knife", "modify_knife_cut", "modify_bridge", "modify_bridge_pick", "modify_bridge_runs", "modify_grid_fill", "modify_solidify", "modify_poke", "modify_rip",
+            "modify_symmetrize", "modify_screw", "modify_decimate", "modify_subdivide"]
 
 ## An Edit Mesh holding primitive `name`.
 func modeled(editor: Luce3D, name: str) -> unit!:
@@ -64,6 +69,7 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
     let w = editor.workspace
     var target = Vector3(0.0, 1.0, 0.0)
     var distance = 5.2
+    var pitch = 0.55
     if scene == "modify_knife" or scene == "modify_knife_cut":
         modeled(editor, "Box")
         modeling_commands.model(w, "Knife")
@@ -75,7 +81,7 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
             preview_support.settle(w)
     elif scene == "modify_bridge":
         # A sphere's middle band gone; its two loops bridged with 3 cuts and
-        # a swelling sphere Profile.
+        # a slight sphere Profile closing it round again.
         modeled(editor, "Sphere")
         let sphere = preview_support.shown(w) else trap("sphere")
         let box = sphere.bounds()
@@ -85,7 +91,7 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
             if math.abs(sphere.face_center(face).y - middle) < 0.3:
                 band.append(f"{face}")
         tool(editor, "Delete", face_level, band.join(" "), 2)
-        tool(editor, "Bridge", edge_level, "*", 4, [0, 2, 4, 5], [3.0, 1.0, 0.5, 1.0])
+        tool(editor, "Bridge", edge_level, "*", 4, [0, 2, 4, 5], [3.0, 1.0, 0.15, 1.0])
     elif scene == "modify_bridge_pick":
         modeled(editor, "Grid")
         modeling_commands.set_last_step(w, 1, 6.0, 1.0, 1000.0)
@@ -93,17 +99,32 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
         tool(editor, "Delete", face_level, "12-23", 2)
         tool(editor, "Bridge", edge_level, "p14-15-16-17-18-19-20", 4)
         target = Vector3(0.0, 0.3, 0.0)
+    elif scene == "modify_bridge_runs":
+        modeled(editor, "Grid")
+        modeling_commands.set_last_step(w, 1, 6.0, 1.0, 1000.0)
+        preview_support.settle(w)
+        tool(editor, "Delete", face_level, "12-23", 2)
+        tool(editor, "Bridge", edge_level, "p14-15-16-17-18-19-20 p21-22-23-24-25-26-27", 4, [0], [3.0])
+        target = Vector3(0.0, 0.0, 0.0)
     elif scene == "modify_grid_fill":
         modeled(editor, "Cylinder")
         tool(editor, "Delete", face_level, "1", 2)
         tool(editor, "Grid Fill", edge_level, "*", 4)
     elif scene == "modify_solidify":
-        modeled(editor, "Grid")
-        modeling_commands.set_last_step(w, 1, 6.0, 1.0, 1000.0)
-        preview_support.settle(w)
-        tool(editor, "Noise", point_level, "*", 0, [0], [0.12])
+        # A sphere's lower half, roughened: a noisy bowl, its shell inside.
+        modeled(editor, "Sphere")
+        let ball = preview_support.shown(w) else trap("sphere")
+        let bounds = ball.bounds()
+        let equator = (bounds.minimum.y + bounds.maximum.y) * 0.5
+        let upper: list[str] = []
+        for face in 0..<ball.face_count():
+            if ball.face_center(face).y > equator:
+                upper.append(f"{face}")
+        tool(editor, "Delete", face_level, upper.join(" "), 2)
+        tool(editor, "Noise", point_level, "*", 0, [0], [0.05])
         tool(editor, "Solidify", face_level, "*", 2, [0, 2], [0.15, 1.0])
-        target = Vector3(0.0, 0.0, 0.0)
+        target = Vector3(0.0, 0.6, 0.0)
+        pitch = 0.75
     elif scene == "modify_poke":
         modeled(editor, "Box")
         tool(editor, "Poke", face_level, "*", 2, [0], [0.6])
@@ -129,8 +150,13 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
         modeled(editor, "Sphere")
         tool(editor, "Triangulate", face_level, "*", 2)
         tool(editor, "Decimate", face_level, "*", 2, [1], [0.33])
+    elif scene == "modify_subdivide":
+        modeled(editor, "Grid")
+        tool(editor, "Subdivide", face_level, "5 6 9", 2, [1], [0.0])
+        target = Vector3(0.0, 0.0, 0.0)
+        distance = 4.2
     w.view.yaw = 0.6
-    w.view.pitch = 0.55
+    w.view.pitch = pitch
     w.view.distance = distance
     w.view.target = target
     w.view.update_camera()
