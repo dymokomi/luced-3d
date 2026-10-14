@@ -9,7 +9,7 @@ import node_commands
 import selection_commands
 from result_store import ResultStore
 from geometry_data import GeometryData
-from luce_geocore.geocore import MeshPrimitives
+from live_objects import live_objects
 
 func settle(workspace: Workspace) -> unit!:
     let session = workspace.compute else trap("compute")
@@ -107,8 +107,9 @@ pub func compute_tests() -> unit!:
 ## checkpoints are kept apart, and slots of nodes gone are let go. A
 ## 6,000-move drag of a Transform at the end of a 60-node chain adds no
 ## result (the store holds as many, taking as many bytes, after it as
-## before), never cooks the nodes above it again, keeps each move as fast
-## as the first, and undoes in one step.
+## before), never cooks the nodes above it again, keeps as many objects
+## alive on this thread after it as early in it, moves as fast at its end as
+## a fresh chain's drag does, and undoes in one step.
 pub func result_store_bound() -> unit!:
     let store = ResultStore()
     for stamp in 1..<301:
@@ -126,6 +127,69 @@ pub func result_store_bound() -> unit!:
     store.prune({8}, wanted)
     assert(store.count() == 1 and store.peek(7, 301) == none)
 
+    let (w, chain) = transform_chain()
+    let shifted = (w.geometry else trap("chain")).bounds().maximum.x
+    let last = w.network.require(chain[59])
+    assert(shifted > 1.59 and shifted < 1.61, f"{shifted} {w.notice}")
+    let session = w.compute else trap("compute")
+    let results = session.results
+    let held_bytes = session.result_bytes
+    assert(results >= 61, f"{results} results")
+    let cooks = w.network.require(chain[0]).evaluations
+    let above = w.network.require(chain[58]).evaluations
+    let values = last.values.copy()
+    w.begin("Move gizmo")
+    var early_live = 0
+    for move in 0..<6000:
+        _ = drag_move(w, values, move)
+        if move == 499: early_live = live_objects()
+        assert(session.results == results, f"move {move}: {session.results} results, {results} before")
+    # Nothing a move makes outlives it (a move that kept something would
+    # leave thousands more here).
+    let late_live = live_objects()
+    assert(late_live <= early_live + 64, f"{early_live} objects alive at move 500, {late_live} at 6,000")
+    # The drag's moves now against a fresh chain's first ones, one each in
+    # turn, so a load that comes and goes (another test program, another
+    # session) falls on both alike: a creep shows as the long drag's moves
+    # costing more (it was 3.8 times over 6,000 moves; windows timed apart
+    # swung 2.4 times on a loaded machine with no creep at all).
+    let (fresh, _) = transform_chain()
+    let fresh_values = (fresh.selected() else trap("fresh")).values.copy()
+    fresh.begin("Move gizmo")
+    let late_moves: list[float] = []
+    let fresh_moves: list[float] = []
+    for move in 0..<500:
+        late_moves.append(drag_move(w, values, 6000 + move))
+        fresh_moves.append(drag_move(fresh, fresh_values, move))
+    fresh.commit()
+    settle(fresh)
+    (fresh.compute else trap("fresh compute")).close()
+    w.commit()
+    settle(w)
+    near_x(w, shifted + 0.65)
+    assert(session.results == results and session.result_bytes == held_bytes, f"{session.results} results of {session.result_bytes} bytes after, {results} of {held_bytes} before")
+    assert(w.network.require(chain[0]).evaluations == cooks and w.network.require(chain[58]).evaluations == above)
+    # Medians, so spikes do not decide.
+    late_moves.sort()
+    fresh_moves.sort()
+    let later = late_moves[250]
+    let first = fresh_moves[250]
+    print(f"PASS A 6,500-move drag through the worker: {results} results held before and after, {early_live} objects alive at move 500 and {late_live} at 6,000, moves past 6,000 {later:.3f} ms (median) against a fresh chain's {first:.3f} ms, in turn")
+    assert(later < first * 1.5, f"{later} ms a move after 6,000 moves, {first} ms in a fresh chain")
+    w.undo()
+    settle(w)
+    near_x(w, shifted)
+    session.close()
+
+func near_x(w: Workspace, expected: float) -> unit!:
+    let shown = w.meshes_of(w.network.display)
+    assert(shown.length == 1, f"{shown.length} meshes shown, {w.notice}, history {w.history.cursor}")
+    let x = shown[0].bounds().maximum.x
+    assert(x > expected - 0.0001 and x < expected + 0.0001, f"{x} {expected}")
+
+## A Box and 60 Transforms after it, each moving it 0.01 along x, cooked
+## by the worker; the last one selected. The Transforms' ids, in order.
+func transform_chain() -> (Workspace, list[int])!:
     let w = Workspace()
     w.enable_compute()
     settle(w)
@@ -138,74 +202,16 @@ pub func result_store_bound() -> unit!:
         chain.append(node.id)
     w.rebuild()
     settle(w)
-    let shifted = (w.geometry else trap("chain")).bounds().maximum.x
-    assert(shifted > 1.59 and shifted < 1.61, f"{shifted} {w.notice}")
-    let session = w.compute else trap("compute")
-    let results = session.results
-    let held_bytes = session.result_bytes
-    assert(results >= 61, f"{results} results")
-    let cooks = w.network.require(chain[0]).evaluations
-    let above = w.network.require(chain[58]).evaluations
-    let last = w.network.require(chain[59])
-    let values = last.values.copy()
-    w.begin("Move gizmo")
-    let early_moves: list[float] = []
-    let late_moves: list[float] = []
-    # A fixed piece of work timed beside the moves in each window: another
-    # session's load slows it as much as the moves, so the windows are
-    # compared as multiples of it, not in milliseconds.
-    let early_probes: list[float] = []
-    let late_probes: list[float] = []
-    for move in 0..<6000:
-        let started = time.now()
-        let moved = values.copy()
-        moved[1] = 0.01 + 0.0001 * float(move + 1)
-        w.preview_parameters(moved)
-        settle(w)
-        let spent = float(time.now() - started) / 1000000.0
-        if move < 500: early_moves.append(spent)
-        if move >= 5500: late_moves.append(spent)
-        if move % 10 == 0 and (move < 500 or move >= 5500):
-            let probe = probe_ms()
-            if move < 500: early_probes.append(probe)
-            else: late_probes.append(probe)
-        assert(session.results == results, f"move {move}: {session.results} results, {results} before")
-    w.commit()
-    settle(w)
-    near_x(w, shifted + 0.6)
-    assert(session.results == results and session.result_bytes == held_bytes, f"{session.results} results of {session.result_bytes} bytes after, {results} of {held_bytes} before")
-    assert(w.network.require(chain[0]).evaluations == cooks and w.network.require(chain[58]).evaluations == above)
-    # Medians, so spikes do not decide, each window in units of its probe's
-    # median, so a load that comes and goes shifts both alike (the creep
-    # this guards against was 3.8 times over 6,000 moves).
-    early_moves.sort()
-    late_moves.sort()
-    early_probes.sort()
-    late_probes.sort()
-    let first = early_moves[250]
-    let later = late_moves[250]
-    let first_probe = early_probes[early_probes.length // 2]
-    let later_probe = late_probes[late_probes.length // 2]
-    let ratio = (later / later_probe) / (first / first_probe)
-    print(f"PASS A 6,000-move drag through the worker: {results} results held before and after, {first:.3f} ms a move (median) over the first 500, {later:.3f} over the last 500 ({first_probe:.3f} and {later_probe:.3f} ms probes: {ratio:.2f} times)")
-    assert(ratio < 2.0, f"{first} ms then {later} ms a move, probes {first_probe} and {later_probe} ms")
-    w.undo()
-    settle(w)
-    near_x(w, shifted)
-    session.close()
+    return (w, chain)
 
-func near_x(w: Workspace, expected: float) -> unit!:
-    let shown = w.meshes_of(w.network.display)
-    assert(shown.length == 1, f"{shown.length} meshes shown, {w.notice}, history {w.history.cursor}")
-    let x = shown[0].bounds().maximum.x
-    assert(x > expected - 0.0001 and x < expected + 0.0001, f"{x} {expected}")
-
-## A fixed piece of work (a 120x120 grid made and moved, on this thread), in
-## milliseconds: what the machine's load does to the moves it does to this.
-func probe_ms() -> float!:
+## Milliseconds of move `move` of a drag of the selected Transform's
+## Translate x (`values` its parameters before the drag), to its result.
+func drag_move(w: Workspace, values: list[float], move: int) -> float!:
     let started = time.now()
-    let grid = MeshPrimitives.grid(1.0, 120)
-    _ = grid.transformed(Vector3(0.1, 0.0, 0.0), Vector3(), Vector3(1.0, 1.0, 1.0))
+    let moved = values.copy()
+    moved[1] = 0.01 + 0.0001 * float(move + 1)
+    w.preview_parameters(moved)
+    settle(w)
     return float(time.now() - started) / 1000000.0
 
 ## Segments of every batch in `batches` (one a product).
