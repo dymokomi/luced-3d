@@ -1,0 +1,118 @@
+## The Mesh Check overlay (POLY-MODELING.md Stage 8), after Cinema 4D's
+## Mesh Checking and Houdini's PolyDoctor: with Mesh Check on (the
+## viewport's shading menu), the shown mesh's defects draw over it, each
+## finding in its color (edges as lines, faces outlined and tinted, points
+## as small crosses), and a panel at the viewport's lower left lists them
+## with their counts. A click on a row selects that finding's elements,
+## at its level, one undo step. luce-geocore's report runs the same rule
+## passes as the Select tools (Non-manifold, By Sides, Poles, Degenerate,
+## Intersecting); it is made again only when the mesh changes, and not
+## while a drag is under way.
+from luce_ui.ui import Painter, Event
+from luce_gpu.gpu import Rect
+from luce_window.input import EventKind
+from luce_3d.graphics import EditOverlay
+from luce_geocore.geocore import Verbs, MeshReport
+from workspace import Workspace
+import selection_commands
+import theme
+
+## The panel's rows: height, width and the gap to the viewport's edges.
+let row_height = 20.0
+let panel_width = 210.0
+let margin = 12.0
+
+pub class MeshCheckView:
+    let w: Workspace
+    ## The report on the mesh shown, the overlay drawing it, and what it
+    ## was made for (the mesh's points, corners and topology).
+    pub var report: MeshReport? = none
+    let overlay: EditOverlay
+    var made_for: list[int]
+    ## The panel's rows, hovered row (-1: none).
+    var rows: list[Rect]
+    pub var hovered: int = -1
+    pub var changed: bool = false
+
+    pub func init(self, w: Workspace):
+        self.w = w
+        self.overlay = EditOverlay()
+        self.overlay.set_fill(false)
+        self.made_for = []
+        self.rows = []
+
+    pub func visible(self) -> bool:
+        return self.w.display.mesh_check_visible and self.w.geometry != none
+
+    ## The report and the overlay's layers for the mesh shown now (made
+    ## again only when the mesh changed).
+    pub func refresh(self) -> unit!:
+        let mesh = self.w.geometry else return
+        let key = [mesh.points_id(), mesh.corners_id(), mesh.topology_hash()]
+        if key == self.made_for or (self.w.dragging and self.report != none):
+            return
+        self.made_for = key
+        let report = Verbs.mesh_check(mesh)
+        self.report = report
+        self.overlay.clear_findings()
+        for index in 0..<report.count():
+            if report.found(index) > 0:
+                self.overlay.add_finding(mesh, report.selection(index), theme.finding(index))
+
+    ## The findings over the mesh, and the panel.
+    pub func draw(self, p: Painter, width: float, height: float) -> unit!:
+        if not self.visible():
+            return
+        let mesh = self.w.geometry else return
+        self.refresh() catch failure:
+            self.w.notice = f"Mesh Check: {failure.message}"
+            return
+        self.overlay.show(mesh, 1, none, -1)
+        self.overlay.draw(self.w.view.camera, p.target(), theme.grey(90.0), theme.accent(), theme.text(), wires = false)
+        let report = self.report else return
+        self.rows = []
+        let top = height - margin - row_height * float(report.count() + 1) - 8.0
+        p.rounded_rectangle(Rect(margin, top, panel_width, row_height * float(report.count() + 1) + 8.0), theme.grey(28.0), 4.0)
+        p.text("Mesh Check", margin + 8.0, top + 5.0, theme.text())
+        for index in 0..<report.count():
+            let box = Rect(margin + 4.0, top + 4.0 + row_height * float(index + 1), panel_width - 8.0, row_height)
+            self.rows.append(box)
+            let found = report.found(index)
+            if index == self.hovered and found > 0:
+                p.rounded_rectangle(box, theme.grey(50.0), 3.0)
+            p.rounded_rectangle(Rect(box.x + 4.0, box.y + 6.0, 9.0, 9.0), theme.finding(index), 2.0)
+            let ink = theme.text() if found > 0 else theme.disabled(theme.text())
+            p.text(report.label(index), box.x + 20.0, box.y + 3.0, ink)
+            let count = f"{found}" if report.ran(index) else "off"
+            p.text(count, box.x + box.width - 8.0 - float(count.length) * 7.0, box.y + 3.0, ink)
+
+    ## A click on a row selects its finding; whether the event was the
+    ## panel's.
+    pub func event(self, event: Event) -> bool!:
+        self.changed = false
+        if not self.visible():
+            return false
+        var over = -1
+        for index in 0..<self.rows.length:
+            let box = self.rows[index]
+            if event.x >= box.x and event.x < box.x + box.width and event.y >= box.y and event.y < box.y + box.height:
+                over = index
+        if event.kind == EventKind.pointer_moved and over != self.hovered:
+            self.hovered = over
+            self.changed = true
+        if event.kind != EventKind.pointer_down or event.button != 0 or over < 0:
+            return false
+        self.select(over)
+        return true
+
+    ## Finding `index`'s elements as the selection, at their level.
+    pub func select(self, index: int) -> unit!:
+        let report = self.report else return
+        if report.found(index) == 0 or not self.w.selecting():
+            if not self.w.selecting():
+                self.w.notice = "Mesh Check: edit the mesh (an Edit Mesh) to select what it found"
+                self.w.revision += 1
+            return
+        let made = report.selection(index)
+        self.w.perform(f"Select {report.label(index)}", func () -> unit!:
+            selection_commands.adopt(self.w, made))

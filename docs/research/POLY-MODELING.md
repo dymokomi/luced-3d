@@ -1530,7 +1530,7 @@ below).
   region whose outline is not star-shaped or that has more than two outlines (the outlines
   become circles, the inner points stay, with a warning); Straighten on loops.
 
-**Stage 8: deformers, Mesh Check, sculpt-lite.**
+**Stage 8: deformers, Mesh Check, sculpt-lite.** **In part 2026-10-13** (see "Stage 8 as built so far" below).
 - Bend/Twist/Taper/Squash as one node; Lattice; Shrinkwrap.
 - Mesh Check overlay sharing the Select passes.
 - Sculpt-lite brushes as stroke steps.
@@ -1538,6 +1538,53 @@ below).
   - Twist 90° of a box column turns the top 90°;
   - Mesh Check counts on a fixture with each defect;
   - one brush stroke is one undo step.
+
+**Stage 8 as built so far** (paused 2026-10-13 for the held-mesh Edit Mesh; the rest follows
+it).
+- Every tool is a luce-geocore verb and a line in `makers` (or a select rule), as in Stages 5–7.
+  Blender's Simple Deform, Lattice and sculpt brushes and Houdini's Bend, Lattice and
+  PolyDoctor were read for behavior; nothing was copied.
+- **Bend** (`bend.lucb`, Modify › Deform): one node with a Mode (Bend, Twist, Taper, Squash),
+  Amount (degrees, or percent for Taper and Squash), Axis, Direction (the way a bend curls),
+  Origin (the group's start, its center, Custom), Length (0: the group's extent) and Limits
+  (the span that deforms; points past it follow rigidly). Its drag turns Amount; M steps the
+  mode and A the axis while it lasts.
+- **Lattice** (`lattice.lucb`, Modify › Deform): a cage of Points along X, Y and Z round the
+  group's bounds (Padding), Smooth (Bernstein, Sederberg–Parry) or Linear (trilinear). The
+  moved cage points follow the parameters (count, then index and offset each), so a node
+  and a step replay them. The run leaves its cage's box on the mesh (`.lattice_low`,
+  `.lattice_size`, `.lattice_points`), so `Verbs.lattice` gives the cage over the result.
+  luced-3d's `lattice_gesture.luc` draws it and drags its points (Shift adds), one undo
+  step per drag, for the edited node's last step or a shown Lattice node.
+- **Sculpt** (`sculpt.lucb`, `sculpt_brush.lucb`, Modify › Sculpt): Draw, Grab, Smooth,
+  Inflate, Flatten, Pinch; Radius, Strength, Falloff (Smooth, Sphere, Linear, Constant,
+  Sharp), Invert; the group alone moves; the Edit node's symmetry mirrors each dab. A stroke's
+  dabs (center and direction each) follow the parameters. luce-geocore remembers the last
+  stroke cooked, so a stroke sent again with more dabs runs only the new ones and makes its
+  mesh over the last one (normals and GPU copies refreshed around what moved): 3 ms per
+  pointer move on 1M faces. `sculpt_gesture.luc`: the brush circle (and its half-strength
+  ring) on the surface, a drag strokes, Ctrl inverts, Shift smooths, [ and ] size it (it
+  keeps its size on screen), Escape drops a stroke; one stroke, one undo step.
+- **Mesh Check**: the select rules **Poles**, **Degenerate**, **Intersecting** and the
+  **Mesh Check** rule (every finding turned on, at the selection's level) are Select › Find
+  tools; luce-geocore's `MeshReport` (`Verbs.mesh_check`) runs the same passes for the
+  overlay: non-manifold edges, pinched points, boundary edges, flipped neighbors, loose
+  points, n-gons, triangles, poles, zero-area faces, zero-length edges, intersecting faces.
+  `mesh_check_view.luc`: the shading menu's Mesh Check draws each finding in its color over
+  the shown mesh (luce-3d `EditOverlay.add_finding`) and lists them at the lower left; a row's
+  click selects that finding, one undo step.
+- Edge marks draw 3.5 points wide and the selection's lines 2, so a selected hard edge or seam
+  shows its mark's color at both sides (Stage 7's carry-over).
+- Nodes of a verb taking numbers after its parameters keep them past the Group Type's slot
+  (`edit_operations.node_numbers`, `insert_numbers`), so a Sculpt or Lattice node with many
+  dabs or moved points replays them.
+- Tests: luce-geocore `deform_checks`, `sculpt_checks`, `mesh_check_checks` under the
+  allocation-failure sweep; luced-3d `deform_tool_tests` from real viewport events.
+  Benchmarks: luce-geocore docs/API.md.
+- Not built yet: Shrinkwrap was Stage 6's; corrective smooth, a Soft Transform node, edge
+  transport; tablet pressure; sculpt screenshots and latency in a real window; icons
+  (stand-ins: Bend `stretch-curve`, Lattice `grid`, Mesh Check `surface-analysis`, Poles
+  `vertex-select`, Degenerate `select-by-area`, Intersecting `boolean-intersect`).
 
 ## 9. Open questions for the owner
 

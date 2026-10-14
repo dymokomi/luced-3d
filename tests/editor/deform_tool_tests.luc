@@ -1,0 +1,252 @@
+## The Stage 8 tools (POLY-MODELING.md Stage 8) from real viewport events
+## on a grid seen from above:
+##
+## - Bend with nothing selected bends everything; its drag sets Amount in
+##   the same undo step, and Twist from the tool bar turns the grid;
+## - Lattice shows its cage over the result; a drag on a cage point moves
+##   it, the grid follows, one undo step; Shift+click adds a point to the
+##   drag;
+## - Sculpt: a stroke from pointer events is one Sculpt step and one undo
+##   step; Draw raises the points under the stroke along the surface and
+##   leaves the rest; Ctrl inverts it; under the Edit node's X symmetry the
+##   other side rises alike; the falloff lowers the points toward the
+##   brush's edge; Escape drops a stroke under way; [ and ] size the brush;
+## - the Mesh Check overlay reports the grid's boundary and a row's click
+##   selects it, one undo step;
+## - Bend, Lattice and Sculpt as nodes give the same points as their steps.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3
+from luce_geocore.geocore import Mesh
+from edit_types import edge_level, symmetry_slot
+from tool_drag_tests import editor_on, at, drag, last, near, move, press, release, key
+from tools import ToolRun
+from edit_steps import add_tool_node, edit_step
+import modeling_commands
+import node_commands
+from luce_std import math
+
+pub func deform_tool_tests() -> unit!:
+    bend_drag()
+    lattice_cage()
+    sculpt_stroke()
+    sculpt_symmetry()
+    mesh_check_panel()
+    node_parity()
+    print("PASS Stage 8 tools from viewport events: Bend's drag and Twist; a Lattice cage point dragged, one undo step; a Sculpt stroke is one step and one undo, Draw raises under it with falloff, Ctrl inverts, X symmetry mirrors, Escape drops it, [ ] size the brush; the Mesh Check reports the boundary and selects it; Bend, Lattice and Sculpt nodes equal their steps")
+
+func mesh_of(editor: Luce3D) -> Mesh!:
+    return editor.workspace.geometry else trap("no mesh")
+
+## The editor's grid made `divisions` by `divisions` (2 wide, centered).
+func finer(editor: Luce3D, divisions: int) -> unit!:
+    let w = editor.workspace
+    var found: int = -1
+    for node in w.network.nodes:
+        if node.kind == "Grid":
+            found = node.id
+    let grid = w.network.require(found)
+    grid.values[2] = float(divisions)
+    grid.values[3] = float(divisions)
+    w.network.invalidate(grid.id)
+    w.rebuild()
+    editor.panels.refresh()
+
+func bend_drag() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    finer(editor, 8)
+    let before = w.history.cursor
+    modeling_commands.model(w, "Bend")
+    let node = w.selected() else trap("edit")
+    assert(node.edits[-1].verb == "Bend" and w.history.cursor == before + 1)
+    # Its starting Amount bends the grid (Y axis: the grid lies across it,
+    # so it stays flat); the drag turns Amount.
+    let s = w.drag_session else trap("Bend takes no drag")
+    let center = at(editor, s.frame.center_point())
+    drag(editor, [center[0] + 100.0, center[1]], [center[0], center[1] - 100.0], meta = true)
+    assert(last(editor)[1] != 90.0 and w.history.cursor == before + 1)
+    # Twist about X, a quarter turn: the far edge (z = 1) stands up.
+    modeling_commands.set_last_step(w, 0, 1.0, 0.0, 3.0)
+    modeling_commands.set_last_step(w, 1, 90.0, -100000.0, 100000.0)
+    modeling_commands.set_last_step(w, 2, 0.0, 0.0, 2.0)
+    let mesh = mesh_of(editor)
+    var far = 0
+    for point in 0..<mesh.point_count():
+        let p = mesh.point(point)
+        if math.abs(p.x - 1.0) < 0.000001:
+            # The end of the twist (x = 1): turned 90° about X.
+            near(p.z, 0.0, 0.00001)
+            far += 1
+    assert(far == 9)
+    editor.close()
+
+func lattice_cage() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    finer(editor, 8)
+    modeling_commands.model(w, "Lattice")
+    let gesture = editor.panels.view.tools.lattice
+    let cage = gesture.cage() else trap("no cage over the Lattice")
+    assert(cage.count() == 27)
+    let before = w.history.cursor
+    # Cage point 0 (the low corner, x = z = -1) dragged toward the eye.
+    let start = at(editor, cage.point(0))
+    move(editor, start)
+    press(editor, start)
+    move(editor, [start[0] + 30.0, start[1] + 20.0])
+    move(editor, [start[0] + 60.0, start[1] + 40.0])
+    release(editor, [start[0] + 60.0, start[1] + 40.0])
+    assert(w.history.cursor == before + 1)
+    let numbers = last(editor)
+    assert(numbers[5] == 1.0 and numbers[6] == 0.0)
+    let moved = mesh_of(editor).point(0)
+    assert(moved.subtract(Vector3(-1.0, 0.0, -1.0)).length() > 0.05)
+    # Undo puts the cage back: no point moved.
+    w.undo()
+    editor.panels.refresh()
+    assert(last(editor).length <= 5 or last(editor)[5] == 0.0)
+    near(mesh_of(editor).point(0).subtract(Vector3(-1.0, 0.0, -1.0)).length(), 0.0)
+    editor.close()
+
+## A stroke across the grid from screen point `a` to `b` in `steps`
+## moves, Ctrl held for `invert`.
+func stroke(editor: Luce3D, a: list[float], b: list[float], steps: int, invert: bool = false) -> unit!:
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = a[0], y = a[1], control = invert))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = a[0], y = a[1], button = 0, control = invert))
+    for at_step in 1..<steps + 1:
+        let t = float(at_step) / float(steps)
+        editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t, control = invert))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = b[0], y = b[1], button = 0, control = invert))
+    editor.panels.refresh()
+
+func sculpt_stroke() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    finer(editor, 40)
+    modeling_commands.model(w, "Sculpt")
+    assert(w.edit_tool == "Sculpt")
+    let node = w.selected() else trap("edit")
+    let steps = node.edits.length
+    let before = w.history.cursor
+    stroke(editor, at(editor, Vector3(-0.5, 0.0, 0.0)), at(editor, Vector3(0.5, 0.0, 0.0)), 12)
+    assert(node.edits.length == steps + 1 and node.edits[-1].verb == "Sculpt")
+    assert(w.history.cursor == before + 1)
+    let numbers = node.edits[-1].numbers
+    let radius = numbers[1]
+    assert(numbers[5] > 5.0 and radius > 0.05 and radius < 1.0)
+    # Raised under the stroke's line, most in the middle of the brush, not
+    # beyond its reach; the far corner stays.
+    let mesh = mesh_of(editor)
+    var middle = 0.0
+    var edge = 0.0
+    for point in 0..<mesh.point_count():
+        let p = mesh.point(point)
+        assert(p.y >= -0.0000001)
+        if math.abs(p.x) < 0.3 and math.abs(p.z) < 0.03:
+            middle = math.max(middle, p.y)
+        if math.abs(p.x) < 0.3 and math.abs(math.abs(p.z) - radius * 0.8) < 0.03:
+            edge = math.max(edge, p.y)
+        if math.abs(p.z) > radius * 1.001:
+            near(p.y, 0.0)
+    assert(middle > 0.0 and edge < middle * 0.6)
+    # One undo takes the whole stroke back.
+    w.undo()
+    editor.panels.refresh()
+    assert((w.selected() else trap("edit")).edits.length == steps)
+    # Ctrl inverts: the stroke digs.
+    stroke(editor, at(editor, Vector3(-0.5, 0.0, 0.0)), at(editor, Vector3(0.5, 0.0, 0.0)), 12, true)
+    var lowest = 0.0
+    for point in 0..<mesh_of(editor).point_count():
+        lowest = math.min(lowest, mesh_of(editor).point(point).y)
+    assert(lowest < 0.0)
+    # Escape drops a stroke under way: no step.
+    let count = (w.selected() else trap("edit")).edits.length
+    let a = at(editor, Vector3(0.0, 0.0, 0.5))
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = a[0], y = a[1]))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = a[0], y = a[1], button = 0))
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = a[0] + 40.0, y = a[1]))
+    key(editor, Key.escape)
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = a[0] + 40.0, y = a[1], button = 0))
+    editor.panels.refresh()
+    assert((w.selected() else trap("edit")).edits.length == count)
+    # ] makes the brush larger.
+    let size = w.sculpt_radius
+    modeling_commands.scale_brush(w, 1.25)
+    near(w.sculpt_radius, size * 1.25)
+    editor.close()
+
+func sculpt_symmetry() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    finer(editor, 40)
+    let node = w.selected() else trap("edit")
+    node.values[symmetry_slot] = 1.0
+    modeling_commands.model(w, "Sculpt")
+    stroke(editor, at(editor, Vector3(0.5, 0.0, -0.3)), at(editor, Vector3(0.5, 0.0, 0.3)), 8)
+    let mesh = mesh_of(editor)
+    let raised: list[Vector3] = []
+    for point in 0..<mesh.point_count():
+        let p = mesh.point(point)
+        if p.y > 0.0:
+            raised.append(p)
+    assert(raised.length > 10)
+    # Each raised point's mirror across X stands as high.
+    for p in raised:
+        var found = false
+        for q in raised:
+            if math.abs(q.x + p.x) < 0.00001 and math.abs(q.z - p.z) < 0.00001:
+                near(q.y, p.y, 0.00001)
+                found = true
+        assert(found)
+    editor.close()
+
+func mesh_check_panel() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    w.display.mesh_check_visible = true
+    let view = editor.panels.view.tools.checking
+    view.refresh()
+    let report = view.report else trap("no Mesh Check report")
+    # The 4 × 4 grid: 16 boundary edges, 4 corner points of two edges
+    # (on the boundary: no poles), nothing else.
+    assert(report.found(2) == 16 and report.found(0) == 0 and report.found(7) == 0)
+    let before = w.history.cursor
+    view.select(2)
+    assert(w.history.cursor == before + 1 and w.level_index() == edge_level and w.selected_count() == 16)
+    editor.close()
+
+## Bend, Lattice (a cage point moved) and Sculpt (a stroke) on the grid as
+## a step and as a node: the same points.
+func node_parity() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    finer(editor, 12)
+    let grid = mesh_of(editor)
+    let cases: list[(str, list[float])] = [("Bend", [1.0, 60.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+                                            ("Lattice", [3.0, 3.0, 3.0, 0.0, 0.0, 1.0, 13.0, 0.0, 0.4, 0.0]),
+                                            ("Sculpt", [0.0, 0.4, 0.8, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.1, 0.0, 0.1, 0.0, 1.0, 0.0, 0.2, 0.0, 0.2, 0.0, 1.0, 0.0])]
+    for (name, numbers) in cases:
+        let edit = w.network.display
+        # As a step of the Edit Mesh.
+        w.perform(name, func () -> unit!:
+            let node = w.selected() else trap("edit")
+            node.edits.append(edit_step(w, node, name, "", numbers, grid))
+            w.network.invalidate(node.id)
+            w.rebuild())
+        let stepped = mesh_of(editor)
+        w.undo()
+        # As a node after the Edit Mesh.
+        add_tool_node(w, name, ToolRun(name, numbers), "", grid)
+        let noded = mesh_of(editor)
+        assert(w.network.require(w.network.display).kind == name)
+        assert(stepped.point_count() == noded.point_count())
+        var moved = 0.0
+        for point in 0..<stepped.point_count():
+            near(stepped.point(point).subtract(noded.point(point)).length(), 0.0)
+            moved = math.max(moved, stepped.point(point).subtract(grid.point(point)).length())
+        assert(moved > 0.01, name)
+        w.undo()
+        node_commands.select_node(w, edit)
+    editor.close()

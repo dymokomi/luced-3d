@@ -1035,6 +1035,60 @@ Snap points to a grid.
 | --- | --- | --- | --- |
 | Spacing | 0.1 | yes | Grid spacing points snap to. |
 
+#### Deform
+
+##### Bend
+
+Bend, twist, taper or squash the group along an axis.
+
+- Node `Bend` in Geo; a step of Edit Mesh.
+- Works on objects or points or edges or faces, or everything when nothing is selected.
+- After it runs, a drag in the viewport sets Amount (turned about the selection's center); a click keeps it.
+- While its drag lasts: M cycles Mode, A cycles Axis.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Mode | Bend | yes | Bend curls along the axis; Twist turns about it; Taper widens or narrows toward the end; Squash lengthens or shortens, keeping the volume. |
+| Amount | 90.0 | yes | Bend and Twist: degrees over the length. Taper: how much wider the far end grows, in percent (-100 is a point). Squash: how much longer the span grows, in percent (negative squashes it). |
+| Axis | Y | yes | The axis the deformation runs along. |
+| Direction | 0.0 | yes | Bend: the way it curls, in degrees about the axis from +X (+Y for the X axis). |
+| Origin | Group's start | yes | Where the deformation starts: the group's lowest point along the axis, its middle, or Custom origin. |
+| Custom origin | 0.0, 0.0, 0.0 | yes | The origin when Origin is Custom. |
+| Length | 0.0 | yes | The distance Amount is spread over (0: the group's extent along the axis). |
+| Limits | 0.0, 1.0, 0.0 | yes | The span that deforms, as shares of the group's extent along the axis (0 its start, 1 its end; the third number is unused); points past it follow rigidly. |
+
+##### Lattice
+
+Deform the group by moving the points of a cage round it.
+
+- Node `Lattice` in Geo; a step of Edit Mesh.
+- Works on objects or points or edges or faces, or everything when nothing is selected.
+- Gesture: lattice.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Points | 3.0, 3.0, 3.0 | yes | Cage points along X, Y and Z. |
+| Interpolation | Smooth | yes | Smooth: every cage point pulls the whole group, most near it (Bernstein weights); Linear: a point follows the eight cage points of its cell. |
+| Padding | 0.0 | yes | How far the cage stands outside the group's bounds, as a share of their size. |
+
+#### Sculpt
+
+##### Sculpt
+
+A brush stroke: draw, grab, smooth, inflate, flatten or pinch the surface.
+
+- Node `Sculpt` in Geo; a step of Edit Mesh.
+- Works on objects or points or edges or faces, or everything when nothing is selected.
+- Gesture: sculpt.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Brush | Draw | yes | Draw raises along the surface's normal; Grab drags the points under the stroke's start; Smooth evens them out; Inflate pushes each along its own normal; Flatten levels them onto their plane; Pinch draws them toward the stroke. |
+| Radius | 0.5 | yes | How far from the brush's center points are reached. |
+| Strength | 0.5 | yes | How much each dab moves the points under it. |
+| Falloff | Smooth | yes | How the brush's effect fades from its center to its edge. |
+| Invert | off | yes | Draw digs, Inflate deflates, Pinch spreads and Flatten pushes away from the plane (Ctrl held while stroking). |
+
 #### Normals
 
 ##### Reverse
@@ -1372,6 +1426,61 @@ Boundary edges, edges of three faces or more, flipped neighbors and pinched poin
 | Multiple faces | on | yes | Edges with three faces or more (a T-junction). |
 | Non contiguous | on | yes | Edges whose two faces wind opposite ways (a flipped neighbor). |
 | Pinched points | on | yes | Points where faces meet only at the point (at the Points level). |
+
+##### Poles
+
+Points by how many edges meet there: the poles of a quad mesh.
+
+- Node `Select Poles` in Geo; a step of Edit Mesh.
+- Works on points, or everything when nothing is selected.
+- Group function: `poles(group, edges, compare, interior_only)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Edges | 4 | yes | The number of edges a point's edges are compared with. |
+| Compare | Not equal | yes | How a point's edges compare with Edges (Not equal 4: the poles of a quad mesh). |
+| Interior only | on | yes | Leave out points on a boundary, whose edges differ anyway (a grid's sides have three). |
+
+##### Degenerate
+
+Faces without area and edges without length.
+
+- Node `Select Degenerate` in Geo; a step of Edit Mesh.
+- Works on faces or edges, or everything when nothing is selected.
+- Group function: `degenerate(group, tolerance)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Tolerance | 0.000001 | yes | Faces with less area than its square, edges shorter than it. |
+
+##### Intersecting
+
+Faces that pass through other faces of the mesh.
+
+- Node `Select Intersecting` in Geo; a step of Edit Mesh.
+- Works on faces, or everything when nothing is selected.
+- Group function: `intersecting(group)`.
+
+##### Mesh Check
+
+Select the mesh's defects: non-manifold, flipped, loose, n-gons, poles, degenerate and intersecting; the viewport's Mesh Check overlay shows them.
+
+- Node `Mesh Check` in Geo; a step of Edit Mesh.
+- Works on points or edges or faces, or everything when nothing is selected.
+- Group function: `problems(group, non-manifold, boundary, flipped, loose_points, n-gons, triangles, poles, degenerate, intersecting, tolerance)`.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Non-manifold | on | yes | Edges of three faces or more, and points where faces meet only at the point. |
+| Boundary | off | yes | Edges with one face: the open edges of a sheet or a hole. |
+| Flipped | on | yes | Edges whose two faces wind opposite ways. |
+| Loose points | on | yes | Points no face uses. |
+| N-gons | on | yes | Faces of more than four sides. |
+| Triangles | off | yes | Faces of three sides. |
+| Poles | off | yes | Inner points where other than four edges meet. |
+| Degenerate | on | yes | Faces without area and edges without length (within Tolerance). |
+| Intersecting | on | yes | Faces passing through other faces of the mesh. |
+| Tolerance | 0.000001 | yes | Degenerate: faces with less area than its square, edges shorter than it. |
 
 ##### Loose
 

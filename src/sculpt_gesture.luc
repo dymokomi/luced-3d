@@ -1,0 +1,249 @@
+## The `sculpt` gesture (POLY-MODELING.md Stage 8), sculpt-lite after
+## Blender's sculpt brushes and Cinema 4D's brushes: with Sculpt chosen in
+## an edited Edit Mesh, the brush's circle follows the surface under the
+## pointer, and a drag strokes it. A stroke is one Sculpt step (one undo):
+## its dabs, spaced a tenth of the radius apart along the surface (Grab: one
+## per move, dragged in the plane facing the view), are sent again as the
+## pointer moves, and luce-geocore goes on from the dabs it has (the
+## remembered stroke), so the surface follows the pointer. Ctrl inverts the
+## stroke, Shift smooths instead; [ and ] size the brush, which keeps its
+## size on screen (its radius in the step is the world size under the
+## stroke's start). The brush, strength and falloff come from the last
+## Sculpt step (the tool bar sets them), and the Edit node's symmetry
+## mirrors each dab. Only the selection moves when something is selected.
+from luce_ui.ui import Painter, Event
+from luce_window.input import EventKind, Key
+from luce_3d.graphics import Vector3, WireRenderer
+from workspace import Workspace
+from edit_operations import EditStep
+from edit_types import symmetry_slot
+from verb_rows import initial_numbers
+import tool_registry
+import view_projection as gm
+import theme
+from luce_std import math
+
+## Where the stroke's dabs begin among the step's numbers (after the five
+## parameters and the count).
+let head = 5
+let brush_slot = 0
+let radius_slot = 1
+let falloff_slot = 3
+let invert_slot = 4
+let grab_brush = 1.0
+let smooth_brush = 2.0
+## Dabs a tenth of the radius apart.
+let spacing = 0.1
+
+## A point on the surface under the pointer and the way it faces.
+pub class SurfaceHit:
+    pub let point: Vector3
+    pub let normal: Vector3
+
+    pub func init(self, point: Vector3, normal: Vector3):
+        self.point = point
+        self.normal = normal
+
+pub class SculptGesture:
+    let w: Workspace
+    ## The surface under the pointer (none: off the model) and the pointer.
+    pub var hit: SurfaceHit? = none
+    var pointer_x: float = -1.0
+    var pointer_y: float = 0.0
+    ## The stroke under way: its settings, its dabs, the last dab's place
+    ## and, for Grab, the plane point the pointer was last at.
+    pub var stroking: bool = false
+    var settings: list[float]
+    pub var dabs: list[float]
+    var last: Vector3
+    var grab_from: Vector3
+    var grab_normal: Vector3
+    ## Whether the last event changed what is drawn.
+    pub var changed: bool = false
+
+    pub func init(self, w: Workspace):
+        self.w = w
+        self.settings = []
+        self.dabs = []
+        self.last = Vector3()
+        self.grab_from = Vector3()
+        self.grab_normal = Vector3()
+
+    ## Whether Sculpt is chosen in an edited Edit Mesh.
+    pub func active(self) -> bool:
+        return tool_registry.gesture_of(self.w.edit_tool) == "sculpt" and self.w.editing()
+
+    ## What the notice line says.
+    pub func hint(self) -> str:
+        return "Sculpt: drag on the surface to stroke (Ctrl inverts, Shift smooths); [ and ] size the brush; the tool bar sets the brush, strength and falloff; Esc leaves"
+
+    ## Pointer and key events while Sculpt is chosen; whether one was used.
+    pub func event(self, event: Event, width: float, height: float) -> bool!:
+        self.changed = false
+        if not self.active():
+            if self.stroking:
+                self.stroking = false
+                self.w.cancel()
+            self.hit = none
+            return false
+        if event.alt:
+            return false
+        if event.kind == EventKind.pointer_moved:
+            self.pointer_x = event.x
+            self.pointer_y = event.y
+            self.changed = true
+            if not event.inside:
+                self.hit = none
+                return self.stroking
+            self.hit = self.surface(event.x, event.y, width, height)
+            if self.stroking:
+                self.follow(event.x, event.y, width, height)
+                return true
+            return false
+        if event.kind == EventKind.pointer_down and event.inside and event.button == 0:
+            let found = self.surface(event.x, event.y, width, height) else return false
+            self.begin(found, event.control or event.meta, event.shift, event.x, event.y, width, height)
+            return true
+        if event.kind == EventKind.pointer_up and event.button == 0 and self.stroking:
+            self.stroking = false
+            self.changed = true
+            self.w.commit()
+            self.w.notice = self.hint()
+            return true
+        return false
+
+    ## Keys while Sculpt is chosen (from the view's typing path): Escape
+    ## drops the stroke under way, else leaves the tool.
+    pub func key(self, event: Event) -> bool!:
+        if not self.active() or event.kind != EventKind.key_down or event.key != Key.escape:
+            return false
+        if self.stroking:
+            self.stroking = false
+            self.w.cancel()
+        else:
+            self.w.end_modal_tool()
+            self.w.notice = ""
+        self.changed = true
+        self.w.revision += 1
+        return true
+
+    ## The surface under (x, y) of the edited mesh, facing the view.
+    pub func surface(self, x: float, y: float, width: float, height: float) -> SurfaceHit?!:
+        let mesh = self.w.geometry else return none
+        let origin = gm.origin(self.w, x, y, width, height)
+        let direction = gm.ray(self.w, x, y, width, height).normalized()
+        let face = mesh.ray_face(origin, direction)
+        if face < 0:
+            return none
+        let point = origin.add(direction.multiply_scalar(mesh.ray_distance(origin, direction)))
+        var normal = mesh.face_normal(face)
+        if normal.dot(direction) > 0.0:
+            normal = normal.multiply_scalar(-1.0)
+        return SurfaceHit(point, normal)
+
+    ## The settings a stroke starts with: the last Sculpt step's (the tool
+    ## bar sets them), else the tool's starting numbers.
+    func current(self) -> list[float]:
+        if let node = self.w.selected():
+            var at = node.edits.length - 1
+            while at >= 0:
+                if node.edits[at].verb == "Sculpt":
+                    return node.edits[at].numbers[..<head]
+                at -= 1
+        return initial_numbers("Sculpt")[..<head]
+
+    ## A press on the surface: the stroke's step, its first dab.
+    func begin(self, found: SurfaceHit, invert: bool, smooth: bool, x: float, y: float, width: float, height: float) -> unit!:
+        let node = self.w.selected() else return
+        let mesh = self.w.geometry else return
+        self.settings = self.current()
+        # The brush keeps its size on screen: the world size there.
+        self.settings[radius_slot] = self.w.sculpt_radius * gm.pixel_at(self.w, found.point, width, height)
+        if invert:
+            self.settings[invert_slot] = 1.0 - self.settings[invert_slot]
+        if smooth:
+            self.settings[brush_slot] = smooth_brush
+        self.dabs = [found.point.x, found.point.y, found.point.z, found.normal.x, found.normal.y, found.normal.z]
+        if self.settings[brush_slot] == grab_brush:
+            # Grab's first dab takes the points; it moves nothing.
+            self.dabs = [found.point.x, found.point.y, found.point.z, 0.0, 0.0, 0.0]
+            self.grab_normal = gm.ray(self.w, x, y, width, height).normalized()
+        self.last = found.point
+        self.grab_from = found.point
+        var group = ""
+        if let chosen = self.w.current_selection():
+            if chosen.count() > 0:
+                group = chosen.expression(mesh)
+        self.w.begin("Sculpt stroke")
+        node.edits.append(EditStep("Sculpt", group, self.w.group_type(), self.numbers(), mesh.topology_hash(), int(node.values[symmetry_slot])))
+        self.stroking = true
+        self.w.dragging = true
+        self.w.pending_changed = true
+        self.w.network.invalidate(node.id)
+        self.w.rebuild()
+
+    ## The step's numbers: the settings, the count, the dabs.
+    func numbers(self) -> list[float]:
+        return self.settings + [float(self.dabs.length // 6)] + self.dabs
+
+    ## The pointer moved while stroking: the dabs it reached.
+    func follow(self, x: float, y: float, width: float, height: float) -> unit!:
+        var added = false
+        if self.settings[brush_slot] == grab_brush:
+            let at = gm.plane(self.w, x, y, width, height, self.grab_from, self.grab_normal)
+            let delta = at.subtract(self.last)
+            if delta.length() > 0.0:
+                self.dabs = self.dabs + [self.grab_from.x, self.grab_from.y, self.grab_from.z, delta.x, delta.y, delta.z]
+                self.last = at
+                added = true
+        else:
+            let found = self.hit else return
+            let step = self.settings[radius_slot] * spacing
+            var way = found.point.subtract(self.last)
+            var left = way.length()
+            if left >= step:
+                let along = way.multiply_scalar(1.0 / left)
+                while left >= step:
+                    self.last = self.last.add(along.multiply_scalar(step))
+                    self.dabs = self.dabs + [self.last.x, self.last.y, self.last.z, found.normal.x, found.normal.y, found.normal.z]
+                    left -= step
+                added = true
+        if added:
+            self.w.preview_step(self.numbers())
+
+    ## The brush's circle on the surface under the pointer, and the half
+    ## strength ring its falloff reaches.
+    pub func draw(self, p: Painter, width: float, height: float) -> unit!:
+        if not self.active():
+            return
+        let found = self.hit else return
+        let radius = self.w.sculpt_radius * gm.pixel_at(self.w, found.point, width, height)
+        let normal = found.normal
+        var side = normal.cross(Vector3(0.0, 1.0, 0.0))
+        if side.length() < 0.001:
+            side = normal.cross(Vector3(1.0, 0.0, 0.0))
+        side = side.normalized()
+        let other = normal.cross(side)
+        let lines: list[Vector3] = []
+        let inner = self.half_reach()
+        for ring in [1.0, inner]:
+            for at in 0..<48:
+                let a = 2.0 * math.pi * float(at) / 48.0
+                let b = 2.0 * math.pi * float(at + 1) / 48.0
+                lines.append(found.point.add(side.multiply_scalar(math.cos(a) * radius * ring)).add(other.multiply_scalar(math.sin(a) * radius * ring)))
+                lines.append(found.point.add(side.multiply_scalar(math.cos(b) * radius * ring)).add(other.multiply_scalar(math.sin(b) * radius * ring)))
+        let color = theme.accent() if self.settings.length == 0 or self.settings[invert_slot] == 0.0 else theme.seam()
+        WireRenderer.lines(lines, self.w.view.camera, p.target(), color, 1.5, depth = false)
+
+    ## Where the falloff is at half its strength, as a share of the radius.
+    func half_reach(self) -> float:
+        let falloff = int(self.current()[falloff_slot])
+        if falloff == 1:
+            return math.sqrt(0.75)
+        if falloff == 2:
+            return 0.5
+        if falloff == 3:
+            return 1.0
+        if falloff == 4:
+            return 1.0 - math.sqrt(0.5)
+        return 0.5

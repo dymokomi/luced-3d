@@ -1,0 +1,182 @@
+## The `lattice` gesture (POLY-MODELING.md Stage 8), Houdini's Lattice
+## state and Blender's lattice edit: while the edited Edit Mesh's last step
+## is a Lattice (or a Lattice node is shown and selected), its cage draws
+## over the result, grey lines and orange points. A drag on a cage point
+## moves it in the plane facing the view, the group following live, one
+## undo step; Shift+click adds points to those dragged together, a click on
+## one alone picks it. The moves are the Lattice's numbers after its
+## parameters (count, then index and offset each), so the step, or the
+## node, replays them.
+from luce_ui.ui import Painter, Event
+from luce_gpu.gpu import Rect
+from luce_window.input import EventKind
+from luce_3d.graphics import Vector3, WireRenderer
+from luce_geocore.geocore import Verbs, LatticeCage
+from workspace import Workspace
+from edit_operations import node_numbers, insert_numbers
+import view_projection as gm
+import theme
+from luce_std import math
+
+## The Lattice's numbers before its moves: Points (3), Interpolation,
+## Padding.
+let head = 5
+## How near (points) a press must be to take a cage point.
+let reach = 9.0
+
+pub class LatticeGesture:
+    let w: Workspace
+    ## The cage points picked (dragged together) and the one hovered.
+    pub var picked: list[int]
+    pub var hovered: int = -1
+    ## A drag: the plane it moves in, where it started, the offsets then.
+    pub var dragging: bool = false
+    var anchor: Vector3
+    var facing: Vector3
+    var start: list[Vector3]
+    pub var changed: bool = false
+
+    pub func init(self, w: Workspace):
+        self.w = w
+        self.picked = []
+        self.anchor = Vector3()
+        self.facing = Vector3()
+        self.start = []
+
+    ## The Lattice numbers being edited: the edited node's last step's, or
+    ## the shown Lattice node's; none without one.
+    pub func numbers(self) -> list[float]?:
+        let node = self.w.selected() else return none
+        if self.w.editing() and node.edits.length > 0 and node.edits[-1].verb == "Lattice":
+            return node.edits[-1].numbers
+        if node.kind == "Lattice" and node.id == self.w.network.display and node.enabled:
+            return node_numbers(node.kind, node.values)
+        return none
+
+    ## The cage over the result shown, or none.
+    pub func cage(self) -> LatticeCage?:
+        let numbers = self.numbers() else return none
+        let mesh = self.w.geometry else return none
+        return Verbs.lattice(mesh, numbers) catch failure:
+            recover none
+
+    ## Pointer events; whether one was used.
+    pub func event(self, event: Event, width: float, height: float) -> bool!:
+        self.changed = false
+        if event.alt:
+            return false
+        let shown = self.cage()
+        if shown == none:
+            self.hovered = -1
+            self.picked = []
+            return false
+        let cage = shown else return false
+        if event.kind == EventKind.pointer_moved:
+            if self.dragging:
+                self.drag(cage, event.x, event.y, width, height)
+                return true
+            let near = self.nearest(cage, event.x, event.y, width, height)
+            if near != self.hovered:
+                self.hovered = near
+                self.changed = true
+            return false
+        if event.kind == EventKind.pointer_down and event.inside and event.button == 0:
+            let near = self.nearest(cage, event.x, event.y, width, height)
+            if near < 0:
+                return false
+            if event.shift:
+                if near in self.picked:
+                    let kept: list[int] = []
+                    for other in self.picked:
+                        if other != near:
+                            kept.append(other)
+                    self.picked = kept
+                else:
+                    self.picked.append(near)
+            elif not (near in self.picked):
+                self.picked = [near]
+            if self.picked.length == 0:
+                return true
+            self.dragging = true
+            self.anchor = cage.point(near)
+            self.facing = gm.ray(self.w, event.x, event.y, width, height).normalized()
+            self.start = []
+            for index in 0..<cage.count():
+                self.start.append(cage.offset(index))
+            self.w.begin("Move lattice points")
+            self.changed = true
+            return true
+        if event.kind == EventKind.pointer_up and event.button == 0 and self.dragging:
+            self.dragging = false
+            self.changed = true
+            self.w.commit()
+            return true
+        return false
+
+    ## The cage point within reach of (x, y), nearest it, or -1.
+    func nearest(self, cage: LatticeCage, x: float, y: float, width: float, height: float) -> int!:
+        var best = reach
+        var found = -1
+        for index in 0..<cage.count():
+            let at = gm.project(self.w, cage.point(index), width, height)
+            if at[2] <= 0.0:
+                continue
+            let distance = math.hypot(at[0] - x, at[1] - y)
+            if distance < best:
+                best = distance
+                found = index
+        return found
+
+    ## The picked points moved with the pointer in the plane facing the view.
+    func drag(self, cage: LatticeCage, x: float, y: float, width: float, height: float) -> unit!:
+        let at = gm.plane(self.w, x, y, width, height, self.anchor, self.facing)
+        let delta = at.subtract(self.anchor)
+        let offsets = self.start.copy()
+        for index in self.picked:
+            offsets[index] = offsets[index].add(delta)
+        let current = self.numbers() else return
+        var numbers = current[..<head]
+        var moved: list[float] = []
+        for index in 0..<offsets.length:
+            let offset = offsets[index]
+            if offset.x != 0.0 or offset.y != 0.0 or offset.z != 0.0:
+                moved = moved + [float(index), offset.x, offset.y, offset.z]
+        numbers = numbers + [float(moved.length // 4)] + moved
+        let node = self.w.selected() else return
+        if node.kind == "Lattice":
+            let values = node.values.copy()
+            # The moves the node held before are cleared first.
+            for slot in head..<values.length:
+                if slot != 15:
+                    values[slot] = 0.0
+            insert_numbers(values, numbers)
+            self.w.preview_parameters(values)
+        else:
+            self.w.preview_step(numbers)
+
+    ## The cage: its lines between neighbors, its points (picked and hovered
+    ## in the accent).
+    pub func draw(self, p: Painter, width: float, height: float) -> unit!:
+        let cage = self.cage() else return
+        let lines: list[Vector3] = []
+        let nx = cage.along(0)
+        let ny = cage.along(1)
+        let nz = cage.along(2)
+        for index in 0..<cage.count():
+            let i = index % nx
+            let j = (index // nx) % ny
+            let k = index // (nx * ny)
+            if i + 1 < nx:
+                lines.extend([cage.point(index), cage.point(index + 1)])
+            if j + 1 < ny:
+                lines.extend([cage.point(index), cage.point(index + nx)])
+            if k + 1 < nz:
+                lines.extend([cage.point(index), cage.point(index + nx * ny)])
+        WireRenderer.lines(lines, self.w.view.camera, p.target(), theme.grey(170.0), 1.5, depth = false)
+        for index in 0..<cage.count():
+            let at = gm.project(self.w, cage.point(index), width, height)
+            if at[2] <= 0.0:
+                continue
+            let lit = index in self.picked or index == self.hovered
+            let size = 9.0 if lit else 7.0
+            p.rectangle(Rect(at[0] - size * 0.5, at[1] - size * 0.5, size, size), theme.accent() if lit else theme.text())
