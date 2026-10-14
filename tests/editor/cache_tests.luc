@@ -1,5 +1,5 @@
 ## Node caching: content stamps, the worker's result store, hashed topology
-## guards and incremental Edit replay on a ~500k-face mesh.
+## guards, and Edit Mesh results held, not replayed, on a ~500k-face mesh.
 from workspace import Workspace
 from network import Network
 from geometry_tests import verb
@@ -33,7 +33,7 @@ pub func cache_tests() -> unit!:
     source_cache()
     large_edit_replay()
     pinned_undo()
-    print("PASS stamps ignore names/flags/Edit values, result store hits on undo, hashed guards, small deltas and one-recipe Edit replay")
+    print("PASS stamps ignore names/flags/Edit values, result store hits on undo, hashed guards, small deltas, and an Edit Mesh's held result replayed nowhere")
 
 ## Rename, placement, visibility, output flags and an Edit node's own values are
 ## not cook inputs; a parameter is, and undo restores the earlier stamp.
@@ -55,7 +55,8 @@ func stamp_rules() -> unit!:
     node_commands.select_node(w, 1)
     node_commands.set_parameter(w, 0, 3.0)
     stamp_graph(w.network)
-    assert(w.network.require(1).stamp != cube and w.network.require(edit_id).stamp != edit)
+    # The Edit Mesh holds its result: its input's change does not reach it.
+    assert(w.network.require(1).stamp != cube and w.network.require(edit_id).stamp == edit)
     w.undo()
     stamp_graph(w.network)
     assert(w.network.require(1).stamp == cube and w.network.require(edit_id).stamp == edit)
@@ -156,8 +157,8 @@ func source_cache() -> unit!:
     assert(cache.tessellated(again, 8, 0.0) is tessellated and cache.hits == 2)
     assert(not (cache.tessellated(first, 12, 0.0) is tessellated))
 
-## A ~500k-face mesh: requests stay small, a new recipe or a gizmo step
-## applies one recipe to the stored prefix, and undo applies none.
+## A ~500k-face mesh: requests stay small, and the worker replays nothing:
+## the Edit Mesh holds its result (moves, gizmo steps and undo alike).
 func large_edit_replay() -> unit!:
     let w = Workspace()
     w.enable_compute()
@@ -174,11 +175,11 @@ func large_edit_replay() -> unit!:
         selection_commands.choose_component(w, face * 9973, true)
     component_moves.move_selection(w, Vector3(0.0, 0.1, 0.0))
     settle(w)
-    assert(w.notice == "" and session.recipes == 1 and session.request_size < 16384)
+    assert(w.notice == "" and session.recipes == 0 and session.request_size < 16384)
     # A second move of the same components merges into the first step (D19).
     component_moves.move_selection(w, Vector3(0.0, 0.1, 0.0))
     settle(w)
-    assert(w.notice == "" and session.recipes == 1 and session.request_size < 16384)
+    assert(w.notice == "" and session.recipes == 0 and session.request_size < 16384)
     assert((w.selected() else trap("Edit Mesh")).edits.length == 1)
     w.undo()
     settle(w)
@@ -186,15 +187,15 @@ func large_edit_replay() -> unit!:
     w.begin("Move components")
     component_moves.preview_move(w, Vector3(0.0, 0.2, 0.0))
     settle(w)
-    assert(session.recipes == 1 and session.request_size < 16384)
+    assert(session.recipes == 0 and session.request_size < 16384)
     component_moves.preview_move(w, Vector3(0.0, 0.3, 0.0))
     settle(w)
-    assert(session.recipes == 1)
+    assert(session.recipes == 0)
     w.commit()
     assert((w.selected() else trap("Edit Mesh")).edits.length == 1)
     session.close()
 
-## Undo inside the pinned window (the last eight steps) replays nothing:
+## Undo replays nothing: the Edit Mesh's earlier results are kept:
 ## every stored prefix is kept while the Edit node is shown (D18).
 func pinned_undo() -> unit!:
     let w = Workspace()
@@ -209,10 +210,10 @@ func pinned_undo() -> unit!:
         selection_commands.choose_component(w, step % 8, false)
         component_moves.move_selection(w, Vector3(0.0, 0.05, 0.0))
         settle(w)
-        assert(session.recipes == 1)
-    assert((w.selected() else trap("Edit Mesh")).edits.length == 10)
-    for undo in 0..<16:
-        if (w.selected() else trap("Edit Mesh")).edits.length <= 2: break
+        assert(session.recipes == 0)
+    # Each move baked the one before it: one step, ten undo steps.
+    assert((w.selected() else trap("Edit Mesh")).edits.length == 1)
+    for undo in 0..<8:
         w.undo()
         settle(w)
         assert(session.recipes == 0)

@@ -32,6 +32,7 @@ import sketch_node
 import edit_cad_sketches
 import slice_view
 from slice_view import Slicer
+from held_store import HeldStore
 
 class Computation:
     let channel: ComputeChannel
@@ -261,6 +262,14 @@ class Computation:
             base = upstream.stamp
         base = edit_base(self.graph, base)
         let tag = cad_nodes.tag_of(node.id)
+        # A holding kind's result is held: read by its key (the UI made it);
+        # untouched, its input passes through.
+        if kind.holds:
+            if node.held_key != 0:
+                let kept = GeometryData(geometry = HeldStore.get(node.held_key))
+                kept.warning = node.held_note
+                return kept
+            return kind.start(input, tag)
         var result = kind.start(input, tag)
         var start = 0
         var count = node.edits.length - 1
@@ -313,7 +322,7 @@ class Computation:
             if node.stamp in result:
                 continue
             result.insert(node.stamp)
-            if is_edit(node.kind) and node.edits.length > 0:
+            if is_edit(node.kind) and node.edits.length > 0 and not holds(self.graph, node):
                 if let input = self.graph.find(node.inputs[0]):
                     for count in 1..<node.edits.length:
                         if checkpoint(count, node.edits.length):
@@ -609,3 +618,8 @@ pub func checkpoint(count: int, total: int) -> bool:
 pub func compute_factory(token: int) -> ComputeHandler!:
     let computation = Computation(compute_bridge.channel(token))
     return computation.compute
+
+## Whether `node`'s Edit kind holds its result (edit_held.luc).
+func holds(graph: Network, node: Node) -> bool:
+    let kind = graph.kinds.of(node.kind) else return false
+    return kind.holds

@@ -1,0 +1,87 @@
+## Captures of Edit Mesh holding its result, for preview.py
+## (docs/research/POLY-MODELING.md, "Edit nodes hold their result"):
+##   held_boxes: two boxes made inside one Edit Mesh, the second moved, both
+##     picked at the Object level.
+##   held_drag: 1,000 faces of a 1M-face grid in an Edit Mesh dragged up a
+##     little each frame in the real window; prints the work a move takes
+##     and the frame intervals (request to redraw).
+from app import Luce3D
+from luce_3d.graphics import Vector3
+from luce_geocore.geocore import Selection
+from edit_types import face_level, object_level
+import node_commands
+import modeling_commands
+import selection_commands
+import component_moves
+import preview_support
+import time
+
+pub func scenes() -> list[str]:
+    return ["held_boxes", "held_drag"]
+
+## The frames a scene runs before its capture (held_drag drags over them).
+pub func frames(scene: str) -> int:
+    return 130 if scene == "held_drag" else 5
+
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    if scene == "held_boxes":
+        node_commands.add_node(w, "Edit Mesh", 40.0, 40.0)
+        preview_support.settle(w)
+        modeling_commands.create(w, "Box")
+        modeling_commands.create(w, "Box")
+        component_moves.move_selection(w, Vector3(1.0, 0.8, 0.9))
+        preview_support.settle(w)
+        selection_commands.set_mode(w, object_level)
+        selection_commands.choose_component(w, 0, false)
+        selection_commands.choose_component(w, 6, true)
+        preview_support.settle(w)
+        return
+    # held_drag: the grid, 1024 × 1024, in an Edit Mesh; a band of 1,000
+    # faces across its middle picked.
+    node_commands.add_node(w, "Grid", 40.0, 40.0)
+    let grid = w.network.require(w.network.selected)
+    grid.values[2] = 1024.0
+    grid.values[3] = 1024.0
+    w.network.invalidate(grid.id)
+    w.rebuild()
+    preview_support.settle(w)
+    node_commands.add_node(w, "Edit Mesh", 40.0, 140.0)
+    preview_support.settle(w)
+    selection_commands.set_mode(w, face_level)
+    w.selection = Selection.of(w.geometry else trap("grid"), "409600-410599", 2)
+    preview_support.settle(w)
+
+## What held_drag measures over its frames.
+pub class DragTimes:
+    pub var last_frame: int = 0
+    pub var work: float = 0.0
+    pub var worst_work: float = 0.0
+    pub var gaps: float = 0.0
+    pub var worst_gap: float = 0.0
+    pub var moves: int = 0
+
+pub func act(editor: Luce3D, scene: str, frame: int, last: int, t: DragTimes) -> unit!:
+    if scene != "held_drag":
+        return
+    let w = editor.workspace
+    let now = time.now()
+    if frame == 4:
+        w.begin("Move gizmo")
+    elif frame > 4 and frame < last - 2:
+        if t.moves > 0:
+            let gap = float(now - t.last_frame) / 1000000.0
+            t.gaps += gap
+            if gap > t.worst_gap: t.worst_gap = gap
+        let started = time.now()
+        component_moves.preview_move(w, Vector3(0.0, 0.002 * float(frame - 4), 0.0))
+        editor.panels.view.layout().invalidate()
+        let spent = float(time.now() - started) / 1000000.0
+        t.work += spent
+        if spent > t.worst_work: t.worst_work = spent
+        t.moves += 1
+    elif frame == last - 2:
+        w.commit()
+        print(f"Held drag in the window: {t.moves} moves of 1,000 faces of a 1M-face grid; the move {t.work / float(t.moves):.2f} ms mean, {t.worst_work:.2f} ms worst; frame to frame {t.gaps / float(t.moves - 1):.2f} ms mean, {t.worst_gap:.2f} ms worst")
+    t.last_frame = now

@@ -1,0 +1,115 @@
+## What Edit nodes hold (docs/research/POLY-MODELING.md, "Edit nodes hold
+## their result"): each held result is an immutable luce-geocore set, kept
+## here under its content key so the compute worker reads it by that key
+## (Luce objects never cross threads; the set's storage is shared, not
+## copied). The UI puts each held result it makes and, after every change
+## of the graph or the undo history, says which keys are still alive; the
+## rest are released. Also measures what the held results of the undo
+## history take, each shared array once, for its memory bound.
+import interop
+import memory
+import sync
+
+from luce_geocore.geocore import GeometrySet, geometry_set_type, invalid
+from luce_geocore.kernel import IdSet, set_bytes
+from luce_geocore.core.growing import Growing
+
+## A held result as storage any thread may own (GeometrySet.plain_storage:
+## its arrays shared; CAD models, objects of the UI thread, left out).
+struct Entry:
+    var key: i64
+    var set: GeometrySet*
+
+    func close():
+        self.set.close()
+        free(self.set) in memory.heap
+
+var store_lock: sync.Mutex
+var entries: Growing[Entry] = Growing[Entry]()
+
+pub struct HeldStore:
+    let reserved: u8 = 0
+
+    ## Keep `set` under `key` (a key already held keeps its set: equal keys
+    ## are equal contents).
+    pub static func put(key: i64, set: interop.Reference[GeometrySet]) -> !:
+        if key == 0: error(invalid, "a held result needs a key")
+        if HeldStore.holds(key): return
+        let storage = try (try set.get()).plain_storage()
+        var entry = Entry(key, storage)
+        store_lock.lock()
+        defer store_lock.unlock()
+        for other in entries.view():
+            if other.key == key:
+                entry.close()
+                return
+        entries.push(entry) catch failure:
+            entry.close()
+            error(failure.code, failure.message)
+
+    ## The set held under `key`, owned by the calling thread.
+    pub static func get(key: i64) -> interop.Reference[GeometrySet]!:
+        store_lock.lock()
+        var found: GeometrySet*? = none
+        for entry in entries.view():
+            if entry.key == key:
+                found = entry.set.plain_storage() catch failure:
+                    store_lock.unlock()
+                    error(failure.code, failure.message)
+                break
+        store_lock.unlock()
+        let storage = found else error(invalid, "an Edit node's held result is gone")
+        return try interop.Reference[GeometrySet].adopt(storage, geometry_set_type, memory.heap)
+
+    ## Whether `key` is held.
+    pub static func holds(key: i64) -> bool:
+        store_lock.lock()
+        defer store_lock.unlock()
+        for entry in entries.view():
+            if entry.key == key: return true
+        return false
+
+    ## Release every held set whose key is not in `alive`.
+    pub static func keep(alive: const i64[]) -> !:
+        var dropped = Growing[Entry]()
+        defer:
+            for at in 0..<dropped.count: dropped.items[at].close()
+            dropped.close()
+        store_lock.lock()
+        var at: usize = 0
+        while at < entries.count:
+            var found = false
+            for key in alive:
+                if key == entries.items[at].key:
+                    found = true
+                    break
+            if found:
+                at += 1
+                continue
+            dropped.push(entries.items[at]) catch failure:
+                store_lock.unlock()
+                error(failure.code, failure.message)
+            entries.items[at] = entries.items[entries.count - 1]
+            entries.count -= 1
+        store_lock.unlock()
+
+    ## How many results are held (tests).
+    pub static func count() -> i64:
+        store_lock.lock()
+        defer store_lock.unlock()
+        return (i64)entries.count
+
+    ## The bytes of the sets held under `keys` (unknown keys add nothing),
+    ## each shared array counted once.
+    pub static func footprint(keys: const i64[]) -> i64!:
+        var ids = IdSet()
+        defer ids.close()
+        var total: usize = 0
+        store_lock.lock()
+        defer store_lock.unlock()
+        for key in keys:
+            for entry in entries.view():
+                if entry.key == key:
+                    total += try set_bytes(entry.set, &ids)
+                    break
+        return (i64)total

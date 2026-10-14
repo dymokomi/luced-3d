@@ -201,7 +201,7 @@ all its points were selected).
 
 Pressing a tool, as with Houdini's shelf tools:
 
-- on the active **Edit node** (Edit Mesh), appends a step to its recipe (see
+- on the active **Edit node** (Edit Mesh), acts on the mesh it holds (see
   below);
 - on any other displayed node, creates the tool's verb node after it (between
   it and whatever it fed), with **Group** set to the selection's expression
@@ -321,8 +321,13 @@ open or closed and each context's last tab are kept in
 ## Edit nodes
 
 An Edit node is a modeling engine in one node: while it is displayed and
-selected, every tool appends a step to its recipe instead of creating a node,
-and each tool (or each drag) is one undo. There is no operation list to edit.
+selected, every tool acts on it instead of creating a node, and each tool (or
+each drag) is one undo. There is no operation list to edit. **Edit Mesh holds
+the mesh modeled in it** (docs/research/POLY-MODELING.md, "Edit nodes hold
+their result"): an action replaces the held mesh at once, the cook returns it
+with no work, and only the last action stays adjustable (its tool bar and drag
+run it again from the mesh before it) until the next one bakes it. Edit CAD
+and Edit SDF still keep a recipe, below, until they hold theirs too.
 There is one Edit node per kind of geometry, so each keeps its own levels and
 tools: **Edit Mesh** (polygons), **Edit CAD** (analytic models) and **Edit
 SDF** (signed distance fields). They share one framework (`edit_types.luc`,
@@ -415,9 +420,13 @@ corner on a point of the mesh (within 11 pixels), else on the surface
 under the cursor, else on the ground; a rubber band follows the cursor;
 Enter or a click on the first corner makes the face (one step with the
 corners' positions), Esc cancels. It creates primitives (Box, Sphere, Cylinder,
-Cone, Torus, Grid, Plane) as recipe steps: each new piece gets its own `path`
-(`/box1`, `/box2`, …), becomes the selected Object and undoes like any step.
-Unconnected, an Edit Mesh starts from nothing.
+Cone, Torus, Grid, Plane) at any level, with nothing selected: each new piece
+gets its own `path` (`/box1`, `/box2`, …), becomes the selected Object and
+undoes like any action. Unconnected, an Edit Mesh starts from nothing; wired,
+from its input's result when it is made. Later upstream changes do not flow
+in: the inspector says "Input changed", and **Reload Input** (the button
+under Edits, or Modify › Reload Input) starts over from the input as it is
+now, one undo step.
 
 Edit CAD's levels are Object (a whole model), Faces (a B-rep face), Edges (a
 B-rep edge), CVs (control vertices) and Patch. Object, Faces and Edges pick on
@@ -1265,14 +1274,19 @@ them in its unit, millimeters or inches (Window → Project settings), kept with
 project. Every length parameter shows its unit and takes typed units
 ("25.4 mm", "1 in", "10 + 5 mm").
 
-- A step is one verb run: the verb, the group expression and its type, the
-  parameter values, the connectivity hash the group was selected on, and the
-  node's Symmetry and Keep selection settings at the time.
-- The recipe is the truth: undo restores a shorter recipe. The worker keeps
-  the results after the last eight steps and every sixteenth (D18), so undo
-  and redo inside that window cook nothing, and a deeper undo replays at most
-  fifteen steps. Consecutive moves of the same components merge into one step
-  (D19); each drag remains its own undo.
+- An action (or a step of a recipe) is one verb run: the verb, the group
+  expression and its type, the parameter values, the connectivity hash the
+  group was selected on, and the node's Symmetry and Keep selection settings
+  at the time.
+- Edit Mesh keeps its earlier meshes in the undo history (each immutable,
+  sharing its arrays with the next): undo and redo cook nothing. The history
+  keeps at most 64 changes and at most 2 GiB of held meshes beyond the
+  graph's own (each shared array counted once, from the newest change back;
+  the newest change always stays). A recipe kind (Edit CAD, Edit SDF) is the
+  truth instead: undo restores a shorter recipe, and the worker keeps the
+  results after the last eight steps and every sixteenth (D18). Consecutive
+  moves of the same components merge into one action (D19); each drag
+  remains its own undo.
 - After a topology tool the selection becomes what the tool made (Extrude's
   front faces); with **Keep selection** it is instead the selection carried
   through the tool (a new element is selected when all its parents were).
@@ -1287,9 +1301,10 @@ project. Every length parameter shows its unit and takes typed units
   each member (points, faces, edges and vertices matched by position within a
   ten-thousandth of the model's size), and moved points' mirrors move to the
   mirrored places; points on the plane stay on it.
-- An upstream change that alters the input's topology fails the node: "Edit
-  input topology changed. Undo the upstream change or clear this node's edits."
-  Position-only upstream changes flow through the recipe.
+- In a recipe kind, an upstream change that alters the input's topology fails
+  the node: "Edit input topology changed. Undo the upstream change or clear
+  this node's edits." Position-only upstream changes flow through the recipe.
+  Edit Mesh holds what it has instead ("Input changed", Reload Input).
 
 ## Attribute contracts
 

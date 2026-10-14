@@ -10,8 +10,10 @@
 import sketch_node
 import edit_cad_sketches
 from stamps import stamp_graph
+import edit_held
+from held_store import HeldStore
 from luce_geocore.geocore import Mesh, Selection, Domain
-from luce_3d.graphics import WireBatch, Scene, Group, Vector3, AmbientLight, DirectionalLight, SurfaceHits, SurfaceHit
+from luce_3d.graphics import WireBatch, Scene, Group, Vector3, AmbientLight, DirectionalLight, SurfaceHits, SurfaceHit, ObjectNode
 from place_prompt import PlacePrompt
 from tool_prompt import ToolPrompt
 from tool_prompt import domain as tool_prompt_domain
@@ -23,7 +25,7 @@ from select_run import SelectRun
 from drag_session import DragSession
 from snapping import SnapSettings, SnapMark
 from history import History, Snapshot
-from scene_projection import append_bounds
+from scene_projection import append_bounds, display_mesh
 from local_cook import cook_outputs
 from context_view import view_items, is_outside
 import context_display
@@ -42,6 +44,7 @@ import node_catalog
 from luce_cad.cad_edits import CadEdits
 from slice_view import Slicer
 from luce_std import math
+
 
 pub class Workspace:
     pub var network: Network
@@ -163,6 +166,12 @@ pub class Workspace:
     ## seen are picked (V), not every one through the depth.
     pub var splat_shape: int = 0
     pub var splat_brush: float = 24.0
+    ## What the undo history may keep of Edit nodes' held results beyond
+    ## the graph's own, in bytes (bound_history): 2 GiB.
+    pub var held_budget: int = 2147483648
+    ## What a drag's last frame showed of each Edit node holding its result
+    ## (edit_held.settle makes the next frame over it); empty between drags.
+    pub var drag_shown: map[int, GeometryData] = {}
     ## The sculpt brush's radius on screen, in points (sculpt_gesture.luc).
     pub var sculpt_radius: float = 50.0
     pub var splat_footprint: float = 0.1
@@ -829,6 +838,7 @@ pub class Workspace:
         let changed = self.pending_changed
         if changed:
             self.history.push(self.pending_label, before, self.snapshot())
+            self.bound_history()
         self.pending = none
         self.pending_changed = false
         self.revision += 1
@@ -861,6 +871,70 @@ pub class Workspace:
         self.hidden = snapshot.hidden
         self.component_mode = snapshot.mode
         self.rebuild()
+
+    ## Whether nodes of kind `name` hold their result (edit_held.luc).
+    pub func holds(self, name: str) -> bool:
+        let kind = self.network.kinds.of(name) else return false
+        return kind.holds
+
+    ## The undo history's memory bound: the held results it keeps (each
+    ## shared array counted once, from the newest change back) take at most
+    ## `held_budget` bytes beyond the graph's own; older changes go, the
+    ## newest always stays. With its 64 changes this bounds what undo keeps
+    ## of Edit nodes' results.
+    func bound_history(self) -> unit!:
+        let changes = self.history.changes
+        if changes.length < 2:
+            return
+        # The newest change always stays (the last action's undo).
+        let keys: list[int] = []
+        edit_held.held_keys(self.network, keys)
+        let own = HeldStore.footprint(keys)
+        edit_held.held_keys(changes[changes.length - 1].before.graph, keys)
+        var at = changes.length - 2
+        while at >= 0:
+            edit_held.held_keys(changes[at].before.graph, keys)
+            if HeldStore.footprint(keys) - own > self.held_budget:
+                self.history.drop_before(at + 1)
+                return
+            at -= 1
+
+    ## While a drag changes what the shown Edit node holds, draw that in
+    ## place of the mesh shown for it (its GPU copies update only where
+    ## points moved), and pick on it; false when the node is not shown on
+    ## its own or holds no mesh, and the cook draws it instead.
+    func show_held(self) -> bool!:
+        let node = self.selected() else return false
+        if node.id != self.network.display or not self.holds(node.kind) or not node.enabled or node.hidden.length > 0:
+            return false
+        let held = node.held else return false
+        let mesh = held.result.mesh else return false
+        let shown = self.geometry else return false
+        # Shown where it is, not placed by a container's transform.
+        var placed = false
+        for item in view_items(self.network):
+            if item.node.id == node.id and item.matrix.is_identity():
+                placed = true
+        if not placed:
+            return false
+        if not swap_shown(self.objects.node(), shown.points_id(), mesh, 0):
+            return false
+        self.drag_shown[node.id] = held.result
+        self.geometry = self.picked(node, held.result)
+        self.sync_selection()
+        return true
+
+    ## Release the held results nothing can reach any more: not the graph,
+    ## the gesture's starting state or the undo history.
+    func keep_held(self) -> unit!:
+        let alive: list[int] = []
+        edit_held.held_keys(self.network, alive)
+        if let before = self.pending:
+            edit_held.held_keys(before.graph, alive)
+        for change in self.history.changes:
+            edit_held.held_keys(change.before.graph, alive)
+            edit_held.held_keys(change.after.graph, alive)
+        HeldStore.keep(alive)
 
     pub func undo(self) -> unit!:
         if self.placing != none:
@@ -902,6 +976,18 @@ pub class Workspace:
         if not self.level_available(self.component_mode):
             self.component_mode = 0
             self.selection = none
+        # Edit nodes that hold their result bring it up to date here, on
+        # this thread (edit_held.luc); the cook only reads it.
+        stamp_graph(self.network)
+        if not self.dragging:
+            self.drag_shown = {}
+        edit_held.settle(self.network, self.drag_shown)
+        self.keep_held()
+        # A drag on the shown Edit node that holds its result draws it as it
+        # now is: no cook here or on the worker until the drag ends.
+        if self.dragging and self.show_held():
+            self.revision += 1
+            return
         self.network.projecting = self.projecting()
         self.network.slicing = self.network.display if self.slice and self.sketching() else -1
         self.network.sketch_object = ""
@@ -1118,5 +1204,23 @@ pub class Workspace:
 func cad_node_named(name: str) -> bool:
     for entry in tool_registry.cad_nodes():
         if entry.label == name:
+            return true
+    return false
+
+## Under scene node `parent`, the object drawing the mesh whose points are
+## `points` replaced by one drawing `mesh` (the cook nests a context's
+## objects in groups); whether one was.
+func swap_shown(parent: ObjectNode, points: int, mesh: Mesh, depth: int) -> bool!:
+    if depth > 4:
+        return false
+    for index in 0..<parent.child_count():
+        let child = parent.child(index)
+        if let polygon = child.polygon():
+            if polygon.points_id() == points:
+                _ = parent.remove(child)
+                parent.add(display_mesh(mesh))
+                return true
+            continue
+        if swap_shown(child.node(), points, mesh, depth + 1):
             return true
     return false

@@ -17,6 +17,8 @@ from spz_nodes import is_spz_path, export_spz
 from luce_ui import ui
 from edit_kinds import edit_kind
 from edit_types import run_step
+from held import Held
+from held_store import HeldStore
 from scene_nodes import add_camera, add_light, add_material, assign_material
 import cad_nodes
 from luce_cad.model import CadTolerances
@@ -44,7 +46,21 @@ pub class Node:
     # Size, translate XYZ, rotate XYZ in degrees, scale XYZ.
     pub var values: list[float]
     pub var texts: list[str]
+    ## An Edit node's steps: for an Edit kind that holds its result
+    ## (edit_held.luc), its adjustable last action alone; for the others,
+    ## its whole recipe.
     pub var edits: list[EditStep]
+    ## What a holding Edit node holds (UI side; none: untouched, it passes
+    ## its input through), and the content key and warning of its result
+    ## as the worker reads them (held_store.lucb).
+    pub var held: Held? = none
+    pub var held_key: int = 0
+    pub var held_note: str = ""
+    ## A saved project's file of the held result (beside the project;
+    ## project_file.luc), "" elsewhere.
+    pub var held_file: str = ""
+    ## The input's stamp a saved held result started from (Input changed).
+    pub var held_input: int = 0
     ## Verb nodes made from a viewport selection: the connectivity hash of the
     ## input the Group was selected on (0: typed, unguarded).
     pub var guard: int = 0
@@ -189,6 +205,11 @@ pub class Node:
         result.values = self.values.copy()
         result.texts = self.texts.copy()
         result.edits = self.edits.copy()
+        result.held = self.held
+        result.held_key = self.held_key
+        result.held_note = self.held_note
+        result.held_file = self.held_file
+        result.held_input = self.held_input
         result.guard = self.guard
         result.hidden = self.hidden.copy()
         result.frozen = self.frozen
@@ -336,6 +357,16 @@ pub class Node:
             return data.merged(second else error(ui.invalid, "Connect the second geometry input"))
         if let kind = edit_kind(self.kind):
             let tag = f"#{self.id}"
+            # A holding kind's result is what it holds; untouched, its
+            # input passes through.
+            if kind.holds:
+                if let held = self.held:
+                    return held.result
+                if self.held_key != 0:
+                    let kept = GeometryData(geometry = HeldStore.get(self.held_key))
+                    kept.warning = self.held_note
+                    return kept
+                return kind.start(data, tag)
             var result = kind.start(data, tag)
             for at in 0..<self.edits.length:
                 let (next, built) = run_step(kind, self.edits[at], at, result, tag, project, gesture and at == self.edits.length - 1, second)

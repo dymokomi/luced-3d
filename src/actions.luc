@@ -77,6 +77,8 @@ pub class Actions:
     ## Edit CAD's sketch commands: Create Sketch, Edit Sketch, Show/Hide.
     pub let model: EditCadActions
     pub let clear_edits: Command
+    ## The context the modeling commands' icons were looked up for.
+    var icon_context: str = ""
     ## Repeat the registry tool run last (tool_run.repeat) on what is
     ## selected now: the first entry of S and of the right-click menu.
     pub let repeat_tool: Command
@@ -333,7 +335,9 @@ pub class Actions:
             self.enabled.set_checked(selected.enabled)
             self.freeze.set_checked(selected.frozen != "")
             self.display.set_checked(selected.visible)
-            self.clear_edits.set_enabled(is_edit(selected.kind) and selected.edits.length > 0)
+            let holding = w.holds(selected.kind)
+            self.clear_edits.set_text("Reload Input" if holding else "Clear edits")
+            self.clear_edits.set_enabled(is_edit(selected.kind) and (selected.edits.length > 0 or selected.held != none))
         else:
             self.clear_edits.set_enabled(false)
         self.cad_refresh()
@@ -365,10 +369,17 @@ pub class Actions:
             tool.set_checked(tool.text() == w.tool_in_use())
         # Tools apply to the selection, or prompt for one (Tool → Select);
         # on the Edit node they need a selection.
+        # A tool's icon follows the context (context_icon): looked up again
+        # only when the context changes, not on every refresh (a drag's).
+        let icon_key = f"{w.network.context()}|{w.editing()}|{w.strip_kind().name}"
+        let icons_stale = icon_key != self.icon_context
+        self.icon_context = icon_key
+        let picked = w.selected_count() > 0
         for command in self.modeling:
-            command.set_enabled(selecting and w.tool_available(command.text()) and (not w.editing() or w.selected_count() > 0 or runs_whole(w, command.text()) or command.text() in w.strip_kind().draw_tools))
-            let icon = context_icon(w, command.text())
-            if command.icon() != icon: command.set_icon(icon)
+            command.set_enabled(selecting and w.tool_available(command.text()) and (not w.editing() or picked or runs_whole(w, command.text()) or command.text() in w.strip_kind().draw_tools))
+            if icons_stale:
+                let icon = context_icon(w, command.text())
+                if command.icon() != icon: command.set_icon(icon)
         self.repeat_tool.set_enabled(selecting and w.last_tool != "" and w.tool_available(w.last_tool))
         self.clear_snap_target.set_enabled(w.snap_target >= 0)
         self.repeat_tool.set_text("Repeat " + w.last_tool if w.last_tool != "" else "Repeat")
@@ -425,7 +436,9 @@ pub func context_icon(w: Workspace, label: str) -> str:
 func runs_whole(w: Workspace, name: str) -> bool:
     let tool = w.strip_kind().tool(name) else return false
     let registered = tool.tool else return false
-    return registered.whole
+    # A primitive makes a piece of its own, and Poly Pen and Sculpt work
+    # under the pointer: none needs a selection.
+    return registered.whole or registered.inputs == 0 or registered.gesture in ["create", "pen", "sculpt"]
 
 ## Every tool's label once: the Edit kinds' tools, then the CAD nodes'.
 func tool_names() -> list[str]:

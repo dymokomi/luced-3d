@@ -455,6 +455,75 @@ must allow for both.
   A node that wants them uses a Soft Transform-style row. That needs nothing new until Bend and
   Taper (§5.4) take a falloff.
 
+## 4b. Edit nodes hold their result
+
+The owner, 2026-10-13: "the Edit Mesh — sure it needs to support undo, but we're not recording
+history of what's happening in the node really — it's a node that as an output holds the new
+thing that we've modeled — so inside this single node there is no stack that we need to process.
+[…] It's all held inside the Edit Mesh node as an absolute representation of what we did there."
+
+**The model** (`src/edit_held.luc`, `src/held.luc`, `src/held_store.lucb`; the framework's, so
+Edit CAD and Edit SDF plug in by setting `EditKind.holds`):
+
+- **An Edit node holds its result.** Every action (a move, a tool, a primitive, a deletion)
+  replaces it at once, on the UI thread; the node's cook returns it with no work. The worker
+  replays nothing: it reads the held result by its content key from `HeldStore` (Base; Luce
+  objects never cross threads), and the request carries the key, not steps.
+- **Adjust last action** (owner answer 7, Blender's redo panel): the node keeps the result before
+  its last action (`Held.base`) and that action as its one step (`Node.edits`), so the tool bar,
+  a drag after the tool and Repeat's numbers run it again from the base. The next action bakes it:
+  its result becomes the new base. There is no stack beyond that.
+- **Undo** keeps the node's earlier results in the app's undo history, one entry per action, a
+  whole drag one entry. They are immutable and share their arrays (a move shares everything but
+  the positions; a topology tool shares nothing it did not rebuild). **The memory bound**: at
+  most 64 changes, and the held results the history keeps take at most 2 GiB beyond the graph's
+  own, each shared array counted once from the newest change back (`Workspace.bound_history`,
+  `HeldStore.footprint`); older changes go and the newest always stays. Results nothing reaches
+  (graph, gesture, history) are released from the store after every rebuild.
+- **Input.** A wired Edit Mesh starts from its input's result when it is made (cooked once on the
+  UI thread); later changes upstream do not flow in. The inspector then says "Input changed:
+  Reload Input takes it", and **Reload Input** (the inspector's button, Modify › Reload Input)
+  starts over from the input as it is now, one undo step. The Reference input (retopology) stays
+  live: Shrinkwrap and Relax read it when they run.
+- **Create inside.** Every Create entry is offered at every level with nothing selected (they were
+  pale because a tool with no selection needed `whole`; primitives, Poly Pen and Sculpt need
+  none). A primitive adds a piece of its own, selected at the Object level.
+- **Saving.** A project keeps each held result beside it as a luce-geocore crate,
+  `<name>.held/n<id>.prism` (binary, written only when its key changed), its last action baked
+  in; the node's line names the file. Loaded, it is the node's result with nothing to adjust.
+  Old step recipes do not load (no backward compatibility).
+- **Realtime.** A drag never serializes or replays anything: the move runs on the held mesh in
+  Base, and while it lasts the shown Edit node's mesh is drawn as the action made it, in place of
+  the cooked one, with no cook here or on the worker until the drag ends
+  (`Workspace.show_held`); its GPU arrays update only where points moved. luce-geocore's moves
+  became O(what moved): a few faces' points found from their corners
+  (`selecting/convert.lucb: sparse_points`), the bounds grown from the last mesh's when no
+  moved point stood on them (`position_edit.moved_bounds`), and the degenerate-face check made
+  only round the moved points. Transform Components of 1,000 faces of a 1M-face grid went from
+  14.1 ms to 1.5 ms (luce-geocore alone). Each frame of a drag is made over the last frame's
+  mesh (`Verbs.run`'s `over`, `Workspace.drag_shown`), so its normals, shading layout and GPU
+  copies change only where points moved since; a shading cache whose mesh is gone gives its
+  column to the next instead of a copy (`ShadingCache.surrender`), and the viewport looks a
+  tool's icon up again only when the context changes.
+
+Measured (`tests/editor/held_speed_tests.luc`, M-series Mac, headless; a pointer move from the
+request to a result the viewport draws):
+
+| Drag | Before (recipe replay, local cook) | Held |
+| --- | ---: | ---: |
+| A cube's edge | 3.8 ms | 0.44 ms |
+| 1,000 faces of a 1M-face grid | 282 ms | 2.0 ms |
+| The same with the compute worker | (worker cook and a deep copy per move) | 1.9 ms |
+
+In the real window (`tools/preview.py --scene held_drag --opt 3`, with the compute worker, 123
+moves of the same 1,000 faces): the move takes 2.1 ms on average (2.8 ms worst) and frames come
+every 16.5 ms on average (20.6 ms worst): the display's 60 Hz. Before the per-frame work above
+(the move from the base each frame, the shading switched to per-corner each frame, the icons
+looked up each refresh) frames came every 28.9 ms.
+
+Edit CAD and Edit SDF convert next (their own sections below when they do); Edit GSplats is
+recommended to follow (its held result is the cloud with its deletions and moves).
+
 ## 5. The polygon tool set
 
 ### 5.1 Create

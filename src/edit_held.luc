@@ -1,0 +1,154 @@
+## Edit nodes hold their result (docs/research/POLY-MODELING.md, "Edit nodes
+## hold their result"; the owner's model, 2026-10-13): an Edit node is not a
+## recipe replayed on each cook but the thing modeled in it. It holds an
+## absolute result; every action (a move, a tool, a primitive, a deletion)
+## replaces it at once, on the UI thread, and the node's cook returns it
+## with no work. Undo keeps the node's earlier results in the undo history
+## (each immutable, sharing storage); the history's memory is bounded
+## (history.luc).
+##
+## Only the latest action stays adjustable (Blender's Adjust Last
+## Operation): the node keeps the result before it (`base`) and the action
+## as its one step (`Node.edits`), so the tool bar and a drag run it again
+## from `base`. The next action bakes it: its result becomes the new
+## `base`. There is no stack beyond that.
+##
+## A wired Edit node starts from its input's result when it is made (or with
+## Reload Input); later changes upstream do not flow in: the node then says
+## "Input changed" and Reload Input takes the new input (one undo step).
+## Until its input can be cooked it passes the input through.
+##
+## The worker reads a held result by its content key from held_store.lucb.
+## An Edit kind takes part when it `holds` (edit_types.EditKind).
+from geometry_data import GeometryData
+from edit_types import EditKind, run_step
+from held_store import HeldStore
+from held import Held, held_as
+from network import Network
+from node import Node
+
+## Bring every holding Edit node's result up to date with its step:
+## started from its input when it is acted on first, the steps before the
+## last baked, the last run from the base. Called before each cook request
+## (Workspace.rebuild) and by the local cook.
+## `shown` holds, by node, the result a drag's last frame showed: a gizmo
+## drag runs the gesture again from the state before it each frame, and its
+## new result is made over that one (Mesh.rebased), so shading and GPU
+## copies change only where points moved since the last frame.
+pub func settle(graph: Network, shown: map[int, GeometryData] = {}) -> unit!:
+    for node in graph.nodes:
+        let kind = graph.kinds.of(node.kind) else continue
+        if not kind.holds or not node.enabled:
+            continue
+        settle_node(graph, node, kind, shown[node.id])
+
+func settle_node(graph: Network, node: Node, kind: EditKind, shown: GeometryData?) -> unit!:
+    var held = node.held
+    if held == none:
+        # A new node starts from its input's result; an input that cannot
+        # be cooked yet leaves it passing its input through until it can.
+        held = start(graph, node, kind) catch failure:
+            if node.edits.length > 0:
+                error(failure.code, failure.message)
+            return
+    var current = held else trap("held")
+    # Steps before the last are baked: their result is the new base.
+    while node.edits.length > 1:
+        let step = node.edits[0]
+        node.edits = node.edits[1..]
+        if current.made_for == step.key:
+            current = Held(current.result, current.key, current.result, current.key, "", 0, current.input_stamp)
+            continue
+        let (made, _) = run_step(kind, step, 0, current.base, tag_of(node), graph.tolerances, false, reference_of(graph, node))
+        let key = (current.base_key, step.key).hash()
+        current = Held(made, key, made, key, "", 0, current.input_stamp)
+    if node.edits.length == 0:
+        # The last action was taken back (Clear): the base stands.
+        if current.made_for != 0:
+            current = held_as(current.base, current.base_key, current.input_stamp)
+    else:
+        let step = node.edits[0]
+        if current.made_for != step.key:
+            # The same action adjusted again (a drag): its new result is made
+            # over its last one where only positions differ, so shading and
+            # GPU copies update only where points moved.
+            var last: GeometryData? = shown
+            if last == none and current.made_for != 0:
+                last = current.result
+            var made = current.base
+            var ran = false
+            if let previous = last:
+                if let again = kind.run_over:
+                    # A failure is reported by the plain run below.
+                    let tried: GeometryData? = again(step, current.base, reference_of(graph, node), previous) catch failure:
+                        recover none
+                    if let result = tried:
+                        made = result
+                        ran = true
+            if not ran:
+                let (plain, _) = run_step(kind, step, 0, current.base, tag_of(node), graph.tolerances, false, reference_of(graph, node))
+                made = plain
+            current = Held(current.base, current.base_key, made, (current.base_key, step.key).hash(), made.warning, step.key, current.input_stamp)
+    keep(node, current)
+
+## `held` as what `node` holds, put where the worker reads it.
+func keep(node: Node, held: Held) -> unit!:
+    node.held = held
+    node.held_key = held.key
+    node.held_note = held.warning
+    HeldStore.put(held.key, held.result.geometry)
+
+## The node's start: its input's result (cooked here, on the UI thread, once)
+## made the kind's own, or nothing for an unwired node.
+func start(graph: Network, node: Node, kind: EditKind) -> Held!:
+    var input = GeometryData()
+    var stamp = 0
+    if node.inputs.length > 0 and node.inputs[0] >= 0:
+        let upstream = graph.require(node.inputs[0])
+        stamp = upstream.stamp
+        input = local_cook(graph).evaluate_data(upstream.id)
+    let started = kind.start(input, tag_of(node))
+    return held_as(started, ("start", node.id, stamp).hash(), stamp)
+
+## Take the input's current result again (Reload Input): the node starts
+## over from it.
+pub func reload(graph: Network, node: Node) -> unit!:
+    let kind = graph.kinds.of(node.kind) else return
+    node.edits = []
+    keep(node, start(graph, node, kind))
+
+## Whether the node's input has changed since it started from it.
+pub func input_changed(graph: Network, node: Node) -> bool:
+    let held = node.held else return false
+    if held.input_stamp == 0 or node.inputs.length == 0 or node.inputs[0] < 0:
+        return false
+    let upstream = graph.find(node.inputs[0]) else return false
+    return upstream.stamp != held.input_stamp
+
+## The keys of every result held in `graph` (live, for HeldStore.keep).
+pub func held_keys(graph: Network, into: list[int]):
+    for node in graph.nodes:
+        if let held = node.held:
+            into.append(held.key)
+
+## A copy of `graph` that cooks here, on this thread: with the worker, the
+## UI's nodes hold no results.
+func local_cook(graph: Network) -> Network!:
+    let local = graph.copy()
+    if graph.background:
+        local.background = false
+        for node in local.nodes:
+            node.dirty = true
+            node.cache = none
+    return local
+
+## What names the node's creations (cad_nodes.tag_of's form).
+func tag_of(node: Node) -> str:
+    return f"#{node.id}"
+
+## The node's second input's result (Edit Mesh's Reference) on the UI.
+func reference_of(graph: Network, node: Node) -> GeometryData?!:
+    if node.inputs.length < 2 or node.inputs[1] < 0:
+        return none
+    return local_cook(graph).evaluate_data(node.inputs[1]) catch failure:
+        recover none

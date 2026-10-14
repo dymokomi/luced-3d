@@ -34,6 +34,7 @@ import tool_picks
 import tool_registry
 import pick_kinds
 from tool_record import Tool, Pick
+import edit_held
 
 pub class Inspector:
     ## A path row's Browse: pick a file for text slot `slot`.
@@ -247,8 +248,12 @@ pub class Inspector:
             self.roles.append("ramp" if row.kind in ["ramp", "color_ramp"] else "text" if row.kind in ["text", "path"] else (("render" if row.name == "Render" else "reload") if row.kind == "button" else ("info" if row.kind == "info" else "value")))
         if is_edit(kind):
             self.add(specs, "edits", ParameterSpec(name = "edits", label = "Edits", kind = ParameterKind.info))
-            self.add(specs, "clear", ParameterSpec(name = "clear", label = "Clear edits", kind = ParameterKind.button,
-                                                    doc = "Remove every component edit of this node."))
+            if self.workspace.holds(kind):
+                self.add(specs, "clear", ParameterSpec(name = "clear", label = "Reload Input", kind = ParameterKind.button,
+                                                        doc = "Start over from the input's result as it is now (what was modeled here goes; one undo step)."))
+            else:
+                self.add(specs, "clear", ParameterSpec(name = "clear", label = "Clear edits", kind = ParameterKind.button,
+                                                        doc = "Remove every component edit of this node."))
         # A verb node made from a selection: pick its components again, or keep
         # its numbers on a changed topology (Houdini's behaviour).
         # A blend's edges: references to them by their faces (luce-cad's
@@ -387,7 +392,11 @@ pub class Inspector:
             elif role == "info":
                 self.parameters.set_text(index, row.text)
             elif role == "edits":
-                self.parameters.set_text(index, f"{node.edits.length} edits / {self.workspace.selected_entities()} selected")
+                if self.workspace.holds(node.kind):
+                    let state = "Input changed: Reload Input takes it" if edit_held.input_changed(self.workspace.network, node) else ("holds its result" if node.held != none else "passes its input through")
+                    self.parameters.set_text(index, f"{state} / {self.workspace.selected_entities()} selected")
+                else:
+                    self.parameters.set_text(index, f"{node.edits.length} edits / {self.workspace.selected_entities()} selected")
             elif role.starts_with("pick:"):
                 if let found = self.pick_of(node.kind, role[5..]):
                     let (tool, at) = found
@@ -397,7 +406,7 @@ pub class Inspector:
                     let (tool, at) = found
                     self.parameters.set_enabled(index, tool_picks.held(node, tool.picks[at], false) != "")
             elif role == "clear":
-                self.parameters.set_enabled(index, node.edits.length > 0)
+                self.parameters.set_enabled(index, node.edits.length > 0 or node.held != none)
             elif role == "keep_ids":
                 self.parameters.set_enabled(index, node.guard != 0)
             elif role == "dimension" or role == "angle_dimension":

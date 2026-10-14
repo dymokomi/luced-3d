@@ -1,4 +1,4 @@
-## The Edit node as a modeling engine: tools append verb steps with the
+## The Edit node as a modeling engine: tools act on its held mesh with the
 ## node's symmetry, soft radius and Keep selection; each tool is one undo;
 ## the output selection (or the kept one) carries on to the next tool.
 from workspace import Workspace
@@ -10,9 +10,11 @@ import node_commands
 import selection_commands
 import component_moves
 
-## Steps of the selected Edit node (undo replaces node objects).
-func steps(w: Workspace) -> int!:
-    return (w.selected() else trap("Edit Mesh")).edits.length
+## The verb of the selected Edit node's last action (undo replaces node
+## objects).
+func last_verb(w: Workspace) -> str!:
+    let node = w.selected() else trap("Edit Mesh")
+    return node.edits[-1].verb if node.edits.length > 0 else ""
 
 func near(a: float, b: float):
     assert(math.abs(a - b) < 0.00001)
@@ -32,7 +34,7 @@ pub func edit_engine_tests() -> unit!:
     near(mesh.point(0).y, 0.5)
     near(mesh.point(4).y, 0.5)
     near(mesh.point(2).y, 0.0)
-    assert(steps(w) == 1 and (w.selected() else trap("Edit Mesh")).edits[0].symmetry == 1)
+    assert((w.selected() else trap("Edit Mesh")).edits.length == 1 and (w.selected() else trap("Edit Mesh")).edits[0].symmetry == 1)
     w.undo()
     near((w.geometry else trap("undo")).point(4).y, 0.0)
     # Soft selection: neighbours follow, less the farther they are.
@@ -59,17 +61,18 @@ pub func edit_engine_tests() -> unit!:
     selection_commands.choose_component(w, 5, false)
     modeling_commands.extrude(w)
     assert(w.selected_ids() == [5])
-    let before = steps(w)
+    let before = w.history.cursor
     modeling_commands.model(w, "Inset")
-    assert(steps(w) == before + 1 and w.selected_ids() == [5])
+    assert(w.history.cursor == before + 1 and last_verb(w) == "Inset" and w.selected_ids() == [5])
     # Keep selection carries the selection through instead (the walls of an
     # extruded face descend from it, so they stay selected too).
     node_commands.set_parameter(w, keep_slot, 1.0)
     selection_commands.choose_component(w, 0, false)
     modeling_commands.extrude(w)
     assert(w.selected_ids().length == 5 and 0 in w.selected_ids())
-    # Each tool is one undo step, and the recipe is the truth.
+    # Each tool is one undo step: two undos (the extrusion, the pick) leave
+    # the Inset the last action again.
     w.undo()
     w.undo()
-    assert(steps(w) == before + 1)
+    assert(last_verb(w) == "Inset")
     print("PASS Edit engine: verb steps with symmetry, soft falloff, output and kept selections, one undo per tool")

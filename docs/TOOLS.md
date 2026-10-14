@@ -10,7 +10,10 @@ luce-geocore's verbs; each CAD tool is a `src/tool_<name>.luc` listed in `src/ca
 
 ## Geo
 
-Edit Mesh and the Geo context's nodes.
+Edit Mesh and the Geo context's nodes. Edit Mesh holds the mesh modeled in it: each tool acts on
+it at once, and only the last action stays adjustable (its tool bar and drag run it again from
+the mesh before it) until the next one (docs/research/POLY-MODELING.md, "Edit nodes hold their
+result").
 
 ### Create
 
@@ -20,7 +23,7 @@ Edit Mesh and the Geo context's nodes.
 
 A box of divisions along each axis, its edges rounded by a bevel.
 
-- Node `Box` in Geo; a step of Edit Mesh.
+- Node `Box` in Geo; an action in Edit Mesh.
 - Works on components.
 - Gesture: create.
 
@@ -41,7 +44,7 @@ A box of divisions along each axis, its edges rounded by a bevel.
 
 A flat grid of rows and columns of quads.
 
-- Node `Grid` in Geo; a step of Edit Mesh.
+- Node `Grid` in Geo; an action in Edit Mesh.
 - Works on components.
 - Gesture: create.
 
@@ -60,7 +63,7 @@ A flat grid of rows and columns of quads.
 
 One flat quad.
 
-- Node `Plane` in Geo; a step of Edit Mesh.
+- Node `Plane` in Geo; an action in Edit Mesh.
 - Works on components.
 - Gesture: create.
 
@@ -77,7 +80,7 @@ One flat quad.
 
 A UV sphere: rings of quads between two poles of triangles.
 
-- Node `Sphere` in Geo; a step of Edit Mesh.
+- Node `Sphere` in Geo; an action in Edit Mesh.
 - Works on components.
 - Gesture: create.
 
@@ -95,7 +98,7 @@ A UV sphere: rings of quads between two poles of triangles.
 
 A sphere of even triangles: the icosahedron subdivided.
 
-- Node `Icosphere` in Geo; a step of Edit Mesh.
+- Node `Icosphere` in Geo; an action in Edit Mesh.
 - Works on components.
 - Gesture: create.
 
@@ -112,7 +115,7 @@ A sphere of even triangles: the icosahedron subdivided.
 
 A sphere of quads with no poles: a divided cube on the sphere.
 
-- Node `Quad Sphere` in Geo; a step of Edit Mesh.
+- Node `Quad Sphere` in Geo; an action in Edit Mesh.
 - Works on components.
 - Gesture: create.
 
@@ -129,7 +132,7 @@ A sphere of quads with no poles: a divided cube on the sphere.
 
 A cylinder of sides and rows, its caps n-gons, fans or grids.
 
-- Node `Cylinder` in Geo; a step of Edit Mesh.
+- Node `Cylinder` in Geo; an action in Edit Mesh.
 - Works on components.
 - Gesture: create.
 
@@ -150,7 +153,7 @@ A cylinder of sides and rows, its caps n-gons, fans or grids.
 
 A cone, or with a top radius a frustum.
 
-- Node `Cone` in Geo; a step of Edit Mesh.
+- Node `Cone` in Geo; an action in Edit Mesh.
 - Works on components.
 - Gesture: create.
 
@@ -172,7 +175,7 @@ A cone, or with a top radius a frustum.
 
 A tube of a wall: an outer and an inner wall joined by rims, or one open wall.
 
-- Node `Pipe` in Geo; a step of Edit Mesh.
+- Node `Pipe` in Geo; an action in Edit Mesh.
 - Works on components.
 - Gesture: create.
 
@@ -192,7 +195,7 @@ A tube of a wall: an outer and an inner wall joined by rims, or one open wall.
 
 A flat circle filled by an n-gon, a fan or a grid.
 
-- Node `Disc` in Geo; a step of Edit Mesh.
+- Node `Disc` in Geo; an action in Edit Mesh.
 - Works on components.
 - Gesture: create.
 
@@ -211,7 +214,7 @@ A flat circle filled by an n-gon, a fan or a grid.
 
 A ring: a tube swept round a circle, resting on its base.
 
-- Node `Torus` in Geo; a step of Edit Mesh.
+- Node `Torus` in Geo; an action in Edit Mesh.
 - Works on components.
 - Gesture: create.
 
@@ -231,7 +234,7 @@ A ring: a tube swept round a circle, resting on its base.
 
 A cylinder with round ends, closed.
 
-- Node `Capsule` in Geo; a step of Edit Mesh.
+- Node `Capsule` in Geo; an action in Edit Mesh.
 - Works on components.
 - Gesture: create.
 
@@ -251,7 +254,7 @@ A cylinder with round ends, closed.
 
 A Platonic solid: tetrahedron, cube, octahedron, dodecahedron or icosahedron.
 
-- Node `Platonic` in Geo; a step of Edit Mesh.
+- Node `Platonic` in Geo; an action in Edit Mesh.
 - Works on components.
 - Gesture: create.
 
@@ -268,7 +271,7 @@ A Platonic solid: tetrahedron, cube, octahedron, dodecahedron or icosahedron.
 
 A spring: a wire swept along a helix.
 
-- Node `Helix` in Geo; a step of Edit Mesh.
+- Node `Helix` in Geo; an action in Edit Mesh.
 - Works on components.
 - Gesture: create.
 
@@ -292,7 +295,7 @@ A spring: a wire swept along a helix.
 
 Add a polygon through drawn positions, or through the group's points.
 
-- Node `PolyDraw` in Geo; a step of Edit Mesh.
+- Node `PolyDraw` in Geo; an action in Edit Mesh.
 - Works on points.
 - With nothing selected: "Select three or more points, or click to place corners".
 - Gesture: clicks place its corners when nothing is selected; Enter finishes.
@@ -306,7 +309,7 @@ Add a polygon through drawn positions, or through the group's points.
 
 Grow faces from boundary edges and corners, or split edges, at drawn positions.
 
-- Node `Poly Pen` in Geo; a step of Edit Mesh.
+- Node `Poly Pen` in Geo; an action in Edit Mesh.
 - Works on edges or points.
 - With nothing selected: "Click a boundary edge to extend, a corner point to fill, or an edge to split".
 - Gesture: pen.
@@ -325,7 +328,7 @@ Grow faces from boundary edges and corners, or split edges, at drawn positions.
 
 Extrude faces (as regions or one by one), edges or points.
 
-- Node `PolyExtrude` in Geo; a step of Edit Mesh.
+- Node `PolyExtrude` in Geo; an action in Edit Mesh.
 - Works on faces or edges or points.
 - After it runs, moving the pointer sets Distance (along the selection's average normal); a click keeps it, the wheel steps Divisions, X, Y or Z locks Vector to that axis.
 
@@ -346,7 +349,7 @@ Extrude faces (as regions or one by one), edges or points.
 
 Inset faces by a distance, as regions or one by one.
 
-- Node `Inset` in Geo; a step of Edit Mesh.
+- Node `Inset` in Geo; an action in Edit Mesh.
 - Works on faces.
 - After it runs, a drag in the viewport sets Thickness (hauled away from the selection's center); a click keeps it.
 
@@ -366,7 +369,7 @@ Inset faces by a distance, as regions or one by one.
 
 Copy the group's faces, offset along their normals.
 
-- Node `Duplicate` in Geo; a step of Edit Mesh.
+- Node `Duplicate` in Geo; an action in Edit Mesh.
 - Works on objects or faces.
 - After it runs, a drag in the viewport sets Offset (along the selection's average normal); a click keeps it.
 
@@ -378,7 +381,7 @@ Copy the group's faces, offset along their normals.
 
 Give the group's faces a thickness: a second sheet behind them, joined at the rim.
 
-- Node `Solidify` in Geo; a step of Edit Mesh.
+- Node `Solidify` in Geo; an action in Edit Mesh.
 - Works on objects or faces.
 - After it runs, a drag in the viewport sets Thickness (hauled away from the selection's center); a click keeps it.
 
@@ -398,7 +401,7 @@ Give the group's faces a thickness: a second sheet behind them, joined at the ri
 
 Bevel the group's edges into strips with corner patches, or cut off its points.
 
-- Node `PolyBevel` in Geo; a step of Edit Mesh.
+- Node `PolyBevel` in Geo; an action in Edit Mesh.
 - Works on edges or points.
 - After it runs, a drag in the viewport sets Width (hauled away from the selection's center); a click keeps it, the wheel steps Segments.
 - While its drag lasts: A drags Width, P drags Shape, S drags Segments, M cycles Width Type, V cycles Affect, O cycles Miter Outer, I cycles Miter Inner, Z cycles Profile Type, N cycles Intersection, C flips Clamp overlap, H flips Harden normals, U flips Mark seams, K flips Mark sharp, L flips Loop slide.
@@ -430,7 +433,7 @@ Bevel the group's edges into strips with corner patches, or cut off its points.
 
 Set the bevel_weight of the group's edges or points for Bevel's Limit Weight.
 
-- Node `Bevel Weight` in Geo; a step of Edit Mesh.
+- Node `Bevel Weight` in Geo; an action in Edit Mesh.
 - Works on edges or points.
 - After it runs, a drag in the viewport sets Weight (rightward, its range over 300 points); a click keeps it.
 
@@ -445,7 +448,7 @@ Set the bevel_weight of the group's edges or points for Bevel's Limit Weight.
 
 Cut edge loops across the rings of the group's edges.
 
-- Node `Loop Cut` in Geo; a step of Edit Mesh.
+- Node `Loop Cut` in Geo; an action in Edit Mesh.
 - Works on edges.
 - Gesture: the edge under the pointer shows what it makes, the wheel sets the count; a click makes it there.
 - After it runs, moving the pointer sets Slide (along the rails of the element under the pointer); a click keeps it, the wheel steps Cuts.
@@ -462,7 +465,7 @@ Cut edge loops across the rings of the group's edges.
 
 Add two edge loops either side of the group's loops.
 
-- Node `Offset Edge Loops` in Geo; a step of Edit Mesh.
+- Node `Offset Edge Loops` in Geo; an action in Edit Mesh.
 - Works on edges.
 - After it runs, moving the pointer sets Amount (along the rails of the element under the pointer); a click keeps it.
 
@@ -476,7 +479,7 @@ Add two edge loops either side of the group's loops.
 
 Cut the group's faces with a plane; keep one side, or both.
 
-- Node `Clip` in Geo; a step of Edit Mesh.
+- Node `Clip` in Geo; an action in Edit Mesh.
 - Works on components.
 - Gesture: a stroke dragged across the model.
 
@@ -493,7 +496,7 @@ Cut the group's faces with a plane; keep one side, or both.
 
 Cut the group's faces along a stroke of segments, through or on the visible surface.
 
-- Node `Knife` in Geo; a step of Edit Mesh.
+- Node `Knife` in Geo; an action in Edit Mesh.
 - Works on components, or everything when nothing is selected.
 - Gesture: clicks place the stroke's points on the surface (points snap, Ctrl edge middles, Shift none; C holds 15° angles, Z cuts through, Backspace takes a point back, the first point again closes); Enter cuts.
 
@@ -507,7 +510,7 @@ Cut the group's faces along a stroke of segments, through or on the visible surf
 
 Connect the group's points or edge middles across their faces.
 
-- Node `Connect` in Geo; a step of Edit Mesh.
+- Node `Connect` in Geo; an action in Edit Mesh.
 - Works on points or edges.
 - With nothing selected: "Select points (or edges) across faces".
 - After it runs, a drag in the viewport sets Position (rightward, its range over 300 points); a click keeps it.
@@ -520,7 +523,7 @@ Connect the group's points or edge middles across their faces.
 
 Slide the group's edges along the faces beside them.
 
-- Node `Edge Slide` in Geo; a step of Edit Mesh.
+- Node `Edge Slide` in Geo; an action in Edit Mesh.
 - Works on edges.
 - After it runs, moving the pointer sets Amount (along the rails of the element under the pointer); a click keeps it.
 
@@ -535,7 +538,7 @@ Slide the group's edges along the faces beside them.
 
 Slide the group's points along their edges.
 
-- Node `Vertex Slide` in Geo; a step of Edit Mesh.
+- Node `Vertex Slide` in Geo; an action in Edit Mesh.
 - Works on points.
 - After it runs, moving the pointer sets Amount (along the rails of the element under the pointer); a click keeps it, X, Y or Z locks Direction to that axis.
 
@@ -551,7 +554,7 @@ Slide the group's points along their edges.
 
 Turn each of the group's edges within the two faces beside it.
 
-- Node `Rotate Edge` in Geo; a step of Edit Mesh.
+- Node `Rotate Edge` in Geo; an action in Edit Mesh.
 - Works on edges.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -564,7 +567,7 @@ Turn each of the group's edges within the two faces beside it.
 
 Cap each closed loop of the group's boundary edges.
 
-- Node `Fill` in Geo; a step of Edit Mesh.
+- Node `Fill` in Geo; an action in Edit Mesh.
 - Works on edges.
 - With nothing selected: "Select the boundary edges around each hole".
 
@@ -576,7 +579,7 @@ Cap each closed loop of the group's boundary edges.
 
 Join pairs of boundary loops or runs with faces, or weld them.
 
-- Node `Bridge` in Geo; a step of Edit Mesh.
+- Node `Bridge` in Geo; an action in Edit Mesh.
 - Works on edges or faces.
 - Also picks second loop.
 - With nothing selected: "Select two boundary loops or runs of edges (or faces whose outlines to bridge)".
@@ -597,7 +600,7 @@ Join pairs of boundary loops or runs with faces, or weld them.
 
 Fill each hole the group's boundary edges close with a grid of quads.
 
-- Node `Grid Fill` in Geo; a step of Edit Mesh.
+- Node `Grid Fill` in Geo; an action in Edit Mesh.
 - Works on edges.
 - With nothing selected: "Select the boundary edges around each hole".
 
@@ -613,7 +616,7 @@ Fill each hole the group's boundary edges close with a grid of quads.
 
 Merge nearby points of the group.
 
-- Node `Fuse` in Geo; a step of Edit Mesh.
+- Node `Fuse` in Geo; an action in Edit Mesh.
 - Works on objects or points.
 - After it runs, a drag in the viewport sets Distance (hauled away from the selection's center); a click keeps it.
 
@@ -625,7 +628,7 @@ Merge nearby points of the group.
 
 Merge the group's points: at their center, first, last, per island or by distance.
 
-- Node `Merge Points` in Geo; a step of Edit Mesh.
+- Node `Merge Points` in Geo; an action in Edit Mesh.
 - Works on points or edges or faces.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -638,14 +641,14 @@ Merge the group's points: at their center, first, last, per island or by distanc
 
 Collapse each island of the group's edges or faces into one point at its center.
 
-- Node `Collapse` in Geo; a step of Edit Mesh.
+- Node `Collapse` in Geo; an action in Edit Mesh.
 - Works on points or edges or faces.
 
 ##### Target Weld
 
 Weld the group's points onto a picked point.
 
-- Node `Target Weld` in Geo; a step of Edit Mesh.
+- Node `Target Weld` in Geo; an action in Edit Mesh.
 - Works on points.
 - Also picks target.
 - With nothing selected: "Select the points to weld".
@@ -656,7 +659,7 @@ Weld the group's points onto a picked point.
 
 Remove the group's faces (points delete every face using them) and the points left unused.
 
-- Node `Delete` in Geo; a step of Edit Mesh.
+- Node `Delete` in Geo; an action in Edit Mesh.
 - Works on components.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -667,14 +670,14 @@ Remove the group's faces (points delete every face using them) and the points le
 
 Remove points no face uses.
 
-- Node `Clean` in Geo; a step of Edit Mesh.
+- Node `Clean` in Geo; an action in Edit Mesh.
 - Works on components, or everything when nothing is selected.
 
 ##### Dissolve
 
 Join the faces across the group's interior edges (or around its points), one face per region.
 
-- Node `Dissolve` in Geo; a step of Edit Mesh.
+- Node `Dissolve` in Geo; an action in Edit Mesh.
 - Works on points or edges or faces.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -685,14 +688,14 @@ Join the faces across the group's interior edges (or around its points), one fac
 
 Remove the group's edge loops: the faces either side join and the loop's points go.
 
-- Node `Delete Edge Loop` in Geo; a step of Edit Mesh.
+- Node `Delete Edge Loop` in Geo; an action in Edit Mesh.
 - Works on edges.
 
 ##### Limited Dissolve
 
 Join the group's faces where they meet flatter than an angle, and take out the points left on straight runs.
 
-- Node `Limited Dissolve` in Geo; a step of Edit Mesh.
+- Node `Limited Dissolve` in Geo; an action in Edit Mesh.
 - Works on objects or faces, or everything when nothing is selected.
 - After it runs, a drag in the viewport sets Angle (rightward, its range over 300 points); a click keeps it.
 
@@ -709,7 +712,7 @@ Join the group's faces where they meet flatter than an angle, and take out the p
 
 Fewer faces: collapse edges to a share of the triangles, undo subdivision, or join flat faces.
 
-- Node `PolyReduce` in Geo; a step of Edit Mesh.
+- Node `PolyReduce` in Geo; an action in Edit Mesh.
 - Works on objects or faces, or everything when nothing is selected.
 - After it runs, a drag in the viewport sets Ratio (rightward, its range over 300 points); a click keeps it.
 
@@ -727,14 +730,14 @@ Fewer faces: collapse edges to a share of the triangles, undo subdivision, or jo
 
 Detach the group's faces: they get their own points.
 
-- Node `Split` in Geo; a step of Edit Mesh.
+- Node `Split` in Geo; an action in Edit Mesh.
 - Works on faces.
 
 ##### Separate
 
 Make the group's faces pieces of their own: one, or one per island.
 
-- Node `Separate` in Geo; a step of Edit Mesh.
+- Node `Separate` in Geo; an action in Edit Mesh.
 - Works on objects or faces.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -745,14 +748,14 @@ Make the group's faces pieces of their own: one, or one per island.
 
 Tear the surface open along the group's edges: the faces either side get their own points.
 
-- Node `Edge Split` in Geo; a step of Edit Mesh.
+- Node `Edge Split` in Geo; an action in Edit Mesh.
 - Works on edges.
 
 ##### Rip
 
 Tear the surface open along the group's edges (or at its points) and pull one side away.
 
-- Node `Rip` in Geo; a step of Edit Mesh.
+- Node `Rip` in Geo; an action in Edit Mesh.
 - Works on points or edges or faces.
 - After it runs, a drag in the viewport sets Offset (hauled away from the selection's center); a click keeps it.
 - While its drag lasts: F flips Flip, L flips Fill.
@@ -770,7 +773,7 @@ Tear the surface open along the group's edges (or at its points) and pull one si
 
 Reflect the group's faces across a plane, joined along it.
 
-- Node `PolyMirror` in Geo; a step of Edit Mesh.
+- Node `PolyMirror` in Geo; an action in Edit Mesh.
 - Works on objects or faces.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -785,7 +788,7 @@ Reflect the group's faces across a plane, joined along it.
 
 Sweep the group's edges around an axis into a surface of revolution.
 
-- Node `Spin` in Geo; a step of Edit Mesh.
+- Node `Spin` in Geo; an action in Edit Mesh.
 - Works on edges.
 - After it runs, a drag in the viewport sets Angle (turned about the selection's center); a click keeps it, the wheel steps Steps.
 
@@ -801,7 +804,7 @@ Sweep the group's edges around an axis into a surface of revolution.
 
 Sweep the group's edges round an axis in turns, rising along it: a spring or a thread.
 
-- Node `Screw` in Geo; a step of Edit Mesh.
+- Node `Screw` in Geo; an action in Edit Mesh.
 - Works on edges.
 - After it runs, a drag in the viewport sets Rise (hauled away from the selection's center); a click keeps it, the wheel steps Turns.
 
@@ -820,7 +823,7 @@ Sweep the group's edges round an axis in turns, rising along it: a spring or a t
 
 Split the group's faces into triangles.
 
-- Node `Triangulate` in Geo; a step of Edit Mesh.
+- Node `Triangulate` in Geo; an action in Edit Mesh.
 - Works on objects or faces, or everything when nothing is selected.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -832,7 +835,7 @@ Split the group's faces into triangles.
 
 Join pairs of the group's triangles into quads, the squarest first.
 
-- Node `Quadrangulate` in Geo; a step of Edit Mesh.
+- Node `Quadrangulate` in Geo; an action in Edit Mesh.
 - Works on objects or faces, or everything when nothing is selected.
 - After it runs, a drag in the viewport sets Shape angle (rightward, its range over 300 points); a click keeps it.
 
@@ -849,7 +852,7 @@ Join pairs of the group's triangles into quads, the squarest first.
 
 Split the group's faces into quads (or its edges), optionally with Catmull-Clark smoothing; the faces around stay joined.
 
-- Node `Subdivide` in Geo; a step of Edit Mesh.
+- Node `Subdivide` in Geo; an action in Edit Mesh.
 - Works on objects or faces or edges, or everything when nothing is selected.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -862,7 +865,7 @@ Split the group's faces into quads (or its edges), optionally with Catmull-Clark
 
 Set the crease sharpness of the group's edges for subdivision.
 
-- Node `Crease` in Geo; a step of Edit Mesh.
+- Node `Crease` in Geo; an action in Edit Mesh.
 - Works on edges.
 - After it runs, a drag in the viewport sets Sharpness (rightward, its range over 300 points); a click keeps it.
 
@@ -875,7 +878,7 @@ Set the crease sharpness of the group's edges for subdivision.
 
 Fan each of the group's faces into triangles round a new point at its center.
 
-- Node `Poke` in Geo; a step of Edit Mesh.
+- Node `Poke` in Geo; an action in Edit Mesh.
 - Works on faces.
 - After it runs, a drag in the viewport sets Offset (along the selection's average normal); a click keeps it.
 
@@ -891,7 +894,7 @@ Fan each of the group's faces into triangles round a new point at its center.
 
 Laplacian smoothing of the group's points.
 
-- Node `Smooth` in Geo; a step of Edit Mesh.
+- Node `Smooth` in Geo; an action in Edit Mesh.
 - Works on components.
 - After it runs, a drag in the viewport sets Amount (rightward, its range over 300 points); a click keeps it, the wheel steps Iterations.
 
@@ -907,7 +910,7 @@ Laplacian smoothing of the group's points.
 
 Even out the group's points along the surface, keeping its shape (on the reference surface, given one).
 
-- Node `Relax` in Geo; a step of Edit Mesh.
+- Node `Relax` in Geo; an action in Edit Mesh.
 - Works on components.
 - After it runs, a drag in the viewport sets Amount (rightward, its range over 300 points); a click keeps it, the wheel steps Iterations.
 
@@ -921,7 +924,7 @@ Even out the group's points along the surface, keeping its shape (on the referen
 
 Move the group's points onto the reference surface (its second input).
 
-- Node `Shrinkwrap` in Geo; a step of Edit Mesh.
+- Node `Shrinkwrap` in Geo; an action in Edit Mesh.
 - Works on objects or points or edges or faces, or everything when nothing is selected.
 - After it runs, a drag in the viewport sets Strength (rightward, its range over 300 points); a click keeps it.
 
@@ -936,7 +939,7 @@ Move the group's points onto the reference surface (its second input).
 
 Deterministic noise displacement.
 
-- Node `Mountain` in Geo; a step of Edit Mesh.
+- Node `Mountain` in Geo; an action in Edit Mesh.
 - Works on components.
 - After it runs, a drag in the viewport sets Height (hauled away from the selection's center); a click keeps it.
 
@@ -949,7 +952,7 @@ Deterministic noise displacement.
 
 Move points along their normals.
 
-- Node `Peak` in Geo; a step of Edit Mesh.
+- Node `Peak` in Geo; an action in Edit Mesh.
 - Works on components.
 - After it runs, a drag in the viewport sets Distance (along the selection's average normal); a click keeps it.
 
@@ -961,7 +964,7 @@ Move points along their normals.
 
 Flatten the group onto a plane through its centroid.
 
-- Node `Flatten` in Geo; a step of Edit Mesh.
+- Node `Flatten` in Geo; an action in Edit Mesh.
 - Works on components.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -972,7 +975,7 @@ Flatten the group onto a plane through its centroid.
 
 Flatten each of the group's faces in place, each on its own plane.
 
-- Node `Make Planar` in Geo; a step of Edit Mesh.
+- Node `Make Planar` in Geo; an action in Edit Mesh.
 - Works on objects or faces, or everything when nothing is selected.
 - After it runs, a drag in the viewport sets Factor (rightward, its range over 300 points); a click keeps it, the wheel steps Iterations.
 
@@ -985,7 +988,7 @@ Flatten each of the group's faces in place, each on its own plane.
 
 Make the group's edge loops, or its regions' outlines, circles.
 
-- Node `Circularize` in Geo; a step of Edit Mesh.
+- Node `Circularize` in Geo; an action in Edit Mesh.
 - Works on edges or faces or points.
 - After it runs, a drag in the viewport sets Influence (rightward, its range over 300 points); a click keeps it.
 
@@ -1001,7 +1004,7 @@ Make the group's edge loops, or its regions' outlines, circles.
 
 Put the inner points of the group's runs of edges on the line between the runs' ends.
 
-- Node `Straighten` in Geo; a step of Edit Mesh.
+- Node `Straighten` in Geo; an action in Edit Mesh.
 - Works on edges or points.
 - After it runs, a drag in the viewport sets Influence (rightward, its range over 300 points); a click keeps it.
 
@@ -1014,7 +1017,7 @@ Put the inner points of the group's runs of edges on the line between the runs' 
 
 Slide the points of the group's runs and loops of edges along them to equal lengths apart.
 
-- Node `Space Evenly` in Geo; a step of Edit Mesh.
+- Node `Space Evenly` in Geo; an action in Edit Mesh.
 - Works on edges or points.
 - After it runs, a drag in the viewport sets Influence (rightward, its range over 300 points); a click keeps it.
 
@@ -1027,7 +1030,7 @@ Slide the points of the group's runs and loops of edges along them to equal leng
 
 Snap points to a grid.
 
-- Node `Snap` in Geo; a step of Edit Mesh.
+- Node `Snap` in Geo; an action in Edit Mesh.
 - Works on components.
 - After it runs, a drag in the viewport sets Spacing (hauled away from the selection's center); a click keeps it.
 
@@ -1041,7 +1044,7 @@ Snap points to a grid.
 
 Bend, twist, taper or squash the group along an axis.
 
-- Node `Bend` in Geo; a step of Edit Mesh.
+- Node `Bend` in Geo; an action in Edit Mesh.
 - Works on objects or points or edges or faces, or everything when nothing is selected.
 - After it runs, a drag in the viewport sets Amount (turned about the selection's center); a click keeps it.
 - While its drag lasts: M cycles Mode, A cycles Axis.
@@ -1061,7 +1064,7 @@ Bend, twist, taper or squash the group along an axis.
 
 Deform the group by moving the points of a cage round it.
 
-- Node `Lattice` in Geo; a step of Edit Mesh.
+- Node `Lattice` in Geo; an action in Edit Mesh.
 - Works on objects or points or edges or faces, or everything when nothing is selected.
 - Gesture: lattice.
 
@@ -1077,7 +1080,7 @@ Deform the group by moving the points of a cage round it.
 
 A brush stroke: draw, grab, smooth, inflate, flatten or pinch the surface.
 
-- Node `Sculpt` in Geo; a step of Edit Mesh.
+- Node `Sculpt` in Geo; an action in Edit Mesh.
 - Works on objects or points or edges or faces, or everything when nothing is selected.
 - Gesture: sculpt.
 
@@ -1095,14 +1098,14 @@ A brush stroke: draw, grab, smooth, inflate, flatten or pinch the surface.
 
 Flip the winding of the group's faces.
 
-- Node `Reverse` in Geo; a step of Edit Mesh.
+- Node `Reverse` in Geo; an action in Edit Mesh.
 - Works on objects or faces.
 
 ##### Recalculate Normals
 
 Wind the group's faces one way with their neighbors, facing out of each island.
 
-- Node `Recalculate Normals` in Geo; a step of Edit Mesh.
+- Node `Recalculate Normals` in Geo; an action in Edit Mesh.
 - Works on objects or faces, or everything when nothing is selected.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -1113,7 +1116,7 @@ Wind the group's faces one way with their neighbors, facing out of each island.
 
 Mark the group's edges hard: the shading splits across them.
 
-- Node `Hard Edges` in Geo; a step of Edit Mesh.
+- Node `Hard Edges` in Geo; an action in Edit Mesh.
 - Works on edges.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -1124,7 +1127,7 @@ Mark the group's edges hard: the shading splits across them.
 
 Mark the group's edges soft: the shading runs smooth across them at any angle.
 
-- Node `Soft Edges` in Geo; a step of Edit Mesh.
+- Node `Soft Edges` in Geo; an action in Edit Mesh.
 - Works on edges.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -1135,7 +1138,7 @@ Mark the group's edges soft: the shading runs smooth across them at any angle.
 
 Mark the group's edges hard where their faces meet at more than an angle, soft elsewhere.
 
-- Node `Smooth by Angle` in Geo; a step of Edit Mesh.
+- Node `Smooth by Angle` in Geo; an action in Edit Mesh.
 - Works on objects or faces or edges, or everything when nothing is selected.
 - After it runs, a drag in the viewport sets Angle (rightward, its range over 300 points); a click keeps it.
 
@@ -1150,7 +1153,7 @@ Mark the group's edges hard where their faces meet at more than an angle, soft e
 
 Mark the group's edges as UV seams.
 
-- Node `Mark Seam` in Geo; a step of Edit Mesh.
+- Node `Mark Seam` in Geo; an action in Edit Mesh.
 - Works on edges.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -1161,7 +1164,7 @@ Mark the group's edges as UV seams.
 
 Mark seams on the edges where the UVs split into islands, and clear them on the group's other edges.
 
-- Node `Seams from Islands` in Geo; a step of Edit Mesh.
+- Node `Seams from Islands` in Geo; an action in Edit Mesh.
 - Works on objects or faces, or everything when nothing is selected.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -1174,7 +1177,7 @@ Mark seams on the edges where the UVs split into islands, and clear them on the 
 
 Make the group's faces symmetric: one half cut away and the other mirrored over it.
 
-- Node `Symmetrize` in Geo; a step of Edit Mesh.
+- Node `Symmetrize` in Geo; an action in Edit Mesh.
 - Works on objects or faces, or everything when nothing is selected.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -1186,7 +1189,7 @@ Make the group's faces symmetric: one half cut away and the other mirrored over 
 
 Move the group's points to symmetric places, each pair meeting across the plane.
 
-- Node `Snap to Symmetry` in Geo; a step of Edit Mesh.
+- Node `Snap to Symmetry` in Geo; an action in Edit Mesh.
 - Works on points or edges or faces, or everything when nothing is selected.
 - After it runs, a drag in the viewport sets Factor (rightward, its range over 300 points); a click keeps it.
 
@@ -1223,7 +1226,7 @@ Hovering an edge shows the loop a double-click would take (its ring with Cmd/Ctr
 
 Edge loops through the selected edges, face loops through faces side by side, point loops through points along an edge.
 
-- Node `Select Loop` in Geo; a step of Edit Mesh.
+- Node `Select Loop` in Geo; an action in Edit Mesh.
 - Works on edges or faces or points.
 - With nothing selected: "Select edges, two faces side by side, or two points on a loop".
 - Group function: `loop(group, only_between)`.
@@ -1236,7 +1239,7 @@ Edge loops through the selected edges, face loops through faces side by side, po
 
 Edge rings through the selected edges: across each quad to its opposite edge.
 
-- Node `Select Ring` in Geo; a step of Edit Mesh.
+- Node `Select Ring` in Geo; an action in Edit Mesh.
 - Works on edges.
 - With nothing selected: "Select edges for Ring".
 - Group function: `ring(group)`.
@@ -1245,7 +1248,7 @@ Edge rings through the selected edges: across each quad to its opposite edge.
 
 Each selected boundary edge's whole boundary; selected faces' outline as edges.
 
-- Node `Select Boundary Loop` in Geo; a step of Edit Mesh.
+- Node `Select Boundary Loop` in Geo; an action in Edit Mesh.
 - Works on edges or faces.
 - With nothing selected: "Select boundary edges, or faces for their outline".
 - Group function: `boundary(group)`.
@@ -1254,7 +1257,7 @@ Each selected boundary edge's whole boundary; selected faces' outline as edges.
 
 The faces a closed loop of selected edges encloses (its smaller side, or bigger).
 
-- Node `Select Loop to Region` in Geo; a step of Edit Mesh.
+- Node `Select Loop to Region` in Geo; an action in Edit Mesh.
 - Works on edges.
 - With nothing selected: "Select a closed edge loop".
 - Group function: `region(group, side)`.
@@ -1269,7 +1272,7 @@ The faces a closed loop of selected edges encloses (its smaller side, or bigger)
 
 The selection and its neighbors, a ring at a time.
 
-- Node `Select Grow` in Geo; a step of Edit Mesh.
+- Node `Select Grow` in Geo; an action in Edit Mesh.
 - Works on points or edges or faces.
 - Group function: `grow(group, steps, face_step)`.
 
@@ -1282,7 +1285,7 @@ The selection and its neighbors, a ring at a time.
 
 The selection without its outer ring, a ring at a time.
 
-- Node `Select Shrink` in Geo; a step of Edit Mesh.
+- Node `Select Shrink` in Geo; an action in Edit Mesh.
 - Works on points or edges or faces.
 - Group function: `shrink(group, steps, face_step)`.
 
@@ -1295,7 +1298,7 @@ The selection without its outer ring, a ring at a time.
 
 The selected elements next to an unselected one.
 
-- Node `Select Border` in Geo; a step of Edit Mesh.
+- Node `Select Border` in Geo; an action in Edit Mesh.
 - Works on points or edges or faces.
 - Group function: `border(group)`.
 
@@ -1303,7 +1306,7 @@ The selected elements next to an unselected one.
 
 Whole islands touching the selection, optionally kept inside seams, sharp edges, materials, UV islands or face angles.
 
-- Node `Select Connected` in Geo; a step of Edit Mesh.
+- Node `Select Connected` in Geo; an action in Edit Mesh.
 - Works on points or edges or faces.
 - Group function: `connected(group, seams, sharp, materials, uv_seams, normals, angle)`.
 
@@ -1320,7 +1323,7 @@ Whole islands touching the selection, optionally kept inside seams, sharp edges,
 
 Faces reached from the selection across edges flatter than an angle.
 
-- Node `Select Linked Flat` in Geo; a step of Edit Mesh.
+- Node `Select Linked Flat` in Geo; an action in Edit Mesh.
 - Works on faces.
 - Group function: `flat(group, angle)`.
 
@@ -1332,7 +1335,7 @@ Faces reached from the selection across edges flatter than an angle.
 
 The shortest path between the selected elements, taken in order; with Fill region every element on a shortest path.
 
-- Node `Select Shortest Path` in Geo; a step of Edit Mesh.
+- Node `Select Shortest Path` in Geo; an action in Edit Mesh.
 - Works on points or edges or faces.
 - With nothing selected: "Select two components to join".
 - Group function: `path(group, distance, fill_region, face_step)`.
@@ -1349,7 +1352,7 @@ The shortest path between the selected elements, taken in order; with Fill regio
 
 Every element like a selected one by normal, area, perimeter, sides, plane, material, group, length, direction, face angle, crease, seam, sharpness or valence.
 
-- Node `Select Similar` in Geo; a step of Edit Mesh.
+- Node `Select Similar` in Geo; an action in Edit Mesh.
 - Works on points or edges or faces.
 - Group function: `similar(group, by, compare, threshold)`.
 
@@ -1365,7 +1368,7 @@ Every element like a selected one by normal, area, perimeter, sides, plane, mate
 
 Edges whose faces meet at more than an angle.
 
-- Node `Select Sharp Edges` in Geo; a step of Edit Mesh.
+- Node `Select Sharp Edges` in Geo; an action in Edit Mesh.
 - Works on edges, or everything when nothing is selected.
 - Group function: `sharp(group, angle)`.
 
@@ -1377,7 +1380,7 @@ Edges whose faces meet at more than an angle.
 
 Faces by their number of sides: triangles, quads, n-gons.
 
-- Node `Select By Sides` in Geo; a step of Edit Mesh.
+- Node `Select By Sides` in Geo; an action in Edit Mesh.
 - Works on faces, or everything when nothing is selected.
 - Group function: `sides(group, sides, compare)`.
 
@@ -1390,7 +1393,7 @@ Faces by their number of sides: triangles, quads, n-gons.
 
 Faces smaller or larger than an area.
 
-- Node `Select By Area` in Geo; a step of Edit Mesh.
+- Node `Select By Area` in Geo; an action in Edit Mesh.
 - Works on faces, or everything when nothing is selected.
 - Group function: `area(group, area, compare)`.
 
@@ -1403,7 +1406,7 @@ Faces smaller or larger than an area.
 
 Faces facing a direction within a spread.
 
-- Node `Select By Normal` in Geo; a step of Edit Mesh.
+- Node `Select By Normal` in Geo; an action in Edit Mesh.
 - Works on faces, or everything when nothing is selected.
 - Group function: `facing(group, direction_x, direction_y, direction_z, spread)`.
 
@@ -1416,7 +1419,7 @@ Faces facing a direction within a spread.
 
 Boundary edges, edges of three faces or more, flipped neighbors and pinched points.
 
-- Node `Select Non-manifold` in Geo; a step of Edit Mesh.
+- Node `Select Non-manifold` in Geo; an action in Edit Mesh.
 - Works on edges or points, or everything when nothing is selected.
 - Group function: `nonmanifold(group, boundary, multiple_faces, non_contiguous, pinched_points)`.
 
@@ -1431,7 +1434,7 @@ Boundary edges, edges of three faces or more, flipped neighbors and pinched poin
 
 Points by how many edges meet there: the poles of a quad mesh.
 
-- Node `Select Poles` in Geo; a step of Edit Mesh.
+- Node `Select Poles` in Geo; an action in Edit Mesh.
 - Works on points, or everything when nothing is selected.
 - Group function: `poles(group, edges, compare, interior_only)`.
 
@@ -1445,7 +1448,7 @@ Points by how many edges meet there: the poles of a quad mesh.
 
 Faces without area and edges without length.
 
-- Node `Select Degenerate` in Geo; a step of Edit Mesh.
+- Node `Select Degenerate` in Geo; an action in Edit Mesh.
 - Works on faces or edges, or everything when nothing is selected.
 - Group function: `degenerate(group, tolerance)`.
 
@@ -1457,7 +1460,7 @@ Faces without area and edges without length.
 
 Faces that pass through other faces of the mesh.
 
-- Node `Select Intersecting` in Geo; a step of Edit Mesh.
+- Node `Select Intersecting` in Geo; an action in Edit Mesh.
 - Works on faces, or everything when nothing is selected.
 - Group function: `intersecting(group)`.
 
@@ -1465,7 +1468,7 @@ Faces that pass through other faces of the mesh.
 
 Select the mesh's defects: non-manifold, flipped, loose, n-gons, poles, degenerate and intersecting; the viewport's Mesh Check overlay shows them.
 
-- Node `Mesh Check` in Geo; a step of Edit Mesh.
+- Node `Mesh Check` in Geo; an action in Edit Mesh.
 - Works on points or edges or faces, or everything when nothing is selected.
 - Group function: `problems(group, non-manifold, boundary, flipped, loose_points, n-gons, triangles, poles, degenerate, intersecting, tolerance)`.
 
@@ -1486,7 +1489,7 @@ Select the mesh's defects: non-manifold, flipped, loose, n-gons, poles, degenera
 
 Points no face uses.
 
-- Node `Select Loose` in Geo; a step of Edit Mesh.
+- Node `Select Loose` in Geo; an action in Edit Mesh.
 - Works on points, or everything when nothing is selected.
 - Group function: `loose(group)`.
 
@@ -1494,7 +1497,7 @@ Points no face uses.
 
 Faces all of whose edges have more than two faces (walls inside a solid).
 
-- Node `Select Interior Faces` in Geo; a step of Edit Mesh.
+- Node `Select Interior Faces` in Geo; an action in Edit Mesh.
 - Works on faces, or everything when nothing is selected.
 - Group function: `interior(group)`.
 
@@ -1504,7 +1507,7 @@ Faces all of whose edges have more than two faces (walls inside a solid).
 
 Keep a checker pattern of the group: runs of selected and deselected elements across each island.
 
-- Node `Select Checker` in Geo; a step of Edit Mesh.
+- Node `Select Checker` in Geo; an action in Edit Mesh.
 - Works on points or edges or faces.
 - With nothing selected: "Select the region to thin out".
 - Group function: `checker(group, selected, deselected, offset)`.
@@ -1519,7 +1522,7 @@ Keep a checker pattern of the group: runs of selected and deselected elements ac
 
 A random share of the group: each element kept with the Ratio's chance, the same for the same seed.
 
-- Node `Select Random` in Geo; a step of Edit Mesh.
+- Node `Select Random` in Geo; an action in Edit Mesh.
 - Works on points or edges or faces.
 - With nothing selected: "Select the region to thin out".
 - Group function: `random(group, ratio, seed)`.
@@ -1535,7 +1538,7 @@ A random share of the group: each element kept with the Ratio's chance, the same
 
 The selection's mirror across X, Y or Z (elements with nothing at their mirror drop out).
 
-- Node `Select Mirror` in Geo; a step of Edit Mesh.
+- Node `Select Mirror` in Geo; an action in Edit Mesh.
 - Works on points or edges or faces.
 - Group function: `mirror(group, axis, extend)`.
 
@@ -1550,7 +1553,7 @@ The selection's mirror across X, Y or Z (elements with nothing at their mirror d
 
 The selection as points, edges or faces: those it touches, or only those it contains (Maya's Convert Selection).
 
-- Node `Select Convert` in Geo; a step of Edit Mesh.
+- Node `Select Convert` in Geo; an action in Edit Mesh.
 - Works on points or edges or faces.
 
 | Row | Starts at | On the tool bar | What it does |

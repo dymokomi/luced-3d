@@ -7,6 +7,8 @@ import modeling_commands
 import node_commands
 import selection_commands
 import component_moves
+import edit_held
+from stamps import stamp_graph
 
 pub func model_tests() -> unit!:
     let empty = Network()
@@ -42,16 +44,24 @@ pub func model_tests() -> unit!:
     graph.connect(left.id, edit.id, 0)
     let input = graph.evaluate(left.id)
     edit.edits.append(EditStep("PolyExtrude", "2", 3, [1.0], input.topology_hash()))
+    # An Edit Mesh holds its result: brought up to date from its action
+    # (the workspace does it before each cook).
+    stamp_graph(graph)
+    edit_held.settle(graph)
+    graph.invalidate(edit.id)
     assert(graph.evaluate(edit.id).face_count() == 10)
     edit.enabled = false
     graph.invalidate(edit.id)
     assert(graph.evaluate(edit.id).face_count() == 6)
     edit.enabled = true
+    graph.invalidate(edit.id)
+    # A new input does not flow in: the node keeps what it holds and says
+    # its input changed.
     graph.connect(merge.id, edit.id, 0)
-    # Its step was picked on other topology: left out, said in a warning;
-    # the node passes what came before it.
-    _ = graph.evaluate(edit.id)
-    assert(edit.failure == "" and edit.warning.starts_with("Step 1 (PolyExtrude) could not be built: "))
+    stamp_graph(graph)
+    edit_held.settle(graph)
+    assert(graph.evaluate(edit.id).face_count() == 10)
+    assert(edit_held.input_changed(graph, edit))
     graph.remove(right.id)
     assert(merge.inputs[1] == -1)
     rejected = false
@@ -91,7 +101,8 @@ pub func model_tests() -> unit!:
     component_moves.preview_move(w, Vector3(0.0, 0.2, 0.0))
     component_moves.preview_move(w, Vector3(0.0, 0.7, 0.0))
     w.commit()
-    assert(w.network.require(edit_id).edits.length == 2)
+    # The move is the last action; the extrusion before it is baked in.
+    assert(w.network.require(edit_id).edits.length == 1 and w.network.require(edit_id).edits[0].verb == "Transform Components")
     near((w.geometry else trap("mesh")).bounds().maximum.y, 2.9)
     w.undo()
     near((w.geometry else trap("mesh")).bounds().maximum.y, 2.2)

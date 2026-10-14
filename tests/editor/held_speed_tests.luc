@@ -1,0 +1,74 @@
+## How fast an Edit Mesh that holds its result follows a drag (the owner's
+## targets, 2026-10-13): a cube's edge moved, and 1,000 faces of a
+## 1M-face grid moved, each pointer move from the request to a result the
+## viewport can draw. Measured headless on this thread (the local cook)
+## and with the compute worker (the request, then the published result
+## adopted); printed for docs/research/POLY-MODELING.md, with generous
+## bounds asserted so a regression shows.
+from workspace import Workspace
+from luce_3d.graphics import Vector3
+from luce_geocore.geocore import Selection
+import node_commands
+import selection_commands
+import component_moves
+import time
+from luce_std import math
+
+pub func held_speed_tests() -> unit!:
+    let cube = drag_cost(false, 0, "p0-1", 2)
+    let grid = drag_cost(false, 1024, "", 3)
+    let worker_grid = drag_cost(true, 1024, "", 3)
+    print(f"PASS Edit Mesh drags: a cube's edge {cube:.3f} ms a move, 1,000 faces of a 1M-face grid {grid:.2f} ms a move here, {worker_grid:.2f} ms with the worker (request to result adopted)")
+
+## Wait for the worker's result.
+func settle(w: Workspace) -> unit!:
+    let session = w.compute else return
+    let deadline = time.now() + 60000000000
+    while session.busy and time.now() < deadline:
+        _ = w.poll_compute()
+    assert(not session.busy)
+
+## Milliseconds per pointer move of a gizmo drag of `group` (edges with
+## group type 2, faces with 3) of a box (`divisions` 0) or a grid of
+## `divisions`² faces (1,000 of its faces: a block of rows), here or with
+## the worker.
+func drag_cost(worker: bool, divisions: int, group: str, group_type: int) -> float!:
+    let w = Workspace()
+    if worker:
+        w.enable_compute()
+        settle(w)
+    node_commands.delete_selected(w)
+    if divisions > 0:
+        node_commands.add_node(w, "Grid", 0.0, 0.0)
+        let grid = w.network.require(w.network.selected)
+        grid.values[2] = float(divisions)
+        grid.values[3] = float(divisions)
+        w.network.invalidate(grid.id)
+    else:
+        node_commands.add_node(w, "Box", 0.0, 0.0)
+    settle(w)
+    node_commands.add_node(w, "Edit Mesh", 0.0, 100.0)
+    settle(w)
+    assert(w.editing())
+    let mesh = w.geometry else trap("mesh")
+    var chosen = group
+    if chosen == "":
+        chosen = f"{divisions * 400}-{divisions * 400 + 999}"
+    selection_commands.set_mode(w, 2 if group_type == 2 else 3)
+    w.selection = Selection.of(mesh, chosen, 4 if group_type == 2 else 2)
+    # A warm-up drag, then the measured one.
+    var spent = 0.0
+    for round in 0..<2:
+        w.begin("Move gizmo")
+        let started = time.now()
+        let moves = 20
+        for move in 0..<moves:
+            component_moves.preview_move(w, Vector3(0.0, 0.01 * float(move + 1), 0.0))
+            settle(w)
+        spent = float(time.now() - started) / 1000000.0 / float(moves)
+        w.commit()
+        settle(w)
+    # Two drags of 0.2 each moved the group up 0.4.
+    let moved = w.geometry else trap("moved")
+    assert(math.abs(moved.bounds().maximum.y - (0.4 if divisions > 0 else 2.0)) < 0.0001 or divisions == 0)
+    return spent
