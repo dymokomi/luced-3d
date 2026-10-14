@@ -1,0 +1,190 @@
+## Stage 7's captures for preview.py (docs/research/POLY-MODELING.md): the
+## shape, topology and normals tools in Edit Mesh, shown with their
+## wireframes.
+##   shape_circularize: a box of 4 divisions, its top's faces made a disc
+##     (Circularize: the outline a circle, the inner points carried along).
+##   shape_hole: an 8 by 8 grid with its middle 2 by 2 faces gone, the ring
+##     of faces round the hole circularized: a round hole in a round rim.
+##   shape_straighten: a grid roughened by Noise, one row of edges
+##     straightened.
+##   shape_space: that grid, a row's points (left uneven by the noise) spaced
+##     evenly along it.
+##   shape_planar: a divided box roughened, every face made planar.
+##   normals_recalculated: a sphere with a band of faces reversed, after
+##     Recalculate Normals: the faces it turned back selected (the viewport
+##     shades both sides of a face alike, so the band shows only so).
+##   normals_hard: a cylinder all soft, its rims marked hard (cyan), one rim
+##     selected (orange over the cyan).
+##   normals_angle: a rounded box (Bevel 0.3, 3 segments) by Smooth by Angle
+##     at 20°: the rounds' 30° steps between segments turn hard (cyan),
+##     faceting them; their 15° steps into the flat faces stay soft.
+##   normals_seams: a divided box with a seam loop round its middle (red),
+##     hard edges on its top (cyan) and the seam's front edges selected
+##     (orange over the red).
+from app import Luce3D
+from luce_3d.graphics import Vector3
+from luce_geocore.geocore import Selection, Mesh
+from edit_types import point_level, edge_level, face_level
+import node_commands
+import modeling_commands
+import selection_commands
+import preview_support
+
+pub func scenes() -> list[str]:
+    return ["shape_circularize", "shape_hole", "shape_straighten", "shape_space", "shape_planar",
+            "normals_recalculated", "normals_hard", "normals_angle", "normals_seams"]
+
+## An Edit Mesh holding primitive `name`, its rows `slots` set to `values`.
+func modeled(editor: Luce3D, name: str, slots: list[int] = [], values: list[float] = []) -> unit!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Edit Mesh", 40.0, 40.0)
+    preview_support.settle(w)
+    modeling_commands.create(w, name)
+    preview_support.settle(w)
+    for index in 0..<slots.length:
+        modeling_commands.set_last_step(w, slots[index], values[index], -1.0e9, 1.0e9)
+    preview_support.settle(w)
+
+## Run tool `label` on `expression` (on `domain`: 0 points, 4 edges, 2
+## faces) at `level`, then set its numbers `slots` to `values`.
+func tool(editor: Luce3D, label: str, level: int, expression: str, domain: int, slots: list[int] = [], values: list[float] = []) -> unit!:
+    let w = editor.workspace
+    let mesh = preview_support.shown(w) else trap("mesh")
+    selection_commands.set_mode(w, level)
+    w.selection = Selection.of(mesh, expression, domain)
+    modeling_commands.model(w, label)
+    preview_support.settle(w)
+    for index in 0..<slots.length:
+        modeling_commands.set_last_step(w, slots[index], values[index], -1.0e9, 1.0e9)
+    preview_support.settle(w)
+
+## The faces of `mesh` whose normal's Y is above `low` and whose center's
+## Y lies within `low_y`..`high_y`, as a group.
+func faces_where(mesh: Mesh, low: float, low_y: float = -1.0e9, high_y: float = 1.0e9) -> str!:
+    let chosen: list[str] = []
+    for face in 0..<mesh.face_count():
+        let y = mesh.face_center(face).y
+        if mesh.face_normal(face).y > low and y >= low_y and y <= high_y:
+            chosen.append(f"{face}")
+    return chosen.join(" ")
+
+## Edge `edge` of `mesh` as a group names it: by its points (a plain
+## number in an edge group is a face's edges).
+func edge_text(mesh: Mesh, edge: int) -> str!:
+    return f"p{mesh.edge_point(edge, 0)}-{mesh.edge_point(edge, 1)}"
+
+## Scene `scene` before its first frame.
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    let w = editor.workspace
+    var target = Vector3(0.0, 1.0, 0.0)
+    var distance = 5.2
+    var pitch = 0.55
+    if scene == "shape_circularize":
+        modeled(editor, "Box", [3, 4, 5], [4.0, 4.0, 4.0])
+        let box = preview_support.shown(w) else trap("box")
+        tool(editor, "Circularize", face_level, faces_where(box, 0.9), 2)
+        pitch = 0.75
+    elif scene == "shape_hole":
+        modeled(editor, "Grid", [2, 3], [8.0, 8.0])
+        tool(editor, "Delete", face_level, "27 28 35 36", 2)
+        # The ring round the hole: the faces left within the middle 4 by 4.
+        let holed = preview_support.shown(w) else trap("grid")
+        let ring: list[str] = []
+        for face in 0..<holed.face_count():
+            let c = holed.face_center(face)
+            if c.x > -0.5 and c.x < 0.5 and c.z > -0.5 and c.z < 0.5:
+                ring.append(f"{face}")
+        tool(editor, "Circularize", face_level, ring.join(" "), 2)
+        target = Vector3(0.0, 0.0, 0.0)
+        distance = 3.6
+        pitch = 0.95
+    elif scene == "shape_straighten" or scene == "shape_space":
+        # Lifted off the ground grid (Position's Y), whose lines would cross it.
+        modeled(editor, "Grid", [2, 3, 5], [8.0, 8.0, 0.4])
+        tool(editor, "Noise", point_level, "*", 0, [0], [0.05])
+        if scene == "shape_space":
+            tool(editor, "Space Evenly", edge_level, "p36-37-38-39-40-41-42-43-44", 4)
+        else:
+            tool(editor, "Straighten", edge_level, "p36-37-38-39-40-41-42-43-44", 4, [0], [1.0])
+        target = Vector3(0.0, 0.4, 0.0)
+        distance = 3.4
+        pitch = 0.9
+    elif scene == "shape_planar":
+        modeled(editor, "Box", [3, 4, 5], [3.0, 3.0, 3.0])
+        tool(editor, "Noise", point_level, "*", 0, [0], [0.12])
+        selection_commands.set_mode(w, face_level)
+        w.selection = none
+        modeling_commands.model(w, "Make Planar")
+        preview_support.settle(w)
+        modeling_commands.set_last_step(w, 1, 40.0, 1.0, 1000.0)
+        preview_support.settle(w)
+    elif scene == "normals_recalculated":
+        modeled(editor, "Sphere")
+        let ball = preview_support.shown(w) else trap("sphere")
+        let bounds = ball.bounds()
+        let middle = (bounds.minimum.y + bounds.maximum.y) * 0.5
+        tool(editor, "Reverse", face_level, faces_where(ball, -2.0, middle - 0.1, middle + 0.6), 2)
+        selection_commands.set_mode(w, face_level)
+        w.selection = none
+        modeling_commands.model(w, "Recalculate Normals")
+        preview_support.settle(w)
+    elif scene == "normals_hard":
+        modeled(editor, "Cylinder", [2], [32.0])
+        tool(editor, "Soft Edges", edge_level, "*", 4)
+        let can = preview_support.shown(w) else trap("cylinder")
+        let rims: list[str] = []
+        for edge in 0..<can.edge_count():
+            let a = can.point(can.edge_point(edge, 0))
+            let b = can.point(can.edge_point(edge, 1))
+            if a.y == b.y and (a.x * a.x + a.z * a.z) > 0.99 and (b.x * b.x + b.z * b.z) > 0.99:
+                rims.append(edge_text(can, edge))
+        tool(editor, "Hard Edges", edge_level, rims.join(" "), 4)
+        # One rim selected: the selection draws over its cyan.
+        let top: list[str] = []
+        for edge in 0..<can.edge_count():
+            let a = can.point(can.edge_point(edge, 0))
+            let b = can.point(can.edge_point(edge, 1))
+            if a.y > 1.99 and b.y > 1.99 and a.x * a.x + a.z * a.z > 0.99 and b.x * b.x + b.z * b.z > 0.99:
+                top.append(edge_text(can, edge))
+        w.selection = Selection.of(preview_support.shown(w) else trap("cylinder"), top.join(" "), 4)
+        editor.panels.refresh()
+    elif scene == "normals_angle":
+        modeled(editor, "Box", [6, 7], [0.3, 3.0])
+        tool(editor, "Smooth by Angle", face_level, "*", 2, [0], [20.0])
+        w.selection = none
+    elif scene == "normals_seams":
+        modeled(editor, "Box", [3, 4, 5], [2.0, 2.0, 2.0])
+        let box = preview_support.shown(w) else trap("box")
+        let middle: list[str] = []
+        let top: list[str] = []
+        for edge in 0..<box.edge_count():
+            let a = box.point(box.edge_point(edge, 0))
+            let b = box.point(box.edge_point(edge, 1))
+            if a.y == 1.0 and b.y == 1.0:
+                middle.append(edge_text(box, edge))
+            if a.y == 2.0 and b.y == 2.0 and (a.x * a.x == 1.0 or a.z * a.z == 1.0) and (a.x == b.x or a.z == b.z) and (b.x * b.x == 1.0 or b.z * b.z == 1.0):
+                top.append(edge_text(box, edge))
+        tool(editor, "Mark Seam", edge_level, middle.join(" "), 4)
+        tool(editor, "Hard Edges", edge_level, top.join(" "), 4)
+        let marked = preview_support.shown(w) else trap("box")
+        # The seam's two edges on the front face, selected: orange over red.
+        let front: list[str] = []
+        for edge in 0..<marked.edge_count():
+            let a = marked.point(marked.edge_point(edge, 0))
+            let b = marked.point(marked.edge_point(edge, 1))
+            if a.y == 1.0 and b.y == 1.0 and a.z == 1.0 and b.z == 1.0:
+                front.append(edge_text(marked, edge))
+        w.selection = Selection.of(marked, front.join(" "), 4)
+        editor.panels.refresh()
+    w.view.yaw = 0.6
+    w.view.pitch = pitch
+    w.view.distance = distance
+    w.view.target = target
+    w.view.update_camera()
+    editor.panels.refresh()
+
+## Frame `frame` of scene `scene`: nothing moves.
+pub func act(editor: Luce3D, scene: str, frame: int, last: int) -> unit!:
+    editor.app.focus(editor.panels.view.layout())
+    editor.panels.refresh()

@@ -1,0 +1,305 @@
+## The Stage 7 tools (POLY-MODELING.md Stage 7) from real viewport events
+## on the 4 by 4 grid over -1..1 (point z*5+x, face z*4+x) seen from above:
+##
+## - Circularize from the right-click menu on four faces clicked in the
+##   middle makes their outline a circle round the middle point, and a drag
+##   after it sets its Influence in the same undo step;
+## - an edge row taken by a double-click is laid straight by Straighten and
+##   spaced by Space Evenly; Make Planar with nothing selected flattens
+##   every face a Noise step bent;
+## - Recalculate Normals with nothing selected turns a reversed face back;
+## - Hard Edges, Soft Edges and Mark Seam mark a double-clicked row, which
+##   the viewport draws (hard edges and seams), and Clear takes it off;
+##   Smooth by Angle's drag sets its Angle; Seams from Islands without UVs
+##   says why on the Edit Mesh and keeps the last good mesh;
+## - every Stage 7 tool as a node gives the same points and edge marks as
+##   its step.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind
+from luce_3d.graphics import Vector3
+from luce_geocore.geocore import Mesh, Selection
+from edit_types import point_level, edge_level, face_level
+from tool_drag_tests import editor_on, at, drag, last, near
+from tools import ToolRun
+from edit_steps import add_tool_node
+import modeling_commands
+import selection_commands
+import node_commands
+import tool_registry
+from workspace import Workspace
+import thread
+from luce_std import math
+
+pub func shape_tool_tests() -> unit!:
+    circularize_menu()
+    rows_straightened()
+    planar_faces()
+    recalculated()
+    marked_edges()
+    node_parity()
+    print("PASS Stage 7 tools from viewport events: Circularize from the right-click menu rounds four faces' outline and takes a drag; a double-clicked row straightened and spaced evenly; Make Planar flattens a bent grid; Recalculate Normals turns a reversed face back; Hard Edges, Soft Edges and Mark Seam mark a row the viewport draws, Clear takes it off; Smooth by Angle's drag; Seams from Islands says it needs UVs; every tool's node gives its step's points and marks")
+
+func grid_point(index: int) -> Vector3:
+    return Vector3(-1.0 + 0.5 * float(index % 5), 0.0, -1.0 + 0.5 * float(index // 5))
+
+func mesh_of(editor: Luce3D) -> Mesh!:
+    return editor.workspace.geometry else trap("no mesh")
+
+## A click at world point `p`, with Shift to add.
+func click_at(editor: Luce3D, p: Vector3, shift: bool = false) -> unit!:
+    let point = at(editor, p)
+    editor.app.dispatch(Event(kind = EventKind.pointer_moved, x = point[0], y = point[1], shift = shift))
+    editor.app.dispatch(Event(kind = EventKind.pointer_down, x = point[0], y = point[1], button = 0, shift = shift))
+    editor.app.dispatch(Event(kind = EventKind.pointer_up, x = point[0], y = point[1], button = 0, shift = shift))
+    editor.panels.refresh()
+
+## A double-click on the edge between grid points `a` and `b` (its loop),
+## after the last click's double-click time.
+func double_click_edge(editor: Luce3D, a: int, b: int) -> unit!:
+    thread.sleep(450)
+    let middle = grid_point(a).add(grid_point(b)).multiply_scalar(0.5)
+    click_at(editor, middle)
+    click_at(editor, middle)
+
+## The right-click menu's entry `label` (in any submenu), run.
+func menu_run(editor: Luce3D, label: str) -> unit!:
+    editor.panels.actions.refresh()
+    for entry in editor.panels.viewport_menu.entries():
+        for index in 0..<entry.item_count():
+            let item = entry.item(index)
+            if item.text() == label:
+                item.trigger()
+                editor.panels.refresh()
+                return
+        if entry.text() == label:
+            entry.trigger()
+            editor.panels.refresh()
+            return
+    trap(f"no {label} in the right-click menu")
+
+## A Noise step on every point (Select All, then Noise), bending the grid.
+func noise(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    selection_commands.set_mode(w, point_level)
+    selection_commands.select_all(w)
+    modeling_commands.model(w, "Noise", [0.15, 3.0])
+    # A click keeps Noise's dragged value (off the grid: it selects nothing).
+    click_at(editor, Vector3(3.0, 0.0, 0.0))
+    selection_commands.select_none(w)
+    editor.panels.refresh()
+
+func circularize_menu() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    selection_commands.set_mode(w, face_level)
+    # Faces 5, 6, 9 and 10 round point 12, clicked at their middles.
+    click_at(editor, Vector3(-0.25, 0.0, -0.25))
+    for p in [Vector3(0.25, 0.0, -0.25), Vector3(-0.25, 0.0, 0.25), Vector3(0.25, 0.0, 0.25)]:
+        click_at(editor, p, shift = true)
+    assert(w.selected_count() == 4)
+    let before = w.history.cursor
+    menu_run(editor, "Circularize")
+    let node = w.selected() else trap("edit")
+    assert(node.edits[-1].verb == "Circularize")
+    var mesh = mesh_of(editor)
+    # The outline's eight points at one distance from point 12, at equal
+    # angles; point 12 and the grid's outline stay.
+    let ring = [6, 7, 8, 13, 18, 17, 16, 11]
+    let radius = mesh.point(6).length()
+    for point in ring:
+        near(mesh.point(point).length(), radius)
+        near(mesh.point(point).y, 0.0)
+    for index in 0..<8:
+        near(mesh.point(ring[index]).subtract(mesh.point(ring[(index + 1) % 8])).length(), mesh.point(6).subtract(mesh.point(7)).length())
+    near(mesh.point(12).length(), 0.0)
+    near(mesh.point(0).subtract(grid_point(0)).length(), 0.0)
+    # A drag leftward lowers Influence: the ring moves back toward the grid.
+    let s = w.drag_session else trap("Circularize takes no drag")
+    let center = at(editor, s.frame.center_point())
+    drag(editor, [center[0] + 200.0, center[1]], [center[0] + 50.0, center[1]], meta = true)
+    let influence = last(editor)[4]
+    assert(influence < 1.0 and influence >= 0.0, f"{influence}")
+    mesh = mesh_of(editor)
+    assert(mesh.point(6).subtract(grid_point(6)).length() < grid_point(6).length() - radius + 0.000001 or influence == 0.0)
+    assert(w.history.cursor == before + 1)
+    editor.close()
+
+func rows_straightened() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    noise(editor)
+    selection_commands.set_mode(w, edge_level)
+    # The row of points 5..9 (its loop from a double-click on edge 6-7, seen
+    # from above where the noise left it).
+    var mesh = mesh_of(editor)
+    let middle = mesh.point(6).add(mesh.point(7)).multiply_scalar(0.5)
+    thread.sleep(450)
+    click_at(editor, middle)
+    click_at(editor, middle)
+    assert(w.selected_count() == 4)
+    modeling_commands.model(w, "Straighten")
+    mesh = mesh_of(editor)
+    let a = mesh.point(5)
+    let b = mesh.point(9)
+    for point in [6, 7, 8]:
+        let way = b.subtract(a)
+        near(way.cross(mesh.point(point).subtract(a)).length() / way.length(), 0.0, 0.00001)
+    # Space Evenly on the same row (the selection kept): equal steps.
+    modeling_commands.model(w, "Space Evenly")
+    mesh = mesh_of(editor)
+    let step = mesh.point(9).subtract(mesh.point(5)).length() / 4.0
+    for point in [5, 6, 7, 8]:
+        near(mesh.point(point + 1).subtract(mesh.point(point)).length(), step, 0.00001)
+    let verbs: list[str] = []
+    for edit in (w.selected() else trap("edit")).edits:
+        verbs.append(edit.verb)
+    assert(verbs == ["Mountain", "Straighten", "Space Evenly"], f"{verbs}")
+    editor.close()
+
+## The farthest a face's corner lies off its own plane.
+func unflat(mesh: Mesh) -> float!:
+    var worst = 0.0
+    for face in 0..<mesh.face_count():
+        let normal = mesh.face_normal(face)
+        let center = mesh.face_center(face)
+        for corner in 0..<mesh.face_size(face):
+            worst = math.max(worst, math.abs(mesh.point(mesh.face_point(face, corner)).subtract(center).dot(normal)))
+    return worst
+
+func planar_faces() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    noise(editor)
+    let bent = unflat(mesh_of(editor))
+    assert(bent > 0.01)
+    selection_commands.set_mode(w, face_level)
+    w.selection = none
+    editor.panels.refresh()
+    modeling_commands.model(w, "Make Planar")
+    assert(unflat(mesh_of(editor)) < bent * 0.5)
+    # The wheel during its drag steps Iterations: more rounds, flatter.
+    editor.close()
+
+func recalculated() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    selection_commands.set_mode(w, face_level)
+    click_at(editor, Vector3(-0.25, 0.0, -0.25))
+    modeling_commands.model(w, "Reverse")
+    assert(mesh_of(editor).face_normal(5).y < -0.99)
+    # Nothing selected: a click off the grid.
+    thread.sleep(450)
+    click_at(editor, Vector3(3.0, 0.0, 0.0))
+    assert(w.selected_count() == 0)
+    modeling_commands.model(w, "Recalculate Normals")
+    let mesh = mesh_of(editor)
+    for face in 0..<mesh.face_count():
+        assert(mesh.face_normal(face).y > 0.99)
+    editor.close()
+
+func node_steps(editor: Luce3D) -> int!:
+    return (editor.workspace.selected() else trap("edit")).edits.length
+
+func last_verb(editor: Luce3D) -> str!:
+    return (editor.workspace.selected() else trap("edit")).edits[-1].verb
+
+## The edit overlay given the viewport's mesh and selection, as a frame
+## gives them (tests draw no frames).
+func shown(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    editor.panels.view.tools.overlay.show(w.geometry else trap("mesh"), w.overlay_mode(), w.selection, -1)
+
+## Edge mark `name` on the edge between grid points `a` and `b`.
+func mark(mesh: Mesh, name: str, a: int, b: int) -> float!:
+    let index = mesh.find_attribute(name, 4)
+    if index < 0:
+        return 0.0
+    return mesh.attribute_value(index, mesh.find_edge(a, b))
+
+func marked_edges() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    let overlay = editor.panels.view.tools.overlay
+    selection_commands.set_mode(w, edge_level)
+    double_click_edge(editor, 6, 7)
+    assert(w.selected_count() == 4)
+    modeling_commands.model(w, "Hard Edges")
+    assert(mark(mesh_of(editor), "sharp", 6, 7) == 1.0 and mark(mesh_of(editor), "sharp", 11, 12) == 0.0)
+    editor.panels.refresh()
+    shown(editor)
+    assert(overlay.hard_segments() == 4 and overlay.seam_segments() == 0)
+    modeling_commands.model(w, "Soft Edges")
+    assert(mark(mesh_of(editor), "sharp", 7, 8) == -1.0)
+    editor.panels.refresh()
+    shown(editor)
+    assert(overlay.hard_segments() == 0)
+    modeling_commands.model(w, "Mark Seam")
+    editor.panels.refresh()
+    shown(editor)
+    assert(mark(mesh_of(editor), "seam", 8, 9) == 1.0 and overlay.seam_segments() == 4)
+    # Clear on the tool bar's Mode: the seams go.
+    modeling_commands.set_last_step(w, 0, 1.0, 0.0, 1.0)
+    editor.panels.refresh()
+    shown(editor)
+    assert(mark(mesh_of(editor), "seam", 8, 9) == 0.0 and overlay.seam_segments() == 0)
+    # Smooth by Angle on everything: its drag sets Angle.
+    thread.sleep(450)
+    click_at(editor, Vector3(3.0, 0.0, 0.0))
+    modeling_commands.model(w, "Smooth by Angle")
+    let s = w.drag_session else trap("Smooth by Angle takes no drag")
+    let center = at(editor, s.frame.center_point())
+    drag(editor, [center[0] + 20.0, center[1]], [center[0] + 120.0, center[1]], meta = true)
+    assert(last(editor)[0] != 30.0)
+    # Seams from Islands needs UVs: the Edit Mesh says so, the mesh stays.
+    let faces = mesh_of(editor).face_count()
+    selection_commands.set_mode(w, face_level)
+    modeling_commands.model(w, "Seams from Islands")
+    assert(node_steps(editor) > 0 and last_verb(editor) == "Seams from Islands")
+    let node = w.selected() else trap("edit")
+    assert(node.warning.contains("UV"), node.warning)
+    assert(mesh_of(editor).face_count() == faces)
+    editor.close()
+
+## Every Stage 7 tool on the grid bent by noise, as a step and as a node on
+## the same selection: the same points and edge marks.
+func node_parity() -> unit!:
+    let cases = [("Circularize", face_level, "5 6 9 10", 2), ("Straighten", edge_level, "p5-6-7-8-9", 4), ("Space Evenly", edge_level, "p5-6-7-8-9", 4),
+                 ("Make Planar", face_level, "*", 2), ("Recalculate Normals", face_level, "*", 2), ("Hard Edges", edge_level, "p5-6-7-8-9", 4),
+                 ("Soft Edges", edge_level, "p5-6-7-8-9", 4), ("Smooth by Angle", face_level, "*", 2), ("Mark Seam", edge_level, "p5-6-7-8-9", 4)]
+    for (label, level, expression, domain) in cases:
+        let step = bent_grid(true)
+        let node = bent_grid(false)
+        for w in [step, node]:
+            selection_commands.set_mode(w, level)
+            w.selection = Selection.of(w.geometry else trap("grid"), expression, domain)
+        modeling_commands.model(step, label)
+        let tool = tool_registry.find(label) else trap(label)
+        let mesh = node.geometry else trap("grid")
+        let chosen = node.current_selection() else trap("selection")
+        add_tool_node(node, tool.label, ToolRun(tool.name, tool.starting()), chosen.expression(mesh), mesh)
+        assert(node.network.require(node.network.display).kind == tool.name, label)
+        let a = step.geometry else trap(label)
+        let b = node.geometry else trap(label)
+        assert(a.point_count() == b.point_count() and a.face_count() == b.face_count(), label)
+        for point in 0..<a.point_count():
+            near(a.point(point).subtract(b.point(point)).length(), 0.0)
+        for face in 0..<a.face_count():
+            near(a.face_normal(face).subtract(b.face_normal(face)).length(), 0.0)
+        for name in ["sharp", "seam"]:
+            let x = a.find_attribute(name, 4)
+            let y = b.find_attribute(name, 4)
+            assert((x < 0) == (y < 0), label)
+            if x >= 0:
+                for edge in 0..<a.edge_count():
+                    assert(a.attribute_value(x, edge) == b.attribute_value(y, edge), label)
+
+## The grid bent by a Noise node, with an Edit Mesh after it when `edit`.
+func bent_grid(edit: bool) -> Workspace!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Grid", 0.0, 0.0)
+    node_commands.add_node(w, "Mountain", 0.0, 50.0)
+    if edit:
+        node_commands.add_node(w, "Edit Mesh", 0.0, 100.0)
+    return w

@@ -968,6 +968,61 @@ Flatten the group onto a plane through its centroid.
 | --- | --- | --- | --- |
 | Axis | Y | yes | The axis flattened to the group's centroid. |
 
+##### Make Planar
+
+Flatten each of the group's faces in place, each on its own plane.
+
+- Node `Make Planar` in Geo; a step of Edit Mesh.
+- Works on objects or faces, or everything when nothing is selected.
+- After it runs, a drag in the viewport sets Factor (rightward, its range over 300 points); a click keeps it, the wheel steps Iterations.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Factor | 1.0 | yes | How far each point moves toward its faces' planes in a round. |
+| Iterations | 10 | yes | Rounds; faces that share points settle over several. |
+
+##### Circularize
+
+Make the group's edge loops, or its regions' outlines, circles.
+
+- Node `Circularize` in Geo; a step of Edit Mesh.
+- Works on edges or faces or points.
+- After it runs, a drag in the viewport sets Influence (rightward, its range over 300 points); a click keeps it.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Radius | 0.0 | yes | The circle's radius; 0 fits it to each loop's points. A ring's inner circle keeps its share of the outer. |
+| Even | on | yes | Space each loop's points at equal angles; off, each point keeps its angle about the center. |
+| Flatten | on | yes | Put the loop in its plane; off, each point keeps its height off the plane. |
+| Influence | 1.0 | yes | How far the points move toward the circle: 0 leaves them, 1 is the circle. |
+| Twist | 0.0 | yes | Turn the points about the center by this many degrees. |
+
+##### Straighten
+
+Put the inner points of the group's runs of edges on the line between the runs' ends.
+
+- Node `Straighten` in Geo; a step of Edit Mesh.
+- Works on edges or points.
+- After it runs, a drag in the viewport sets Influence (rightward, its range over 300 points); a click keeps it.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Even | off | yes | Space the points equally along the line; off, each keeps its share of the run's length. |
+| Influence | 1.0 | yes | How far the points move toward the line. |
+
+##### Space Evenly
+
+Slide the points of the group's runs and loops of edges along them to equal lengths apart.
+
+- Node `Space Evenly` in Geo; a step of Edit Mesh.
+- Works on edges or points.
+- After it runs, a drag in the viewport sets Influence (rightward, its range over 300 points); a click keeps it.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Interpolation | Smooth | yes | Slide the points along the edges as they are, or along a smooth curve through the points. |
+| Influence | 1.0 | yes | How far the points move toward their even places. |
+
 ##### Snap
 
 Snap points to a grid.
@@ -988,6 +1043,76 @@ Flip the winding of the group's faces.
 
 - Node `Reverse` in Geo; a step of Edit Mesh.
 - Works on objects or faces.
+
+##### Recalculate Normals
+
+Wind the group's faces one way with their neighbors, facing out of each island.
+
+- Node `Recalculate Normals` in Geo; a step of Edit Mesh.
+- Works on objects or faces, or everything when nothing is selected.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Inside | off | yes | Face every island in instead of out (Blender's Recalculate Inside). |
+
+##### Hard Edges
+
+Mark the group's edges hard: the shading splits across them.
+
+- Node `Hard Edges` in Geo; a step of Edit Mesh.
+- Works on edges.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Mode | Set | yes | Mark the group's edges, or clear their mark (they shade by the 60° cusp again). |
+
+##### Soft Edges
+
+Mark the group's edges soft: the shading runs smooth across them at any angle.
+
+- Node `Soft Edges` in Geo; a step of Edit Mesh.
+- Works on edges.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Mode | Set | yes | Mark the group's edges, or clear their mark (they shade by the 60° cusp again). |
+
+##### Smooth by Angle
+
+Mark the group's edges hard where their faces meet at more than an angle, soft elsewhere.
+
+- Node `Smooth by Angle` in Geo; a step of Edit Mesh.
+- Works on objects or faces or edges, or everything when nothing is selected.
+- After it runs, a drag in the viewport sets Angle (rightward, its range over 300 points); a click keeps it.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Angle | 30.0 | yes | Edges whose faces meet at more than this angle (degrees) turn hard, the others soft. |
+| Keep hard edges | off | yes | Edges marked hard stay hard, whatever their angle (Blender's Keep Sharp Edges). |
+
+#### UV
+
+##### Mark Seam
+
+Mark the group's edges as UV seams.
+
+- Node `Mark Seam` in Geo; a step of Edit Mesh.
+- Works on edges.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Mode | Set | yes | Mark the group's edges as UV seams, or clear them. |
+
+##### Seams from Islands
+
+Mark seams on the edges where the UVs split into islands, and clear them on the group's other edges.
+
+- Node `Seams from Islands` in Geo; a step of Edit Mesh.
+- Works on objects or faces, or everything when nothing is selected.
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Mark hard | off | yes | Mark the seams hard as well (Blender's Mark Sharp), so the shading splits along them. |
 
 #### Symmetry
 

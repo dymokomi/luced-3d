@@ -1432,7 +1432,8 @@ below).
 - Preview scenes `tools/preview_create.luc`: create_gallery, create_box, create_surface,
   pen_strip, retopo_sphere, retopo_shrinkwrap.
 
-**Stage 7: shape, topology and normals tools.**
+**Stage 7: shape, topology and normals tools.** **Done 2026-10-13** (see "Stage 7 as built"
+below).
 - Circularize, Straighten, Space Evenly, Relax, Make Planar.
 - Quadrangulate (quality-scored joining), Limited Dissolve, Un-subdivide, PolyReduce (quadric
   collapse), Triangulate methods.
@@ -1442,6 +1443,92 @@ below).
   - Quadrangulate of a triangulated grid gives the grid back;
   - PolyReduce to 50% halves the face count and keeps the boundary;
   - Recalculate fixes a sphere with flipped faces.
+
+**Stage 7 as built.**
+- Every tool is one luce-geocore verb and a line in `makers`, as in Stages 5 and 6; luced-3d
+  took no per-tool wiring (one family name, UV, in `tool_registry.family_order`). Blender's
+  LoopTools and bmesh operators, Maya's and Houdini's manuals were read for what the tools do;
+  nothing was copied.
+- Shape (`circularize.lucb`, `straighten.lucb`, `planar.lucb`):
+  - **Circularize** (edges, faces, points): loops become circles round their edge-weighted
+    centers in their Newell planes, open runs arcs of their Kåsa circle fits; faces give their
+    regions' outlines and carry the inner points along their rays when the outline is
+    star-shaped, or between two concentric circles for a ring of faces (a round rim round a
+    round hole). Radius (0 fits), Even, Flatten, Twist, Influence (the drag row).
+  - **Straighten** (edges, points): runs onto the line between their ends, Even or by length
+    shares; Influence. **Space Evenly**: runs and loops to equal lengths along the polyline
+    (Linear) or a centripetal Catmull-Rom spline (Smooth); Influence. Chains run in parallel.
+  - **Make Planar** (faces): Blender's Make Planar Faces, Factor and Iterations (10), both
+    passes of a round in parallel. Relax was built in Stage 5.
+- Topology: Quadrangulate (Tris to Quads), Limited Dissolve, Un-subdivide and PolyReduce
+  (Decimate) and the Triangulate methods were built in Stage 5; their Stage 7 tests (a
+  triangulated grid joined back, a sphere halved, a grid's boundary kept) are Stage 5's
+  `reduce_checks`.
+- Normals (`recalculate.lucb`, `edge_marks.lucb`):
+  - **Recalculate Normals** (faces, everything with none; Inside): islands wound one way by
+    a breadth-first walk over corner links found in parallel, then turned to face out by
+    their signed volume about their centers (summed in parallel pieces), a sheet too flat to
+    tell keeping its majority's winding; faces that cannot agree are reported. It selects the
+    faces it turned.
+  - **Hard Edges**, **Soft Edges** (Mode Set/Clear) and **Smooth by Angle** (Angle 30°, Keep
+    hard edges; edges, faces or everything) write the edge mark `sharp` (1 hard, -1 soft, 0
+    by the cusp). The shading follows it: luce-geocore's smooth normals, given `sharp`,
+    split each point's faces into fans at hard edges, join them across soft ones and across
+    unmarked edges within 60° (`smooth_normals.lucb`: `EdgeMarks`, `fan_normal`), so the
+    marks survive every later edit on the edges' provenance and a Move refreshes them
+    around the moved points; a mesh whose `sharp` changes takes a fresh shading cache.
+    Blender's rule holds: one hard edge at a point splits nothing there.
+  - **Mark Seam** (Mode) and **Seams from Islands** (Mark hard) write `seam`; the latter reads
+    corner UVs and refuses a mesh without them (the Edit Mesh says why, the mesh stays).
+  - Bevel weights: **Bevel Weight** (Stage 4).
+- The viewport draws the marks in an Edit node (luce-3d `EditOverlay`, `seam` and `sharp`
+  colors): hard edges cyan, seams red, 2 points wide over the 1-point wireframe, writing no
+  depth so the selection's orange draws over them; the selection and the marks stand 0.2% of
+  the view distance toward the eye, so the surface no longer speckles them.
+- Poly Pen: the floating panel is titled Poly Pen (the tool chosen) for the PolyDraw, Delete
+  and Poly Pen steps it makes (`tool_bar.luc`), as its menus name it.
+- Icons: Circularize `circle-center`, Straighten `constraint-collinear`, Space Evenly
+  `resample-curve`, Make Planar `set-planar`, Recalculate Normals `reverse-normals`, Hard
+  Edges `select-sharp`, Soft Edges `shaded-view`, Smooth by Angle `surface-normal`, Mark Seam
+  `sketch-break`, Seams from Islands `uv-project`: stand-ins until luciaos-assets has
+  circularize, straighten, space-evenly, make-planar, recalculate-normals, hard-edges,
+  soft-edges, smooth-by-angle, mark-seam and seams-from-islands. The Stage 6 tools now draw
+  their own icons (icosphere, quad-sphere, disc, platonic-solid, helix, poly-pen,
+  shrinkwrap, snap-target).
+- Tests: luce-geocore `shape_loop_checks` (a divided box's top outline on a circle within
+  1e-6 at equal angles, inner points inside, Radius, Flatten off and Twist, Influence 0; arcs
+  through a bent run and a straight run refused; Straighten even and by length, half
+  Influence; Space Evenly on a squeezed row, a square outline and, Smooth, a circle's chords
+  within 1%; Make Planar exact on one face, a noisy grid flattened) and
+  `normals_tool_checks` (a sphere with 62 faces reversed turned back, closed and of its
+  volume, Inside, a group alone, a sheet's majority; a box's corner shading by the cusp,
+  all soft, one hard edge, two, cleared, Smooth by Angle 30 and 100, Keep hard edges, a
+  sphere's equator hard before and after a Move; seams set and cleared, found from corner UV
+  islands, refused without UVs), both under the allocation-failure sweep. luced-3d
+  `shape_tool_tests` (real viewport events: Circularize from the right-click menu on four
+  clicked faces and its Influence drag in one undo step; a double-clicked row straightened
+  and spaced; Make Planar on a bent grid; Recalculate after Reverse; Hard, Soft and Seam
+  marks drawn by the overlay and cleared from the bar; Smooth by Angle's drag; Seams from
+  Islands' refusal; every Stage 7 tool's node equal to its step in every point, face normal
+  and mark), `poly_pen_tests` (the panel's title), `tool_parity_tests` (a tool the grid
+  cannot take must be refused alike by node and step).
+- Benchmarks (luce-geocore docs/API.md: the 1024² grid and a 1448 × 724 sphere, about a
+  million faces): Circularize of the whole grid (its outline a circle, 1M inner points mapped)
+  90 ms, of a 512² block 35 ms, of every row as an arc 80 ms (113 ms before the chains were
+  fitted in parallel); Straighten of every row 40 ms; Space Evenly 57 ms linear, 125 ms smooth
+  (154 ms before each span's knots were found once); Make Planar of every face, 10 rounds,
+  43 ms; Recalculate Normals of the half-reversed sphere 40–50 ms and of the grid 28 ms (148 ms
+  and 117 ms before the links and the island sums went parallel); Hard Edges on 2.1M edges
+  3 ms; Smooth by Angle of the sphere 18 ms; Seams from Islands 20 ms; the sphere's shading
+  normals 27 ms by the cusp, 23 ms by its edge marks.
+- Preview scenes `tools/preview_shape.luc`: shape_circularize, shape_hole, shape_straighten,
+  shape_space, shape_planar, normals_recalculated, normals_hard, normals_angle,
+  normals_seams.
+- Not built: custom normals (Blender's set from faces, average, point to target, weighted
+  normal) and a face-orientation display (the viewport lights both sides of a face alike, so
+  a reversed face shows only when turned); Circularize's mapping of the inner points of a
+  region whose outline is not star-shaped or that has more than two outlines (the outlines
+  become circles, the inner points stay, with a warning); Straighten on loops.
 
 **Stage 8: deformers, Mesh Check, sculpt-lite.**
 - Bend/Twist/Taper/Squash as one node; Lattice; Shrinkwrap.

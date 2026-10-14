@@ -296,6 +296,21 @@ open or closed and each context's last tab are kept in
 - Fuse merges the group's points within a distance into the first of them,
   dropping faces that collapse. Merge Points merges them at their center, at
   the first or last, per connected island or by distance.
+- The Stage 7 shape tools: Circularize makes the selected loops circles
+  (faces: their regions' outlines, the inner points carried along; a ring of
+  faces round a hole becomes a round rim round a round hole), Straighten
+  lays runs of edges on the line between their ends, Space Evenly slides
+  points along their runs and loops to equal lengths apart, Make Planar
+  flattens each face in place. Their rows are in docs/TOOLS.md.
+- Normals and edge marks: Recalculate Normals winds faces one way with their
+  neighbors, facing out (and selects the faces it turned); Hard Edges, Soft
+  Edges and Smooth by Angle mark edges in the `sharp` attribute, which the
+  viewport's shading follows (hard edges split it, soft ones join it at any
+  angle, unmarked ones split past 60°); Mark Seam and Seams from Islands
+  mark `seam`. In an Edit node the viewport draws hard edges cyan and seams
+  red, a little wider than the wireframe and under the selection. The
+  viewport lights both sides of a face alike, so a reversed face does not
+  show until it is turned (or rendered).
 - A kernel that would make degenerate faces (a bridge between coplanar
   loops, say) passes its input through with a warning.
 - CopyToPoints realizes copies at target positions, as many as there are
