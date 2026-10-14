@@ -17,6 +17,7 @@ from script_build import BuildPlan, toolchain, build_failure, scripts_home
 from script_packages import editor_packages
 import script_build
 from luce_ui import ui
+from signal import Signal
 import time
 
 ## A build in flight or done.
@@ -53,9 +54,9 @@ pub class Build:
             self.failure = "the built script could not be kept: " + failure.message
         return true
 
-    func begin(self) -> unit!:
+    func begin(self, news: Signal) -> unit!:
         self.started = time.now()
-        self.command = self.plan.start()
+        self.command = self.plan.start(news.waker())
 
     pub func cancel(self):
         if let command = self.command:
@@ -86,8 +87,13 @@ pub class ScriptHosts:
     ## last kept to its limit.
     let marked: map[str, bool]
     var evicted_at: int = 0
+    ## Notified when a build or a child process ends or has news (their
+    ## commands wake it), and, on the compute worker, when a newer request
+    ## arrives: a cook waiting on either blocks on it instead of polling.
+    pub let news: Signal
 
     pub func init(self):
+        self.news = Signal.make()
         self.builds = {}
         self.waiting = {}
         self.current = {}
@@ -117,7 +123,7 @@ pub class ScriptHosts:
         if exists == files.FileKind.regular and wanted.pinned():
             made.done = true
             return made
-        made.begin()
+        made.begin(self.news)
         self.built += 1
         return made
 
@@ -143,7 +149,7 @@ pub class ScriptHosts:
         self.waiting[made.plan.key] = self.start(made)
 
     func start(self, made: Build) -> ScriptProcess!:
-        return ScriptProcess(made.plan.program, made.plan.folder)
+        return ScriptProcess(made.plan.program, made.plan.folder, self.news.waker())
 
     ## The file input `port` of node `node` goes to the child in: the one the last
     ## cook wrote when its content key `key` is the same (0: unknown, written

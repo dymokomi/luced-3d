@@ -23,6 +23,7 @@ from luce_cad.measure import CadCheck, check_lines
 from luce_cad.cad_curves import curve_lines
 from luce_cad.cad_geometry import set_models
 from luce_ui import ui
+from signal import Signal, SignalCore, release_core
 
 pub type ComputeHandler = interop.Callback[str, unit]
 
@@ -104,6 +105,9 @@ struct State:
     ## Wakes the UI loop when there is something for it (a result, progress,
     ## a request taken): the UI never polls the worker on a timer.
     var waker: ui.NotifyHandle? = none
+    ## The worker's wait for news (signal.lucb): notified when a request
+    ## arrives or the service stops, so a cook waiting on a build hears it.
+    var news: SignalCore*? = none
 
     ## Wake the UI loop (its notifier's callback polls the service once).
     func wake():
@@ -180,6 +184,15 @@ pub struct ComputeChannel:
             return
         if self.state.depth == 0 or not self.state.wants(self.state.cooking[self.state.depth - 1]):
             error(invalid, "Computation superseded")
+
+    ## Notify `signal` when a request arrives or the service stops (the worker
+    ## waits on it for builds and children, which wake it too).
+    pub func wake_on_requests(signal: interop.Reference[Signal]) -> !:
+        let core = (try signal.get()).held_core()
+        self.state.lock.lock()
+        defer self.state.lock.unlock()
+        if let old = self.state.news: release_core(old)
+        self.state.news = core
 
     ## Whether a newer request waits; its delta must be applied before cooking.
     pub func superseded() -> bool:
@@ -465,6 +478,7 @@ pub struct ComputeService:
         state.queued += 1
         state.requested = generation
         state.changed.broadcast()
+        if let news = state.news: news.notify()
 
     ## How many requests wait for the worker to take them.
     pub func queued() -> i64:
@@ -711,10 +725,13 @@ pub struct ComputeService:
         state.lock.lock()
         state.stopping = true
         state.changed.broadcast()
+        if let news = state.news: news.notify()
         state.lock.unlock()
         state.handle.join() catch failure: trap(failure.message)
         if let handle = state.waker: handle.release()
         state.waker = none
+        if let news = state.news: release_core(news)
+        state.news = none
         state.clear()
         for request in state.queue[..<state.queued]:
             request.message.release()

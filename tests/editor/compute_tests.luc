@@ -9,6 +9,7 @@ import node_commands
 import selection_commands
 from result_store import ResultStore
 from geometry_data import GeometryData
+from luce_geocore.geocore import MeshPrimitives
 
 func settle(workspace: Workspace) -> unit!:
     let session = workspace.compute else trap("compute")
@@ -150,6 +151,11 @@ pub func result_store_bound() -> unit!:
     w.begin("Move gizmo")
     let early_moves: list[float] = []
     let late_moves: list[float] = []
+    # A fixed piece of work timed beside the moves in each window: another
+    # session's load slows it as much as the moves, so the windows are
+    # compared as multiples of it, not in milliseconds.
+    let early_probes: list[float] = []
+    let late_probes: list[float] = []
     for move in 0..<6000:
         let started = time.now()
         let moved = values.copy()
@@ -159,20 +165,30 @@ pub func result_store_bound() -> unit!:
         let spent = float(time.now() - started) / 1000000.0
         if move < 500: early_moves.append(spent)
         if move >= 5500: late_moves.append(spent)
+        if move % 10 == 0 and (move < 500 or move >= 5500):
+            let probe = probe_ms()
+            if move < 500: early_probes.append(probe)
+            else: late_probes.append(probe)
         assert(session.results == results, f"move {move}: {session.results} results, {results} before")
     w.commit()
     settle(w)
     near_x(w, shifted + 0.6)
     assert(session.results == results and session.result_bytes == held_bytes, f"{session.results} results of {session.result_bytes} bytes after, {results} of {held_bytes} before")
     assert(w.network.require(chain[0]).evaluations == cooks and w.network.require(chain[58]).evaluations == above)
-    # Medians, so a busy machine's spikes do not decide (the creep this
-    # guards against was 3.8 times over 6,000 moves).
+    # Medians, so spikes do not decide, each window in units of its probe's
+    # median, so a load that comes and goes shifts both alike (the creep
+    # this guards against was 3.8 times over 6,000 moves).
     early_moves.sort()
     late_moves.sort()
+    early_probes.sort()
+    late_probes.sort()
     let first = early_moves[250]
     let later = late_moves[250]
-    print(f"PASS A 6,000-move drag through the worker: {results} results held before and after, {first:.3f} ms a move (median) over the first 500, {later:.3f} over the last 500")
-    assert(later < first * 2.0 + 0.5, f"{first} ms then {later} ms a move")
+    let first_probe = early_probes[early_probes.length // 2]
+    let later_probe = late_probes[late_probes.length // 2]
+    let ratio = (later / later_probe) / (first / first_probe)
+    print(f"PASS A 6,000-move drag through the worker: {results} results held before and after, {first:.3f} ms a move (median) over the first 500, {later:.3f} over the last 500 ({first_probe:.3f} and {later_probe:.3f} ms probes: {ratio:.2f} times)")
+    assert(ratio < 2.0, f"{first} ms then {later} ms a move, probes {first_probe} and {later_probe} ms")
     w.undo()
     settle(w)
     near_x(w, shifted)
@@ -183,3 +199,11 @@ func near_x(w: Workspace, expected: float) -> unit!:
     assert(shown.length == 1, f"{shown.length} meshes shown, {w.notice}, history {w.history.cursor}")
     let x = shown[0].bounds().maximum.x
     assert(x > expected - 0.0001 and x < expected + 0.0001, f"{x} {expected}")
+
+## A fixed piece of work (a 120x120 grid made and moved, on this thread), in
+## milliseconds: what the machine's load does to the moves it does to this.
+func probe_ms() -> float!:
+    let started = time.now()
+    let grid = MeshPrimitives.grid(1.0, 120)
+    _ = grid.transformed(Vector3(0.1, 0.0, 0.0), Vector3(), Vector3(1.0, 1.0, 1.0))
+    return float(time.now() - started) / 1000000.0

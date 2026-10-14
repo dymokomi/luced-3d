@@ -1,0 +1,88 @@
+## A worker's wait for news: background work it started (a build's or a
+## Script child's process.Command) wakes it through a luce-std Waker, and
+## the compute service wakes it when a newer request arrives, so the worker
+## blocks until something changed instead of sleeping in a loop.
+##
+## The core is shared by count: the Signal, every waker made from it and the
+## compute service each hold it, and the last to let go frees it, so a
+## process that outlives the worker can still wake it safely.
+import interop
+import memory
+import sync
+from luce_std import wake
+
+## What wakers and waiters share.
+pub struct SignalCore:
+    var lock: sync.Mutex
+    var changed: sync.Condition
+    var count: i64
+    var users: @usize
+
+    ## Something changed: every waiter wakes. Any thread.
+    pub func notify():
+        self.lock.lock()
+        self.count += 1
+        self.changed.broadcast()
+        self.lock.unlock()
+
+    pub func hold():
+        _ = self.users.add(1, .relaxed)
+
+## Give up one hold of `core`; the last frees it.
+pub func release_core(core: SignalCore*):
+    if core.users.sub(1, .acq_rel) != 1: return
+    free(SignalCore[](core, 1)) in memory.heap
+
+pub struct Signal:
+    var core: SignalCore*
+
+    ## A new signal, nothing changed yet (out of memory traps: owners make
+    ## one in their constructors).
+    pub static func make() -> interop.Reference[Signal]:
+        let core = new SignalCore[1] --- in memory.heap catch failure: trap(failure.message)
+        core[0] = SignalCore(sync.Mutex(), sync.Condition(), 0, 1)
+        let made = new Signal(core = core.data) in memory.heap catch failure: trap(failure.message)
+        return interop.Reference[Signal].adopt(made, signal_type, memory.heap) catch failure: trap(failure.message)
+
+    ## A waker that notifies this signal (for a process.Command or a job).
+    pub func waker() -> interop.Reference[wake.Waker]!:
+        self.core.hold()
+        return try wake.waker(notify_core, (void*)self.core, let_core_go)
+
+    ## How many times it was notified so far.
+    pub func count() -> i64:
+        self.core.lock.lock()
+        defer self.core.lock.unlock()
+        return self.core.count
+
+    ## Block until the count is no longer `seen` (something changed since),
+    ## or `timeout_ms` passed when it is positive; the count then.
+    pub func wait(seen: i64, timeout_ms: i64 = 0) -> i64:
+        let core = self.core
+        core.lock.lock()
+        defer core.lock.unlock()
+        if timeout_ms <= 0:
+            while core.count == seen: core.changed.wait(&core.lock)
+        elif core.count == seen:
+            core.changed.wait_for(&core.lock, (u64)timeout_ms)
+        return core.count
+
+    ## Notify it from this thread.
+    pub func notify():
+        self.core.notify()
+
+    ## The shared core, held once more, for Base owners (the compute service).
+    pub func held_core() -> SignalCore*:
+        self.core.hold()
+        return self.core
+
+    pub func close():
+        release_core(self.core)
+
+func notify_core(context: void*):
+    ((SignalCore*)context).notify()
+
+func let_core_go(context: void*):
+    release_core((SignalCore*)context)
+
+pub let signal_type: interop.Type[Signal] = interop.Type[Signal]("Signal", Signal.close)
