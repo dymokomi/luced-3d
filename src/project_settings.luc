@@ -47,17 +47,34 @@ func set_tolerances(w: Workspace, tolerances: CadTolerances) -> unit!:
         w.network.invalidate(node.id)
     w.rebuild()
 
-## The tolerance presets (Alias's construction presets): names, and the
-## positional and fit tolerances (mm), tangent (degrees) and curvature (%).
-func preset_names() -> list[str]: return ["Default", "Fine", "Class A", "Rough import"]
+## The tolerance presets (Alias's construction presets), each named with
+## its positional tolerance: the positional and fit tolerances (mm),
+## tangent (degrees) and curvature (%).
+func preset_names() -> list[str]: return ["Standard (0.01 mm)", "Fine (0.0001 mm)", "Class A (0.001 mm)", "Rough import (0.05 mm)"]
 func preset(name: str) -> CadTolerances:
-    if name == "Fine":
+    if name.starts_with("Fine"):
         return CadTolerances(positional = 0.0001, fit = 0.00001, tangent = radians(0.1), curvature = 0.005)
-    if name == "Class A":
+    if name.starts_with("Class A"):
         return CadTolerances(positional = 0.001, fit = 0.0001, tangent = radians(0.05), curvature = 0.001)
-    if name == "Rough import":
+    if name.starts_with("Rough"):
         return CadTolerances(positional = 0.05, fit = 0.005, tangent = radians(0.5), curvature = 0.01)
     return CadTolerances()
+
+## The preset `tolerances` are, or "Custom".
+func preset_of(tolerances: CadTolerances) -> str:
+    for name in preset_names():
+        if preset(name).equals(tolerances):
+            return name
+    return "Custom"
+
+## The fewest decimals (1 to 6) that show `value` without dropping digits.
+func trimmed_decimals(value: float) -> int:
+    var scale = 10.0
+    for places in 1..<6:
+        if math.abs(math.round(value * scale) - value * scale) <= 1e-6 * math.max(1.0, value * scale):
+            return places
+        scale *= 10.0
+    return 6
 
 
 ## The unit names a project chooses among, and how the dialog shows them.
@@ -76,6 +93,7 @@ pub class ProjectSettings:
     let sections: ListView
     let pages: list[VStack]
     let units_menu: Menu
+    let presets_menu: Menu
     let positional_field: NumberField
     let fit_field: NumberField
     let tangent_field: NumberField
@@ -108,10 +126,18 @@ pub class ProjectSettings:
         self.fit_field = NumberField(0.001, 0.000000001, 1.0, 0.0001, 6, font = font, cells = 14.0)
         self.tangent_field = NumberField(0.1, 0.001, 5.0, 0.01, 3, suffix = "°", font = font, cells = 10.0)
         self.curvature_field = NumberField(0.5, 0.01, 10.0, 0.1, 2, suffix = " %", font = font, cells = 10.0)
-        self.connections.append(self.positional_field.on_change(func (value: float) -> unit!: self.draft.tolerances.positional = value))
-        self.connections.append(self.fit_field.on_change(func (value: float) -> unit!: self.draft.tolerances.fit = value))
-        self.connections.append(self.tangent_field.on_change(func (value: float) -> unit!: self.draft.tolerances.tangent = radians(value)))
-        self.connections.append(self.curvature_field.on_change(func (value: float) -> unit!: self.draft.tolerances.curvature = value * 0.01))
+        self.connections.append(self.positional_field.on_change(func (value: float) -> unit!:
+            self.draft.tolerances.positional = value
+            self.show_preset()))
+        self.connections.append(self.fit_field.on_change(func (value: float) -> unit!:
+            self.draft.tolerances.fit = value
+            self.show_preset()))
+        self.connections.append(self.tangent_field.on_change(func (value: float) -> unit!:
+            self.draft.tolerances.tangent = radians(value)
+            self.show_preset()))
+        self.connections.append(self.curvature_field.on_change(func (value: float) -> unit!:
+            self.draft.tolerances.curvature = value * 0.01
+            self.show_preset()))
         var preset_commands: list[Command] = []
         for name in preset_names():
             let chosen = name
@@ -120,12 +146,14 @@ pub class ProjectSettings:
                 self.draft.tolerances = preset(chosen)
                 self.show_tolerances()))
             preset_commands.append(command)
-        let presets = Menu("Preset ▾", preset_commands, font = font)
+        self.presets_menu = Menu(preset_names()[0] + " ▾", preset_commands, font = font)
         let units = VStack([self.row("Length", self.units_menu),
                             Text("Lengths show and are typed in this unit.", font = font, muted = true),
                             Rule(structural = true),
+                            Text("Tolerances", font = font),
+                            self.row("Preset", self.presets_menu),
                             self.row("Positional", self.positional_field), self.row("Fit", self.fit_field),
-                            self.row("Tangent", self.tangent_field), self.row("Curvature", self.curvature_field), self.row("Preset", presets),
+                            self.row("Tangent", self.tangent_field), self.row("Curvature", self.curvature_field),
                             Text("Every body is built under these tolerances.", font = font, muted = true),
                             Text("Changing them rebuilds the model.", font = font, muted = true), Spacer()], spacing = 8.0)
         # Time: what the timeline plays and the nodes that follow it read.
@@ -174,7 +202,6 @@ pub class ProjectSettings:
     pub func open(self) -> unit!:
         self.draft = current(self.workspace)
         self.show_units()
-        self.show_tolerances()
         self.fps_field.set_value(self.draft.fps)
         self.start_field.set_value(self.draft.start)
         self.end_field.set_value(self.draft.end)
@@ -185,13 +212,25 @@ pub class ProjectSettings:
         let shown = ui.unit_named(self.draft.units) else ui.millimeters()
         self.positional_field.set_units(shown)
         self.fit_field.set_units(shown)
+        self.show_tolerances()
 
+    ## The draft's tolerances in the fields, each with as many decimals as
+    ## it needs in the shown unit ("0.01 mm", "0.001 mm").
     func show_tolerances(self) -> unit!:
         let t = self.draft.tolerances
+        let shown = ui.unit_named(self.draft.units) else ui.millimeters()
+        self.positional_field.set_decimals(trimmed_decimals(shown.shown(t.positional)))
+        self.fit_field.set_decimals(trimmed_decimals(shown.shown(t.fit)))
+        self.tangent_field.set_decimals(trimmed_decimals(degrees(t.tangent)))
+        self.curvature_field.set_decimals(trimmed_decimals(t.curvature * 100.0))
         self.positional_field.set_value(t.positional)
         self.fit_field.set_value(t.fit)
         self.tangent_field.set_value(degrees(t.tangent))
         self.curvature_field.set_value(t.curvature * 100.0)
+        self.show_preset()
+
+    func show_preset(self) -> unit!:
+        self.presets_menu.set_text(preset_of(self.draft.tolerances) + " ▾")
 
     pub func cancel(self) -> unit!:
         self.dialog.hide()
