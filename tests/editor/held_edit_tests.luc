@@ -3,7 +3,8 @@
 ##
 ## - primitives are made inside it at any level with nothing selected (the
 ##   Create entries are not pale), each a piece selected at the Object
-##   level; two boxes, one moved, both picked;
+##   level; two boxes, one moved, both picked,
+##   joined by Boolean (then Subtract by adjusting it);
 ## - the last action stays adjustable from the result before it, and the
 ##   next action bakes it;
 ## - a change upstream does not flow in: the node says its input changed,
@@ -25,11 +26,12 @@ from luce_std import files, paths
 
 pub func held_edit_tests() -> unit!:
     create_inside()
+    boolean_inside()
     adjust_last()
     input_changes()
     history_bound()
     saved_held()
-    print("PASS Edit Mesh holds its result: primitives made inside at any level, two boxes, one moved, both picked; the last action adjusted from the result before it, the next baking it; upstream changes held off, Input changed and Reload Input; undo bounded by the held bytes; saved beside the project and loaded back")
+    print("PASS Edit Mesh holds its result: primitives made inside at any level, two boxes, one moved, both picked and joined by Boolean; the last action adjusted from the result before it, the next baking it; upstream changes held off, Input changed and Reload Input; undo bounded by the held bytes; saved beside the project and loaded back")
 
 func create_inside() -> unit!:
     let editor = editor_on(Vector3(4.0, 5.0, 6.0), edit = false)
@@ -58,6 +60,38 @@ func create_inside() -> unit!:
     selection_commands.choose_component(w, 0, false)
     selection_commands.choose_component(w, 6, true)
     assert(w.selected_count() == 12)
+    editor.close()
+
+## Two boxes made inside one Edit Mesh, the second moved into the first,
+## then both picked and joined by Boolean (one undo step), adjusted to Intersect.
+func boolean_inside() -> unit!:
+    let editor = editor_on(Vector3(4.0, 5.0, 6.0), edit = false)
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Edit Mesh", 0.0, 0.0)
+    modeling_commands.create(w, "Box")
+    modeling_commands.create(w, "Box")
+    component_moves.move_selection(w, Vector3(0.5, 0.5, 0.5))
+    selection_commands.choose_component(w, 0, false)
+    selection_commands.choose_component(w, 6, true)
+    let before = w.history.cursor
+    modeling_commands.model(w, "Boolean")
+    let joined = w.geometry else trap("joined")
+    assert(w.history.cursor == before + 1 and w.notice == "")
+    # The union: one closed piece over both boxes (-1..1 and -0.5..1.5
+    # across, 0..2 and 0.5..2.5 up), new points where their faces cross.
+    assert(joined.point_count() > 16, f"{joined.point_count()} points")
+    near(joined.bounds().minimum.x, -1.0)
+    near(joined.bounds().maximum.y, 2.5)
+    # Intersect, adjusted from the tool bar: only the part both hold.
+    modeling_commands.set_last_step(w, 0, 2.0, 0.0, 2.0)
+    let both = w.geometry else trap("both")
+    near(both.bounds().minimum.x, -0.5)
+    near(both.bounds().maximum.y, 2.0)
+    # Undo back to before it: the two boxes.
+    while w.history.cursor > before:
+        w.undo()
+    assert((w.geometry else trap("undone")).point_count() == 16)
     editor.close()
 
 func adjust_last() -> unit!:

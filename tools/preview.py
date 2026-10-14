@@ -47,7 +47,7 @@ CREATE_SCENES = ["create_gallery", "create_box", "create_surface", "pen_strip", 
 # The shape, topology and normals tools in Edit Mesh (tools/preview_shape.luc).
 SHAPE_SCENES = ["shape_circularize", "shape_hole", "shape_straighten", "shape_space", "shape_planar", "normals_recalculated", "normals_hard", "normals_angle", "normals_seams"]
 # Edit Mesh holding its result (tools/preview_held.luc).
-HELD_SCENES = ["held_boxes", "held_drag"]
+HELD_SCENES = ["held_boxes", "held_boolean", "held_subtract", "held_drag"]
 # The viewport tool shelf (tools/preview_shelf.luc).
 SHELF_SCENES = ["shelf_mesh", "shelf_cad", "shelf_full_screen", "shelf_quad", "shelf_disabled"]
 # Icon review: the A/S/D marking menus per place, networks of many node kinds (tools/preview_icons.luc).

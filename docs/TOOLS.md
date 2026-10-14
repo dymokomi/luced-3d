@@ -1200,6 +1200,21 @@ Move the group's points to symmetric places, each pair meeting across the plane.
 | Factor | 0.5 | yes | Where a pair meets: 0 at the leading point, 0.5 halfway, 1 at its partner's reflection. |
 | Center | on | yes | Move unpaired points within Threshold of the plane onto it. |
 
+#### Combine
+
+##### Boolean
+
+Union, subtract or intersect closed pieces, exactly.
+
+- Node `Mesh Boolean` in Geo; an action in Edit Mesh.
+- Works on objects.
+- Also picks cutters.
+- With nothing selected: "Pick the pieces to combine".
+
+| Row | Starts at | On the tool bar | What it does |
+| --- | --- | --- | --- |
+| Operation | Union | yes | Union keeps what any piece holds, Subtract what the pieces hold outside the cutters, Intersect what both hold. |
+
 ### Select
 
 A Select tool changes the selection only: from D, the right-click Select submenu or Modify ›

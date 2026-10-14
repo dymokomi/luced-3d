@@ -521,6 +521,22 @@ every 16.5 ms on average (20.6 ms worst): the display's 60 Hz. Before the per-fr
 (the move from the base each frame, the shading switched to per-corner each frame, the icons
 looked up each refresh) frames came every 28.9 ms.
 
+**Mesh Boolean** (luce-geocore `verbs/boolean.lucb` and `booleans/`; label Boolean, Modify ›
+Combine; a node and an Edit Mesh action from the one definition). Union, Subtract or Intersect
+of closed pieces: with one pick of several pieces (Object level: faces sharing a `path`, else
+connected parts) the piece holding the lowest face is A and the rest B; a second pick makes its
+pieces B. The result is one piece (A's path) and the output selection. Exact and deterministic:
+Shewchuk-filtered orientation predicates with exact fallbacks, cut points kept as exact
+homogeneous coordinates named only by input ids, a constrained triangulation per cut triangle,
+and patches kept by their exact winding numbers (after Zhou et al. 2016 and Cherchi et al.
+2022; no code taken). Results are stored with f64 points; an operand that is not closed is
+refused, naming the pick, and a result that would not close is an error, never an open mesh.
+Two UV spheres of 100,352 faces each: Union 70 ms, Subtract 68 ms, Intersect 62 ms; of 999,698
+faces each: 479, 465 and 416 ms (luce-geocore docs/API.md). Inside one Edit Mesh: two boxes, one
+moved into the other, both picked, Boolean, and Operation switched on the tool bar
+(`tests/editor/held_edit_tests.luc: boolean_inside`; captures `held_boxes`, `held_boolean`,
+`held_subtract`).
+
 Edit CAD and Edit SDF convert next (their own sections below when they do); Edit GSplats is
 recommended to follow (its held result is the cloud with its deletions and moves).
 

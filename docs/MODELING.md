@@ -12,7 +12,7 @@ No placeholder nodes are listed: every registered node evaluates geometry.
 | Sources | The primitives (Box, Grid, Plane, Sphere, Icosphere, Quad Sphere, Cylinder, Cone, Pipe, Disc, Torus, Capsule, Platonic Solid, Helix: docs/TOOLS.md), File |
 | Graph | Edit Mesh, Edit CAD, Edit SDF, Merge, Null, Switch, Tessellate, Group, Blast, Cache, Export |
 | Transforms/copies | Transform, Mirror, CopyTransform, CopyToPoints, MatchSize |
-| Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Loop Cut, Bridge, Fill, Dissolve, Merge Points; Subdivision (display) and Crease |
+| Modeling (verbs) | Delete, Reverse, Triangulate, Duplicate, Split, Inset, PolyExtrude, Subdivide, Fuse, Clean, PolyBevel, Loop Cut, Bridge, Fill, Dissolve, Merge Points, Mesh Boolean (Union, Subtract, Intersect: exact); Subdivision (display) and Crease |
 | Deformation (verbs) | Transform Components, Smooth, Mountain, Peak, Flatten, Snap |
 | Curves (set verbs) | Curve Line, Curve Circle, Curve Arc, Curve Spiral, Resample Curve, Trim Curve, Fillet Curve, Reverse Curve, Set Curve Type, Curve to Mesh, Mesh to Curve |
 | Volumes (set verbs) | SDF Sphere, SDF Box, SDF Torus, SDF Capsule, SDF Cylinder, SDF Boolean, SDF Modify, SDF to Volume, Mesh to SDF, Volume from Points, Convert to Mesh, Volume Slice |
@@ -1350,5 +1350,5 @@ expressions inside widgets.
 
 ## Remaining modeling milestones
 
-Robust booleans, remeshing, UV unwrap, multi-node selection, wire insertion and
+Remeshing, UV unwrap, multi-node selection, wire insertion and
 subnets remain future work.
