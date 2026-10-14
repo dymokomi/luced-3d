@@ -1,8 +1,12 @@
 ## Window › Project Settings…: what the open project keeps for itself — the
-## unit lengths show in, and its time (frames per second and frame range) —
-## edited as a draft in a floating, centered dialog and applied together, as
-## one undo step.
+## unit lengths show in, the CAD tolerances every body is built under, and
+## its time (frames per second and frame range) — edited as a draft in a
+## floating, centered dialog and applied together, as one undo step.
 from luce_ui.ui import Widget, Font, Text, Button, VStack, HStack, Spacer, Size, Dialog, ListView, ListItem, NumberField, Menu, Command, Rule
+from luce_ui import ui
+from luce_cad.model import CadTolerances
+from luce_std import math
+from angles import degrees, radians
 from interop import Connection
 from workspace import Workspace
 import timeline_commands
@@ -10,6 +14,7 @@ import timeline_commands
 ## The project settings as the dialog edits them, apart from the project.
 pub struct ProjectValues:
     pub var units: str
+    pub var tolerances: CadTolerances
     pub var fps: float
     pub var start: float
     pub var end: float
@@ -17,18 +22,43 @@ pub struct ProjectValues:
 ## The settings `w`'s project has now.
 pub func current(w: Workspace) -> ProjectValues:
     let g = w.network
-    return ProjectValues(units = g.units, fps = g.fps, start = g.start, end = g.end)
+    return ProjectValues(units = g.units, tolerances = g.tolerances, fps = g.fps, start = g.start, end = g.end)
 
 ## Make `values` the project's, as one undo step ("Project settings"); a value
 ## already the project's changes nothing.
 pub func apply_values(w: Workspace, values: ProjectValues) -> unit!:
     let before = current(w)
-    if before.units == values.units and before.fps == values.fps and before.start == values.start and before.end == values.end:
+    let same_tolerances = before.tolerances.equals(values.tolerances)
+    if before.units == values.units and same_tolerances and before.fps == values.fps and before.start == values.start and before.end == values.end:
         return
+    values.tolerances.checked()
     w.perform("Project settings", func () -> unit!:
         w.set_units(values.units)
+        if not same_tolerances:
+            set_tolerances(w, values.tolerances)
         timeline_commands.set_range(w, values.start, values.end)
         timeline_commands.set_fps(w, values.fps))
+
+## Make `tolerances` the project's: every node cooks again under them (the
+## worker by its stamps, which hold them; the local cook by invalidation).
+func set_tolerances(w: Workspace, tolerances: CadTolerances) -> unit!:
+    w.network.tolerances = tolerances
+    for node in w.network.nodes:
+        w.network.invalidate(node.id)
+    w.rebuild()
+
+## The tolerance presets (Alias's construction presets): names, and the
+## positional and fit tolerances (mm), tangent (degrees) and curvature (%).
+func preset_names() -> list[str]: return ["Default", "Fine", "Class A", "Rough import"]
+func preset(name: str) -> CadTolerances:
+    if name == "Fine":
+        return CadTolerances(positional = 0.0001, fit = 0.00001, tangent = radians(0.1), curvature = 0.005)
+    if name == "Class A":
+        return CadTolerances(positional = 0.001, fit = 0.0001, tangent = radians(0.05), curvature = 0.001)
+    if name == "Rough import":
+        return CadTolerances(positional = 0.05, fit = 0.005, tangent = radians(0.5), curvature = 0.01)
+    return CadTolerances()
+
 
 ## The unit names a project chooses among, and how the dialog shows them.
 func unit_names() -> list[str]: return ["mm", "in"]
@@ -46,6 +76,10 @@ pub class ProjectSettings:
     let sections: ListView
     let pages: list[VStack]
     let units_menu: Menu
+    let positional_field: NumberField
+    let fit_field: NumberField
+    let tangent_field: NumberField
+    let curvature_field: NumberField
     let fps_field: NumberField
     let start_field: NumberField
     let end_field: NumberField
@@ -68,8 +102,32 @@ pub class ProjectSettings:
                 self.show_units()))
             unit_commands.append(command)
         self.units_menu = Menu("Millimeters ▾", unit_commands, font = font)
+        # Tolerances: every body is built under them (luce-cad's
+        # KERNEL-ROBUSTNESS.md); lengths in the document's unit.
+        self.positional_field = NumberField(0.01, 0.000001, 1.0, 0.001, 6, font = font, cells = 14.0)
+        self.fit_field = NumberField(0.001, 0.000000001, 1.0, 0.0001, 6, font = font, cells = 14.0)
+        self.tangent_field = NumberField(0.1, 0.001, 5.0, 0.01, 3, suffix = "°", font = font, cells = 10.0)
+        self.curvature_field = NumberField(0.5, 0.01, 10.0, 0.1, 2, suffix = " %", font = font, cells = 10.0)
+        self.connections.append(self.positional_field.on_change(func (value: float) -> unit!: self.draft.tolerances.positional = value))
+        self.connections.append(self.fit_field.on_change(func (value: float) -> unit!: self.draft.tolerances.fit = value))
+        self.connections.append(self.tangent_field.on_change(func (value: float) -> unit!: self.draft.tolerances.tangent = radians(value)))
+        self.connections.append(self.curvature_field.on_change(func (value: float) -> unit!: self.draft.tolerances.curvature = value * 0.01))
+        var preset_commands: list[Command] = []
+        for name in preset_names():
+            let chosen = name
+            let command = Command(name, id = f"project_tolerances_{name.lower().replace(" ", "_")}")
+            self.connections.append(command.on_trigger(func () -> unit!:
+                self.draft.tolerances = preset(chosen)
+                self.show_tolerances()))
+            preset_commands.append(command)
+        let presets = Menu("Preset ▾", preset_commands, font = font)
         let units = VStack([self.row("Length", self.units_menu),
-                            Text("Lengths show and are typed in this unit.", font = font, muted = true), Spacer()], spacing = 8.0)
+                            Text("Lengths show and are typed in this unit.", font = font, muted = true),
+                            Rule(structural = true),
+                            self.row("Positional", self.positional_field), self.row("Fit", self.fit_field),
+                            self.row("Tangent", self.tangent_field), self.row("Curvature", self.curvature_field), self.row("Preset", presets),
+                            Text("Every body is built under these tolerances.", font = font, muted = true),
+                            Text("Changing them rebuilds the model.", font = font, muted = true), Spacer()], spacing = 8.0)
         # Time: what the timeline plays and the nodes that follow it read.
         self.fps_field = NumberField(24.0, 1.0, 1000.0, 1.0, 2, suffix = " fps", font = font, cells = 10.0)
         self.start_field = NumberField(1.0, -100000.0, 100000.0, 1.0, 0, font = font, cells = 10.0)
@@ -80,11 +138,11 @@ pub class ProjectSettings:
         let time = VStack([self.row("Frame rate", self.fps_field), self.row("Start frame", self.start_field), self.row("End frame", self.end_field), Spacer()], spacing = 8.0)
         self.pages = [units, time]
         for page in self.pages:
-            page.layout().set_limits(Size(320.0, 160.0), Size(16384.0, 160.0))
+            page.layout().set_limits(Size(320.0, 320.0), Size(16384.0, 320.0))
             page.layout().set_visible(false)
         self.pages[0].layout().set_visible(true)
         self.sections = ListView([ListItem(text = "Units"), ListItem(text = "Time")], font = font)
-        self.sections.layout().set_limits(Size(130.0, 160.0), Size(130.0, 160.0))
+        self.sections.layout().set_limits(Size(130.0, 320.0), Size(130.0, 320.0))
         self.sections.select(0)
         self.connections.append(self.sections.on_activate(self.show_page))
         var content: list[Widget] = []
@@ -116,6 +174,7 @@ pub class ProjectSettings:
     pub func open(self) -> unit!:
         self.draft = current(self.workspace)
         self.show_units()
+        self.show_tolerances()
         self.fps_field.set_value(self.draft.fps)
         self.start_field.set_value(self.draft.start)
         self.end_field.set_value(self.draft.end)
@@ -123,11 +182,25 @@ pub class ProjectSettings:
 
     func show_units(self) -> unit!:
         self.units_menu.set_text(unit_label(self.draft.units) + " ▾")
+        let shown = ui.unit_named(self.draft.units) else ui.millimeters()
+        self.positional_field.set_units(shown)
+        self.fit_field.set_units(shown)
+
+    func show_tolerances(self) -> unit!:
+        let t = self.draft.tolerances
+        self.positional_field.set_value(t.positional)
+        self.fit_field.set_value(t.fit)
+        self.tangent_field.set_value(degrees(t.tangent))
+        self.curvature_field.set_value(t.curvature * 100.0)
 
     pub func cancel(self) -> unit!:
         self.dialog.hide()
 
     pub func apply(self) -> unit!:
+        # The fit tolerance stays within the positional one, down to a
+        # thousandth of it.
+        let p = self.draft.tolerances.positional
+        self.draft.tolerances.fit = math.min(p, math.max(p * 0.001, self.draft.tolerances.fit))
         apply_values(self.workspace, self.draft)
         self.dialog.hide()
         if let done = self.applied: done()

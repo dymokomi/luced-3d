@@ -33,6 +33,7 @@ from parameter_rows import Parameter, number, toggle, menu
 import build_ops
 import fill_ops
 from luce_ui import ui
+from luce_cad.model import CadTolerances
 
 pub let blend_verb = "Blend Surface"
 pub let fillet_verb = "Surface Fillet"
@@ -275,9 +276,9 @@ func face_middle(data: GeometryData, name: str) -> Vector3?!:
 
 ## Blend `verb` on `data` by values `v` and texts `t`; `name` names the
 ## sheet it makes.
-pub func build(verb: str, data: GeometryData, v: list[float], t: list[str], name: str) -> GeometryData!:
+pub func build(verb: str, data: GeometryData, v: list[float], t: list[str], name: str, tolerances: CadTolerances) -> GeometryData!:
     if verb == fill_verb:
-        return fill_ops.build(data, v, t, name)
+        return fill_ops.build(data, v, t, name, tolerances)
     let texts = [t[first_text], t[second_text], t[profiles_text] if t.length > profiles_text else ""]
     let first = build_ops.items(texts[first_text])
     let second = build_ops.items(texts[second_text])
@@ -298,26 +299,26 @@ pub func build(verb: str, data: GeometryData, v: list[float], t: list[str], name
         let e = blend_explicit_slot
         made = CadSurfaceBlend.blend(data.geometry, side1, side2, continuity = [int(v[side_slot]), int(v[side_slot + 1])], shape = [v[shape_slot], shape2],
                                      crown = v[crown_slot], flow = int(v[flow_slot]), range = ranges, profiles = profiles, name = name, interior = v[interior_slot] != 0.0,
-                                     explicit = v[e] != 0.0, degree_u = int(v[e + 1]), spans_u = int(v[e + 2]), degree_v = int(v[e + 3]), spans_v = int(v[e + 4]))
+                                     explicit = v[e] != 0.0, degree_u = int(v[e + 1]), spans_u = int(v[e + 2]), degree_v = int(v[e + 3]), spans_v = int(v[e + 4]), tolerances = tolerances)
         report = f"G{int(v[side_slot])} to G{int(v[side_slot + 1])}" + (f" through {build_ops.items(texts[profiles_text]).length} profiles" if profiles != "" else "")
     elif verb == fillet_verb:
         let sections = ["G0 chamfer", "G1 circular", "G2 curvature", "G3 curvature", "Bias", "Lead"]
         made = CadSurfaceBlend.fillet(data.geometry, face_names(first), face_names(second), v[size_slot], section = int(v[section_slot]), chordal = int(v[construction_slot]) == 1,
                                       flips = [v[flip_slot] != 0.0, v[flip_slot + 1] != 0.0], trim = int(v[trim_slot]), form = v[form_slot], name = name,
-                                      bias = v[bias_slot], knee = v[knee_slot], curvature = int(v[curvature_slot]), variable = law(v, size_slot, variable_slot))
+                                      bias = v[bias_slot], knee = v[knee_slot], curvature = int(v[curvature_slot]), variable = law(v, size_slot, variable_slot), tolerances = tolerances)
         report = f"{sections[int(v[section_slot])]} {"chord" if int(v[construction_slot]) == 1 else "radius"} {v[size_slot]}"
     elif verb == tube_verb:
         let along = build_ops.resolve_isoparms(data, first, false)
         made = CadSurfaceBlend.tube(data.geometry, along[0], v[radius_slot], tangent_offset = v[tangent_slot], normal_offset = v[normal_slot], flip = v[tube_flip_slot] != 0.0, name = name,
-                                    variable = law(v, radius_slot, tube_variable_slot), trim = int(v[tube_trim_slot]))
+                                    variable = law(v, radius_slot, tube_variable_slot), trim = int(v[tube_trim_slot]), tolerances = tolerances)
         report = f"radius {v[radius_slot]}"
     elif verb == bridge_verb:
         let center = build_ops.items(texts[profiles_text])
         made = CadSurfaceBlend.bridge(data.geometry, face_names(first), face_names(second), face_names(center), v[bridge_size_slot],
-                                      flips = [v[bridge_flip_slot] != 0.0, v[bridge_flip_slot + 1] != 0.0], trim = int(v[bridge_trim_slot]), name = name)
+                                      flips = [v[bridge_flip_slot] != 0.0, v[bridge_flip_slot + 1] != 0.0], trim = int(v[bridge_trim_slot]), name = name, tolerances = tolerances)
         report = f"bridge of {first.length + second.length + center.length} faces"
     elif verb == corner_verb:
-        return corner(data, v, first, name)
+        return corner(data, v, first, name, tolerances)
     let edit = made else error(ui.invalid, f"{verb} is not a blend")
     let result = GeometryData(geometry = edit.geometry())
     result.report = report
@@ -339,7 +340,7 @@ pub func build(verb: str, data: GeometryData, v: list[float], t: list[str], name
 ## of a picked face tried as Fill's one edge of a hole), filled by Fill
 ## at the continuity asked (G1 by default) on every side; Center adjust
 ## moves its middle along its normal (Alias's Ball Corner).
-func corner(data: GeometryData, v: list[float], picked: list[str], name: str) -> GeometryData!:
+func corner(data: GeometryData, v: list[float], picked: list[str], name: str, tolerances: CadTolerances) -> GeometryData!:
     let names = face_names(picked).split(";")
     var best = ""
     var best_count = 0
@@ -370,7 +371,7 @@ func corner(data: GeometryData, v: list[float], picked: list[str], name: str) ->
     values[fill_ops.check_slot] = v[corner_check_slot]
     values[fill_ops.conflicts_slot] = v[corner_conflicts_slot]
     values[fill_ops.labels_slot] = 0.0
-    var made = fill_ops.build(data, values, [best, ""], name)
+    var made = fill_ops.build(data, values, [best, ""], name, tolerances)
     let adjust = v[corner_center_slot] if corner_center_slot < v.length else 0.0
     if adjust != 0.0:
         # Center adjust: the fill made again through its middle moved along
@@ -386,7 +387,7 @@ func corner(data: GeometryData, v: list[float], picked: list[str], name: str) ->
                 reach += Vector3(float(parts[parts.length - 3]), float(parts[parts.length - 2]), float(parts[parts.length - 1])).subtract(at.point).length()
         reach = reach / float(loop_words.length)
         let moved = at.point.add(at.normal.multiply_scalar(adjust * reach))
-        made = fill_ops.build(data, values, [best, f"isoparm_at {moved.x} {moved.y} {moved.z}"], name)
+        made = fill_ops.build(data, values, [best, f"isoparm_at {moved.x} {moved.y} {moved.z}"], name, tolerances)
     made.report = ("Ball corner" if ball else "Corner blend") + f" of {loop_words.length} sides; " + made.report
     return made
 

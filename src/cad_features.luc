@@ -17,7 +17,7 @@
 ## Operation is the node's own (cad_nodes.operated): Auto by default.
 from luce_cad.cad_geometry import CadGeometry
 from luce_cad.modeling import CadModeling, ProfileAnchor
-from luce_cad.model import CadModel
+from luce_cad.model import CadModel, CadTolerances
 from luce_cad.sketch import CadSketch
 from luce_3d.graphics import Vector3
 from luce_geocore.geocore import GeometrySet
@@ -139,11 +139,11 @@ func target_body(target: GeometryData?) -> CadModel!:
 
 ## One side's solid from the profiles in `curves`, from `start` along the
 ## normal.
-func side_solid(curves: GeometrySet, side: Side, start: float, tag: str, profiles: str, target: GeometryData?) -> CadModel!:
+func side_solid(curves: GeometrySet, side: Side, start: float, tag: str, profiles: str, target: GeometryData?, tolerances: CadTolerances) -> CadModel!:
     if side.extent == 0:
         if math.abs(side.distance) < 1e-9:
             error(ui.invalid, "The distance is zero: drag the arrow or type a distance")
-        return CadModeling.extruded_sides(curves, side.distance, 0.0, tag, side.taper, 0.0, start, profiles)
+        return CadModeling.extruded_sides(curves, side.distance, 0.0, tag, side.taper, 0.0, start, profiles, tolerances)
     if side.extent == 1:
         if side.face.trim() == "":
             error(ui.invalid, "To object: pick the face to extrude to (the Object row's Pick object)")
@@ -174,25 +174,25 @@ func from_object(v: list[float], texts: list[str], curves: GeometrySet, tag: str
 ## The solid an Extrude with values `v` makes from the profiles in `curves`
 ## (`profiles` their keys; texts: profiles, then the faces it runs to),
 ## against `target`'s bodies.
-pub func extruded(v: list[float], texts: list[str], curves: GeometrySet, profiles: str, tag: str, target: GeometryData?) -> CadModel!:
+pub func extruded(v: list[float], texts: list[str], curves: GeometrySet, profiles: str, tag: str, target: GeometryData?, tolerances: CadTolerances) -> CadModel!:
     if int(v[start_slot]) == start_object:
         return from_object(v, texts, curves, tag, profiles, target)
     let start = v[start_offset_slot] if int(v[start_slot]) == 1 else 0.0
     let sides = sides_of(v, texts)
     if sides.length == 1:
-        return side_solid(curves, sides[0], start, tag, profiles, target)
+        return side_solid(curves, sides[0], start, tag, profiles, target, tolerances)
     let one = sides[0]
     let two = sides[1]
     if one.extent == 0 and two.extent == 0:
         if one.distance <= 0.0 or two.distance >= 0.0:
             error(ui.invalid, "Two sides take positive distances, one each way")
-        return CadModeling.extruded_sides(curves, one.distance, -two.distance, tag, one.taper, two.taper, start, profiles)
+        return CadModeling.extruded_sides(curves, one.distance, -two.distance, tag, one.taper, two.taper, start, profiles, tolerances)
     if one.extent == 2 and two.extent == 2 and int(v[direction_slot]) == 2:
         return CadModeling.extruded_through(curves, target_body(target), tag, 0, one.taper, profiles, start)
     # Sides of different extents: each its own solid, side two's faces
     # named apart, joined.
-    let first = side_solid(curves, one, start, tag, profiles, target)
-    let second = CadModeling.prefixed(side_solid(curves, two, start, tag, profiles, target), f"{tag}.2:")
+    let first = side_solid(curves, one, start, tag, profiles, target, tolerances)
+    let second = CadModeling.prefixed(side_solid(curves, two, start, tag, profiles, target, tolerances), f"{tag}.2:")
     return CadModeling.combined(first, second, 0)
 
 ## How far along the normal from the profiles' anchor the extrusion starts:
@@ -355,7 +355,7 @@ func profile_shape(data: GeometryData, text: str) -> (GeometrySet, str)!:
 
 ## The solid a Revolve with values `v` makes from the profiles in `data`,
 ## and the point halfway round it (for Auto) when there is a profile.
-pub func revolved(v: list[float], texts: list[str], data: GeometryData, tag: str, sketch: str, target: GeometryData?) -> (CadModel, Vector3)!:
+pub func revolved(v: list[float], texts: list[str], data: GeometryData, tag: str, sketch: str, target: GeometryData?, tolerances: CadTolerances) -> (CadModel, Vector3)!:
     let (shape, profiles) = profile_shape(data, texts[0])
     let axis = axis_of(v, texts, data, shape, sketch)
     let anchor = CadModeling.profile_anchor(shape, profiles)
@@ -372,7 +372,7 @@ pub func revolved(v: list[float], texts: list[str], data: GeometryData, tag: str
         return (made, center.add(radial.rotated_about(way, sense * radians(5.0))))
     let span = span_of(v)
     let whole = span[1] - span[0] >= 360.0 - 1e-9
-    var made = CadModeling.revolved_about(shape, axis.origin, way, tag, radians(360.0 if whole else span[1] - span[0]), profiles)
+    var made = CadModeling.revolved_about(shape, axis.origin, way, tag, radians(360.0 if whole else span[1] - span[0]), profiles, tolerances)
     if not whole and span[0] != 0.0:
         made = CadModeling.moved_body(made, Vector3(), axis.origin, way, radians(span[0]))
     let middle = radians((span[0] + span[1]) * 0.5)

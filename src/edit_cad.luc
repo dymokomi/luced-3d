@@ -49,6 +49,7 @@ import edit_cad_curves
 import edit_cad_align
 from luce_cad.cad_curves import CadCurves
 from luce_ui import ui
+from luce_cad.model import CadTolerances
 
 pub let kind_name = "Edit CAD"
 
@@ -162,8 +163,8 @@ func pick(data: GeometryData, level: int) -> Mesh?!:
 ## surface it works on too (edit_cad_nets.probe_line: the viewport draws
 ## the isoparm under the pointer from it, knot_place.luc), and after Trim
 ## its region markers (surface_ops: trim_regions.luc draws them).
-func run(step: EditStep, at: int, data: GeometryData, tag: str, reference: GeometryData?) -> GeometryData!:
-    var made = ran(step, f"{tag}s{at}", data)
+func run(step: EditStep, at: int, data: GeometryData, tag: str, reference: GeometryData?, tolerances: CadTolerances) -> GeometryData!:
+    var made = ran(step, f"{tag}s{at}", data, tolerances)
     # Aligned rows stay aligned: a CV drag on them runs their Align again;
     # the Aligns so far carry on to later steps.
     if step.verb == edit_cad_nets.move_verb or (step.group_type == 1 and step.verb in cv_verbs()):
@@ -185,9 +186,9 @@ func stated(data: GeometryData) -> GeometryData!:
     return data
 
 ## `name` names what the step makes (`#<node>s<n>`).
-func ran(step: EditStep, name: str, data: GeometryData) -> GeometryData!:
+func ran(step: EditStep, name: str, data: GeometryData, tolerances: CadTolerances) -> GeometryData!:
     if step.verb.starts_with("Create "):
-        return created(step, name, data)
+        return created(step, name, data, tolerances)
     if edit_cad_sketches.is_sketch_step(step.verb):
         return edit_cad_sketches.sketched(step, data)
     # CVs moved by the gizmo or a point verb go back to their surfaces and
@@ -198,7 +199,7 @@ func ran(step: EditStep, name: str, data: GeometryData) -> GeometryData!:
         return moved_cvs(step, data)
     # A CAD tool's step: its declaration's cook (cad_tools.luc).
     if let tool = tool_registry.cad_step(step.verb):
-        return tool.cook(step.invocation(), data, name)
+        return tool.cook(step.invocation(tolerances = tolerances), data, name)
     # The gizmo's CV moves in a frame of their own (Move CVs).
     if step.verb == edit_cad_nets.move_verb:
         cad_cook.needs_models(data)
@@ -237,28 +238,28 @@ func create(name: str) -> EditStep?!:
 
 ## `data` with the solid of step `name` added as a model of its own,
 ## named for the step and selected as what was created.
-func created(step: EditStep, tag: str, data: GeometryData) -> GeometryData!:
+func created(step: EditStep, tag: str, data: GeometryData, tolerances: CadTolerances) -> GeometryData!:
     let name = step.verb[7..]
     let v = step.numbers
     if v.length < 6:
         error(ui.invalid, f"{step.verb} needs six numbers")
     let index = CadGeometry.model_count(data.geometry)
-    let solid = CadModeling.tagged(solid_of(name, v), tag)
+    let solid = CadModeling.tagged(solid_of(name, v, tolerances), tag)
     let position = Vector3(v[3], v[4], v[5])
     let placed = solid if position.length() == 0.0 else solid.placed(Matrix4.compose(position, Vector3(), Vector3(1.0, 1.0, 1.0)))
     let result = GeometryData(geometry = CadEdits.with_model(data.geometry, placed))
     result.created = f"@cad_model={index}"
     return result
 
-func solid_of(name: str, v: list[float]) -> CadModel!:
+func solid_of(name: str, v: list[float], tolerances: CadTolerances) -> CadModel!:
     if name == "Box":
-        return CadSolids.box(v[0], v[1], v[2])
+        return CadSolids.box(v[0], v[1], v[2], tolerances = tolerances)
     if name == "Cylinder":
-        return CadSolids.cylinder(v[0], v[1])
+        return CadSolids.cylinder(v[0], v[1], tolerances = tolerances)
     if name == "Cone":
-        return CadSolids.cone(v[0], v[1], v[2])
+        return CadSolids.cone(v[0], v[1], v[2], tolerances = tolerances)
     if name == "Sphere":
-        return CadSolids.sphere(v[0])
+        return CadSolids.sphere(v[0], tolerances = tolerances)
     if name == "Torus":
-        return CadSolids.torus(v[0], v[1])
+        return CadSolids.torus(v[0], v[1], tolerances = tolerances)
     error(ui.invalid, f"Edit CAD cannot create {name}")
