@@ -1,0 +1,53 @@
+## Name lists of the node catalog, made once per process and kept here:
+## Luce has no module state (§15.3), and making them anew (every CAD tool's
+## entry) each time a Node was made took 80% of the worker's cook of a
+## parameter drag (each request makes its changed nodes again), and the
+## garbage woke the cycle collector. The first caller on any thread fills
+## a list; the catalog does not change while the program runs.
+import sync
+import strings
+from luce_geocore.core.growing import Growing
+
+var memo_lock: sync.Mutex
+## Each list's names, each after a newline and the last before one.
+var known_names: Growing[u8] = Growing[u8]()
+var cad_only_names: Growing[u8] = Growing[u8]()
+
+func list_of(list: i64) -> Growing[u8]*:
+    return &known_names if list == 0 else &cad_only_names
+
+pub struct KindMemo:
+    let reserved: u8 = 0
+
+    ## Whether list `list` (0 every known kind, 1 the CAD-only kinds) is
+    ## filled.
+    pub static func filled(list: i64) -> bool:
+        memo_lock.lock()
+        defer memo_lock.unlock()
+        return list_of(list).count > 0
+
+    ## Fill list `list` with `names`, one per line (a list already filled
+    ## keeps its names: they are the same).
+    pub static func fill(list: i64, names: str) -> !:
+        memo_lock.lock()
+        defer memo_lock.unlock()
+        let text = list_of(list)
+        if text.count > 0: return
+        try text.push((u8)'\n')
+        for byte in names.bytes: try text.push(byte)
+        try text.push((u8)'\n')
+
+    ## Whether `name` is one of list `list`'s names.
+    pub static func has(list: i64, name: str) -> bool:
+        if name.length == 0: return false
+        memo_lock.lock()
+        defer memo_lock.unlock()
+        let text = (str)list_of(list).view()
+        var start: usize = 0
+        while true:
+            let at = strings.find_from(text, name, start) else return false
+            let end = at + name.length
+            if at > 0 and text.bytes[at - 1] == (u8)'\n' and end < text.length and text.bytes[end] == (u8)'\n':
+                return true
+            start = at + 1
+        return false

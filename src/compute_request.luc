@@ -50,11 +50,13 @@ pub class RequestWriter:
             var holds = false
             if let kind = graph.kinds.of(node.kind):
                 holds = kind.holds
+            # An action the worker runs (held_base: edit_held.luc) goes with it.
+            let steps = not holds or node.held_base != 0
             if self.sent[node.id] != node.stamp or node_paths.holds_paths(node.kind):
-                schema.write_body(doc, path, node, carried, not holds)
+                schema.write_body(doc, path, node, carried, steps)
                 doc.set(path, "source", Value.integer(node.source_revision))
             sent[node.id] = node.stamp
-            if not holds:
+            if steps:
                 for edit in node.edits:
                     lists.insert(edit.group_key)
         doc.add("/scene/lists", "lists")
@@ -73,7 +75,9 @@ pub class RequestWriter:
             self.lists.insert(key)
         return (doc.encode(Encoding.text).bytes()).text()
 
-## Worker side: rebuild the mirror, reusing held bodies (and their recipes).
+## Worker side: rebuild the mirror. A node sent without a body is the one
+## the worker holds, kept as it is (only its header read again): a drag's
+## request makes only the nodes it changed.
 pub func read_request(message: str, previous: Network) -> Network!:
     let doc = Document.parse(message)
     let lists: map[int, str] = {}
@@ -88,27 +92,24 @@ pub func read_request(message: str, previous: Network) -> Network!:
     schema.read_scene(doc, graph)
     for index in 0..<doc.child_count("/scene/nodes"):
         let path = doc.child_at("/scene/nodes", index) else error(ui.invalid, "Missing request node")
+        let stamp = values.stamp(doc, path, "stamp")
+        if not schema.has_body(doc, path):
+            # Its body is the one the worker holds: the same node, taking the
+            # header (a rename, a move in the network, its wires).
+            let old = previous.find(values.integer(doc, path, "id", 1, 2147483646)) else error(ui.invalid, "Compute request lost a node body")
+            if old.kind != doc.type_at(path) or old.stamp != stamp:
+                error(ui.invalid, "Compute request lost a node body")
+            schema.apply_header(doc, path, old, true)
+            graph.nodes.append(old)
+            continue
         let node = schema.read_header(doc, path, true)
-        node.stamp = values.stamp(doc, path, "stamp")
+        node.stamp = stamp
         # A feature's memo outlives its stamp (a Fillet's radius dragged).
         if let old = previous.find(node.id):
             if old.kind == node.kind:
                 node.memo = old.memo
-        if schema.has_body(doc, path):
-            schema.read_body(doc, path, node, lists, graph.kinds)
-            node.source_revision = values.integer(doc, path, "source", 0, 2147483647)
-        else:
-            let old = previous.find(node.id) else error(ui.invalid, "Compute request lost a node body")
-            if old.kind != node.kind or old.stamp != node.stamp:
-                error(ui.invalid, "Compute request lost a node body")
-            node.enabled = old.enabled
-            node.values = old.values
-            node.texts = old.texts
-            node.edits = old.edits
-            node.guard = old.guard
-            node.frozen = old.frozen
-            node.time_dependent = old.time_dependent
-            node.source_revision = old.source_revision
+        schema.read_body(doc, path, node, lists, graph.kinds)
+        node.source_revision = values.integer(doc, path, "source", 0, 2147483647)
         graph.nodes.append(node)
     graph.compute_mode = values.integer(doc, "/scene", "mode", 0, 4)
     graph.show_normals = values.flag(doc, "/scene", "normals")
@@ -152,8 +153,9 @@ pub class Outcome:
 ## body's edges cast for the Sketch the Project tool works in, as of that
 ## node's stamp `shadows_stamp` (sketch_node.shadows_text). `section`: the
 ## cap of the sliced Sketch's body, as of its stamp `section_stamp`
-## (slice_view.luc).
-pub func write_report(notice: str, resync: bool, outcomes: list[Outcome], recipes: int = 0, shadows: str = "", shadows_stamp: int = 0, section: str = "", section_stamp: int = 0) -> str!:
+## (slice_view.luc). `results` and `result_bytes`: what the worker's result
+## store holds after the cook (tests read them).
+pub func write_report(notice: str, resync: bool, outcomes: list[Outcome], recipes: int = 0, shadows: str = "", shadows_stamp: int = 0, section: str = "", section_stamp: int = 0, results: int = 0, result_bytes: int = 0) -> str!:
     let doc = Document()
     doc.add("/report", "report")
     doc.set("/report", "shadows", Value.text(shadows))
@@ -163,6 +165,8 @@ pub func write_report(notice: str, resync: bool, outcomes: list[Outcome], recipe
     doc.set("/report", "notice", Value.text(notice))
     doc.set("/report", "resync", Value.boolean(resync))
     doc.set("/report", "recipes", Value.integer(recipes))
+    doc.set("/report", "results", Value.integer(results))
+    doc.set("/report", "result_bytes", Value.integer(result_bytes))
     for outcome in outcomes:
         let path = f"/report/n{outcome.id}"
         doc.add(path, "node")
@@ -185,6 +189,8 @@ pub class Report:
     pub let resync: bool
     pub let outcomes: list[Outcome]
     pub let recipes: int
+    pub var results: int = 0
+    pub var result_bytes: int = 0
     pub var shadows: str = ""
     pub var shadows_stamp: int = 0
     pub var section: str = ""
@@ -216,6 +222,8 @@ pub func read_report(text: str) -> Report!:
             outcome.curves.append(curve_names.text_at(at))
         outcomes.append(outcome)
     let report = Report(values.text(doc, "/report", "notice"), values.flag(doc, "/report", "resync"), outcomes, values.integer(doc, "/report", "recipes", 0, 2147483647))
+    report.results = values.integer(doc, "/report", "results", 0, 2147483647)
+    report.result_bytes = values.stamp(doc, "/report", "result_bytes")
     report.shadows = values.text(doc, "/report", "shadows")
     report.shadows_stamp = values.stamp(doc, "/report", "shadows_stamp")
     report.section = values.text(doc, "/report", "section")

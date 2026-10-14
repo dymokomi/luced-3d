@@ -466,9 +466,29 @@ thing that we've modeled — so inside this single node there is no stack that w
 Mesh, Edit CAD and Edit SDF take part by setting `EditKind.holds`):
 
 - **An Edit node holds its result.** Every action (a move, a tool, a primitive, a deletion)
-  replaces it at once, on the UI thread; the node's cook returns it with no work. The worker
-  replays nothing: it reads the held result by its content key from `HeldStore` (Base; Luce
-  objects never cross threads), and the request carries the key, not steps.
+  replaces it; the node's cook returns it with no work. The worker replays nothing: it reads
+  the held result by its content key from `HeldStore` (Base; Luce objects never cross threads),
+  and the request carries the key, not steps.
+- **Heavy actions run on the worker** (owner: modeling must be absolutely realtime; the UI never
+  blocks). With the compute worker, every Edit CAD action and every Edit Mesh action but a
+  gizmo's move and a sculpt stroke (which follow the pointer on the UI thread and cost only what
+  moved) run there (`EditKind.background`): the node names the result it will hold (`held_key`,
+  the base's key and the step's) and the base it runs on (`held_base`), keeps showing what it
+  held, and its node in the network shows the action's progress; the worker runs the step on the
+  base, keeps a drag's frames as its own (a CAD result never crosses as a file per frame) and
+  puts the released result in `HeldStore`, which the node takes when the report comes
+  (`edit_held.adopt`). A drag adjusting such an action sends each frame's step; requests
+  coalesce (at most one waits for the worker), so the worker cooks only the newest values and a
+  stale result is never shown. Undo is one step per action as before; a result the worker made
+  is found again by its key. A project saved while one runs runs it first. Measured
+  (`tests/editor/background_action_tests.luc`, headless): a Boolean of two 100k-face spheres
+  held the UI thread 124–149 ms; with the worker the command returns in ~6 ms and the UI's
+  longest turn while it runs is under 1 ms. Moving an Edit CAD box's top face held it 17 ms;
+  with the worker the command returns in 1 ms. In the real window (`tools/preview.py --scene
+  held_heavy --background`, two 1M-face spheres, Subtract): frames keep coming every 16.7 ms
+  while the worker runs the 0.6 s Boolean; the frame the result first shows takes ~80 ms (the
+  new 1M-face mesh's overlay and upload; its edges and shading normals are made on the worker
+  before it is published). Captures: `held_heavy_running`, `held_heavy`.
 - **Adjust last action** (owner answer 7, Blender's redo panel): the node keeps the result before
   its last action (`Held.base`) and that action as its one step (`Node.edits`), so the tool bar,
   a drag after the tool and Repeat's numbers run it again from the base. The next action bakes it:
@@ -529,7 +549,11 @@ pieces B. The result is one piece (A's path) and the output selection. Exact and
 Shewchuk-filtered orientation predicates with exact fallbacks, cut points kept as exact
 homogeneous coordinates named only by input ids, a constrained triangulation per cut triangle,
 and patches kept by their exact winding numbers (after Zhou et al. 2016 and Cherchi et al.
-2022; no code taken). Results are stored with f64 points; an operand that is not closed is
+2022; no code taken). Results are stored with f64 points (chained Booleans survive ~43 steps
+instead of 20), which a move shares rather than copies (luce-geocore: a moved point's f32
+position no longer rounds its f64 point, so it reads from f32): 1,000 faces of a 1M-face
+result drag in 1.6 ms a move with the worker, as a plain grid's do (3.2 ms when each move
+copied the f64 column); an operand that is not closed is
 refused, naming the pick, and a result that would not close is an error, never an open mesh.
 Two UV spheres of 100,352 faces each: Union 70 ms, Subtract 68 ms, Intersect 62 ms; of 999,698
 faces each: 479, 465 and 416 ms (luce-geocore docs/API.md). Inside one Edit Mesh: two boxes, one

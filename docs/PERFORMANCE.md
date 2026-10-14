@@ -32,12 +32,13 @@ interactive while they cook.
   cook reads (kind, bypass, parameters, texts, Edit recipe keys, file epoch and
   input stamps). Names, positions, display/output flags, visibility, selection
   and the Edit tool amount are not in it, so renames, visibility toggles,
-  selection and undo/redo to an earlier state never recook: they hit the
-  worker's stamp-keyed result store (LRU, a quarter of physical memory, pinning
-  the displayed and selected stamps and their inputs).
+  and selection never recook: they hit the worker's result store, which keeps
+  one current result per node (a drag overwrites the same slots: 6,000 moves
+  leave it holding what it held). Undo recooks what it changes back.
 - **Delta requests.** The UI sends node bodies only when the worker's copy is
-  stale, and each Edit element list once by content key. Only the newest queued
-  request is cooked; a still-wanted cook is never cancelled.
+  stale, and each Edit element list once by content key. At most one request
+  waits for the worker; newer states coalesce into the next one sent. A
+  still-wanted cook is never cancelled.
 - **Incremental Edit.** An Edit node applies only the recipes after its longest
   stored prefix; a gizmo drag previews by applying one recipe per pointer move.
   Recipes guard their input with the mesh's 64-bit topology hash instead of

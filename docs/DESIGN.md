@@ -110,15 +110,23 @@ The UI never shares Luce objects with it.
 - **Requests** (`compute_request.luc`). The shared graph schema (`project_graph`,
   also used by project files) is framed as a Prism document: every node's header
   and stamp, but a body only when the worker's copy is stale, and each Edit element
-  list once by content key. Requests queue in order as deltas; only the newest is
-  cooked. A worker that loses its mirror asks for one full resend.
-- **Result store** (`result_store.luc`). Cooked results, and failures of a node's
-  own recipe, are keyed by stamp with an LRU budget of a quarter of physical
-  memory. The displayed and selected stamps, their inputs and the Edit prefix
-  before their last recipe are pinned. Renames, visibility toggles, the tool
-  amount and undo/redo to an earlier state are store hits. An Edit node applies
-  only the recipes after its longest stored prefix; a gizmo drag previews by
-  applying its one recipe, one request per pointer move. Parsed files (by path,
+  list once by content key. Requests are deltas against the last one sent; at
+  most one waits for the worker (a newer state is kept and sent, encoded as it
+  then is, once the worker takes the waiting one), so the worker cooks only the
+  newest state however fast moves come. The worker keeps the nodes a request
+  sends without a body as they are. A worker that loses its mirror asks for one
+  full resend.
+- **Result store** (`result_store.luc`). One current result per node, as
+  Houdini keeps each node's cook: the node's slot holds the result (or its own
+  recipe's failure) for the stamp it was cooked for, and a new stamp's cook
+  overwrites it. A drag rewrites the same slots in place and adds nothing;
+  undo cooks again what changed back. Renames, visibility toggles and the tool
+  amount keep the stamp and hit. Apart from the slots: each shown node's last
+  good result (kept while a drag makes it fail) and a recipe Edit node's
+  checkpoints for its current recipe; slots of nodes gone go after each cook.
+  A recipe Edit node applies only the steps after its longest stored
+  checkpoint; a gizmo drag previews by applying its one recipe, one request per
+  pointer move. Parsed files (by path,
   size, mtime, content hash and tolerance) and tessellations (by parsed model and
   options) are cached for the process in `node_evaluation.SourceCache`.
 - **Cancellation.** A newer request stops publishing at the next checkpoint and
@@ -155,7 +163,8 @@ records and selection arrays are copied; immutable meshes and operations are
 shared. `Workspace.perform` is the mutation boundary; rejected operations restore
 the before snapshot. New commands after undo discard the redo branch. Parameter
 scrubs and gizmo/node drags bracket one transaction; Escape or lost capture
-cancels. Undo never recooks when the target state is in the result store.
+cancels. Undo cooks again the nodes whose stamps it changes back (the worker
+keeps one result per node); Edit nodes holding their result read it by key.
 
 ## Gizmos
 

@@ -1,8 +1,9 @@
-## Worker-local DAG mirror, stamp-keyed result store and publishing. No UI
-## objects are created here. Cooking resolves each node by stamp: a stored
-## result is reused, and an Edit node applies only the recipes after its
-## longest stored prefix.
-from compute_bridge import ComputeChannel, ComputeHandler, memory_budget
+## Worker-local DAG mirror, result store (one current result per node:
+## result_store.luc) and publishing. No UI objects are created here. Cooking
+## resolves each node by stamp: its stored result is reused while the stamp
+## stands, and a recipe Edit node applies only the steps after its longest
+## stored checkpoint.
+from compute_bridge import ComputeChannel, ComputeHandler
 import compute_bridge
 from compute_request import read_request, write_report, Outcome
 from network import Network, warned
@@ -21,10 +22,9 @@ from luce_3d.graphics import Matrix4, FogVolume, GaussianSplats
 import node_catalog
 import script_cook
 import import_node
-import node_paths
 from luce_ui import ui
 from edit_kinds import is_edit, context_kind
-from edit_types import run_step
+from edit_types import run_step, EditKind
 from shader_nodes import is_shader
 from luce_cad.cad_edits import CadEdits
 from render_geometry import render_geometry
@@ -33,6 +33,8 @@ import edit_cad_sketches
 import slice_view
 from slice_view import Slicer
 from held_store import HeldStore
+import edit_held
+from held import meta_of
 
 class Computation:
     let channel: ComputeChannel
@@ -43,9 +45,6 @@ class Computation:
     let cooks: map[int, int]
     ## Failures met while cooking this request, with node names.
     let failures: map[int, str]
-    ## The stamp of each shown node's last good cook: while a drag makes it
-    ## fail, the viewport keeps that (Fusion's last good preview).
-    let last_good: map[int, int]
     var preview_warning: str = ""
     ## What showing each node's CAD left out (faces its tessellation could
     ## not mesh, named): on the node, beside its own warning.
@@ -59,17 +58,22 @@ class Computation:
     var keys: list[int]
     ## Slice's last cut, kept while the body and plane stay.
     let slicer: Slicer
+    ## Results of Edit actions run here (held_action), by key, while a node
+    ## names them: a drag's frames stay here (a result holding CAD models
+    ## would cross to the UI as a file); the last, once let go, goes to
+    ## HeldStore for the node to take.
+    let made: map[int, GeometryData]
 
     pub func init(self, channel: ComputeChannel) -> unit!:
         self.slicer = Slicer()
+        self.made = {}
         self.channel = channel
         self.graph = Network(false)
-        self.store = ResultStore(memory_budget())
+        self.store = ResultStore()
         self.sources = SourceCache()
         self.cooks = {}
         self.failures = {}
         self.display_warnings = {}
-        self.last_good = {}
         self.meshes = []
         self.keys = []
 
@@ -116,7 +120,7 @@ class Computation:
                     if shown != "":
                         notice = f"{failure.message} (the viewport {shown})"
                 continue
-            self.last_good[item.node.id] = item.node.stamp
+            self.store.remember_good(item.node.id)
             self.channel.progress(item.node.id, 0.95, "Preparing viewport")
             self.publish(item.node, self.slicer.shown(graph, item.node, data), item.matrix, slice_view.salt(graph, item.node))
         if let node = graph.find(graph.selected):
@@ -139,8 +143,16 @@ class Computation:
         if notice == "":
             notice = self.preview_warning
         let (shadows, shadows_stamp) = self.shadows()
-        self.store.trim(self.pinned())
-        self.channel.report(write_report(notice, false, self.outcomes(), self.recipes, shadows, shadows_stamp, self.slicer.section, self.slicer.section_stamp))
+        let live = self.node_ids()
+        self.store.prune(live, self.wanted_checkpoints())
+        self.prune_made()
+        # Cook counts of nodes gone go too.
+        let gone: list[int] = []
+        for id in self.cooks.keys():
+            if not (id in live): gone.append(id)
+        for id in gone:
+            _ = self.cooks.remove(id)
+        self.channel.report(write_report(notice, false, self.outcomes(), self.recipes, shadows, shadows_stamp, self.slicer.section, self.slicer.section_stamp, self.store.count(), self.store.bytes()))
 
     ## The Project tool's cast: the projecting Sketch's input body's edges
     ## on its plane, and that Sketch's stamp; none when nothing projects or
@@ -168,7 +180,7 @@ class Computation:
     func evaluate(self, node: Node, depth: int = 0) -> GeometryData!:
         if depth > 64:
             error(ui.invalid, "Cycle detected during evaluation")
-        if let entry = self.store.get(node.stamp):
+        if let entry = self.store.get(node.id, node.stamp):
             if entry.failure != "":
                 error(ui.invalid, self.failed(node, entry.failure))
             return entry.data else GeometryData()
@@ -229,6 +241,11 @@ class Computation:
                     second = self.upstream(node, graph.require(node.inputs[1]), depth)
                 elif node_catalog.requires_second(node.kind):
                     return self.own(node, ui.invalid, "Connect the second geometry input")
+        # A Cache or Export writes its file once the gesture ends: its input
+        # passes through while it lasts, not kept as its result, so the
+        # release cooks it again and writes what was let go.
+        if self.graph.gesture and node.enabled and node.frozen == "" and (node.kind == "Export" or (node.kind == "Cache" and not reads_file(node.kind, node.enabled, node.values))):
+            return input
         self.channel.progress(node.id, 0.0, "Computing")
         self.cooks[node.id] = (self.cooks[node.id] else 0) + 1
         var result = GeometryData()
@@ -247,7 +264,7 @@ class Computation:
                 result = warned(result, graph.output_warning(node.id))
         result = node.shown(result) catch failure:
             return self.own(node, failure.code, failure.message)
-        _ = self.store.put(node.stamp, result)
+        _ = self.store.put(node.id, node.stamp, result)
         self.channel.progress(node.id, 1.0, "Complete")
         return result
 
@@ -267,19 +284,20 @@ class Computation:
         if kind.holds:
             if node.held_failure != "":
                 error(ui.invalid, node.held_failure)
+            # The last action runs here (edit_held.luc: a heavy one), on the
+            # base the UI holds; its result goes where the UI takes it.
+            if node.held_base != 0 and not HeldStore.holds(node.held_key):
+                return self.held_action(node, kind, tag, reference)
             if node.held_key != 0:
-                let kept = GeometryData(geometry = HeldStore.get(node.held_key))
-                kept.warning = node.held_note
-                return kept
+                return self.held_data(node.held_key)
             return kind.start(input, tag)
         var result = kind.start(input, tag)
         var start = 0
         var count = node.edits.length - 1
         while count > 0 and start == 0:
-            if let entry = self.store.get(prefix_stamp(node, base, count)):
-                if let data = entry.data:
-                    result = data
-                    start = count
+            if let data = self.store.checkpoint(node.id, prefix_stamp(node, base, count)):
+                result = data
+                start = count
             count -= 1
         for at in start..<node.edits.length:
             let (next, built) = run_step(kind, node.edits[at], at, result, tag, self.graph.tolerances, self.graph.gesture and at == node.edits.length - 1, reference)
@@ -289,8 +307,51 @@ class Computation:
             if not built:
                 break
             if at + 1 < node.edits.length and checkpoint(at + 1, node.edits.length):
-                _ = self.store.put(prefix_stamp(node, base, at + 1), result)
+                self.store.put_checkpoint(node.id, prefix_stamp(node, base, at + 1), result)
         return result
+
+    ## A holding Edit node's last action run on its base (`held_base`), the
+    ## result kept in HeldStore under the key the node names (`held_key`).
+    ## While a drag sets its values, a failure fails the node (the viewport
+    ## keeps the last good result); else the base passes with a warning.
+    func held_action(self, node: Node, kind: EditKind, tag: str, reference: GeometryData?) -> GeometryData!:
+        if node.edits.length == 0:
+            error(ui.invalid, f"{node.name}'s action is missing")
+        var made = GeometryData()
+        if let ran = self.made[node.held_key]:
+            made = ran
+        else:
+            let step = node.edits[node.edits.length - 1]
+            self.channel.progress(node.id, 0.05, step.verb)
+            let base = self.held_data(node.held_base)
+            let (result, _) = run_step(kind, step, node.held_actions, base, tag, self.graph.tolerances, self.graph.gesture, reference)
+            self.recipes += 1
+            self.channel.check()
+            self.made[node.held_key] = result
+            made = result
+        if not self.graph.gesture:
+            HeldStore.put(node.held_key, made.geometry, meta_of(made))
+        return made
+
+    ## The held result under `key`: one made here, else HeldStore's.
+    func held_data(self, key: int) -> GeometryData!:
+        if let made = self.made[key]:
+            return made
+        return edit_held.stored(key)
+
+    ## Let go of results made here that no node names.
+    func prune_made(self) -> unit:
+        if self.made.length == 0:
+            return
+        let named: set[int] = {}
+        for node in self.graph.nodes:
+            named.insert(node.held_key)
+            named.insert(node.held_base)
+        let gone: list[int] = []
+        for key in self.made.keys():
+            if not (key in named): gone.append(key)
+        for key in gone:
+            _ = self.made.remove(key)
 
     func upstream(self, node: Node, input: Node, depth: int) -> GeometryData!:
         let data = self.evaluate(input, depth + 1) catch failure:
@@ -303,7 +364,7 @@ class Computation:
     func own(self, node: Node, code: ErrorCode, message: str) -> GeometryData!:
         if message == "Computation superseded":
             error(code, message)
-        _ = self.store.fail(node.stamp, message)
+        _ = self.store.fail(node.id, node.stamp, message)
         error(code, self.failed(node, message))
 
     func failed(self, node: Node, message: str) -> str:
@@ -311,40 +372,28 @@ class Computation:
         self.failures[node.id] = text
         return text
 
-    ## Displayed and selected stamps and everything they read stay resident.
-    func pinned(self) -> set[int]!:
+    ## The ids of the graph's nodes (their slots stay in the store).
+    func node_ids(self) -> set[int]:
         let result: set[int] = {}
-        let pending: list[int] = [self.graph.display, self.graph.selected]
-        for node in self.graph.outputs(-1):
-            pending.append(node.id)
-        for item in view_items(self.graph):
-            pending.append(item.node.id)
-        while pending.length > 0:
-            let node = self.graph.find(pending.pop()) else continue
-            if node.stamp in result:
+        for node in self.graph.nodes:
+            result.insert(node.id)
+        return result
+
+    ## Each recipe Edit node's checkpoints its current recipe uses.
+    func wanted_checkpoints(self) -> map[int, set[int]]!:
+        let result: map[int, set[int]] = {}
+        for node in self.graph.nodes:
+            if not is_edit(node.kind) or node.edits.length == 0 or holds(self.graph, node):
                 continue
-            result.insert(node.stamp)
-            if is_edit(node.kind) and node.edits.length > 0 and not holds(self.graph, node):
-                if let input = self.graph.find(node.inputs[0]):
-                    for count in 1..<node.edits.length:
-                        if checkpoint(count, node.edits.length):
-                            result.insert(prefix_stamp(node, input.stamp, count))
-            for input in node.inputs:
-                pending.append(input)
-            if node.kind == "Input":
-                pending.append(self.graph.context_input(node))
-            if node_catalog.collects_children(node.kind):
-                for child in self.graph.outputs(node.id):
-                    pending.append(child.id)
-            if node.kind == "Render":
-                for child in self.graph.outputs(-1):
-                    pending.append(child.id)
-            for source in node_paths.dependencies(self.graph.nodes, node):
-                pending.append(source.id)
-        # Each shown node's last good cook, kept for a drag that fails.
-        for item in view_items(self.graph):
-            if let stamp = self.last_good[item.node.id]:
-                result.insert(stamp)
+            var base = 0
+            if let upstream = self.graph.find(node.inputs[0]):
+                base = upstream.stamp
+            base = edit_base(self.graph, base)
+            let stamps: set[int] = {}
+            for count in 1..<node.edits.length:
+                if checkpoint(count, node.edits.length):
+                    stamps.insert(prefix_stamp(node, base, count))
+            result[node.id] = stamps
         return result
 
     func outcomes(self) -> list[Outcome]:
@@ -360,7 +409,7 @@ class Computation:
             var automatic = ""
             var handles = ""
             var curves: list[str] = []
-            if let entry = self.store.peek(node.stamp):
+            if let entry = self.store.peek(node.id, node.stamp):
                 cooked = node.stamp
                 summary = entry.summary
                 paths = entry.paths
@@ -405,7 +454,6 @@ class Computation:
             self.channel.end()
             error(failure.code, failure.message)
         self.channel.end()
-        self.store.refresh(node.stamp)
         # A placed copy (the rest of the scene around a context) keys by its
         # placement too.
         let placement = salt if salt != 0 else (0 if matrix.is_identity() else matrix_key(matrix))
@@ -431,11 +479,9 @@ class Computation:
     ## last good result", "shows its input"), "" nothing.
     func publish_fallback(self, node: Node, matrix: Matrix4) -> str!:
         if self.graph.gesture:
-            if let stamp = self.last_good[node.id]:
-                if let entry = self.store.peek(stamp):
-                    if let data = entry.data:
-                        self.publish(node, data, matrix)
-                        return "keeps its last good result"
+            if let data = self.store.good(node.id):
+                self.publish(node, data, matrix)
+                return "keeps its last good result"
         for id in self.graph.upstream_chain(node.id):
             let upstream = self.graph.find(id) else return ""
             let data = self.evaluate(upstream) catch failure:

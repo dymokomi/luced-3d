@@ -47,7 +47,7 @@ CREATE_SCENES = ["create_gallery", "create_box", "create_surface", "pen_strip", 
 # The shape, topology and normals tools in Edit Mesh (tools/preview_shape.luc).
 SHAPE_SCENES = ["shape_circularize", "shape_hole", "shape_straighten", "shape_space", "shape_planar", "normals_recalculated", "normals_hard", "normals_angle", "normals_seams"]
 # Edit Mesh holding its result (tools/preview_held.luc).
-HELD_SCENES = ["held_boxes", "held_boolean", "held_subtract", "held_cad", "held_sdf", "held_drag"]
+HELD_SCENES = ["held_boxes", "held_boolean", "held_subtract", "held_cad", "held_sdf", "held_drag", "held_heavy", "held_heavy_running"]
 
 # Stage 8's deformers, sculpt and Mesh Check (tools/preview_deform.luc).
 DEFORM_SCENES = ["deform_bend", "deform_twist", "deform_lattice", "sculpt_draw", "sculpt_drag", "mesh_check", "hard_marks"]

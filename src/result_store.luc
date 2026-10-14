@@ -1,7 +1,24 @@
-## The worker's cooked results, keyed by content stamp. Stamps name recipes, so
-## a rename, a visibility toggle or an undo lands on an existing entry instead
-## of a recook. Least-recently used entries go once the byte budget is
-## exceeded, except the pinned ones the current display and selection need.
+## The worker's cooked results: one current result per node, as Houdini
+## keeps each node's cook, held in the node's slot under the stamp it was
+## cooked for (stamps name recipes: a rename or a visibility toggle keeps
+## the stamp, and the result stands). A new stamp's cook overwrites the
+## slot, so a drag, whose every move gives the dragged node and those below
+## it new stamps, rewrites the same slots in place and adds nothing; undo
+## cooks again what changed back.
+##
+## Beside the current results, two bounded structures of their own:
+## - each shown node's last good result (one per node), which the viewport
+##   keeps while a drag makes the node fail (Fusion's last good preview);
+## - a recipe Edit node's checkpoints (Edit GSplats: the results after
+##   some of its steps, compute_worker.checkpoint), so its next step or a
+##   drag of its last starts from a stored result; only the current
+##   recipe's are kept.
+## Slots of nodes gone from the graph go after every cook (`prune`).
+##
+## (It once kept every stamp's result in a map bounded only by a quarter of
+## memory: each move of a drag added an entry for every node it changed,
+## and every cycle collection on the worker traced them all, so each move
+## grew slower than the last.)
 from geometry_data import GeometryData
 
 pub class Entry:
@@ -16,86 +33,146 @@ pub class Entry:
     pub var automatic: str = ""
     pub var handles: str = ""
     pub var curves: list[str] = []
-    pub var size: int
-    pub var used: int = 0
 
-    pub func init(self, data: GeometryData?, failure: str, summary: str, paths: list[str], size: int):
+    pub func init(self, data: GeometryData?, failure: str, summary: str, paths: list[str]):
         self.data = data
         self.failure = failure
         self.summary = summary
         self.paths = paths
-        self.size = size
+
+## A node's slot: its current result and the stamp it is for, its last good
+## result (shown nodes), and a recipe Edit node's checkpoints by stamp.
+class Slot:
+    pub var stamp: int = 0
+    pub var entry: Entry? = none
+    pub var good: Entry? = none
+    pub var good_stamp: int = 0
+    pub let checkpoints: map[int, Entry]
+
+    pub func init(self):
+        self.checkpoints = {}
 
 pub class ResultStore:
-    let entries: map[int, Entry]
-    pub let budget: int
-    pub var total: int = 0
-    var clock: int = 0
+    let slots: map[int, Slot]
     pub var hits: int = 0
     pub var cooks: int = 0
 
-    pub func init(self, budget: int):
-        self.entries = {}
-        self.budget = budget
+    pub func init(self):
+        self.slots = {}
 
+    ## How many results are kept: current ones, last good ones that are not
+    ## also current, and checkpoints.
     pub func count(self) -> int:
-        return self.entries.length
+        var total = 0
+        for id in self.slots.keys():
+            let slot = self.slots[id] else continue
+            if slot.entry != none: total += 1
+            if slot.good != none and slot.good_stamp != slot.stamp: total += 1
+            total += slot.checkpoints.length
+        return total
 
-    pub func get(self, stamp: int) -> Entry?:
-        let entry = self.entries[stamp] else return none
-        self.clock += 1
-        entry.used = self.clock
+    ## The bytes the kept results take (a result kept twice, current and
+    ## last good, counted once).
+    pub func bytes(self) -> int!:
+        var total = 0
+        for id in self.slots.keys():
+            let slot = self.slots[id] else continue
+            if let entry = slot.entry:
+                if let data = entry.data: total += data.footprint()
+            if slot.good_stamp != slot.stamp:
+                if let entry = slot.good:
+                    if let data = entry.data: total += data.footprint()
+            for stamp in slot.checkpoints.keys():
+                if let entry = slot.checkpoints[stamp]:
+                    if let data = entry.data: total += data.footprint()
+        return total
+
+    ## Node `node`'s result for `stamp`, if it is the current one.
+    pub func get(self, node: int, stamp: int) -> Entry?:
+        let entry = self.peek(node, stamp) else return none
         self.hits += 1
         return entry
 
-    ## Look without counting a hit or refreshing recency (reports, probes).
-    pub func peek(self, stamp: int) -> Entry?:
-        return self.entries[stamp]
+    ## The same without counting a hit (reports, probes).
+    pub func peek(self, node: int, stamp: int) -> Entry?:
+        let slot = self.slots[node] else return none
+        if slot.stamp != stamp:
+            return none
+        return slot.entry
 
-    pub func put(self, stamp: int, data: GeometryData) -> Entry!:
-        let entry = Entry(data, "", data.description(), data.paths(), data.footprint())
+    ## `data` as node `node`'s current result, cooked for `stamp`.
+    pub func put(self, node: int, stamp: int, data: GeometryData) -> Entry!:
+        let entry = Entry(data, "", data.description(), data.paths())
         entry.warning = data.warning
         entry.console = data.console
         entry.sketch_state = data.sketch_state
         entry.automatic = data.automatic
         entry.handles = data.handles
         entry.curves = data.curve_paths()
-        return self.insert(stamp, entry)
-
-    pub func fail(self, stamp: int, message: str) -> Entry!:
-        return self.insert(stamp, Entry(none, message, "", [], 256))
-
-    ## Re-measure after lazily built data (a CAD preview) grew an entry.
-    pub func refresh(self, stamp: int) -> unit!:
-        let entry = self.entries[stamp] else return
-        let data = entry.data else return
-        self.total -= entry.size
-        entry.size = data.footprint()
-        self.total += entry.size
-
-    func insert(self, stamp: int, entry: Entry) -> Entry!:
-        if let old = self.entries.remove(stamp):
-            self.total -= old.size
-        self.clock += 1
-        entry.used = self.clock
-        self.entries[stamp] = entry
-        self.total += entry.size
-        self.cooks += 1
+        self.place(node, stamp, entry)
         return entry
 
-    ## Evict least-recently used, unpinned entries until within budget.
-    pub func trim(self, pinned: set[int]) -> unit:
-        while self.total > self.budget:
-            var victim = 0
-            var oldest = -1
-            for stamp in self.entries.keys():
-                if stamp in pinned:
-                    continue
-                let entry = self.entries[stamp] else continue
-                if oldest < 0 or entry.used < oldest:
-                    oldest = entry.used
-                    victim = stamp
-            if oldest < 0:
-                return
-            if let removed = self.entries.remove(victim):
-                self.total -= removed.size
+    ## Node `node`'s own recipe failed for `stamp`.
+    pub func fail(self, node: int, stamp: int, message: str) -> Entry!:
+        let entry = Entry(none, message, "", [])
+        self.place(node, stamp, entry)
+        return entry
+
+    func place(self, node: int, stamp: int, entry: Entry):
+        let slot = self.slot(node)
+        slot.stamp = stamp
+        slot.entry = entry
+        self.cooks += 1
+
+    func slot(self, node: int) -> Slot:
+        if let found = self.slots[node]:
+            return found
+        let made = Slot()
+        self.slots[node] = made
+        return made
+
+    ## Node `node`'s current result is good and shown: kept as its last good
+    ## one.
+    pub func remember_good(self, node: int) -> unit:
+        let slot = self.slots[node] else return
+        let entry = slot.entry else return
+        if entry.data == none:
+            return
+        slot.good = entry
+        slot.good_stamp = slot.stamp
+
+    ## Node `node`'s last good result (see remember_good).
+    pub func good(self, node: int) -> GeometryData?:
+        let slot = self.slots[node] else return none
+        let entry = slot.good else return none
+        return entry.data
+
+    ## Recipe Edit node `node`'s checkpoint `stamp` (a prefix of its steps).
+    pub func checkpoint(self, node: int, stamp: int) -> GeometryData?:
+        let slot = self.slots[node] else return none
+        let entry = slot.checkpoints[stamp] else return none
+        self.hits += 1
+        return entry.data
+
+    pub func put_checkpoint(self, node: int, stamp: int, data: GeometryData) -> unit:
+        self.slot(node).checkpoints[stamp] = Entry(data, "", "", [])
+
+    ## Keep only the slots of `nodes` (the graph's), and of each recipe Edit
+    ## node only the checkpoints `wanted` names for it.
+    pub func prune(self, nodes: set[int], wanted: map[int, set[int]]) -> unit:
+        let gone: list[int] = []
+        for id in self.slots.keys():
+            if not (id in nodes):
+                gone.append(id)
+                continue
+            let slot = self.slots[id] else continue
+            if slot.checkpoints.length == 0:
+                continue
+            let keep = wanted[id] else {}
+            let stale: list[int] = []
+            for stamp in slot.checkpoints.keys():
+                if not (stamp in keep): stale.append(stamp)
+            for stamp in stale:
+                _ = slot.checkpoints.remove(stamp)
+        for id in gone:
+            _ = self.slots.remove(id)

@@ -7,6 +7,8 @@ import time
 import modeling_commands
 import node_commands
 import selection_commands
+from result_store import ResultStore
+from geometry_data import GeometryData
 
 func settle(workspace: Workspace) -> unit!:
     let session = workspace.compute else trap("compute")
@@ -97,3 +99,81 @@ pub func compute_tests() -> unit!:
     assert(shown.failure == "" and shown.warning.contains("looser than the project's"), shown.warning)
     (workspace.compute else trap("compute")).close()
     print("PASS background DAG computation, copied snapshots, latest-wins requests, undo and CAD preview/tessellation; a STEP file looser than the project's tolerance named on the node")
+
+## The worker's result store keeps one current result per node
+## (result_store.luc): a new stamp's cook overwrites the node's slot, a
+## shown node's last good result and a recipe Edit node's current
+## checkpoints are kept apart, and slots of nodes gone are let go. A
+## 6,000-move drag of a Transform at the end of a 60-node chain adds no
+## result (the store holds as many, taking as many bytes, after it as
+## before), never cooks the nodes above it again, keeps each move as fast
+## as the first, and undoes in one step.
+pub func result_store_bound() -> unit!:
+    let store = ResultStore()
+    for stamp in 1..<301:
+        _ = store.put(7, stamp, GeometryData())
+    assert(store.count() == 1 and store.peek(7, 300) != none and store.peek(7, 299) == none)
+    store.remember_good(7)
+    _ = store.fail(7, 301, "failed")
+    assert(store.count() == 2 and store.good(7) != none)
+    store.put_checkpoint(8, 11, GeometryData())
+    store.put_checkpoint(8, 12, GeometryData())
+    let wanted: map[int, set[int]] = {}
+    wanted[8] = {12}
+    store.prune({7, 8}, wanted)
+    assert(store.count() == 3 and store.checkpoint(8, 11) == none and store.checkpoint(8, 12) != none)
+    store.prune({8}, wanted)
+    assert(store.count() == 1 and store.peek(7, 301) == none)
+
+    let w = Workspace()
+    w.enable_compute()
+    settle(w)
+    var chain: list[int] = []
+    for at in 0..<60:
+        node_commands.add_node(w, "Transform", 0.0, 100.0 + float(at) * 40.0)
+        let node = w.selected() else trap("transform")
+        node.values[1] = 0.01
+        w.network.invalidate(node.id)
+        chain.append(node.id)
+    w.rebuild()
+    settle(w)
+    let shifted = (w.geometry else trap("chain")).bounds().maximum.x
+    assert(shifted > 1.59 and shifted < 1.61, f"{shifted} {w.notice}")
+    let session = w.compute else trap("compute")
+    let results = session.results
+    let held_bytes = session.result_bytes
+    assert(results >= 61, f"{results} results")
+    let cooks = w.network.require(chain[0]).evaluations
+    let above = w.network.require(chain[58]).evaluations
+    let last = w.network.require(chain[59])
+    let values = last.values.copy()
+    w.begin("Move gizmo")
+    var first = 0.0
+    var later = 0.0
+    for move in 0..<6000:
+        let started = time.now()
+        let moved = values.copy()
+        moved[1] = 0.01 + 0.0001 * float(move + 1)
+        w.preview_parameters(moved)
+        settle(w)
+        let spent = float(time.now() - started) / 1000000.0
+        if move < 500: first += spent / 500.0
+        if move >= 5500: later += spent / 500.0
+        assert(session.results == results, f"move {move}: {session.results} results, {results} before")
+    w.commit()
+    settle(w)
+    near_x(w, shifted + 0.6)
+    assert(session.results == results and session.result_bytes == held_bytes, f"{session.results} results of {session.result_bytes} bytes after, {results} of {held_bytes} before")
+    assert(w.network.require(chain[0]).evaluations == cooks and w.network.require(chain[58]).evaluations == above)
+    print(f"PASS A 6,000-move drag through the worker: {results} results held before and after, {first:.3f} ms a move over the first 500, {later:.3f} over the last 500")
+    assert(later < first * 1.5 + 0.3)
+    w.undo()
+    settle(w)
+    near_x(w, shifted)
+    session.close()
+
+func near_x(w: Workspace, expected: float) -> unit!:
+    let shown = w.meshes_of(w.network.display)
+    assert(shown.length == 1, f"{shown.length} meshes shown, {w.notice}, history {w.history.cursor}")
+    let x = shown[0].bounds().maximum.x
+    assert(x > expected - 0.0001 and x < expected + 0.0001, f"{x} {expected}")

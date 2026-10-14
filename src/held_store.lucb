@@ -8,6 +8,11 @@
 ## of the graph or the undo history, says which keys are still alive; the
 ## rest are released. Also measures what the held results of the undo
 ## history take, each shared array once, for its memory bound.
+##
+## Each result also keeps what its GeometryData says beside the set (its
+## warning, sketches' state, handles, Aligns: held.meta_of's text), so an
+## action the worker ran (edit_held.luc: heavy actions run there) comes
+## back to the UI whole, and the worker reads a base whole.
 import interop
 import memory
 import sync
@@ -29,6 +34,8 @@ struct Entry:
     ## (empty: none). Plain bytes: the store outlives the runtime's objects.
     var set: GeometrySet*?
     var file: Growing[u8]
+    ## The GeometryData's own fields, as text (held.meta_of).
+    var meta: Growing[u8]
 
     func close():
         if let storage = self.set:
@@ -38,6 +45,7 @@ struct Entry:
             # A crate that cannot be removed stays behind in the folder.
             _ = removed((str)self.file.view())
         self.file.close()
+        self.meta.close()
 
 ## Remove crate `path`; whether it went.
 func removed(path: str) -> bool:
@@ -69,9 +77,9 @@ func crate_folder() -> str!:
 pub struct HeldStore:
     let reserved: u8 = 0
 
-    ## Keep `set` under `key` (a key already held keeps its set: equal keys
-    ## are equal contents).
-    pub static func put(key: i64, set: interop.Reference[GeometrySet]) -> !:
+    ## Keep `set` under `key` with `meta`, what its GeometryData says (a key
+    ## already held keeps its set: equal keys are equal contents).
+    pub static func put(key: i64, set: interop.Reference[GeometrySet], meta: str = "") -> !:
         if key == 0: error(invalid, "a held result needs a key")
         if HeldStore.holds(key): return
         let whole = try set.get()
@@ -96,7 +104,14 @@ pub struct HeldStore:
         var storage: GeometrySet*? = none
         if file.count == 0:
             storage = try whole.plain_storage()
-        var entry = Entry(key, storage, file)
+        var text = Growing[u8]()
+        text.assign(meta.bytes) catch failure:
+            text.close()
+            if let made = storage:
+                made.close()
+                free(made) in memory.heap
+            error(failure.code, failure.message)
+        var entry = Entry(key, storage, file, text)
         store_lock.lock()
         defer store_lock.unlock()
         for other in entries.view():
@@ -131,6 +146,15 @@ pub struct HeldStore:
             return try GeometryFile.load((str)crate.view())
         let storage = found else error(invalid, "an Edit node's held result is gone")
         return try interop.Reference[GeometrySet].adopt(storage, geometry_set_type, memory.heap)
+
+    ## What the GeometryData held under `key` says (held.meta_of's text;
+    ## "" for a key not held).
+    pub static func meta(key: i64) -> interop.Owned[str]!:
+        store_lock.lock()
+        defer store_lock.unlock()
+        for entry in entries.view():
+            if entry.key == key: return try interop.copy_text((str)entry.meta.view())
+        return try interop.copy_text("")
 
     ## Whether `key` is held.
     pub static func holds(key: i64) -> bool:

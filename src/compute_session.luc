@@ -17,6 +17,10 @@ pub class ComputeSession:
     ## Size of the last request text and Edit recipes the last cook applied.
     pub var request_size: int = 0
     pub var recipes: int = 0
+    ## What the worker's result store held after the last cook: results and
+    ## their bytes.
+    pub var results: int = 0
+    pub var result_bytes: int = 0
     ## The last report's Project shadows and the Sketch stamp they are for.
     pub var shadows: str = ""
     pub var shadows_stamp: int = 0
@@ -25,11 +29,22 @@ pub class ComputeSession:
     pub var section_stamp: int = 0
     let writer: RequestWriter
     var resyncs: int = 0
+    ## The graph a request is wanted for while another waits (see submit).
+    var deferred: Network? = none
+    var deferred_mode: int = 0
+    var deferred_normals: bool = false
 
     pub func init(self) -> unit!:
         self.service = ComputeService(compute_factory)
         self.writer = RequestWriter()
 
+    ## Ask the worker for `graph` as it is. Requests coalesce: while one
+    ## waits for the worker to take it, a newer one is not sent but kept as
+    ## wanted (`poll_progress` sends it once the worker takes the waiting
+    ## one, encoded from the graph as it is then), so however fast moves
+    ## come and however slow the worker is, at most one request waits and
+    ## the worker cooks only the newest state. (Each request is a delta
+    ## against the last one sent, so skipping states loses nothing.)
     pub func submit(self, graph: Network, mode: int, normals: bool = false) -> unit!:
         stamp_graph(graph)
         self.generation += 1
@@ -42,14 +57,37 @@ pub class ComputeSession:
         for node in graph.nodes:
             wanted.append(node.stamp)
             node.dirty = node.stamp != node.cooked
-            node.computing = node.dirty and not quiet
+            # An Edit action the worker runs (edit_held.luc) shows its
+            # progress even inside a gesture: it may take a while.
+            let shown = not quiet or node.held_base != 0
+            node.computing = node.dirty and shown
             node.progress = 0.0
-            node.phase = "Queued" if node.dirty and not quiet else ""
+            node.phase = "Queued" if node.dirty and shown else ""
+        if self.service.queued() > 0:
+            self.deferred = graph
+            self.deferred_mode = mode
+            self.deferred_normals = normals
+            return
+        self.send(graph, mode, normals, wanted)
+
+    func send(self, graph: Network, mode: int, normals: bool, wanted: list[int]) -> unit!:
+        self.deferred = none
         let request = self.writer.encode(graph, mode, normals)
         self.request_size = request.byte_count
         self.service.submit(request, self.generation, wanted)
 
+    ## Send the request kept as wanted once the worker took the one waiting.
+    func send_deferred(self) -> unit!:
+        let graph = self.deferred else return
+        if self.service.queued() > 0:
+            return
+        let stamps: list[int] = []
+        for node in graph.nodes:
+            stamps.append(node.stamp)
+        self.send(graph, self.deferred_mode, self.deferred_normals, stamps)
+
     pub func poll_progress(self, graph: Network) -> bool!:
+        self.send_deferred()
         let sequence = self.service.sequence()
         if sequence == self.sequence:
             return false
@@ -58,7 +96,7 @@ pub class ComputeSession:
             if node.phase != "Queued":
                 node.computing = false
         if let node = graph.find(self.service.active_node()):
-            node.computing = self.busy and not graph.quiet
+            node.computing = self.busy and (not graph.quiet or node.held_base != 0)
             node.progress = self.service.progress()
             node.phase = self.service.phase()
         return true
@@ -76,6 +114,8 @@ pub class ComputeSession:
             return self.service.report()
         let report = read_report(self.service.report())
         self.recipes = report.recipes
+        self.results = report.results
+        self.result_bytes = report.result_bytes
         self.shadows = report.shadows
         self.shadows_stamp = report.shadows_stamp
         self.section = report.section

@@ -1,0 +1,220 @@
+## Heavy Edit actions run on the compute worker (edit_held.luc): the
+## command returns at once and the UI thread stays free while the worker
+## runs it, the viewport keeping what the node held until the result comes;
+## a drag adjusting such an action coalesces (only the newest values are
+## cooked and shown); one undo step per action. Timed against the same
+## action run on the UI thread (no worker), and printed for
+## docs/research/POLY-MODELING.md.
+from workspace import Workspace
+from luce_3d.graphics import Vector3
+from held_store import HeldStore
+import edit_held
+import node_commands
+import selection_commands
+import component_moves
+import modeling_commands
+from edit_types import face_level, object_level
+import time
+from luce_std import math, files
+from luce_geocore.geocore import GeometryFile
+
+pub func background_action_tests() -> unit!:
+    let (here, here_frame) = boolean_action(false)
+    let (there, there_frame) = boolean_action(true)
+    print(f"PASS A Boolean of two 100k-face spheres in Edit Mesh: the UI thread held {here:.1f} ms running it there; with the worker the command returns in {there:.2f} ms and the UI thread's longest turn while the worker runs it is {there_frame:.2f} ms")
+    assert(there < 10.0 and there_frame < 20.0)
+    _ = here_frame
+    let (cad_here, _) = cad_action(false)
+    let (cad_there, cad_frame) = cad_action(true)
+    print(f"PASS Edit CAD: a box's top face moved held the UI thread {cad_here:.1f} ms; with the worker the command returns in {cad_there:.2f} ms, the longest UI turn after it {cad_frame:.2f} ms")
+    assert(cad_there < cad_here)
+    drag_coalesces()
+    cache_waits_for_release()
+
+## Wait for the worker; the longest turn of the UI thread's poll meanwhile.
+func settle(w: Workspace) -> float!:
+    let session = w.compute else return 0.0
+    let deadline = time.now() + 60000000000
+    var longest = 0.0
+    while session.busy and time.now() < deadline:
+        let started = time.now()
+        _ = w.poll_compute()
+        longest = math.max(longest, float(time.now() - started) / 1000000.0)
+    assert(not session.busy)
+    return longest
+
+## An Edit Mesh starting from two overlapping UV spheres of 100,352 faces.
+func spheres(worker: bool) -> Workspace!:
+    let w = Workspace()
+    if worker:
+        w.enable_compute()
+        _ = settle(w)
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Sphere", 0.0, 0.0)
+    let first = w.network.require(w.network.selected)
+    first.values[1] = 448.0
+    first.values[2] = 224.0
+    w.network.invalidate(first.id)
+    node_commands.add_node(w, "Sphere", 200.0, 0.0)
+    let second = w.network.require(w.network.selected)
+    second.values[1] = 448.0
+    second.values[2] = 224.0
+    second.values[3] = 0.7
+    second.values[4] = 0.3
+    w.network.invalidate(second.id)
+    node_commands.add_node(w, "Merge", 0.0, 100.0)
+    let merge = w.network.require(w.network.selected)
+    w.network.connect(first.id, merge.id, 0)
+    w.network.connect(second.id, merge.id, 1)
+    w.network.invalidate(merge.id)
+    w.rebuild()
+    _ = settle(w)
+    node_commands.add_node(w, "Edit Mesh", 0.0, 200.0)
+    _ = settle(w)
+    return w
+
+## Milliseconds the Boolean's command held the UI thread, and the longest
+## UI turn until its result showed.
+func boolean_action(worker: bool) -> (float, float)!:
+    let w = spheres(worker)
+    let mesh = w.geometry else trap("spheres")
+    let faces = mesh.face_count()
+    selection_commands.set_mode(w, object_level)
+    selection_commands.choose_component(w, 0, false)
+    selection_commands.choose_component(w, faces - 1, true)
+    let before = w.history.cursor
+    let started = time.now()
+    modeling_commands.model(w, "Boolean")
+    let held_for = float(time.now() - started) / 1000000.0
+    let node = w.selected() else trap("edit")
+    if worker:
+        # Still running there: the viewport shows the two spheres.
+        assert(edit_held.waiting(node))
+        assert((w.geometry else trap("shown")).face_count() == faces)
+    let longest = settle(w)
+    assert(not edit_held.waiting(node))
+    let joined = w.geometry else trap("joined")
+    assert(joined.face_count() != faces and w.history.cursor == before + 1, f"{joined.face_count()} faces, {w.notice}")
+    near(joined.bounds().maximum.x, 1.7)
+    # One undo step: the two spheres again.
+    w.undo()
+    _ = settle(w)
+    assert((w.geometry else trap("undone")).face_count() == faces)
+    w.redo()
+    _ = settle(w)
+    assert((w.geometry else trap("redone")).face_count() == joined.face_count())
+    if let session = w.compute:
+        session.close()
+    return (held_for, longest)
+
+## A box made in an Edit CAD and its top face moved up: milliseconds the
+## move's command held the UI thread, and the longest UI turn after it.
+func cad_action(worker: bool) -> (float, float)!:
+    let w = Workspace()
+    if worker:
+        w.enable_compute()
+        _ = settle(w)
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    _ = settle(w)
+    modeling_commands.create(w, "Box")
+    _ = settle(w)
+    selection_commands.set_mode(w, face_level)
+    let mesh = w.geometry else trap("pick geometry")
+    for polygon in 0..<mesh.face_count():
+        if mesh.face_normal(polygon).y > 0.99:
+            selection_commands.choose_component(w, polygon, false)
+            break
+    let started = time.now()
+    component_moves.move_selection(w, Vector3(0.0, 0.5, 0.0))
+    var held_for = float(time.now() - started) / 1000000.0
+    if not worker:
+        # The local cook tessellates on the UI thread too.
+        _ = w.network.evaluate_data(w.network.display)
+        held_for = float(time.now() - started) / 1000000.0
+    let longest = settle(w)
+    let moved = w.geometry else trap("moved")
+    let edit = w.selected() else trap("edit")
+    assert(math.abs(moved.bounds().maximum.y - 1.5) < 0.0001, f"{moved.bounds().minimum.y}..{moved.bounds().maximum.y} {moved.face_count()} faces; notice {w.notice}; failure {edit.failure}; warning {edit.warning}; waiting {edit_held.waiting(edit)}; edits {edit.edits.length}")
+    if let session = w.compute:
+        session.close()
+    return (held_for, longest)
+
+## Switching a running Boolean's operation over and over, faster than the
+## worker runs it: only the newest values are shown, HeldStore keeps no
+## stale result, and the drag is one undo step.
+func drag_coalesces() -> unit!:
+    let w = spheres(true)
+    let mesh = w.geometry else trap("spheres")
+    let faces = mesh.face_count()
+    selection_commands.set_mode(w, object_level)
+    selection_commands.choose_component(w, 0, false)
+    selection_commands.choose_component(w, faces - 1, true)
+    modeling_commands.model(w, "Boolean")
+    _ = settle(w)
+    let node = w.selected() else trap("edit")
+    let before = w.history.cursor
+    let numbers = node.edits[0].numbers.copy()
+    w.begin("Drag")
+    var longest = 0.0
+    for at in 0..<9:
+        let values = numbers.copy()
+        values[0] = float(at % 3)
+        let started = time.now()
+        w.preview_step(values)
+        _ = w.poll_compute()
+        longest = math.max(longest, float(time.now() - started) / 1000000.0)
+        # Requests coalesce: at most one waits for the worker.
+        assert((w.compute else trap("compute")).service.queued() <= 1)
+    # The last values: Subtract (1)... the 9th value is 8 % 3 = 2, Intersect.
+    w.commit()
+    _ = settle(w)
+    let shown = w.geometry else trap("intersect")
+    # Intersect: only the lens both spheres hold, inside the first.
+    assert(shown.bounds().maximum.x < 1.0001 and shown.bounds().minimum.x > -0.3001, f"{shown.bounds().minimum.x} {shown.bounds().maximum.x}")
+    assert(w.history.cursor == before + 1)
+    # The frames' results the worker made are let go once nothing names them.
+    let held = HeldStore.count()
+    assert(held < 12, f"{held} results held")
+    print(f"PASS A drag switching a running Boolean's operation 9 times: the UI's longest turn {longest:.2f} ms, the last values shown, one undo step, {held} results held")
+    if let session = w.compute:
+        session.close()
+
+func near(value: float, expected: float, within: float = 0.0001) -> unit:
+    assert(math.abs(value - expected) <= within, f"{value} is not {expected}")
+
+## A Cache node writing its file below a dragged node writes it once, when
+## the drag is let go, not at each move (its input passes through while it
+## lasts).
+func cache_waits_for_release() -> unit!:
+    let w = Workspace()
+    w.enable_compute()
+    _ = settle(w)
+    let file = "background-cache.prism"
+    node_commands.add_node(w, "Cache", 0.0, 100.0)
+    let cache = w.selected() else trap("cache")
+    cache.texts[0] = file
+    w.network.invalidate(cache.id)
+    w.rebuild()
+    _ = settle(w)
+    let first = GeometryFile.key(file)
+    assert(first != 0)
+    let box = w.network.require(1)
+    node_commands.select_node(w, box.id)
+    let values = box.values.copy()
+    w.begin("Move gizmo")
+    for move in 0..<20:
+        let moved = values.copy()
+        moved[0] = values[0] + 0.01 * float(move + 1)
+        w.preview_parameters(moved)
+        _ = settle(w)
+        assert(GeometryFile.key(file) == first, f"move {move} wrote the cache")
+    w.commit()
+    _ = settle(w)
+    let written = GeometryFile.key(file)
+    assert(written != first and written == w.network.require(cache.id).stamp)
+    files.remove_file(file)
+    if let session = w.compute:
+        session.close()

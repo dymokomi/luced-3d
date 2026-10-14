@@ -13,6 +13,13 @@
 ##   held_drag: 1,000 faces of a 1M-face grid in an Edit Mesh dragged up a
 ##     little each frame in the real window; prints the work a move takes
 ##     and the frame intervals (request to redraw).
+##   held_heavy: two 1M-face spheres in an Edit Mesh, the second cut out of
+##     the first by Boolean (Subtract) in the real window; prints the frame intervals while it runs and
+##     when its result showed (with --background the worker runs it and the
+##     UI keeps drawing; without, the UI thread runs it).
+##   held_heavy_running: the same, captured a few frames after the
+##     command, while the worker runs it: the Edit Mesh node computing,
+##     both spheres still shown.
 from app import Luce3D
 from luce_3d.graphics import Vector3
 from luce_geocore.geocore import Selection
@@ -22,13 +29,18 @@ import modeling_commands
 import selection_commands
 import component_moves
 import preview_support
+import edit_held
 import time
 
 pub func scenes() -> list[str]:
-    return ["held_boxes", "held_boolean", "held_subtract", "held_cad", "held_sdf", "held_drag"]
+    return ["held_boxes", "held_boolean", "held_subtract", "held_cad", "held_sdf", "held_drag", "held_heavy", "held_heavy_running"]
 
 ## The frames a scene runs before its capture (held_drag drags over them).
 pub func frames(scene: str) -> int:
+    if scene == "held_heavy":
+        return 70
+    if scene == "held_heavy_running":
+        return 7
     return 130 if scene == "held_drag" else 5
 
 pub func setup(editor: Luce3D, scene: str) -> unit!:
@@ -47,6 +59,34 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
             selection_commands.select_none(w)
         else:
             modeling_commands.model(w, "Subtract")
+        preview_support.settle(w)
+        return
+    if scene.starts_with("held_heavy"):
+        # Two UV spheres of 999,698 faces, overlapping, in an Edit Mesh;
+        # both picked at the Object level.
+        node_commands.add_node(w, "Sphere", 40.0, 40.0)
+        let first = w.network.require(w.network.selected)
+        node_commands.add_node(w, "Sphere", 200.0, 40.0)
+        let second = w.network.require(w.network.selected)
+        for sphere in [first, second]:
+            sphere.values[1] = 1414.0
+            sphere.values[2] = 707.0
+        second.values[3] = 0.7
+        second.values[4] = 0.3
+        node_commands.add_node(w, "Merge", 40.0, 140.0)
+        let merge = w.network.require(w.network.selected)
+        w.network.connect(first.id, merge.id, 0)
+        w.network.connect(second.id, merge.id, 1)
+        for node in [first, second, merge]:
+            w.network.invalidate(node.id)
+        w.rebuild()
+        preview_support.settle(w)
+        node_commands.add_node(w, "Edit Mesh", 40.0, 240.0)
+        preview_support.settle(w)
+        let mesh = w.geometry else trap("spheres")
+        selection_commands.set_mode(w, object_level)
+        selection_commands.choose_component(w, 0, false)
+        selection_commands.choose_component(w, mesh.face_count() - 1, true)
         preview_support.settle(w)
         return
     if scene != "held_drag":
@@ -93,6 +133,9 @@ pub class DragTimes:
     pub var moves: int = 0
 
 pub func act(editor: Luce3D, scene: str, frame: int, last: int, t: DragTimes) -> unit!:
+    if scene.starts_with("held_heavy"):
+        heavy(editor, scene, frame, last, t)
+        return
     if scene != "held_drag":
         return
     let w = editor.workspace
@@ -115,3 +158,35 @@ pub func act(editor: Luce3D, scene: str, frame: int, last: int, t: DragTimes) ->
         w.commit()
         print(f"Held drag in the window: {t.moves} moves of 1,000 faces of a 1M-face grid; the move {t.work / float(t.moves):.2f} ms mean, {t.worst_work:.2f} ms worst; frame to frame {t.gaps / float(t.moves - 1):.2f} ms mean, {t.worst_gap:.2f} ms worst")
     t.last_frame = now
+
+## held_heavy's Boolean, at frame 4.
+func heavy(editor: Luce3D, scene: str, frame: int, last: int, t: DragTimes) -> unit!:
+    if frame != 4 or t.moves != 0:
+        return
+    let started = time.now()
+    modeling_commands.model(editor.workspace, "Boolean", [1.0])
+    t.work = float(time.now() - started) / 1000000.0
+    t.gaps = float(started)
+    t.last_frame = time.now()
+    t.moves = 1
+
+## held_heavy's every frame, the capture's own waiting for the worker
+## included: after the Boolean, the intervals between frames (each redraws
+## the viewport) until its result shows.
+pub func watch(editor: Luce3D, scene: str, t: DragTimes) -> unit!:
+    if not scene.starts_with("held_heavy") or t.moves <= 0:
+        return
+    let w = editor.workspace
+    let now = time.now()
+    # Redrawn every frame, as while the camera turns: how often frames come
+    # is how free the UI thread is.
+    editor.panels.view.layout().invalidate()
+    let gap = float(now - t.last_frame) / 1000000.0
+    t.last_frame = now
+    if gap > t.worst_gap: t.worst_gap = gap
+    t.moves += 1
+    let node = w.selected() else trap("edit")
+    let shown = w.geometry else trap("shown")
+    if not edit_held.waiting(node) and shown.face_count() != 1999396 and node.edits.length > 0:
+        print(f"Held heavy action in the window ({"worker" if w.compute != none else "UI thread"}): the Boolean's command took {t.work:.1f} ms; its result showed {(float(now) - t.gaps) / 1000000.0:.1f} ms after it; the longest frame interval meanwhile {t.worst_gap:.1f} ms over {t.moves - 1} frames")
+        t.moves = -1

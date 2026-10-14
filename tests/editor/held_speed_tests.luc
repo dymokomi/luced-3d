@@ -21,10 +21,20 @@ pub func held_speed_tests() -> unit!:
     let grid = drag_cost(false, 1024, "", 3)
     let worker_grid = drag_cost(true, 1024, "", 3)
     print(f"PASS Edit Mesh drags: a cube's edge {cube:.3f} ms a move, 1,000 faces of a 1M-face grid {grid:.2f} ms a move here, {worker_grid:.2f} ms with the worker (request to result adopted)")
+    let precise = boolean_drag_cost()
+    print(f"PASS A Boolean's 1M-face result (f64 points) in Edit Mesh: 1,000 faces dragged {precise:.2f} ms a move with the worker")
+    # Its f64 points are shared by a move, not copied: it costs what the
+    # plain grid does.
+    assert(precise < worker_grid * 2.0 + 1.0)
     let early = cad_action_cost(1)
     let late = cad_action_cost(40)
     print(f"PASS Edit CAD actions: a box's top face moved, {early:.2f} ms after 1 action, {late:.2f} ms after 40 (the held bodies, nothing replayed)")
     assert(late < early * 4.0 + 20.0)
+    let (edge_first, edge_last) = long_drag(false)
+    let (worker_first, worker_last) = long_drag(true)
+    print(f"PASS Long drags stay flat: a cube's edge in Edit Mesh {edge_first:.3f} ms a move over the first 500 moves, {edge_last:.3f} ms over moves 2,500 to 3,000; a Transform's Translate with the worker {worker_first:.3f} and {worker_last:.3f} ms")
+    assert(edge_last < edge_first * 1.5 + 0.2)
+    assert(worker_last < worker_first * 1.5 + 0.3)
 
 ## Wait for the worker's result.
 func settle(w: Workspace) -> unit!:
@@ -101,4 +111,93 @@ func cad_action_cost(actions: int) -> float!:
         component_moves.move_selection(w, Vector3(0.0, 0.1, 0.0))
         _ = w.network.evaluate_data(w.network.display)
         spent = float(time.now() - started) / 1000000.0
+    return spent
+
+## The mean milliseconds per pointer move over the first 500 and the last
+## 500 moves of a 3,000-move drag: a cube's edge in Edit Mesh (held, drawn
+## on this thread) or, with `worker`, a Transform's Translate (each move
+## cooked by the worker). Each move once grew slower than the last (the
+## worker kept every move's result and traced them all in each cycle
+## collection: 1.4 to 2.4 ms over 3,000 moves).
+func long_drag(worker: bool) -> (float, float)!:
+    let w = Workspace()
+    w.enable_compute()
+    settle(w)
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Box", 0.0, 0.0)
+    settle(w)
+    node_commands.add_node(w, "Transform" if worker else "Edit Mesh", 0.0, 100.0)
+    settle(w)
+    let node = w.selected() else trap("node")
+    let values = node.values.copy()
+    if not worker:
+        selection_commands.set_mode(w, 2)
+        selection_commands.choose_component(w, 0, false)
+    w.begin("Move gizmo")
+    var first = 0.0
+    var last = 0.0
+    for move in 0..<3000:
+        let started = time.now()
+        let offset = 0.001 * float(move + 1)
+        if worker:
+            let moved = values.copy()
+            moved[1] = offset
+            w.preview_parameters(moved)
+        else:
+            component_moves.preview_move(w, Vector3(0.0, offset, 0.0))
+        settle(w)
+        let spent = float(time.now() - started) / 1000000.0
+        if move < 500:
+            first += spent / 500.0
+        if move >= 2500:
+            last += spent / 500.0
+    w.commit()
+    settle(w)
+    (w.compute else trap("compute")).close()
+    return (first, last)
+
+## Milliseconds per pointer move of a drag of 1,000 faces of a Boolean's
+## result in Edit Mesh: a 410×410×410 box (1M faces) united with a sphere
+## sunk in its top, its points f64, with the worker.
+func boolean_drag_cost() -> float!:
+    let w = Workspace()
+    w.enable_compute()
+    settle(w)
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Box", 0.0, 0.0)
+    let box = w.network.require(w.network.selected)
+    for slot in [3, 4, 5]: box.values[slot] = 410.0
+    w.network.invalidate(box.id)
+    node_commands.add_node(w, "Sphere", 200.0, 0.0)
+    let sphere = w.network.require(w.network.selected)
+    sphere.values[0] = 0.6
+    sphere.values[4] = 0.8
+    w.network.invalidate(sphere.id)
+    node_commands.add_node(w, "Merge", 0.0, 100.0)
+    let merge = w.network.require(w.network.selected)
+    w.network.connect(box.id, merge.id, 0)
+    w.network.connect(sphere.id, merge.id, 1)
+    w.network.invalidate(merge.id)
+    w.rebuild()
+    node_commands.add_node(w, "Mesh Boolean", 0.0, 200.0)
+    settle(w)
+    node_commands.add_node(w, "Edit Mesh", 0.0, 300.0)
+    settle(w)
+    assert(w.editing())
+    let mesh = w.geometry else trap("mesh")
+    assert(mesh.face_count() > 1000000)
+    selection_commands.set_mode(w, 3)
+    w.selection = Selection.of(mesh, "400000-400999", 2)
+    var spent = 0.0
+    for round in 0..<2:
+        w.begin("Move gizmo")
+        let started = time.now()
+        let moves = 20
+        for move in 0..<moves:
+            component_moves.preview_move(w, Vector3(0.0, 0.001 * float(move + 1), 0.0))
+            settle(w)
+        spent = float(time.now() - started) / 1000000.0 / float(moves)
+        w.commit()
+        settle(w)
+    (w.compute else trap("compute")).close()
     return spent
