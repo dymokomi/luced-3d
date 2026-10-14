@@ -8,6 +8,7 @@ from luce_ui import ui
 from luce_obj.obj import Obj
 from luce_step.step import Step
 from luce_cad.model import CadTolerances
+from luce_cad.modeling import CadModeling
 from geometry_data import GeometryData, cad_data
 from file_identity import file_identity
 from usd_nodes import load_usd
@@ -16,7 +17,13 @@ from ply_nodes import is_ply_path, load_ply
 from spz_nodes import is_spz_path, load_spz
 from script_hosts import ScriptHosts
 
-pub func load_geometry(path: str, step_tolerance: float = 0.0, tolerances: CadTolerances? = none) -> GeometryData!:
+## What a STEP file node does with a file looser than the project's
+## positional tolerance (its Tolerances row, value slot 0).
+pub let tolerances_ask = 0.0
+pub let tolerances_keep = 1.0
+pub let tolerances_adopt = 2.0
+
+pub func load_geometry(path: str, option: float = 0.0, tolerances: CadTolerances? = none) -> GeometryData!:
     if path == "":
         error(ui.invalid, "Choose an external geometry file")
     if path.lower().ends_with(".obj"):
@@ -28,8 +35,36 @@ pub func load_geometry(path: str, step_tolerance: float = 0.0, tolerances: CadTo
     if path.lower().ends_with(".fbx"):
         return load_fbx(path, [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0])
     if path.lower().ends_with(".step") or path.lower().ends_with(".stp"):
-        return cad_data(Step.load_model(path, step_tolerance, tolerances else CadTolerances()))
+        return step_data(path, option, tolerances else CadTolerances())
     error(ui.invalid, "Unsupported geometry file extension")
+
+## A STEP file's bodies under the project's `tolerances`: measured, and
+## with `option` tolerances_adopt healed to them where their faces meet. A
+## file looser than the positional tolerance says so on the node: what
+## Ask leaves to choose, what Adopt could not heal.
+func step_data(path: str, option: float, tolerances: CadTolerances) -> GeometryData!:
+    let read = Step.load_model(path, 0.0, tolerances)
+    let model = CadModeling.rechecked(read, tolerances, option == tolerances_adopt)
+    let report = CadModeling.tolerance_report(model)
+    let data = cad_data(model)
+    if report.tolerant_edges == 0:
+        return data
+    let worst = f"{fixed_mm(report.worst)} mm"
+    let edges = f"{report.tolerant_edges} edge{"" if report.tolerant_edges == 1 else "s"}"
+    if option == tolerances_ask:
+        data.warning = f"{edges} lie up to {worst} off their faces, looser than the project's {fixed_mm(tolerances.positional)} mm: choose Keep the file's or Adopt the scene's under Tolerances"
+    elif option == tolerances_adopt:
+        data.warning = f"{edges} could not be healed to the project's tolerance and stay tolerant, up to {worst}"
+    return data
+
+## A length in millimeters with at most six decimals, trailing zeros off.
+func fixed_mm(value: float) -> str:
+    var text = f"{value:.6f}"
+    while text.ends_with("0") and text.contains("."):
+        text = text[..<text.length - 1]
+    if text.ends_with("."):
+        text = text[..<text.length - 1]
+    return text
 
 ## Process-lifetime import caches, so undo, reload and project reopen reuse
 ## parsed files and tessellations. Files are keyed by path, size, mtime,
