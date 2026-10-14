@@ -616,21 +616,6 @@ pub struct ComputeService:
         state.products[(usize)index].set = none
         return try interop.Reference[GeometrySet].adopt(set, geocore.geometry_set_type, memory.heap)
 
-    ## Combined overlays of the current result (fresh and held keys), of the
-    ## products whose node is (with `around`) or is not one of `outside`: the
-    ## rest of the scene around the context draws apart from the context.
-    pub func wires(outside: const i64[], around: bool = false) -> interop.Reference[WireBatch]!:
-        return try self.batch(0, outside, around)
-
-    pub func normals(outside: const i64[], around: bool = false) -> interop.Reference[WireBatch]!:
-        return try self.batch(1, outside, around)
-
-    pub func patches(outside: const i64[], around: bool = false) -> interop.Reference[WireBatch]!:
-        return try self.batch(2, outside, around)
-
-    pub func curve_lines(outside: const i64[], around: bool = false) -> interop.Reference[WireBatch]!:
-        return try self.batch(3, outside, around)
-
     ## A Check node's line group `group` (luce-cad's check_passed ...
     ## check_quills), of every product.
     pub func check_batch(group: i64, outside: const i64[]) -> interop.Reference[WireBatch]!:
@@ -646,12 +631,8 @@ pub struct ComputeService:
             let pairs = overlay_of(state, product, 10)
             for at in 0..<pairs.length // 2: try into.value().add_segment(pairs[at * 2], pairs[at * 2 + 1])
 
-    ## Every published hull: curve control polygons and handles, CV nets.
-    pub func hulls(outside: const i64[], around: bool = false) -> interop.Reference[WireBatch]!:
-        return try self.batch(4, outside, around)
-
-    ## What overlay `which`'s batch holds (of the products `outside` and
-    ## `around` choose, as `wires` does): the keys of the products with some
+    ## What overlay `which`'s batches hold (of the products `outside` and
+    ## `around` choose, as `batch_count` does): the keys of the products with some
     ## of it (equal keys, equal lines), so an unchanged batch is kept.
     pub func batch_key(which: i64, outside: const i64[], around: bool = false) -> i64!:
         let state = self.state else error(invalid, "Compute service closed")
@@ -660,6 +641,38 @@ pub struct ComputeService:
             if listed(outside, product.node) != around: continue
             if overlay_of(state, product, which).length > 0: key = (key ^ (u64)product.key) *% 0x100000001B3
         return (i64)(key >> 1)
+
+    ## The products with overlay `which` (0 wires, 1 normals, 2 patches, 3
+    ## curves, 4 hulls) of the current result (fresh and held keys), of those
+    ## whose node is (with `around`) or is not one of `outside` (the rest of
+    ## the scene around a context draws apart), one batch each: how many, the key of the
+    ## `at`th, and the batch of the product `key`. A viewport keeps each
+    ## product's batch while its key stands, so a changed product sends its
+    ## own lines, not its category's.
+    pub func batch_count(which: i64, outside: const i64[], around: bool = false) -> i64!:
+        let state = self.state else error(invalid, "Compute service closed")
+        var count: i64 = 0
+        for product in state.products[..<state.count]:
+            if listed(outside, product.node) != around: continue
+            if overlay_of(state, product, which).length > 0: count += 1
+        return count
+
+    pub func batch_product(which: i64, outside: const i64[], around: bool, at: i64) -> i64!:
+        let state = self.state else error(invalid, "Compute service closed")
+        var seen: i64 = 0
+        for product in state.products[..<state.count]:
+            if listed(outside, product.node) != around: continue
+            if overlay_of(state, product, which).length == 0: continue
+            if seen == at: return product.key
+            seen += 1
+        error(invalid, "no such product batch")
+
+    pub func product_lines(which: i64, key: i64) -> interop.Reference[WireBatch]!:
+        let state = self.state else error(invalid, "Compute service closed")
+        for product in state.products[..<state.count]:
+            if product.key != key: continue
+            return try interop.Reference[WireBatch].adopt(try new WireBatch(overlay_of(state, product, which)) in memory.heap, wire_batch_type, memory.heap)
+        error(invalid, "no such product")
 
     func batch(which: i64, outside: const i64[], around: bool) -> interop.Reference[WireBatch]!:
         let state = self.state else error(invalid, "Compute service closed")
