@@ -26,6 +26,11 @@ from held_store import HeldStore
 from held import Held, held_as
 from network import Network
 from node import Node
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadTolerances, CadModel
+from luce_cad.modeling import CadModeling
+from node_evaluation import fixed_mm
+from edit_cad_sketches import with_models
 
 ## Bring every holding Edit node's result up to date with its step:
 ## started from its input when it is acted on first, the steps before the
@@ -57,15 +62,15 @@ func settle_node(graph: Network, node: Node, kind: EditKind, shown: GeometryData
         let step = node.edits[0]
         node.edits = node.edits[1..]
         if current.made_for == step.key:
-            current = Held(current.result, current.key, current.result, current.key, "", 0, current.input_stamp)
+            current = Held(current.result, current.key, current.result, current.key, "", 0, current.input_stamp, current.actions + 1)
             continue
-        let (made, _) = run_step(kind, step, 0, current.base, tag_of(node), graph.tolerances, false, reference_of(graph, node))
+        let (made, _) = run_step(kind, step, current.actions, current.base, tag_of(node), graph.tolerances, false, reference_of(graph, node))
         let key = (current.base_key, step.key).hash()
-        current = Held(made, key, made, key, "", 0, current.input_stamp)
+        current = Held(made, key, made, key, "", 0, current.input_stamp, current.actions + 1)
     if node.edits.length == 0:
         # The last action was taken back (Clear): the base stands.
         if current.made_for != 0:
-            current = held_as(current.base, current.base_key, current.input_stamp)
+            current = held_as(current.base, current.base_key, current.input_stamp, current.actions)
     else:
         let step = node.edits[0]
         if current.made_for != step.key:
@@ -86,9 +91,18 @@ func settle_node(graph: Network, node: Node, kind: EditKind, shown: GeometryData
                         made = result
                         ran = true
             if not ran:
-                let (plain, _) = run_step(kind, step, 0, current.base, tag_of(node), graph.tolerances, false, reference_of(graph, node))
+                # While a drag sets its values the action's failure fails the
+                # node instead: the viewport keeps the drag's last good
+                # result, as a feature node's does; let go, it says why.
+                let attempt: (GeometryData, bool)? = run_step(kind, step, current.actions, current.base, tag_of(node), graph.tolerances, graph.gesture, reference_of(graph, node)) catch failure:
+                    if not graph.gesture:
+                        error(failure.code, failure.message)
+                    node.held_failure = failure.message
+                    recover none
+                let (plain, _) = attempt else return
                 made = plain
-            current = Held(current.base, current.base_key, made, (current.base_key, step.key).hash(), made.warning, step.key, current.input_stamp)
+            node.held_failure = ""
+            current = Held(current.base, current.base_key, made, (current.base_key, step.key).hash(), made.warning, step.key, current.input_stamp, current.actions)
     keep(node, current)
 
 ## `held` as what `node` holds, put where the worker reads it.
@@ -96,6 +110,12 @@ func keep(node: Node, held: Held) -> unit!:
     node.held = held
     node.held_key = held.key
     node.held_note = held.warning
+    # What the result tells the editor (sketches, handles, the last
+    # action's aids) is the UI's own: the worker reads only the geometry.
+    node.sketch_state = held.result.sketch_state
+    node.handles = held.result.handles
+    # CAD models go to the worker as a crate: their codecs first.
+    _ = CadGeometry.register_codec()
     HeldStore.put(held.key, held.result.geometry)
 
 ## The node's start: its input's result (cooked here, on the UI thread, once)
@@ -124,6 +144,46 @@ pub func input_changed(graph: Network, node: Node) -> bool:
         return false
     let upstream = graph.find(node.inputs[0]) else return false
     return upstream.stamp != held.input_stamp
+
+## The project's tolerances changed: held CAD bodies do not cook again, so
+## each is checked against the new ones instead (luce-cad's rechecked): an
+## edge lying off its faces by more than the new positional tolerance is
+## made tolerant there, and the node says how many. The base and the
+## result alike, so the last action stays adjustable.
+pub func recheck(graph: Network) -> unit!:
+    for node in graph.nodes:
+        let held = node.held else continue
+        if not held.result.has_cad():
+            continue
+        let (base, _) = rechecked(held.base, graph.tolerances)
+        let (result, note) = rechecked(held.result, graph.tolerances)
+        let stamp = graph.tolerances.positional
+        let base_key = (held.base_key, "tolerances", stamp).hash()
+        let key = (held.key, "tolerances", stamp).hash()
+        let warning = note if note != "" else held.warning
+        keep(node, Held(base, base_key, result, key, warning, held.made_for, held.input_stamp, held.actions))
+
+## `data`'s models checked against `tolerances`, its sketches and Aligns
+## kept, and what it says when edges were made tolerant ("" when none).
+func rechecked(data: GeometryData, tolerances: CadTolerances) -> (GeometryData, str)!:
+    if not data.has_cad():
+        return (data, "")
+    let models: list[CadModel] = []
+    var edges = 0
+    var worst = 0.0
+    for model in data.models():
+        let checked = CadModeling.rechecked(model, tolerances)
+        let report = CadModeling.tolerance_report(checked)
+        edges += report.tolerant_edges
+        if report.worst > worst: worst = report.worst
+        models.append(checked)
+    let made = with_models(data, models)
+    made.aligns = data.aligns
+    made.sketch_state = data.sketch_state
+    made.handles = data.handles
+    if edges == 0:
+        return (made, "")
+    return (made, f"{edges} edge{"" if edges == 1 else "s"} lie up to {fixed_mm(worst)} mm off their faces, looser than the project's {fixed_mm(tolerances.positional)} mm: made tolerant there")
 
 ## The keys of every result held in `graph` (live, for HeldStore.keep).
 pub func held_keys(graph: Network, into: list[int]):

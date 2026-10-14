@@ -11,12 +11,18 @@
 ##   and Reload Input (one undo step) takes the new input;
 ## - the undo history keeps earlier results and is bounded by their bytes;
 ## - a saved project keeps the held result in <name>.held/, loaded back as
-##   the node's result with nothing to adjust.
+##   the node's result with nothing to adjust;
+## - Edit CAD's held bodies rechecked when the project's tolerances change.
 from luce_3d.graphics import Vector3
 from luce_geocore.geocore import Selection
 from tool_drag_tests import editor_on, near
 from edit_types import object_level, point_level, face_level
 from held_store import HeldStore
+from workspace import Workspace
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.model import CadTolerances
+from project_settings import ProjectValues
+import project_settings
 import edit_held
 import modeling_commands
 import selection_commands
@@ -31,6 +37,7 @@ pub func held_edit_tests() -> unit!:
     input_changes()
     history_bound()
     saved_held()
+    cad_tolerances()
     print("PASS Edit Mesh holds its result: primitives made inside at any level, two boxes, one moved, both picked and joined by Boolean; the last action adjusted from the result before it, the next baking it; upstream changes held off, Input changed and Reload Input; undo bounded by the held bytes; saved beside the project and loaded back")
 
 func create_inside() -> unit!:
@@ -179,3 +186,22 @@ func saved_held() -> unit!:
     node_commands.select_node(w, edit)
     near((w.geometry else trap("loaded")).point(12).y, 0.75)
     editor.close()
+
+## Edit CAD holds its bodies: the project's tolerances changed, they are
+## checked against the new ones (not cooked again) in the same undo step.
+func cad_tolerances() -> unit!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    modeling_commands.create(w, "Box")
+    let node = w.network.require(w.network.selected)
+    let before = node.held else trap("held")
+    let faces = CadGeometry.model(before.result.geometry, 0).face_count()
+    let values = project_settings.current(w)
+    project_settings.apply_values(w, ProjectValues(units = values.units, tolerances = CadTolerances(positional = 0.0001, fit = 0.00001, tangent = 0.001, curvature = 0.005), fps = values.fps, start = values.start, end = values.end))
+    let after = w.network.require(node.id).held else trap("rechecked")
+    assert(after.key != before.key and CadGeometry.model(after.result.geometry, 0).face_count() == faces and w.network.require(node.id).held_note == "")
+    w.undo()
+    assert((w.network.require(node.id).held else trap("undone")).key == before.key)

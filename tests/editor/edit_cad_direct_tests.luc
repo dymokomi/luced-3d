@@ -14,8 +14,8 @@ from sketch_support import render
 import tool_picks
 import tool_run
 import handle_lines
-from luce_prism.prism import Document, Encoding
-from project_graph import write_graph, read_graph
+import project_file
+from luce_std import files, math
 from luce_cad.cad_geometry import CadGeometry
 from node import Node
 from luce_3d.graphics import Vector3
@@ -37,7 +37,6 @@ import selection_commands
 import modeling_commands
 import component_moves
 import cad_features
-from luce_std import math
 
 pub func edit_cad_direct_tests() -> unit!:
     sketch_and_extrude()
@@ -151,10 +150,10 @@ func select_named(w: Workspace, part: str) -> unit!:
             return
     assert(false, f"no face named like {part}")
 
-## Undo until `node`'s recipe has `steps` steps (and the selection made
-## before the step undone too).
+## Undo until `node` has had `steps` actions (and the selection made
+## before the action undone too).
 func undo_to(w: Workspace, node: Node, steps: int) -> unit!:
-    while (w.network.find(node.id) else trap("node")).edits.length > steps:
+    while (w.network.find(node.id) else trap("node")).action_count() > steps:
         w.undo()
     w.undo()
 
@@ -210,22 +209,22 @@ func sketch_and_extrude() -> unit!:
     let square = CadSketch.parse(edited.text)
     assert(math.abs(square.x(0) + 10.0) < 1e-9 and edited.visible)
     # Drawing again replaces that Edit Sketch step: one step per sketch edit.
-    let steps = node.edits.length
+    let steps = node.action_count()
     draw(w, node, sketch_commands.rectangle_text(0.0, 0.0, 30.0, 30.0))
-    assert(node.edits.length == steps)
+    assert(node.action_count() == steps)
     edit_cad_commands.finish_sketch(w)
     assert(not w.sketching())
-    # Hidden (its editing showed it; one undo step), then the recipe
-    # through a project file:
-    # the sketches' texts with it, the same model.
+    # Hidden (its editing showed it; one undo step), then the held result
+    # through a project file: the sketches' texts with it, the same model.
     edit_cad_commands.toggle_sketch(w, "Sketch1")
     let shown = edit_cad_sketches.named(edit_cad_sketches.parse_objects(data_of(w, node).sketch_state), "Sketch1") else trap("shown")
     assert(not shown.visible)
-    let doc = Document()
-    write_graph(doc, w.network)
-    let restored = read_graph(Document.parse((doc.encode(Encoding.text).bytes()).text()))
+    files.ensure_directory("direct-project")
+    project_file.save("direct-project/direct.prisma", w, [1.0, 0.0, 0.0])
+    let restored = project_file.load("direct-project/direct.prisma").graph
     let again = restored.require(node.id)
-    assert(again.edits.length == fresh(w, node).edits.length and again.edits[0].text(edit_cad_sketches.name_slot) == "Sketch1")
+    assert(again.edits.length == 0 and again.held != none)
+    assert(CadSketches.count(restored.evaluate_data(node.id).geometry) == CadSketches.count(data_of(w, node).geometry))
     near(volume(CadGeometry.model(restored.evaluate_data(node.id).geometry, 0)), volume(CadGeometry.model(data_of(w, node).geometry, 0)), 1e-9, "the model read back")
 
 ## An L-bracket (40 × 5 foot, 5 × 30 upright, 20 deep): its inner wall
@@ -357,7 +356,7 @@ func face_tools() -> unit!:
     near(total_volume(w, node), 12.0 - 1.6 * 1.6 * 2.8, 0.01, "the shell")
     # Too thick: the step says why; the model before it stays.
     modeling_commands.set_last_step(w, edit_cad_faces.thickness_slot, 5.0, 0.0001, 100000.0)
-    assert(fresh(w, node).warning.starts_with(f"Step {fresh(w, node).edits.length} (Shell) could not be built"))
+    assert(fresh(w, node).warning.starts_with("Shell could not be built"))
     near(total_volume(w, node), 12.0, 1e-3, "the model before the failed shell")
     undo_to(w, node, 2)
     # Remove Faces: the top taken away, the box open.

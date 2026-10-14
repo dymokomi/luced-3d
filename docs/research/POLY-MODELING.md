@@ -462,8 +462,8 @@ history of what's happening in the node really — it's a node that as an output
 thing that we've modeled — so inside this single node there is no stack that we need to process.
 […] It's all held inside the Edit Mesh node as an absolute representation of what we did there."
 
-**The model** (`src/edit_held.luc`, `src/held.luc`, `src/held_store.lucb`; the framework's, so
-Edit CAD and Edit SDF plug in by setting `EditKind.holds`):
+**The model** (`src/edit_held.luc`, `src/held.luc`, `src/held_store.lucb`; the framework's: Edit
+Mesh, Edit CAD and Edit SDF take part by setting `EditKind.holds`):
 
 - **An Edit node holds its result.** Every action (a move, a tool, a primitive, a deletion)
   replaces it at once, on the UI thread; the node's cook returns it with no work. The worker
@@ -537,8 +537,41 @@ moved into the other, both picked, Boolean, and Operation switched on the tool b
 (`tests/editor/held_edit_tests.luc: boolean_inside`; captures `held_boxes`, `held_boolean`,
 `held_subtract`).
 
-Edit CAD and Edit SDF convert next (their own sections below when they do); Edit GSplats is
-recommended to follow (its held result is the cloud with its deletions and moves).
+**Edit CAD and Edit SDF hold theirs too** (owner, 2026-10-13: the same model). `EditKind.holds`
+is set for both; the framework above is unchanged. Edit CAD holds its bodies, free curves and
+sketches; Edit SDF its SDF program. Case by case for Edit CAD:
+
+- **Sketches** are objects of the held model (luce-cad `CadSketches`). Drawing changes the last
+  action while it made the sketch, else is an Edit Sketch action. Editing a sketch later changes
+  the sketch, not a body already extruded from it: the extrude was baked when the next action
+  came (as in a direct modeler; Fusion's timeline would replay it).
+- **CV moves** run on the held surfaces; a drag adjusts its one action.
+- **Align** (owner rule: a CV move on rows an Align set runs that Align again) is a relation held
+  as data with the bodies (`GeometryData.aligns`), carried from action to action, saved with the
+  held result (`held_aligns`) and read back on load.
+- **Reblend** works on the held bodies as they are: luce-cad identifies their constant blends by
+  shape, so no fillet history is needed.
+- **Names**: an action's faces are named `#<node>s<n>`, `n` counted across baked actions
+  (`Held.actions`, saved as `held_actions`), so names never repeat within a node.
+- **Tolerances** (the kernel agent's project tolerances): held bodies do not cook again when the
+  project's tolerances change; each is checked against them instead (luce-cad `rechecked`), edges
+  off their faces by more than the new positional tolerance made tolerant, and the node says how
+  many (`edit_held.recheck`, one undo step with the setting).
+- **The timeline strip** shows only the adjustable last action: there is nothing earlier to roll
+  back to (undo goes back instead).
+- **The worker** reads held CAD sets from a crate in a per-process temporary folder (a set holding
+  luce-cad objects cannot be stored as plain columns); plain sets stay in memory.
+- A drag whose values cannot be built fails the node while it lasts and the viewport keeps the
+  last good result; let go, the warning names the action (`"Shell could not be built: …"`).
+
+Measured (`held_speed_tests.cad_action_cost`, from the command to the result): moving a box's top
+face as an Edit CAD action took 22.5 ms after 1 action and 23.1 ms after 40 with the recipe and
+its checkpoints; held, 16.2 ms and 17.2 ms. Captures: `held_cad` (a box and a cylinder made in one
+Edit CAD, the cylinder moved), `held_sdf` (a sphere and a box made in one Edit SDF, the box moved
+over the sphere and set to Subtract).
+
+Edit GSplats still keeps a recipe; it is recommended to follow (its held result would be the
+cloud with its deletions, moves and recolors; the same `holds` flag and a run_over for moves).
 
 ## 5. The polygon tool set
 

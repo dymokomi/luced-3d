@@ -322,31 +322,32 @@ open or closed and each context's last tab are kept in
 
 An Edit node is a modeling engine in one node: while it is displayed and
 selected, every tool acts on it instead of creating a node, and each tool (or
-each drag) is one undo. There is no operation list to edit. **Edit Mesh holds
-the mesh modeled in it** (docs/research/POLY-MODELING.md, "Edit nodes hold
-their result"): an action replaces the held mesh at once, the cook returns it
-with no work, and only the last action stays adjustable (its tool bar and drag
-run it again from the mesh before it) until the next one bakes it. Edit CAD
-and Edit SDF still keep a recipe, below, until they hold theirs too.
+each drag) is one undo. There is no operation list to edit. **An Edit node
+holds what is modeled in it** (docs/research/POLY-MODELING.md, "Edit nodes
+hold their result"): Edit Mesh its mesh, Edit CAD its bodies, curves and
+sketches, Edit SDF its SDF program. An action replaces the held result at
+once, the cook returns it with no work, and only the last action stays
+adjustable (its tool bar and drag run it again from the result before it)
+until the next one bakes it.
 There is one Edit node per kind of geometry, so each keeps its own levels and
 tools: **Edit Mesh** (polygons), **Edit CAD** (analytic models) and **Edit
 SDF** (signed distance fields). They share one framework (`edit_types.luc`,
 `edit_kinds.luc`): a kind supplies its selection levels, its tools and
-primitives, the geometry each level picks on, the geometry its recipe starts
-from, and the step executor that gives its verbs meaning; the recipe, undo,
-checkpoints, the selection and its hand-off, the tool amount, symmetry, soft
+primitives, the geometry each level picks on, the geometry it starts from,
+and the step executor that gives its verbs meaning; the held result, undo,
+the selection and its hand-off, the tool amount, symmetry, soft
 selection and Keep selection, Tool → Select, the inspector rows, the level
 switcher and the tool strip are the framework's. The tool strip and the
 Create entries come from the kinds themselves: the strip shows what the
 active kind offers (Edit Mesh's on other nodes). A kind may also show its
 selection through surfaces (Edit SDF).
 
-A step that cannot be built does not take the node down. The recipe stops
-there, and the node keeps what the steps before it made. Its warning names the
-step and says why, for example "Step 3 (Fillet) could not be built: a fillet
-radius of 0.5 is too large for this curved edge: it must be less than 0.341".
-The node shows WARNING, and the status line shows the displayed node's
-warning. Undo the step, or change its values in the tool bar.
+An action that cannot be built does not take the node down: the node keeps
+what it held, and its warning names the action and says why, for example
+"Fillet could not be built: a fillet radius of 0.5 is too large for this
+curved edge: it must be less than 0.341". The node shows WARNING, and the
+status line shows the displayed node's warning. Undo the action, or change
+its values in the tool bar.
 
 Any other node that fails shows ERROR and its message, and the status line
 says "(the viewport shows its input)". The viewport then shows the nearest node
@@ -379,7 +380,7 @@ Polygons), and the menus follow:
   numbers (as its tool bar left them, or its node's values when it made a
   node).
 
-A Select tool changes the selection, not the recipe, one undo step: loops,
+A Select tool changes the selection, not the model, one undo step: loops,
 rings, face loops, boundaries, Loop to Region, Grow and Shrink, Connected
 (with seam, sharp, material, UV and angle delimits), Shortest Path, Similar,
 Sharp Edges, By Sides, By Area, By Normal, Non-manifold, Loose, Interior
@@ -458,8 +459,10 @@ Bodies, the surfacing families, Curves…), led by Repeat and Press Pull.
   face, its loops projected once when it is made, or on an origin plane, and
   edits it at once with the Sketch node's editor; **Finish Sketch** leaves it,
   **Edit Sketch** edits one again, **Show/Hide Sketch** shows it or not.
-  Drawing changes the step that made the sketch while it is the recipe's last,
-  else adds an Edit Sketch step. Extrude and Revolve from the sketch (its
+  Drawing changes the action that made the sketch while it is the last,
+  else is an Edit Sketch action. A sketch is held as data: editing it later
+  changes the sketch, not the bodies already extruded from it (they were
+  baked when the next action came), as a direct modeler's sketches do. Extrude and Revolve from the sketch (its
   picked profiles, else its closed shapes) are steps with the nodes' rows,
   arrows and value box; Auto cuts into a model, else joins the models it
   touches, else makes a body. A feature hides its sketch, as Fusion's does,
@@ -641,10 +644,11 @@ Bodies, the surfacing families, Curves…), led by Repeat and Press Pull.
     range arrows are handles. The report line is
     Alias's Diagnostic Feedback (gap, angle, curvature and G3 differences,
     start and end angles).
-  - **Aligned rows stay aligned**: a Move CVs or CV transform step later in
-    the recipe that moves a CV of the rows an Align set runs that Align
-    again afterwards (the owner's rule), so the tangent row cannot be
-    dragged off the tangent plane.
+  - **Aligned rows stay aligned**: each Align is held with the bodies as a
+    relation (`GeometryData.aligns`, saved with the held result), and a
+    later CV move on the rows an Align set runs that Align again
+    afterwards (the owner's rule), so the tangent row cannot be dragged off
+    the tangent plane.
   - **Symmetry Align** (Alias's Symmetry Plane Align): the input's edge
     onto a plane square to X, Y or Z at an offset (Project for position),
     G0–G3 with its mirror half.
@@ -785,10 +789,17 @@ Bodies, the surfacing families, Curves…), led by Repeat and Press Pull.
 - **Stage 3 follow-up**: Trim's 3D Trimming draws the curves as they are cast
   onto the face (white) while it waits for its region clicks.
 - Primitives are luce-cad's analytic solids: Box, Cylinder, Cone, Sphere and
-  Torus. Faces a step makes are named for the node and the step's place in
-  the recipe (`#<node>s<n>`), so later steps find them and two Edit CAD nodes
-  in one chain never clash; an imported model's unnamed faces are named when
-  the recipe starts.
+  Torus. Faces an action makes are named for the node and the action's
+  number (`#<node>s<n>`, counted across baked actions and saved), so later
+  actions find them and two Edit CAD nodes in one chain never clash; an
+  imported model's unnamed faces are named when the node starts.
+- **Reblend** works on the held bodies as they are: luce-cad identifies their
+  blends by shape (constant rolling-ball fillets, an imported body's too),
+  so no fillet history is needed.
+- **Tolerances.** Held bodies do not cook again when the project's
+  tolerances change: each is checked against the new ones instead, and edges
+  lying off their faces by more than the new positional tolerance are made
+  tolerant, the node saying how many (`edit_held.recheck`).
 
 The last step's handles, value box and tool bar rows are the nodes'; a step
 that cannot be built says why under its rows and on the node, while the model
@@ -1278,15 +1289,13 @@ project. Every length parameter shows its unit and takes typed units
   expression and its type, the parameter values, the connectivity hash the
   group was selected on, and the node's Symmetry and Keep selection settings
   at the time.
-- Edit Mesh keeps its earlier meshes in the undo history (each immutable,
+- An Edit node keeps its earlier results in the undo history (each immutable,
   sharing its arrays with the next): undo and redo cook nothing. The history
   keeps at most 64 changes and at most 2 GiB of held meshes beyond the
   graph's own (each shared array counted once, from the newest change back;
-  the newest change always stays). A recipe kind (Edit CAD, Edit SDF) is the
-  truth instead: undo restores a shorter recipe, and the worker keeps the
-  results after the last eight steps and every sixteenth (D18). Consecutive
-  moves of the same components merge into one action (D19); each drag
-  remains its own undo.
+  the newest change always stays). Edit CAD and Edit SDF keep theirs the
+  same way. Consecutive moves of the same components merge into one action
+  (D19); each drag remains its own undo.
 - After a topology tool the selection becomes what the tool made (Extrude's
   front faces); with **Keep selection** it is instead the selection carried
   through the tool (a new element is selected when all its parents were).
@@ -1301,10 +1310,11 @@ project. Every length parameter shows its unit and takes typed units
   each member (points, faces, edges and vertices matched by position within a
   ten-thousandth of the model's size), and moved points' mirrors move to the
   mirrored places; points on the plane stay on it.
-- In a recipe kind, an upstream change that alters the input's topology fails
-  the node: "Edit input topology changed. Undo the upstream change or clear
-  this node's edits." Position-only upstream changes flow through the recipe.
-  Edit Mesh holds what it has instead ("Input changed", Reload Input).
+- An upstream change does not flow into an Edit node: it holds what it has,
+  says "Input changed", and Reload Input (one undo step) starts it over from
+  the input as it is now. Edit GSplats still keeps a recipe: there a change
+  upstream that alters the splats fails the node until it is undone or the
+  node's edits are cleared.
 
 ## Attribute contracts
 

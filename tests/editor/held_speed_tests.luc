@@ -11,6 +11,8 @@ from luce_geocore.geocore import Selection
 import node_commands
 import selection_commands
 import component_moves
+import modeling_commands
+from edit_types import face_level
 import time
 from luce_std import math
 
@@ -19,6 +21,10 @@ pub func held_speed_tests() -> unit!:
     let grid = drag_cost(false, 1024, "", 3)
     let worker_grid = drag_cost(true, 1024, "", 3)
     print(f"PASS Edit Mesh drags: a cube's edge {cube:.3f} ms a move, 1,000 faces of a 1M-face grid {grid:.2f} ms a move here, {worker_grid:.2f} ms with the worker (request to result adopted)")
+    let early = cad_action_cost(1)
+    let late = cad_action_cost(40)
+    print(f"PASS Edit CAD actions: a box's top face moved, {early:.2f} ms after 1 action, {late:.2f} ms after 40 (the held bodies, nothing replayed)")
+    assert(late < early * 4.0 + 20.0)
 
 ## Wait for the worker's result.
 func settle(w: Workspace) -> unit!:
@@ -71,4 +77,28 @@ func drag_cost(worker: bool, divisions: int, group: str, group_type: int) -> flo
     # Two drags of 0.2 each moved the group up 0.4.
     let moved = w.geometry else trap("moved")
     assert(math.abs(moved.bounds().maximum.y - (0.4 if divisions > 0 else 2.0)) < 0.0001 or divisions == 0)
+    return spent
+
+## Milliseconds an Edit CAD action takes, from the command to its result,
+## after `actions` earlier ones: a box's top face moved up that many times,
+## then once more, timed.
+func cad_action_cost(actions: int) -> float!:
+    let w = Workspace()
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    modeling_commands.create(w, "Box")
+    var spent = 0.0
+    for action in 0..<actions + 1:
+        selection_commands.set_mode(w, face_level)
+        let mesh = w.geometry else trap("pick geometry")
+        for polygon in 0..<mesh.face_count():
+            if mesh.face_normal(polygon).y > 0.99:
+                selection_commands.choose_component(w, polygon, false)
+                break
+        let started = time.now()
+        component_moves.move_selection(w, Vector3(0.0, 0.1, 0.0))
+        _ = w.network.evaluate_data(w.network.display)
+        spent = float(time.now() - started) / 1000000.0
     return spent

@@ -2,15 +2,22 @@
 ## their result"): each held result is an immutable luce-geocore set, kept
 ## here under its content key so the compute worker reads it by that key
 ## (Luce objects never cross threads; the set's storage is shared, not
-## copied). The UI puts each held result it makes and, after every change
+## copied). A set holding objects of the UI thread (Edit CAD's models) is
+## also written once to a crate in a folder of this process's, which the
+## worker reads back as its own. The UI puts each held result it makes and, after every change
 ## of the graph or the undo history, says which keys are still alive; the
 ## rest are released. Also measures what the held results of the undo
 ## history take, each shared array once, for its memory bound.
 import interop
 import memory
 import sync
+import c
+import strings
+from luce_std import files
+from luce_std import paths
+from luce_std import process
 
-from luce_geocore.geocore import GeometrySet, geometry_set_type, invalid
+from luce_geocore.geocore import GeometrySet, GeometryFile, geometry_set_type, invalid
 from luce_geocore.kernel import IdSet, set_bytes
 from luce_geocore.core.growing import Growing
 
@@ -18,14 +25,46 @@ from luce_geocore.core.growing import Growing
 ## its arrays shared; CAD models, objects of the UI thread, left out).
 struct Entry:
     var key: i64
-    var set: GeometrySet*
+    ## The set's plain storage, or its crate's path when it holds objects
+    ## (empty: none). Plain bytes: the store outlives the runtime's objects.
+    var set: GeometrySet*?
+    var file: Growing[u8]
 
     func close():
-        self.set.close()
-        free(self.set) in memory.heap
+        if let storage = self.set:
+            storage.close()
+            free(storage) in memory.heap
+        if self.file.count > 0:
+            # A crate that cannot be removed stays behind in the folder.
+            _ = removed((str)self.file.view())
+        self.file.close()
+
+## Remove crate `path`; whether it went.
+func removed(path: str) -> bool:
+    let native = strings.copy(path) catch failure:
+        return false
+    defer strings.release(native)
+    files.remove_file((c.str)native) catch failure:
+        return false
+    return true
 
 var store_lock: sync.Mutex
 var entries: Growing[Entry] = Growing[Entry]()
+## This process's folder of crates, made on first use (plain bytes).
+var folder: Growing[u8] = Growing[u8]()
+
+## The folder crates of held sets go in (under TMPDIR, TEMP or /tmp).
+func crate_folder() -> str!:
+    if folder.count > 0: return (str)folder.view()
+    var parent = process.variable("TMPDIR")
+    if parent == none: parent = process.variable("TEMP")
+    let base = parent else "/tmp"
+    let native = try strings.copy(base)
+    defer strings.release(native)
+    let made = try files.create_temporary_directory((c.str)native)
+    defer made.release()
+    try folder.assign(made.value.bytes)
+    return (str)folder.view()
 
 pub struct HeldStore:
     let reserved: u8 = 0
@@ -35,8 +74,29 @@ pub struct HeldStore:
     pub static func put(key: i64, set: interop.Reference[GeometrySet]) -> !:
         if key == 0: error(invalid, "a held result needs a key")
         if HeldStore.holds(key): return
-        let storage = try (try set.get()).plain_storage()
-        var entry = Entry(key, storage)
+        let whole = try set.get()
+        var file = Growing[u8]()
+        errdefer file.close()
+        if whole.holds_objects():
+            store_lock.lock()
+            let directory = crate_folder() catch failure:
+                store_lock.unlock()
+                error(failure.code, failure.message)
+            var room: u8[48]
+            let name = strings.format(room[..<48], f"held-{key}.prism") catch failure:
+                store_lock.unlock()
+                error(failure.code, failure.message)
+            let path = paths.join(directory, name) catch failure:
+                store_lock.unlock()
+                error(failure.code, failure.message)
+            store_lock.unlock()
+            defer path.release()
+            _ = try GeometryFile.save(set, path.value, key)
+            try file.assign(path.value.bytes)
+        var storage: GeometrySet*? = none
+        if file.count == 0:
+            storage = try whole.plain_storage()
+        var entry = Entry(key, storage, file)
         store_lock.lock()
         defer store_lock.unlock()
         for other in entries.view():
@@ -47,17 +107,28 @@ pub struct HeldStore:
             entry.close()
             error(failure.code, failure.message)
 
-    ## The set held under `key`, owned by the calling thread.
+    ## The set held under `key`, owned by the calling thread: read back from
+    ## its crate when it holds objects.
     pub static func get(key: i64) -> interop.Reference[GeometrySet]!:
         store_lock.lock()
         var found: GeometrySet*? = none
+        var crate = Growing[u8]()
+        defer crate.close()
         for entry in entries.view():
             if entry.key == key:
-                found = entry.set.plain_storage() catch failure:
+                if entry.file.count > 0:
+                    crate.assign(entry.file.view()) catch failure:
+                        store_lock.unlock()
+                        error(failure.code, failure.message)
+                    break
+                let storage = entry.set else break
+                found = storage.plain_storage() catch failure:
                     store_lock.unlock()
                     error(failure.code, failure.message)
                 break
         store_lock.unlock()
+        if crate.count > 0:
+            return try GeometryFile.load((str)crate.view())
         let storage = found else error(invalid, "an Edit node's held result is gone")
         return try interop.Reference[GeometrySet].adopt(storage, geometry_set_type, memory.heap)
 
@@ -110,6 +181,6 @@ pub struct HeldStore:
         for key in keys:
             for entry in entries.view():
                 if entry.key == key:
-                    total += try set_bytes(entry.set, &ids)
+                    if let storage = entry.set: total += try set_bytes(storage, &ids)
                     break
         return (i64)total

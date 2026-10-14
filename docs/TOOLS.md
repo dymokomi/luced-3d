@@ -1604,7 +1604,7 @@ Curves on a plane or a flat face, constrained and dimensioned.
 
 Put a sketch onto another flat face or an origin plane.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on faces.
 - With nothing selected: "Click the flat face to put the sketch on (or choose an origin plane in the tool bar, then Enter); Esc cancels".
 - Gesture: sketch.
@@ -1620,7 +1620,7 @@ Put a sketch onto another flat face or an origin plane.
 
 Sweep a sketch's profiles or a face along the sketch plane's normal into a body, joined, cut or intersected by Auto.
 
-- Node `Extrude` in CAD; a step of Edit CAD.
+- Node `Extrude` in CAD; an action in Edit CAD.
 - Works on curves.
 - Also picks object: The face the extrusion runs to (To object), kept by its name so it stays that face as the body changes.
 - Also picks side 2 object: The face the second side runs to (To object).
@@ -1654,7 +1654,7 @@ Sweep a sketch's profiles or a face along the sketch plane's normal into a body,
 
 Turn a sketch's profiles about an axis into a body, joined, cut or intersected by Auto.
 
-- Node `Revolve` in CAD; a step of Edit CAD.
+- Node `Revolve` in CAD; an action in Edit CAD.
 - Works on curves.
 - Also picks object: The face the revolve turns to (Type: To), kept by its name.
 - Also picks axis: The sketch line or body edge the profiles turn about (projected onto the sketch's plane).
@@ -1752,7 +1752,7 @@ A free curve: through points, by control points, from an edge, an isoparm, or on
 
 A curve through clicked control points, degree 5 by default.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on curves.
 - Gesture: clicks place its corners when nothing is selected; Enter finishes.
 
@@ -1764,7 +1764,7 @@ A curve through clicked control points, degree 5 by default.
 
 A curve passing through clicked points, degree 5 by default.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on curves.
 - Gesture: clicks place its corners when nothing is selected; Enter finishes.
 
@@ -1776,7 +1776,7 @@ A curve passing through clicked points, degree 5 by default.
 
 A curve lying on a face, through points clicked on it.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on curves.
 - Gesture: clicks place its corners when nothing is selected; Enter finishes.
 
@@ -1788,7 +1788,7 @@ A curve lying on a face, through points clicked on it.
 
 The isoparm through a point double-clicked on a surface, as a curve.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on curves.
 - Gesture: isoparm.
 
@@ -1805,7 +1805,7 @@ The isoparm through a point double-clicked on a surface, as a curve.
 
 Round edges with a rolling ball: constant, chord length or variable radius, G1 to G3, rule fillets, full rounds and selection sets.
 
-- Node `Fillet` in CAD; a step of Edit CAD.
+- Node `Fillet` in CAD; an action in Edit CAD.
 - Works on edges.
 - Also picks center face: Full round: the face rounded away, kept by its name; the faces on each side are found across its longest parallel edges.
 - Also picks faces: Rule fillet, Between faces: the first set of faces, kept by their names.
@@ -1867,7 +1867,7 @@ Round edges with a rolling ball: constant, chord length or variable radius, G1 t
 
 Cut edges flat: an equal distance, two distances, or a distance and an angle.
 
-- Node `Chamfer` in CAD; a step of Edit CAD.
+- Node `Chamfer` in CAD; an action in Edit CAD.
 - Works on edges.
 - After it runs, a drag in the viewport sets Distance (hauled away from the selection's center); a click keeps it.
 
@@ -1885,7 +1885,7 @@ Cut edges flat: an equal distance, two distances, or a distance and an angle.
 
 Give fillet faces another radius.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on faces or patches.
 - Gesture: reblend.
 - After it runs, a drag in the viewport sets Radius (hauled away from the selection's center); a click keeps it.
@@ -1900,7 +1900,7 @@ Give fillet faces another radius.
 
 Move faces along their normals, tangent faces following.
 
-- Node `Offset Face` in CAD; a step of Edit CAD.
+- Node `Offset Face` in CAD; an action in Edit CAD.
 - Works on faces or patches.
 - After it runs, a drag in the viewport sets Distance (hauled away from the selection's center); a click keeps it.
 
@@ -1912,7 +1912,7 @@ Move faces along their normals, tangent faces following.
 
 Hollow a body to a wall Inside, Outside or Both, the faces picked opened.
 
-- Node `Shell` in CAD; a step of Edit CAD.
+- Node `Shell` in CAD; an action in Edit CAD.
 - Works on objects or faces or patches.
 - Also picks bodies: Bodies hollowed closed, with nothing opened.
 - After it runs, a drag in the viewport sets Inside thickness (hauled away from the selection's center); a click keeps it.
@@ -1928,7 +1928,7 @@ Hollow a body to a wall Inside, Outside or Both, the faces picked opened.
 
 Split faces where a face's surface or an origin plane crosses them.
 
-- Node `Split Face` in CAD; a step of Edit CAD.
+- Node `Split Face` in CAD; an action in Edit CAD.
 - Works on faces or patches.
 - Also picks splitting face: The face whose surface, extended, splits them.
 
@@ -1942,7 +1942,7 @@ Split faces where a face's surface or an origin plane crosses them.
 
 Move faces onto the surface of target faces.
 
-- Node `Replace Face` in CAD; a step of Edit CAD.
+- Node `Replace Face` in CAD; an action in Edit CAD.
 - Works on faces or patches.
 - Also picks target faces: The faces (one surface, or a solid's faces) the faces are moved onto.
 
@@ -1954,14 +1954,14 @@ Move faces onto the surface of target faces.
 
 Delete faces and heal the body over them; a whole body picked goes.
 
-- Node `Delete Face` in CAD; a step of Edit CAD (`Delete`).
+- Node `Delete Face` in CAD; an action in Edit CAD (`Delete`).
 - Works on objects or faces or patches.
 
 ##### Remove Faces
 
 Take faces away and leave the model open.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on faces or patches.
 
 #### Bodies
@@ -1970,7 +1970,7 @@ Take faces away and leave the model open.
 
 Move or copy bodies, or faces with the faces around following: free, along a direction, turned, or point to point.
 
-- Node `Move` in CAD; a step of Edit CAD (`Transform Components`).
+- Node `Move` in CAD; an action in Edit CAD (`Transform Components`).
 - Works on objects or faces or patches.
 - Also picks rotate axis: Rotate: the edge whose line it turns about.
 - Also picks from point: The point that moves: a corner or an edge's end, a round edge's middle.
@@ -1996,7 +1996,7 @@ Move or copy bodies, or faces with the faces around following: free, along a dir
 
 Join tool bodies to a target body, cut them from it, or keep what they share.
 
-- Node `Combine` in CAD; a step of Edit CAD.
+- Node `Combine` in CAD; an action in Edit CAD.
 - Works on objects.
 - Also picks tool bodies: The bodies joined to, cut from or intersected with the target (the second input's bodies are tools too).
 
@@ -2009,7 +2009,7 @@ Join tool bodies to a target body, cut them from it, or keep what they share.
 
 Split bodies by a face's surface or an origin plane, each piece a body.
 
-- Node `Split Body` in CAD; a step of Edit CAD.
+- Node `Split Body` in CAD; an action in Edit CAD.
 - Works on objects.
 - Also picks splitting face: The face whose surface, extended, splits the bodies.
 
@@ -2023,7 +2023,7 @@ Split bodies by a face's surface or an origin plane, each piece a body.
 
 Take whole bodies away.
 
-- Node `Remove` in CAD; a step of Edit CAD.
+- Node `Remove` in CAD; an action in Edit CAD.
 - Works on objects.
 
 ##### Mirror Body
@@ -2058,7 +2058,7 @@ Copy the bodies along an axis or around it.
 
 Scale bodies by one factor, about the origin or about each body's middle.
 
-- Node `Scale Body` in CAD; a step of Edit CAD.
+- Node `Scale Body` in CAD; an action in Edit CAD.
 - Works on objects.
 - After it runs, a drag in the viewport sets Scale (hauled away from the selection's center); a click keeps it.
 
@@ -2073,7 +2073,7 @@ Scale bodies by one factor, about the origin or about each body's middle.
 
 Free curves from the edges picked, or a face's isoparm.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on edges or faces or patches.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2085,7 +2085,7 @@ Free curves from the edges picked, or a face's isoparm.
 
 A curve blending two curves or edges, G0 to G4 at each end.
 
-- Node `Blend Curve` in CAD; a step of Edit CAD.
+- Node `Blend Curve` in CAD; an action in Edit CAD.
 - Works on curves.
 - Also picks from curve: The curve or edge the blend leaves, at its end nearest the other (an edge when the input has no curves).
 - Also picks to curve: The curve or edge the blend meets.
@@ -2111,7 +2111,7 @@ A curve blending two curves or edges, G0 to G4 at each end.
 
 A curve blending two edges, G0 to G4 at each end.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on edges.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2135,7 +2135,7 @@ A curve blending two edges, G0 to G4 at each end.
 
 Join two curves end to end, by a blend or a straight connection.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on curves.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2148,7 +2148,7 @@ Join two curves end to end, by a blend or a straight connection.
 
 Cut a curve in two at a parameter.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on curves.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2159,7 +2159,7 @@ Cut a curve in two at a parameter.
 
 Close a curve, keeping its shape with a blend span or meeting its ends halfway.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on curves.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2170,7 +2170,7 @@ Close a curve, keeping its shape with a blend span or meeting its ends halfway.
 
 Reshape a curve by dragging handles along it.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on curves.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2181,14 +2181,14 @@ Reshape a curve by dragging handles along it.
 
 Reverse a curve's direction.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on curves.
 
 ##### Delete
 
 Delete the curves picked.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on curves.
 
 #### Surface Edit
@@ -2197,7 +2197,7 @@ Delete the curves picked.
 
 Cast curves onto a face along a vector, the view or its normals.
 
-- Node `Project` in CAD; a step of Edit CAD.
+- Node `Project` in CAD; an action in Edit CAD.
 - Works on curves.
 - Also picks projection face: The face the curves are cast onto, kept by its name.
 - Gesture: view.
@@ -2213,7 +2213,7 @@ Cast curves onto a face along a vector, the view or its normals.
 
 Curves where two faces meet, or a face and a plane.
 
-- Node `Intersect` in CAD; a step of Edit CAD.
+- Node `Intersect` in CAD; an action in Edit CAD.
 - Works on faces or patches.
 - Also picks second face: The face it meets.
 
@@ -2228,7 +2228,7 @@ Curves where two faces meet, or a face and a plane.
 
 Cut a face by its curves, keeping or discarding the regions clicked, or dividing it.
 
-- Node `Trim` in CAD; a step of Edit CAD.
+- Node `Trim` in CAD; an action in Edit CAD.
 - Works on faces or patches.
 - Also picks cutting faces: 3D Trimming by Intersect: the faces that cut it where they meet it.
 
@@ -2245,7 +2245,7 @@ Cut a face by its curves, keeping or discarding the regions clicked, or dividing
 
 Undo a face's last trim, or every one.
 
-- Node `Untrim` in CAD; a step of Edit CAD.
+- Node `Untrim` in CAD; an action in Edit CAD.
 - Works on faces or patches.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2256,7 +2256,7 @@ Undo a face's last trim, or every one.
 
 Make a trimmed face a surface of its own, untrimmed.
 
-- Node `Trim Convert` in CAD; a step of Edit CAD.
+- Node `Trim Convert` in CAD; an action in Edit CAD.
 - Works on faces or patches.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2272,14 +2272,14 @@ Make a trimmed face a surface of its own, untrimmed.
 
 Cut a trimmed face's surface down to its trimmed region.
 
-- Node `Shrink` in CAD; a step of Edit CAD.
+- Node `Shrink` in CAD; an action in Edit CAD.
 - Works on faces or patches.
 
 ##### Stitch
 
 Join bodies along edges that lie within a gap.
 
-- Node `Stitch` in CAD; a step of Edit CAD.
+- Node `Stitch` in CAD; an action in Edit CAD.
 - Works on objects.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2292,7 +2292,7 @@ Join bodies along edges that lie within a gap.
 
 Make each face of a body a body of its own.
 
-- Node `Unstitch` in CAD; a step of Edit CAD.
+- Node `Unstitch` in CAD; an action in Edit CAD.
 - Works on objects.
 
 #### Align
@@ -2301,7 +2301,7 @@ Make each face of a body a body of its own.
 
 Make a surface's edge or a curve's end meet a master G0 to G3.
 
-- Node `Align` in CAD; a step of Edit CAD.
+- Node `Align` in CAD; an action in Edit CAD.
 - Works on edges or curves.
 - Also picks master: What it aligns to: an edge, a curve, a face (Project, U/V), or a double-click on a surface for an isoparm.
 - Also picks second master: A second master for another side of the input (optional).
@@ -2353,7 +2353,7 @@ Make a surface's edge or a curve's end meet a master G0 to G3.
 
 Make an edge meeting a symmetry plane continuous with its mirror image.
 
-- Node `Symmetry Align` in CAD; a step of Edit CAD.
+- Node `Symmetry Align` in CAD; an action in Edit CAD.
 - Works on edges or curves.
 - With nothing selected: "Symmetry Align: select the input first: a surface's edge (Edges level) or a curve near its end (Curves level)".
 
@@ -2370,7 +2370,7 @@ Make an edge meeting a symmetry plane continuous with its mirror image.
 
 A surface from four boundaries, each Free, G0, G1, G2, implied or at a tangent angle.
 
-- Node `Square` in CAD; a step of Edit CAD.
+- Node `Square` in CAD; an action in Edit CAD.
 - Works on curves or edges.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2408,7 +2408,7 @@ A surface from four boundaries, each Free, G0, G1, G2, implied or at a tangent a
 
 A loft through sections in order, its ends matched to the surfaces they lie on.
 
-- Node `Skin` in CAD; a step of Edit CAD.
+- Node `Skin` in CAD; an action in Edit CAD.
 - Works on curves or edges.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2435,7 +2435,7 @@ A loft through sections in order, its ends matched to the surfaces they lie on.
 
 Generation curves swept along one or two rails.
 
-- Node `Rail` in CAD; a step of Edit CAD.
+- Node `Rail` in CAD; an action in Edit CAD.
 - Works on curves or edges.
 - Also picks rails: One rail, or two.
 
@@ -2477,7 +2477,7 @@ Generation curves swept along one or two rails.
 
 Profiles placed along a rail, oriented Parallel, Radial or by the surface normal.
 
-- Node `Profile` in CAD; a step of Edit CAD.
+- Node `Profile` in CAD; an action in Edit CAD.
 - Works on curves or edges.
 - Also picks rail: The rail the profiles are placed on.
 
@@ -2495,14 +2495,14 @@ Profiles placed along a rail, oriented Parallel, Radial or by the surface normal
 
 Closed curves lying in a plane filled as a planar sheet.
 
-- Node `Set Planar` in CAD; a step of Edit CAD.
+- Node `Set Planar` in CAD; an action in Edit CAD.
 - Works on curves or edges.
 
 ##### Sheet Extrude
 
 Free curves swept along a direction to a sheet.
 
-- Node `Sheet Extrude` in CAD; a step of Edit CAD.
+- Node `Sheet Extrude` in CAD; an action in Edit CAD.
 - Works on curves or edges.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2515,7 +2515,7 @@ Free curves swept along a direction to a sheet.
 
 Free curves turned about an axis to a sheet.
 
-- Node `Sheet Revolve` in CAD; a step of Edit CAD.
+- Node `Sheet Revolve` in CAD; an action in Edit CAD.
 - Works on curves or edges.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2529,7 +2529,7 @@ Free curves turned about an axis to a sheet.
 
 Carry a surface's edge or a curve's end on, by a distance or a percentage.
 
-- Node `Extend` in CAD; a step of Edit CAD.
+- Node `Extend` in CAD; an action in Edit CAD.
 - Works on edges or curves.
 - With nothing selected: "Extend: select a surface's edge (Edges level) or a curve near its end (Curves level) first".
 
@@ -2547,7 +2547,7 @@ Carry a surface's edge or a curve's end on, by a distance or a percentage.
 
 A surface between two sides of edges or curves, G0 to G3 at each.
 
-- Node `Blend Surface` in CAD; a step of Edit CAD.
+- Node `Blend Surface` in CAD; an action in Edit CAD.
 - Works on edges or curves.
 - Also picks second side: Side 2, likewise.
 - Also picks profiles: Alias's Profile Blend: curves across the blend it passes through (none: a Freeform Blend).
@@ -2579,7 +2579,7 @@ A surface between two sides of edges or curves, G0 to G3 at each.
 
 A rolling-ball blend between two sets of faces.
 
-- Node `Surface Fillet` in CAD; a step of Edit CAD.
+- Node `Surface Fillet` in CAD; an action in Edit CAD.
 - Works on faces or patches.
 - Also picks second faces: The second set.
 
@@ -2604,7 +2604,7 @@ A rolling-ball blend between two sets of faces.
 
 A round tube along a curve, its radius constant or varying.
 
-- Node `Tube` in CAD; a step of Edit CAD.
+- Node `Tube` in CAD; an action in Edit CAD.
 - Works on edges or curves.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2622,7 +2622,7 @@ A round tube along a curve, its radius constant or varying.
 
 A hole's boundaries filled with one surface, G0 to G2 at each, through guides.
 
-- Node `Fill Surface` in CAD; a step of Edit CAD.
+- Node `Fill Surface` in CAD; an action in Edit CAD.
 - Works on edges or curves.
 - Also picks guides: Curves the fill runs through, and points (a double-click on a surface); none as well.
 
@@ -2669,7 +2669,7 @@ A hole's boundaries filled with one surface, G0 to G2 at each, through guides.
 
 A fillet bridging two side sets across a center set it consumes.
 
-- Node `Bridge Fillet` in CAD; a step of Edit CAD.
+- Node `Bridge Fillet` in CAD; an action in Edit CAD.
 - Works on faces or patches.
 - Also picks second faces: The second side set.
 - Also picks center faces: The center set the bridge also touches, and consumes.
@@ -2686,7 +2686,7 @@ A fillet bridging two side sets across a center set it consumes.
 
 A patch closing the corner where three or four blends meet.
 
-- Node `Corner` in CAD; a step of Edit CAD.
+- Node `Corner` in CAD; an action in Edit CAD.
 - Works on faces or patches.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2703,7 +2703,7 @@ A patch closing the corner where three or four blends meet.
 
 Add a knot to a surface where it is, the shape kept.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on cvs or faces or patches.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2716,7 +2716,7 @@ Add a knot to a surface where it is, the shape kept.
 
 Take a knot out of a surface, within a tolerance.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on cvs or faces or patches.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2730,7 +2730,7 @@ Take a knot out of a surface, within a tolerance.
 
 Raise a surface's degree along U and V, the shape kept.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on cvs or faces or patches.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2742,7 +2742,7 @@ Raise a surface's degree along U and V, the shape kept.
 
 Rebuild a surface: explicit degrees and spans, within a tolerance, fewer spans, Bezier.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on cvs or faces or patches.
 
 | Row | Starts at | On the tool bar | What it does |
@@ -2762,7 +2762,7 @@ Rebuild a surface: explicit degrees and spans, within a tolerance, fewer spans, 
 
 Make a face's analytic surface a B-spline surface.
 
-- A step of Edit CAD.
+- An action in Edit CAD.
 - Works on faces or patches.
 
 #### Inspect
