@@ -26,9 +26,16 @@ let lit_bias: f64 = 0.000004
 
 pub struct OverlayLines:
     var points: Growing[Vector3]
+    ## The GPU batch made of the points (`batch`), and how many points it
+    ## holds: points are only added, so it stands while that count does,
+    ## and each draw of unchanged lines reuses it and its upload.
+    var made: interop.Reference[WireBatch]?
+    var made_count: usize
 
     pub func init():
         self.points = Growing[Vector3]()
+        self.made = none
+        self.made_count = 0
 
     ## Empty lines, owned by the caller.
     pub static func make() -> interop.Reference[OverlayLines]!:
@@ -419,11 +426,21 @@ pub struct OverlayLines:
         # Which way it shines: down its local -Z.
         try self.segment(matrix, Vector3(), Vector3(0.0, 0.0, -reach))
 
-    ## A GPU batch of the segments.
+    ## A GPU batch of the segments, made again only when segments were
+    ## added since.
     pub func batch() -> interop.Reference[WireBatch]!:
-        return try interop.Reference[WireBatch].adopt(try new WireBatch(self.points.view()) in memory.heap, wire_batch_type, memory.heap)
+        if let kept = self.made:
+            if self.made_count == self.points.count: return kept.clone()
+            kept.release()
+            self.made = none
+        let fresh = try interop.Reference[WireBatch].adopt(try new WireBatch(self.points.view()) in memory.heap, wire_batch_type, memory.heap)
+        self.made = fresh.clone()
+        self.made_count = self.points.count
+        return fresh
 
     pub func close():
+        if let kept = self.made: kept.release()
+        self.made = none
         self.points.close()
 
 ## The endpoints of `lines`, for Base consumers (the worker channel).

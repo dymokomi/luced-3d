@@ -1,47 +1,79 @@
 ## Chains of a sketch's curves: curves joined end to end, as far as each
 ## joint is just two curves meeting (a shape, for Offset and the Shapes
-## selection level).
+## selection level). The joints (which curves end at each point) are found
+## in one pass, so tracing a chain costs its length, not a scan of the
+## sketch per step.
 from luce_cad.sketch import CadSketch
 from sketch_kinds import point_kind
 from sketch_geometry import start_point, end_point
 
+## The curves ending at each point of a sketch (its points and the origin's
+## axes, which run through shapes without joining them, left out).
+pub class Joints:
+    let ends: map[int, list[int]]
+
+    pub func init(self, sketch: CadSketch):
+        self.ends = {}
+        for at in 0..<sketch.entity_count():
+            if sketch.kind(at) == point_kind or sketch.origin_part(at) >= 0:
+                continue
+            for point in [start_point(sketch, at), end_point(sketch, at)]:
+                if point < 0:
+                    continue
+                if let curves = self.ends[point]:
+                    if not (at in curves): curves.append(at)
+                else:
+                    self.ends[point] = [at]
+
+    ## The curves joined end to end with `curve`, in order along the chain.
+    pub func chain(self, sketch: CadSketch, curve: int) -> list[int]:
+        let chain = [curve]
+        let taken: set[int] = {curve}
+        # Forward from the curve's end, then back from its start.
+        var tail = end_point(sketch, curve)
+        var going = true
+        while going:
+            going = false
+            let next = self.only_other(tail, taken)
+            if next >= 0:
+                chain.append(next)
+                taken.insert(next)
+                tail = end_point(sketch, next) if start_point(sketch, next) == tail else start_point(sketch, next)
+                going = true
+        let before: list[int] = []
+        var head = start_point(sketch, curve)
+        going = true
+        while going:
+            going = false
+            let previous = self.only_other(head, taken)
+            if previous >= 0:
+                before.append(previous)
+                taken.insert(previous)
+                head = start_point(sketch, previous) if end_point(sketch, previous) == head else end_point(sketch, previous)
+                going = true
+        let result: list[int] = []
+        var at = before.length - 1
+        while at >= 0:
+            result.append(before[at])
+            at -= 1
+        return result + chain
+
+    ## The one curve not yet `taken` at point `point`, or -1 (none, or a
+    ## branch: two or more untaken curves end there).
+    func only_other(self, point: int, taken: set[int]) -> int:
+        if point < 0:
+            return -1
+        let curves = self.ends[point] else return -1
+        var found = -1
+        for curve in curves:
+            if curve in taken:
+                continue
+            if found >= 0:
+                return -1
+            found = curve
+        return found
+
 ## The curves joined end to end with `curve` (as far as each joint is two
 ## curves meeting), in order along the chain.
 pub func chain_of(sketch: CadSketch, curve: int) -> list[int]:
-    let chain = [curve]
-    # Forward from the curve's end, then back from its start.
-    var tail = end_point(sketch, curve)
-    var going = true
-    while going:
-        going = false
-        let next = only_other(sketch, tail, chain)
-        if next >= 0:
-            chain.append(next)
-            tail = end_point(sketch, next) if start_point(sketch, next) == tail else start_point(sketch, next)
-            going = true
-    var head = start_point(sketch, curve)
-    going = true
-    while going:
-        going = false
-        let previous = only_other(sketch, head, chain)
-        if previous >= 0:
-            chain.insert(0, previous)
-            head = start_point(sketch, previous) if end_point(sketch, previous) == head else end_point(sketch, previous)
-            going = true
-    return chain
-
-## The one curve besides those in `chain` at point `point`, or -1 (none,
-## or a branch).
-func only_other(sketch: CadSketch, point: int, chain: list[int]) -> int:
-    if point < 0:
-        return -1
-    var found = -1
-    for at in 0..<sketch.entity_count():
-        # (The origin's axes run through shapes without joining them.)
-        if sketch.kind(at) == point_kind or at in chain or sketch.origin_part(at) >= 0:
-            continue
-        if start_point(sketch, at) == point or end_point(sketch, at) == point:
-            if found >= 0:
-                return -1
-            found = at
-    return found
+    return Joints(sketch).chain(sketch, curve)
