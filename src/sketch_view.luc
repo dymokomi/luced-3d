@@ -11,7 +11,7 @@
 from luce_gpu.gpu import RenderTarget, Rect, Color
 from luce_ui.ui import Painter
 from overlay_lines import OverlayLines
-from view_grid import draw_grid
+from view_grid import GridLines
 from workspace import Workspace
 from sketch_editor import SketchEditor
 from sketch_node import SketchFrame
@@ -41,6 +41,16 @@ pub class SketchView:
     var projected_points: list[int]
     ## Slice's cap, under the sketch.
     let section: SketchSection
+    ## The plane's grid, and the lit lines (selected and picked, hovered,
+    ## conflicting) as of their keys: made again only when what they show
+    ## changes, and drawn from the GPU in between.
+    let grid_lines: GridLines
+    var chosen: OverlayLines? = none
+    var chosen_key: str = ""
+    var hovered: OverlayLines? = none
+    var hovered_key: str = ""
+    var conflicting: OverlayLines? = none
+    var conflicting_key: str = ""
 
     pub func init(self, w: Workspace) -> unit!:
         self.w = w
@@ -52,6 +62,7 @@ pub class SketchView:
         self.batches = []
         self.projected_points = []
         self.section = SketchSection()
+        self.grid_lines = GridLines()
 
     ## A drawing tool's clicks are in.
     func finish(self) -> unit!:
@@ -145,40 +156,55 @@ pub class SketchView:
         for which in [0, 1, 2, 3, 4]:
             if self.batches[which].count() > 0:
                 self.batches[which].batch().draw(camera, target, colors[which], 1.5)
-        let chosen = OverlayLines.make()
-        for at in e.selection + e.picks:
-            chosen.add_sketch(sketch, f.origin, f.u, f.v, 3, at)
-        if chosen.count() > 0:
-            chosen.draw_lit(camera, target, theme.accent(), 2.5)
+        let chosen_key = f"{drawn}|{e.selection}|{e.picks}"
+        if chosen_key != self.chosen_key or self.chosen == none:
+            let chosen = OverlayLines.make()
+            for at in e.selection + e.picks:
+                chosen.add_sketch(sketch, f.origin, f.u, f.v, 3, at)
+            self.chosen = chosen
+            self.chosen_key = chosen_key
+        if let chosen = self.chosen:
+            chosen.draw_lit_kept(camera, target, theme.accent(), 2.5)
         self.modify_preview(target)
-        let hovered = OverlayLines.make()
-        if e.hover >= 0 and e.tool != "Trim":
-            hovered.add_sketch(sketch, f.origin, f.u, f.v, 3, e.hover)
         # What a selected or hovered glyph holds, lit.
         let glyphed = e.constraint_selection.copy()
         if e.hover_glyph >= 0:
             glyphed.append(e.hover_glyph)
-        for c in glyphed:
-            if c >= sketch.constraint_count():
-                continue
-            for which in 0..<3:
-                let held = sketch.constraint_entity(c, which)
-                if held >= 0 and held < sketch.entity_count():
-                    hovered.add_sketch(sketch, f.origin, f.u, f.v, 3, held)
-        self.rubber_band(hovered)
-        if hovered.count() > 0:
-            hovered.draw_lit(camera, target, theme.grey(245.0), 2.0)
+        # A drawing tool's rubber band follows the cursor: made each frame.
+        let banding = sketch_tools.draws(e.tool)
+        let hovered_key = f"{drawn}|{e.tool}|{e.hover}|{glyphed}"
+        if banding or hovered_key != self.hovered_key or self.hovered == none:
+            let hovered = OverlayLines.make()
+            if e.hover >= 0 and e.tool != "Trim":
+                hovered.add_sketch(sketch, f.origin, f.u, f.v, 3, e.hover)
+            for c in glyphed:
+                if c >= sketch.constraint_count():
+                    continue
+                for which in 0..<3:
+                    let held = sketch.constraint_entity(c, which)
+                    if held >= 0 and held < sketch.entity_count():
+                        hovered.add_sketch(sketch, f.origin, f.u, f.v, 3, held)
+            self.rubber_band(hovered)
+            self.hovered = hovered
+            self.hovered_key = "" if banding else hovered_key
+        if let hovered = self.hovered:
+            if banding: hovered.draw_lit(camera, target, theme.grey(245.0), 2.0)
+            else: hovered.draw_lit_kept(camera, target, theme.grey(245.0), 2.0)
         # What the constraints an over-constraint runs through hold.
-        let conflicting = OverlayLines.make()
-        for c in e.conflicts:
-            if c >= sketch.constraint_count():
-                continue
-            for which in 0..<3:
-                let held = sketch.constraint_entity(c, which)
-                if held >= 0 and held < sketch.entity_count():
-                    conflicting.add_sketch(sketch, f.origin, f.u, f.v, 3, held)
-        if conflicting.count() > 0:
-            conflicting.draw_lit(camera, target, theme.warning(), 2.0)
+        let conflicting_key = f"{drawn}|{e.conflicts}"
+        if conflicting_key != self.conflicting_key or self.conflicting == none:
+            let conflicting = OverlayLines.make()
+            for c in e.conflicts:
+                if c >= sketch.constraint_count():
+                    continue
+                for which in 0..<3:
+                    let held = sketch.constraint_entity(c, which)
+                    if held >= 0 and held < sketch.entity_count():
+                        conflicting.add_sketch(sketch, f.origin, f.u, f.v, 3, held)
+            self.conflicting = conflicting
+            self.conflicting_key = conflicting_key
+        if let conflicting = self.conflicting:
+            conflicting.draw_lit_kept(camera, target, theme.warning(), 2.0)
 
     ## The sketch plane's grid around where the camera looks: a line every
     ## 1, 2 or 5 × 10ⁿ mm, about a tenth of the view's distance apart, a
@@ -191,7 +217,7 @@ pub class SketchView:
         let at = f.coordinates(view.target)
         let major = step * 5.0
         let center = f.at(math.round(at[0] / major) * major, math.round(at[1] / major) * major)
-        draw_grid(view.camera, target, center, f.u, f.v, step, theme.grey(48.0), theme.grey(70.0))
+        self.grid_lines.draw(view.camera, target, center, f.u, f.v, step, theme.grey(48.0), theme.grey(70.0))
 
     ## What a drawing tool would make with the cursor where it is.
     func rubber_band(self, lines: OverlayLines) -> unit!:
