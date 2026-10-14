@@ -1,0 +1,224 @@
+## Stage 8's captures for preview.py (docs/research/POLY-MODELING.md):
+## deformers, sculpt-lite and Mesh Check in an Edit Mesh.
+##   deform_bend: a tall box of 12 rows bent 90° along Y (Bend's start).
+##   deform_twist: the same box twisted 180° about Y.
+##   deform_lattice: the box's Lattice, two top cage points pulled out: the
+##     cage draws over the result.
+##   sculpt_draw: a sphere sculpted with X symmetry: one Draw stroke across
+##     its front-right, mirrored on the left; the brush circle hovering.
+##   sculpt_drag: a stroke over a 1M-face grid in the real window; prints
+##     the work each pointer move takes and the frame intervals.
+##   mesh_check: a box with a face deleted and one face split, Mesh Check
+##     on: the open boundary, the triangles and the n-gon marked, the panel
+##     listing them.
+##   hard_marks: a box of 3 rows with the ring of edges round y = 1 marked
+##     hard and two of them selected: the marks drawn wider than the
+##     selection, both seen on the same edges.
+from app import Luce3D
+from luce_ui.ui import Event
+from luce_window.input import EventKind
+from luce_3d.graphics import Vector3
+from luce_geocore.geocore import Selection
+from view_projection import project
+from edit_types import edge_level, face_level, symmetry_slot
+import node_commands
+import modeling_commands
+import selection_commands
+import preview_support
+import time
+
+pub func scenes() -> list[str]:
+    return ["deform_bend", "deform_twist", "deform_lattice", "sculpt_draw", "sculpt_drag", "mesh_check", "hard_marks"]
+
+## The frames a scene runs before its capture (the strokes run over them).
+pub func frames(scene: str) -> int:
+    if scene == "sculpt_drag":
+        return 130
+    return 40 if scene == "sculpt_draw" else 5
+
+## What sculpt_drag measures over its frames.
+pub class StrokeTimes:
+    pub var last_frame: int = 0
+    pub var work: float = 0.0
+    pub var worst_work: float = 0.0
+    pub var gaps: float = 0.0
+    pub var worst_gap: float = 0.0
+    pub var moves: int = 0
+
+## An Edit Mesh holding a box `size` across of `rows` rows up (sides of 4).
+func tall_box(editor: Luce3D, rows: float) -> unit!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "Edit Mesh", 40.0, 40.0)
+    preview_support.settle(w)
+    modeling_commands.create(w, "Box")
+    modeling_commands.set_last_step_values(w, 0, [1.0, 3.0, 1.0])
+    modeling_commands.set_last_step(w, 3, 4.0, 1.0, 1024.0)
+    modeling_commands.set_last_step(w, 4, rows, 1.0, 1024.0)
+    modeling_commands.set_last_step(w, 5, 4.0, 1.0, 1024.0)
+    preview_support.settle(w)
+
+func look(editor: Luce3D, target: Vector3, distance: float) -> unit!:
+    let w = editor.workspace
+    w.view.yaw = 0.6
+    w.view.pitch = 0.45
+    w.view.distance = distance
+    w.view.target = target
+    w.view.update_camera()
+    editor.panels.refresh()
+
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    let w = editor.workspace
+    if scene == "deform_bend" or scene == "deform_twist" or scene == "deform_lattice":
+        tall_box(editor, 12.0)
+        selection_commands.set_mode(w, face_level)
+        selection_commands.select_all(w)
+        if scene == "deform_lattice":
+            # Points 3 × 3 × 3, Smooth; the two top cage points at +X pulled
+            # out along +X.
+            modeling_commands.model(w, "Lattice", [3.0, 3.0, 3.0, 0.0, 0.0, 2.0, 8.0, 0.8, 0.0, 0.0, 26.0, 0.8, 0.0, 0.0])
+        else:
+            modeling_commands.model(w, "Bend")
+            if scene == "deform_twist":
+                modeling_commands.set_last_step(w, 0, 1.0, 0.0, 3.0)
+                modeling_commands.set_last_step(w, 1, 180.0, -100000.0, 100000.0)
+        selection_commands.select_none(w)
+        preview_support.settle(w)
+        look(editor, Vector3(0.0, 1.5, 0.0), 8.0)
+        return
+    if scene == "sculpt_draw":
+        node_commands.delete_selected(w)
+        node_commands.add_node(w, "Edit Mesh", 40.0, 40.0)
+        preview_support.settle(w)
+        modeling_commands.create(w, "Sphere")
+        modeling_commands.set_last_step(w, 1, 160.0, 3.0, 4096.0)
+        modeling_commands.set_last_step(w, 2, 80.0, 2.0, 4096.0)
+        selection_commands.select_none(w)
+        let node = w.selected() else trap("edit")
+        node.values[symmetry_slot] = 1.0
+        modeling_commands.model(w, "Sculpt")
+        preview_support.settle(w)
+        look(editor, Vector3(0.0, 1.0, 0.0), 4.2)
+        return
+    if scene == "sculpt_drag":
+        node_commands.delete_selected(w)
+        node_commands.add_node(w, "Grid", 40.0, 40.0)
+        let grid = w.network.require(w.network.selected)
+        grid.values[2] = 1024.0
+        grid.values[3] = 1024.0
+        w.network.invalidate(grid.id)
+        w.rebuild()
+        preview_support.settle(w)
+        node_commands.add_node(w, "Edit Mesh", 40.0, 140.0)
+        preview_support.settle(w)
+        modeling_commands.model(w, "Sculpt")
+        preview_support.settle(w)
+        w.view.yaw = 0.3
+        w.view.pitch = 0.6
+        w.view.distance = 2.4
+        w.view.target = Vector3(0.0, 0.0, 0.0)
+        w.view.update_camera()
+        editor.panels.refresh()
+        return
+    if scene == "mesh_check":
+        tall_box(editor, 3.0)
+        let mesh = w.geometry else trap("box")
+        selection_commands.set_mode(w, face_level)
+        # A side face deleted (an open boundary), one split corner to corner
+        # (two triangles), and two side faces dissolved into one.
+        w.selection = Selection.of(mesh, "0", 2)
+        modeling_commands.model(w, "Delete")
+        preview_support.settle(w)
+        let opened = w.geometry else trap("opened")
+        w.selection = Selection.of(opened, "5", 2)
+        modeling_commands.model(w, "Triangulate")
+        selection_commands.select_none(w)
+        w.display.mesh_check_visible = true
+        editor.panels.view.tools.checking.refresh()
+        preview_support.settle(w)
+        look(editor, Vector3(0.0, 1.5, 0.0), 7.5)
+        return
+    # hard_marks: a ring of edges round the box's middle marked hard, then
+    # two edges crossing that ring selected.
+    tall_box(editor, 3.0)
+    selection_commands.set_mode(w, edge_level)
+    let box = w.geometry else trap("box")
+    var ring: list[str] = []
+    var across: list[str] = []
+    for edge in 0..<box.edge_count():
+        let i = box.edge_point(edge, 0)
+        let j = box.edge_point(edge, 1)
+        let a = box.point(i)
+        let b = box.point(j)
+        if a.y > 0.99 and a.y < 1.01 and b.y > 0.99 and b.y < 1.01:
+            ring.append(f"p{i}-{j}")
+            # Two marked edges on the front (+Z) also selected: the mark
+            # shows round the selection.
+            if a.z > 0.49 and b.z > 0.49 and across.length < 2:
+                across.append(f"p{i}-{j}")
+    w.selection = Selection.of(box, ring.join(" "), 4)
+    modeling_commands.model(w, "Hard Edges")
+    preview_support.settle(w)
+    let marked = w.geometry else trap("marked")
+    w.selection = Selection.of(marked, across.join(" "), 4)
+    preview_support.settle(w)
+    look(editor, Vector3(0.0, 1.5, 0.0), 6.5)
+
+## Window point of world point `p`.
+func at(editor: Luce3D, p: Vector3) -> list[float]!:
+    let area = editor.panels.view.layout().bounds()
+    let on = project(editor.workspace, p, area.width, area.height)
+    return [area.x + on[0], area.y + on[1]]
+
+func send(editor: Luce3D, kind: EventKind, point: list[float]) -> unit!:
+    editor.app.dispatch(Event(kind = kind, x = point[0], y = point[1], button = 0))
+
+## Frame `frame` of scene `scene` (from 2; `last` is the frame captured).
+pub func act(editor: Luce3D, scene: str, frame: int, last: int, t: StrokeTimes) -> unit!:
+    let w = editor.workspace
+    if scene == "sculpt_draw":
+        editor.app.focus(editor.panels.view.layout())
+        # Across the sphere's front-right, from high to low.
+        let begin_at = Vector3(0.25, 1.55, 0.88)
+        let end_at = Vector3(0.75, 0.75, 0.6)
+        let steps = last - 8
+        if frame == 2:
+            send(editor, EventKind.pointer_moved, at(editor, begin_at))
+            send(editor, EventKind.pointer_down, at(editor, begin_at))
+        elif frame > 2 and frame <= steps:
+            let s = float(frame - 2) / float(steps - 2)
+            send(editor, EventKind.pointer_moved, at(editor, begin_at.add(end_at.subtract(begin_at).multiply_scalar(s))))
+        elif frame == steps + 1:
+            send(editor, EventKind.pointer_up, at(editor, end_at))
+        elif frame == last - 2:
+            # The brush hovering beside the stroke.
+            send(editor, EventKind.pointer_moved, at(editor, Vector3(0.6, 1.4, 0.75)))
+        preview_support.settle(w)
+        editor.panels.refresh()
+        return
+    if scene != "sculpt_drag":
+        return
+    editor.app.focus(editor.panels.view.layout())
+    let now = time.now()
+    let begin_at = Vector3(-0.6, 0.0, -0.3)
+    let end_at = Vector3(0.6, 0.0, 0.3)
+    if frame == 4:
+        send(editor, EventKind.pointer_moved, at(editor, begin_at))
+        send(editor, EventKind.pointer_down, at(editor, begin_at))
+    elif frame > 4 and frame < last - 2:
+        if t.moves > 0:
+            let gap = float(now - t.last_frame) / 1000000.0
+            t.gaps += gap
+            if gap > t.worst_gap: t.worst_gap = gap
+        let started = time.now()
+        let s = float(frame - 4) / float(last - 7)
+        send(editor, EventKind.pointer_moved, at(editor, begin_at.add(end_at.subtract(begin_at).multiply_scalar(s))))
+        editor.panels.view.layout().invalidate()
+        let spent = float(time.now() - started) / 1000000.0
+        t.work += spent
+        if spent > t.worst_work: t.worst_work = spent
+        t.moves += 1
+    elif frame == last - 2:
+        send(editor, EventKind.pointer_up, at(editor, end_at))
+        print(f"Sculpt stroke in the window: {t.moves} pointer moves over a 1M-face grid; the move {t.work / float(t.moves):.2f} ms mean, {t.worst_work:.2f} ms worst; frame to frame {t.gaps / float(t.moves - 1):.2f} ms mean, {t.worst_gap:.2f} ms worst")
+    t.last_frame = now

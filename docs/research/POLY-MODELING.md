@@ -1699,10 +1699,27 @@ it).
 - Tests: luce-geocore `deform_checks`, `sculpt_checks`, `mesh_check_checks` under the
   allocation-failure sweep; luced-3d `deform_tool_tests` from real viewport events.
   Benchmarks: luce-geocore docs/API.md.
+- **Sculpt in the real window** (`tools/preview.py --scene sculpt_drag --opt 3 --background`):
+  a Draw stroke over a 1M-face grid in an Edit Mesh, 123 pointer moves: the move takes 4.8 ms
+  on average (13.8 ms worst) and frames come every 16.6 ms (the display's 60 Hz). Getting
+  there: a whole-mesh group ("*") on another domain is the cached group of that domain, not a
+  conversion of the whole mesh on every move (luce-geocore `resolve_group`; 9.2 to 4.8 ms); a
+  holding Edit node's steps no longer go to the worker with every request (its result goes
+  by key; a long stroke's numbers also overran the 64-number cap on a step, now 1M).
+- **Dense wires**: in Edit mode a mesh's wires are left out where they would cover its faces
+  (more than one edge per two pixels of its footprint on screen; luce-3d
+  `mesh_batch.too_dense`). A 1M-face grid in part of the view was drawn as solid wire grey,
+  hiding a sculpted surface's shading; nearer, the wires come back.
+- Mesh Check's panel stands above the snapping and tool shelf buttons.
+- Captures (`tools/preview_deform.luc`): `deform_bend`, `deform_twist`, `deform_lattice` (the
+  cage drawn over the result), `sculpt_draw` (a sphere, one Draw stroke mirrored by X
+  symmetry, the brush hovering), `sculpt_drag` (the 1M grid), `mesh_check` (an open
+  boundary, two triangles, poles, the panel), `hard_marks` (marked edges, two of them
+  selected: the mark shows round the selection).
 - Not built yet: Shrinkwrap was Stage 6's; corrective smooth, a Soft Transform node, edge
-  transport; tablet pressure; sculpt screenshots and latency in a real window; icons
-  (stand-ins: Bend `stretch-curve`, Lattice `grid`, Mesh Check `surface-analysis`, Poles
-  `vertex-select`, Degenerate `select-by-area`, Intersecting `boolean-intersect`).
+  transport; tablet pressure; icons (stand-ins: Bend `stretch-curve`, Lattice `grid`, Mesh
+  Check `surface-analysis`, Poles `vertex-select`, Degenerate `select-by-area`, Intersecting
+  `boolean-intersect`).
 
 ## 9. Open questions for the owner
 
