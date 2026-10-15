@@ -17,7 +17,7 @@ import selection_commands
 import node_commands
 import tool_drag
 import tool_prompts
-from tool_sweep_tests import adjusted
+from tool_sweep_tests import adjusted, shown
 
 ## A fingerprint of the shown mesh: its counts, its faces' corners and
 ## the sum of its points.
@@ -34,17 +34,22 @@ func picked_of(w: Workspace) -> str!:
     let mesh = w.geometry else return ""
     return f"{chosen.domain()}:{chosen.expression(mesh)}"
 
-## An editor with a CAD network's Edit CAD holding solid `shape`.
-func holding(shape: str) -> Luce3D!:
+## An editor with a CAD network's Edit CAD holding solid `shape`; with the
+## compute worker as the app runs it when `worker` (every Edit CAD action
+## runs there).
+func holding(shape: str, worker: bool = false) -> Luce3D!:
     let editor = Luce3D()
     let w = editor.workspace
     editor.app.layout(1400.0, 900.0)
+    if worker:
+        w.enable_compute()
+        shown(editor)
     node_commands.delete_selected(w)
     node_commands.add_node(w, "CAD", 0.0, 0.0)
     node_commands.enter_group(w, w.network.selected)
     node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
     modeling_commands.create(w, shape)
-    editor.panels.refresh()
+    shown(editor)
     return editor
 
 ## The first mesh edge that lies on a B-rep edge, or -1.
@@ -68,8 +73,10 @@ func attempt(editor: Luce3D, tool: EditTool, level: int, all: bool) -> str!:
     let w = editor.workspace
     let base = w.history.cursor
     selection_commands.set_mode(w, object_level)
+    shown(editor)
     let shape = print_of(w.geometry else return "no mesh")
     selection_commands.set_mode(w, level)
+    shown(editor)
     let mesh = w.geometry else return "no mesh"
     # A level with nothing on it (Curves of a solid) has nothing to pick.
     selection_commands.select_all(w)
@@ -82,7 +89,7 @@ func attempt(editor: Luce3D, tool: EditTool, level: int, all: bool) -> str!:
         selection_commands.choose_component(w, edge, false)
     elif not all:
         selection_commands.choose_component(w, 0, false)
-    editor.panels.refresh()
+    shown(editor)
     let before = print_of(w.geometry else return "no mesh")
     let picked = picked_of(w)
     let cursor = w.history.cursor
@@ -96,11 +103,11 @@ func attempt(editor: Luce3D, tool: EditTool, level: int, all: bool) -> str!:
     if w.prompt != none and failed == "":
         tool_prompts.accept_prompt(w) catch failure:
             failed = f"Enter on its prompt: {failure.message}"
-        editor.panels.refresh()
+        shown(editor)
         if w.prompt != none and w.notice == "" and failed == "":
             failed = "its prompt waits after Enter and says nothing"
     tool_drag.settle(w)
-    editor.panels.refresh()
+    shown(editor)
     let node = w.selected() else return "no node"
     let said = w.notice != "" or node.warning != ""
     let after = print_of(w.geometry else return "no mesh after")
@@ -114,12 +121,12 @@ func attempt(editor: Luce3D, tool: EditTool, level: int, all: bool) -> str!:
         result = "ran, no change, nothing said"
     if w.history.cursor > cursor and w.prompt == none:
         w.undo()
-        editor.panels.refresh()
+        shown(editor)
         let undone = print_of(w.geometry else return "no mesh on undo")
         if undone != before:
             result += f" undo {undone} not {before}"
         w.redo()
-        editor.panels.refresh()
+        shown(editor)
         let redone = print_of(w.geometry else return "no mesh on redo")
         if redone != after:
             result += f" redo {redone} not {after}"
@@ -135,6 +142,7 @@ func attempt(editor: Luce3D, tool: EditTool, level: int, all: bool) -> str!:
     while w.history.cursor > base:
         w.undo()
     w.notice = ""
+    shown(editor)
     let back = print_of(w.geometry else return "no mesh at the end")
     if back != shape:
         result += f" undone to {back} not {shape}"
@@ -144,8 +152,10 @@ pub func cad_tool_sweep_tests() -> unit!:
     var failures: list[str] = []
     var runs = 0
     let kind = edit_cad.kind()
-    for shape in ["Box", "Cylinder", "Sphere"]:
-        let editor = holding(shape)
+    # Each solid on the UI thread, and the box again with the compute
+    # worker, as the app runs every Edit CAD action.
+    for (shape, worker) in [("Box", false), ("Cylinder", false), ("Sphere", false), ("Box", true)]:
+        let editor = holding(shape, worker)
         for tool in kind.tools:
             for level in (tool.levels if tool.levels.length > 0 else [0]):
                 for all in [false, true]:
@@ -153,13 +163,15 @@ pub func cad_tool_sweep_tests() -> unit!:
                     let said = swept(editor, tool, level, all)
                     if said != "":
                         let how = "all" if all else "one"
-                        let line = f"{tool.name} on {shape} level {level} {how}: {said}"
+                        let line = f"{tool.name} on {shape}{" with the worker" if worker else ""} level {level} {how}: {said}"
                         print(line)
                         # A tool can rightly leave a shape as it was (Flatten of a flat
                         # face, a drag tool's starting amount of 0): those are printed
                         # for review, not failed.
                         if not said.starts_with("ran, no change"):
                             failures.append(line)
+        if let session = editor.workspace.compute:
+            session.close()
         editor.close()
     print(f"CAD tool sweep: {runs} runs, {failures.length} misbehaved")
     assert(failures.length == 0, failures[0] if failures.length > 0 else "")

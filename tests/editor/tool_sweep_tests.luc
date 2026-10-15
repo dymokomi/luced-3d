@@ -12,6 +12,7 @@ from luce_geocore.geocore import Mesh
 from tool_record import Tool
 from parameter_rows import Parameter
 from luce_std import math
+import time
 from edit_types import object_level, point_level, edge_level, face_level
 import tool_registry
 import modeling_commands
@@ -35,12 +36,25 @@ func picked_of(w: Workspace) -> str!:
     let mesh = w.geometry else return ""
     return f"{chosen.domain()}:{chosen.expression(mesh)}"
 
+## The editor once the worker (when one runs) has shown what it was given:
+## the panels refreshed.
+pub func shown(editor: Luce3D) -> unit!:
+    if let session = editor.workspace.compute:
+        let deadline = time.now() + 60000000000
+        while session.busy and time.now() < deadline:
+            _ = editor.workspace.poll_compute()
+    editor.panels.refresh()
+
 ## An editor with an Edit Mesh holding primitive `shape`, or the fixture
-## file `shape` (an .obj under tests/fixtures).
-func holding(shape: str) -> Luce3D!:
+## file `shape` (an .obj under tests/fixtures); with the compute worker as
+## the app runs it when `worker`.
+func holding(shape: str, worker: bool = false) -> Luce3D!:
     let editor = Luce3D()
     let w = editor.workspace
     editor.app.layout(1400.0, 900.0)
+    if worker:
+        w.enable_compute()
+        shown(editor)
     node_commands.delete_selected(w)
     if shape.ends_with(".obj"):
         node_commands.add_node(w, "File", 0.0, 0.0)
@@ -49,7 +63,7 @@ func holding(shape: str) -> Luce3D!:
     else:
         node_commands.add_node(w, "Edit Mesh", 0.0, 0.0)
         modeling_commands.create(w, shape)
-    editor.panels.refresh()
+    shown(editor)
     return editor
 
 ## The tool bar's rows of the last step each set to another value, as a
@@ -73,7 +87,7 @@ pub func adjusted(editor: Luce3D, rows: list[Parameter]) -> str!:
         value = math.max(row.minimum, math.min(row.maximum, value))
         modeling_commands.set_last_step(w, row.slot, value, row.minimum, row.maximum) catch failure:
             return f"adjusting {row.name} to {value} failed: {failure.message}"
-        editor.panels.refresh()
+        shown(editor)
     return ""
 
 ## What happened when `tool` ran on the held shape at `level`, one
@@ -89,11 +103,12 @@ func attempt(editor: Luce3D, tool: Tool, level: int, all: bool) -> str!:
     let base = w.history.cursor
     let shape = print_of(w.geometry else return "no mesh")
     selection_commands.set_mode(w, level)
+    shown(editor)
     if all:
         selection_commands.select_all(w)
     else:
         selection_commands.choose_component(w, 0, false)
-    editor.panels.refresh()
+    shown(editor)
     let mesh = w.geometry else return "no mesh"
     let before = print_of(mesh)
     let picked = picked_of(w)
@@ -107,7 +122,7 @@ func attempt(editor: Luce3D, tool: Tool, level: int, all: bool) -> str!:
     if w.prompt != none:
         tool_prompts.accept_prompt(w)
     tool_drag.settle(w)
-    editor.panels.refresh()
+    shown(editor)
     let node = w.selected() else return "no node"
     let said = w.notice != "" or node.warning != ""
     let after = print_of(w.geometry else return "no mesh after")
@@ -121,12 +136,12 @@ func attempt(editor: Luce3D, tool: Tool, level: int, all: bool) -> str!:
         result = "ran, no change, nothing said"
     if w.history.cursor > cursor:
         w.undo()
-        editor.panels.refresh()
+        shown(editor)
         let undone = print_of(w.geometry else return "no mesh on undo")
         if undone != before:
             result += f" undo {undone} not {before}"
         w.redo()
-        editor.panels.refresh()
+        shown(editor)
         let redone = print_of(w.geometry else return "no mesh on redo")
         if redone != after:
             result += f" redo {redone} not {after}"
@@ -142,6 +157,7 @@ func attempt(editor: Luce3D, tool: Tool, level: int, all: bool) -> str!:
     while w.history.cursor > base:
         w.undo()
     w.notice = ""
+    shown(editor)
     let back = print_of(w.geometry else return "no mesh at the end")
     if back != shape:
         result += f" undone to {back} not {shape}"
@@ -150,8 +166,11 @@ func attempt(editor: Luce3D, tool: Tool, level: int, all: bool) -> str!:
 pub func tool_sweep_tests() -> unit!:
     var failures: list[str] = []
     var runs = 0
-    for shape in ["Box", "Sphere", "Torus", "Grid", "nonmanifold.obj"]:
-        let editor = holding(shape)
+    # Each shape on the UI thread; the box and the grid again with the
+    # compute worker, as the app runs (actions on the worker, results
+    # adopted when they come).
+    for (shape, worker) in [("Box", false), ("Sphere", false), ("Torus", false), ("Grid", false), ("nonmanifold.obj", false), ("Box", true), ("Grid", true)]:
+        let editor = holding(shape, worker)
         for tool in tool_registry.of_kind("Edit Mesh"):
             if tool.inputs == 0 or tool.gesture in ["pen", "sculpt", "knife", "stroke", "create"]:
                 continue
@@ -163,13 +182,15 @@ pub func tool_sweep_tests() -> unit!:
                     let said = swept(editor, tool, level, all)
                     if said != "":
                         let how = "all" if all else "one"
-                        let line = f"{tool.label} on {shape} level {level} {how}: {said}"
+                        let line = f"{tool.label} on {shape}{" with the worker" if worker else ""} level {level} {how}: {said}"
                         print(line)
                         # A tool can rightly leave a shape as it was (Flatten of a flat
                         # face, a drag tool's starting amount of 0): those are printed
                         # for review, not failed.
                         if not said.starts_with("ran, no change"):
                             failures.append(line)
+        if let session = editor.workspace.compute:
+            session.close()
         editor.close()
     print(f"tool sweep: {runs} runs, {failures.length} misbehaved")
     assert(failures.length == 0, failures[0] if failures.length > 0 else "")
