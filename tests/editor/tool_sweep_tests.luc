@@ -1,11 +1,13 @@
 ## Every Edit Mesh tool on every fixture (a box, a UV sphere, a torus, a
-## grid, a non-manifold mesh: a fin of three faces on one edge and a pinch), at each level it is offered, on one element and on everything:
-## the tool runs (no trap), and either changes the mesh or the selection,
-## or says why not (the workspace's notice or the Edit node's warning); its
-## tool bar rows each adjusted run it again;
-## undo gives back the mesh before, redo the mesh after; the panels
-## refresh after each. A tool that does nothing and says nothing is a dead
-## end.
+## grid, a non-manifold mesh: a fin of three faces on one edge and a pinch),
+## at each level it is offered, on one element and on everything: the tool
+## runs (no trap) and either changes the mesh or the selection or says why
+## not (the workspace's notice or the Edit node's warning); undo gives back
+## the mesh before, redo the mesh after; its tool bar rows each adjusted run
+## it again; on the box, the project saved and loaded shows the same mesh.
+## The box and grid again with the compute worker, as the app runs. The
+## panels refresh after each step. A tool that does nothing and says nothing
+## is a dead end.
 from app import Luce3D
 from workspace import Workspace
 from luce_geocore.geocore import Mesh
@@ -16,6 +18,7 @@ import time
 from edit_types import object_level, point_level, edge_level, face_level
 import tool_registry
 import modeling_commands
+import project_file
 import selection_commands
 import node_commands
 import tool_prompts
@@ -90,15 +93,25 @@ pub func adjusted(editor: Luce3D, rows: list[Parameter]) -> str!:
         shown(editor)
     return ""
 
+## The shown mesh's fingerprint after the project is saved and loaded
+## into a fresh workspace (a held result goes to <name>.held/ and comes back
+## as the node's result).
+pub func reloaded(w: Workspace) -> str!:
+    project_file.save("sweep.prisma", w, [1.0, 0.0, 0.0])
+    let project = project_file.load("sweep.prisma")
+    let other = Workspace()
+    other.replace_network(project.graph)
+    return print_of(other.geometry else return "nothing shown after loading")
+
 ## What happened when `tool` ran on the held shape at `level`, one
 ## element (`all` false) or every element selected: "" when it behaved.
 ## Everything it did is undone after, back to the shape.
-func swept(editor: Luce3D, tool: Tool, level: int, all: bool) -> str!:
-    let said = attempt(editor, tool, level, all) catch failure:
+func swept(editor: Luce3D, tool: Tool, level: int, all: bool, saving: bool) -> str!:
+    let said = attempt(editor, tool, level, all, saving) catch failure:
         return f"error outside the tool: {failure.message}"
     return said
 
-func attempt(editor: Luce3D, tool: Tool, level: int, all: bool) -> str!:
+func attempt(editor: Luce3D, tool: Tool, level: int, all: bool, saving: bool) -> str!:
     let w = editor.workspace
     let base = w.history.cursor
     let shape = print_of(w.geometry else return "no mesh")
@@ -145,6 +158,11 @@ func attempt(editor: Luce3D, tool: Tool, level: int, all: bool) -> str!:
         let redone = print_of(w.geometry else return "no mesh on redo")
         if redone != after:
             result += f" redo {redone} not {after}"
+        # Saved and loaded, the result is the same.
+        if saving and failed == "" and w.prompt == none:
+            let back = reloaded(w)
+            if back != redone:
+                result += f" saved and loaded {back} not {redone}"
         # Then the last action adjusted from its tool bar.
         if w.prompt == none and failed == "" and tool.section != "Select":
             result += adjusted(editor, tool.bar_rows())
@@ -171,6 +189,8 @@ pub func tool_sweep_tests() -> unit!:
     # adopted when they come).
     for (shape, worker) in [("Box", false), ("Sphere", false), ("Torus", false), ("Grid", false), ("nonmanifold.obj", false), ("Box", true), ("Grid", true)]:
         let editor = holding(shape, worker)
+        # The box's runs on one element are also saved and loaded.
+        let first = shape == "Box"
         for tool in tool_registry.of_kind("Edit Mesh"):
             if tool.inputs == 0 or tool.gesture in ["pen", "sculpt", "knife", "stroke", "create"]:
                 continue
@@ -179,7 +199,7 @@ pub func tool_sweep_tests() -> unit!:
                     continue
                 for all in [false, true]:
                     runs += 1
-                    let said = swept(editor, tool, level, all)
+                    let said = swept(editor, tool, level, all, not all and not worker and first)
                     if said != "":
                         let how = "all" if all else "one"
                         let line = f"{tool.label} on {shape}{" with the worker" if worker else ""} level {level} {how}: {said}"
@@ -194,4 +214,4 @@ pub func tool_sweep_tests() -> unit!:
         editor.close()
     print(f"tool sweep: {runs} runs, {failures.length} misbehaved")
     assert(failures.length == 0, failures[0] if failures.length > 0 else "")
-    print("PASS every Edit Mesh tool on a box, sphere, torus, grid and a non-manifold mesh at each level, on one element and on all: it changes something or says why, undo and redo give the meshes back")
+    print("PASS every Edit Mesh tool on a box, sphere, torus, grid and a non-manifold mesh at each level, on one element and on all, with and without the worker: it changes something or says why, undo and redo give the meshes back, its tool bar rows adjust it, saved and loaded it stays")
