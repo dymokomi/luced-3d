@@ -31,6 +31,9 @@ pub class CodeEditor:
     ## `luc check`): it gets the text, and `checked` sends it on when clean.
     ## Leaving the editor sends what is held anyway.
     pub var on_pause: func(str) -> unit!? = none
+    ## Told when typing starts a pause to wait out (`waits` then says when
+    ## `due` is to run).
+    pub var on_wait: func() -> unit!? = none
     var held: bool = false
     ## The node's Run Over code, which text this editor holds (0 the body, 1 the
     ## header) and the editor of the other, for completions and hover.
@@ -49,7 +52,7 @@ pub class CodeEditor:
     pub func init(self, font: Font) -> unit!:
         self.editor = TextEditor("", font = font, line_numbers = true)
         self.tokens = Tokenizer(Grammar(luce_grammar()))
-        self.connections = [self.editor.on_change(self.edited)]
+        self.connections = [self.editor.on_change(self.edited), self.editor.on_focus_lost(self.left)]
         self.editor.set_completion_provider(self.complete)
         self.editor.set_hover_provider(self.hover)
 
@@ -68,6 +71,8 @@ pub class CodeEditor:
     func edited(self) -> unit!:
         self.changed_at = time.now()
         self.color()
+        if let asked = self.on_wait:
+            asked()
 
     ## Nanoseconds from `now` until a pause in typing is due, or -1.
     pub func waits(self, now: int) -> int:
@@ -77,17 +82,18 @@ pub class CodeEditor:
 
         return left if left > 0 else 0
 
-    ## Polled each frame: a pause in typing commits (or checks first), and so
-    ## does the focus gone.
-    pub func poll(self) -> unit!:
-        if self.changed_at == 0:
-            if self.held and not self.editor.layout().is_focused():
-                self.commit()
+    ## The editor lost the focus: what is typed (or held for its check) goes
+    ## to the node now.
+    func left(self) -> unit!:
+        if self.changed_at != 0 or self.held:
+            self.commit()
+
+    ## When a pause in typing is due (`waits`): it commits, or checks first.
+    pub func due(self) -> unit!:
+        if self.changed_at == 0 or time.now() - self.changed_at < pause:
             return
         if not self.editor.layout().is_focused():
             self.commit()
-            return
-        if time.now() - self.changed_at < pause:
             return
         if let check = self.on_pause:
             self.changed_at = 0
@@ -200,6 +206,7 @@ pub class CodeEditor:
         self.connections.clear()
         self.on_commit = none
         self.on_pause = none
+        self.on_wait = none
 
 ## The popup's kind for one of Code.complete's ("module" items are types whose
 ## detail says so).

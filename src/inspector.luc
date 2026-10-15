@@ -494,11 +494,9 @@ pub class Inspector:
         elif node.kind == script_cook.kind_name and slot == code_cook.body_slot:
             script_node.set_code(self.workspace, node.id, text)
 
-    ## Each frame: the code editors commit when typing pauses, and a Script's
-    ## check reports.
-    ## Nanoseconds from `now` until the inspector needs a poll: a pause in
-    ## the code editors, or -1. A Script check's sync and job wake the loop
-    ## themselves when they end (`wake_checks_with`).
+    ## Nanoseconds from `now` until a pause in the code editors' typing is
+    ## due (`due` then), or -1. A Script check's sync and job wake the loop
+    ## themselves when they end (`wake_checks_with`, `poll_checks`).
     pub func waits(self, now: int) -> int:
         var soon = -1
         for left in [self.code_body.waits(now), self.code_header.waits(now)]:
@@ -510,9 +508,19 @@ pub class Inspector:
     pub func wake_checks_with(self, waker: Waker):
         self.checker.waker = waker
 
-    pub func poll(self) -> unit!:
-        self.code_body.poll()
-        self.code_header.poll()
+    ## Told when typing in a code editor starts a pause to wait out.
+    pub func wait_with(self, asked: func() -> unit!):
+        self.code_body.on_wait = asked
+        self.code_header.on_wait = asked
+
+    ## A pause in typing that is due commits its editor's text (or checks it).
+    pub func due(self) -> unit!:
+        self.code_body.due()
+        self.code_header.due()
+
+    ## The Script check's sync or job ended (its waker), or a check ran at
+    ## once: the set's warming moves on, and a finished check reports.
+    pub func poll_checks(self) -> unit!:
         let reported = self.checker.poll()
         self.code_body.set_script_ready(self.checker.ready())
         if reported:
@@ -533,6 +541,7 @@ pub class Inspector:
     func check_script(self, text: str) -> unit!:
         let node = self.workspace.selected() else return
         self.checker.start(text, node.texts[script_cook.packages_slot], node.texts[script_cook.lock_slot], self.workspace.network.folder)
+        self.poll_checks()
 
     pub func close(self):
         self.checker.close()

@@ -4,6 +4,7 @@ from panels import Panels
 import project_values as values
 from luce_std import files, paths
 from luce_ui import ui
+from luce_ui.ui import Application
 from luce_std import math
 from view_panes import panes_size, valid_panes
 
@@ -17,7 +18,8 @@ pub class UIState:
     var path: str = ""
     var restored: Document? = none
     var written: Document? = none
-    var elapsed: float = 0.0
+    ## A write is asked for (`changed`) and not yet done.
+    var scheduled: bool = false
     var writable: bool = true
 
     pub func init(self, path: str = "") -> unit!:
@@ -96,17 +98,18 @@ pub class UIState:
         let shelf = panels.view.tools.chrome.shelf
         shelf.open = values.flag(doc, "/ui", "shelf_open")
         shelf.set_text(values.text(doc, "/ui", "shelf_tabs"))
-        w.revision += 1
+        w.touch()
         self.written = doc
 
-    ## Each frame adds its time; twice a second the settings are written if
-    ## they changed (no disk work per frame, no timer).
-    pub func poll(self, panels: Panels, elapsed: float) -> unit!:
-        if self.path == "" or not self.writable: return
-        self.elapsed += elapsed
-        if self.elapsed < 0.5: return
-        self.elapsed = 0.0
-        self.save(panels)
+    ## Something the settings keep may have changed: they are written half a
+    ## second after the first such change, if they did change; one wake for
+    ## however many changes come meanwhile, and no disk work per input.
+    pub func changed(self, app: Application, panels: Panels) -> unit!:
+        if self.path == "" or not self.writable or self.scheduled: return
+        self.scheduled = true
+        _ = app.after(0.5, func () -> unit!:
+            self.scheduled = false
+            self.save(panels))
 
     pub func save(self, panels: Panels) -> unit!:
         if self.path == "" or not self.writable: return

@@ -1,19 +1,15 @@
 ## The timeline along the window's bottom: icon buttons for the first frame,
 ## a step back, play backwards, play (pause while playing), a step on and
 ## the last frame, the current frame, the playbar (timeline_bar.luc), the
-## range and the frames per second, and looping. Hovering a button shows its
-## command and shortcut.
+## range and the frames per second, and looping. A button's tooltip shows
+## its command and shortcut.
 from luce_gpu.gpu import Rect
-from luce_ui.ui import HStack, Button, ButtonStyle, Font, NumberField, Text, Tooltip, Command
+from luce_ui.ui import HStack, Button, ButtonStyle, Font, NumberField, Text, Command
 from interop import Connection
 from workspace import Workspace
 from actions import Actions
 from timeline_bar import TimelineBar
 import timeline_commands
-import time
-
-## Seconds the pointer rests on a button before its tooltip shows.
-let tooltip_delay: float = 0.5
 
 pub class TimelinePane:
     pub let body: HStack
@@ -24,19 +20,17 @@ pub class TimelinePane:
     let start: NumberField
     let end: NumberField
     let fps: NumberField
-    ## The icon buttons and the command each triggers (hovered: its tooltip).
+    ## The icon buttons and the command each triggers.
     let buttons: list[Button]
     let commands: list[Command]
     let play: Button
     let play_backwards: Button
     let loop: Button
-    let tooltip: Tooltip
-    ## The button under the pointer (-1 none) and since when (ns).
-    var hovered: int = -1
     ## The icons the play buttons show now.
     var play_icon: str = "play"
     var back_icon: str = "play-backwards"
-    var hovered_at: int = 0
+    ## Told when playing starts (the editor draws frames while it plays).
+    pub var on_play: func() -> unit!? = none
     let connections: list[Connection]
 
     pub func init(self, w: Workspace, actions: Actions, font: Font) -> unit!:
@@ -67,6 +61,8 @@ pub class TimelinePane:
                                 ("play", actions.play), ("step-forward", actions.next_frame), ("go-to-end", actions.last_frame), ("repeat", actions.looping)]:
             let button = Button(icon = icon, font = font)
             button.set_style(ButtonStyle.plain)
+            let shortcut = command.shortcut()
+            button.set_tooltip(command.text(), shortcut.text() if shortcut.is_bound() else "")
             let chosen = command
             self.connections.append(button.on_click(func () -> unit!: chosen.trigger()))
             self.buttons.append(button)
@@ -74,14 +70,16 @@ pub class TimelinePane:
         self.play_backwards = self.buttons[2]
         self.play = self.buttons[3]
         self.loop = self.buttons[6]
-        self.tooltip = Tooltip(font)
         let b = self.buttons
-        self.body = HStack([b[0], b[1], b[2], b[3], b[4], b[5], self.frame, self.bar, Text("Start", font = font, muted = true), self.start, Text("End", font = font, muted = true), self.end, self.fps, b[6], self.tooltip], spacing = 2.0, padding = 4.0)
+        self.body = HStack([b[0], b[1], b[2], b[3], b[4], b[5], self.frame, self.bar, Text("Start", font = font, muted = true), self.start, Text("End", font = font, muted = true), self.end, self.fps, b[6]], spacing = 2.0, padding = 4.0)
         self.show_state()
 
     func toggle_play(self, backwards: bool = false) -> unit!:
         self.bar.toggle(backwards)
         self.show_state()
+        if self.bar.playing:
+            if let play = self.on_play:
+                play()
 
     func toggle_loop(self) -> unit!:
         self.bar.looping = not self.bar.looping
@@ -105,64 +103,33 @@ pub class TimelinePane:
             self.play_backwards.set_icon(back_icon)
         self.loop.set_style(ButtonStyle.selected if self.bar.looping else ButtonStyle.plain)
 
-    ## The tooltip of the button the pointer rests on: its command and
-    ## shortcut, above it, after a moment.
-    func follow_hover(self) -> unit!:
-        var over = -1
-        for at in 0..<self.buttons.length:
-            if self.buttons[at].layout().contains_pointer(): over = at
-        let now = time.now()
-        if over != self.hovered:
-            self.hovered = over
-            self.hovered_at = now
-            self.tooltip.hide()
-            return
-        if over < 0 or self.tooltip.is_open() or float(now - self.hovered_at) / 1000000000.0 < tooltip_delay:
-            return
-        self.show_tooltip(over)
-
-    ## Button `index`'s tooltip now: its command and shortcut, above it.
-    pub func show_tooltip(self, index: int) -> unit!:
-        let over = index
-        let command = self.commands[over]
-        let shortcut = command.shortcut()
-        # Above the button, in the row's points.
-        let bounds = self.buttons[over].layout().bounds()
-        let row = self.body.layout().bounds()
-        self.tooltip.show(command.text(), shortcut.text() if shortcut.is_bound() else "", bounds.x - row.x, bounds.y - row.y - 44.0)
-
-    ## Each frame of the app's clock: playback, and the fields kept to the
-    ## timeline (an undo, a project opened).
-    ## Nanoseconds from `now` until the pane needs a poll: at once while it
-    ## plays (each frame moves it on), the hovered button's tooltip delay,
-    ## or -1.
-    pub func waits(self, now: int) -> int:
-        if self.bar.playing:
-            return 0
-        if self.hovered < 0 or self.tooltip.is_open():
-            return -1
-        let left = int(tooltip_delay * 1000000000.0) - (now - self.hovered_at)
-
-        return left if left > 0 else 0
-
-    pub func poll(self) -> unit!:
+    ## One of the clock's frames while playing: the timeline moves on (it
+    ## stops at the end unless it loops, and the play buttons say so).
+    pub func play_frame(self) -> unit!:
         self.bar.poll()
+        if not self.bar.playing:
+            self.show_state()
+
+    ## The fields kept to the timeline (after an undo, a project opened, a
+    ## frame stepped) and the buttons to playing and looping.
+    pub func sync(self) -> unit!:
         let g = self.w.network
         for (field, value) in [(self.frame, g.frame), (self.start, g.start), (self.end, g.end), (self.fps, g.fps)]:
             if field.value() != value and not field.layout().is_focused():
                 field.set_value(value)
+        self.bar.show_frame()
         self.show_state()
-        self.follow_hover()
 
     ## Button `index`'s place in the window (tests).
     pub func button_bounds(self, index: int) -> Rect:
         return self.buttons[index].layout().bounds()
 
-    ## The tooltip's text while it shows, else "" (tests).
-    pub func tooltip_text(self) -> str:
-        return self.tooltip.text() if self.tooltip.is_open() else ""
+    ## Button `index`'s tooltip text while it shows, else "" (tests).
+    pub func tooltip_text(self, index: int) -> str:
+        return self.buttons[index].shown_tooltip()
 
     pub func close(self):
+        self.on_play = none
         for connection in self.connections:
             connection.disconnect()
         self.connections.clear()

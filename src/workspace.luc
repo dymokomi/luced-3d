@@ -197,7 +197,11 @@ pub class Workspace:
     ## Shift or Cmd is held during a tool prompt: its input shows instead of
     ## the tool's result, to see what is picked (as Fusion 360 does).
     pub var peeking: bool = false
+    ## Moves on with each change the panels show (`touch`).
     pub var revision: int = 0
+    ## Told of each change (`touch`): the editor wakes its loop once for
+    ## however many come in a turn, and the panels catch up then.
+    pub var on_change: (func() -> unit)? = none
     pub var notice: str = ""
     ## The open transaction: the state before it, its label, and whether it
     ## changed anything (only then does it become an undo step).
@@ -354,7 +358,7 @@ pub class Workspace:
     ## Frame `points`, from at least `least` away.
     func frame_points(self, points: list[Vector3], least: float = 0.001) -> unit!:
         self.view.frame(points, least)
-        self.revision += 1
+        self.touch()
 
     ## F: frame, or with Space held over the viewport, make the viewport
     ## fill the window (or give the panels back).
@@ -369,7 +373,7 @@ pub class Workspace:
     ## it).
     pub func toggle_full_screen(self) -> unit!:
         self.panes.full_screen = not self.panes.full_screen
-        self.revision += 1
+        self.touch()
 
     ## The active pane alone, or the four panes.
     pub func toggle_four(self) -> unit!:
@@ -381,7 +385,7 @@ pub class Workspace:
         self.panes.toggle(index)
         if self.panes.four:
             self.panes.fit_orthographic()
-        self.revision += 1
+        self.touch()
 
     ## The docked Grid button among four panes: every pane's grid on, or off
     ## when one shows.
@@ -391,7 +395,7 @@ pub class Workspace:
             shown = shown or view.grid_visible
         for view in self.panes.views:
             view.grid_visible = not shown
-        self.revision += 1
+        self.touch()
 
     pub func reset_view(self) -> unit!:
         self.view.yaw = 0.7
@@ -401,13 +405,13 @@ pub class Workspace:
     ## Normal guides are made on the worker only while they are shown.
     pub func toggle_normals(self) -> unit!:
         self.display.normals_visible = not self.display.normals_visible
-        self.revision += 1
+        self.touch()
         if self.compute != none and self.display.normals_visible:
             self.rebuild()
 
     pub func toggle_hulls(self) -> unit!:
         self.display.hulls_visible = not self.display.hulls_visible
-        self.revision += 1
+        self.touch()
 
     ## Show lengths in `name` ("mm" or "in"): the document's unit, kept with
     ## it and undone like any change; lengths themselves stay as they are.
@@ -419,7 +423,7 @@ pub class Workspace:
 
     pub func toggle_grid(self) -> unit!:
         self.view.grid_visible = not self.view.grid_visible
-        self.revision += 1
+        self.touch()
 
     ## CAD bodies are meshed again at the new quality.
     pub func set_cad_quality(self, divisions: int) -> unit!:
@@ -427,12 +431,12 @@ pub class Workspace:
             return
         self.display.cad_quality = divisions
         self.network.cad_quality = divisions
-        self.revision += 1
+        self.touch()
         self.rebuild()
 
     pub func set_display_mode(self, mode: int) -> unit!:
         if self.view.set_display_mode(mode):
-            self.revision += 1
+            self.touch()
 
     ## The meshes on screen (world space) and the node each came from.
     ## The meshes on screen the viewport picks on, and the node each came
@@ -466,7 +470,7 @@ pub class Workspace:
             self.publisher.restyle(self.network, mode)
         else:
             self.rebuild()
-        self.revision += 1
+        self.touch()
 
     ## Every mesh drawn solid, the context's and the rest of the scene's:
     ## what hides what lies behind it (Visible only).
@@ -866,7 +870,7 @@ pub class Workspace:
             self.bound_history()
         self.pending = none
         self.pending_changed = false
-        self.revision += 1
+        self.touch()
         # A drag's frames were previews: the released result is cooked in full
         # (an Edit node's again: its last step failing is a warning now).
         if self.dragging:
@@ -1002,12 +1006,19 @@ pub class Workspace:
         action() catch failure:
             self.cancel()
             self.notice = failure.message
-            self.revision += 1
+            self.touch()
             return
         self.pending_changed = true
-        self.revision += 1
+        self.touch()
         if owns:
             self.commit()
+
+    ## Something the panels show changed: the revision moves on and
+    ## `on_change` hears it.
+    pub func touch(self):
+        self.revision += 1
+        if let changed = self.on_change:
+            changed()
 
     pub func rebuild(self) -> unit!:
         # Normalize before cooking, including empty contexts and the worker.
@@ -1025,7 +1036,7 @@ pub class Workspace:
         # A drag on the shown Edit node that holds its result draws it as it
         # now is: no cook here or on the worker until the drag ends.
         if self.dragging and self.show_held():
-            self.revision += 1
+            self.touch()
             return
         self.network.projecting = self.projecting()
         self.network.slicing = self.network.display if self.slice and self.sketching() else -1
@@ -1042,7 +1053,7 @@ pub class Workspace:
             self.network.picking_cad = self.prompt != none
             self.network.picking = self.picking()
             session.submit(self.network, self.view.mesh_mode(), self.display.normals_visible)
-            self.revision += 1
+            self.touch()
             return
         self.network.picking_cad = self.prompt != none
         self.network.picking = self.picking()
@@ -1061,7 +1072,7 @@ pub class Workspace:
         if let node = cooked.node:
             self.geometry = self.picked(node, cooked.data else trap("display"))
             self.sync_selection()
-        self.revision += 1
+        self.touch()
 
     ## The node a tool prompt picks on (its input, while the tool's result
     ## is shown); -1 without a prompt.
@@ -1101,7 +1112,7 @@ pub class Workspace:
             session.service.release_result(self.publisher.kept)
             session.busy = false
             self.notice = failure.message
-            self.revision += 1
+            self.touch()
             return true
         # Actions the worker ran: their nodes hold the results now.
         _ = edit_held.adopt(self.network)
@@ -1114,7 +1125,7 @@ pub class Workspace:
             # The worker lost its mirror: send the whole graph once.
             if session.resync:
                 self.rebuild()
-            self.revision += 1
+            self.touch()
             return true
         # Lines split by the scope the result was styled for: a new scope
         # with the same products splits them again.
@@ -1131,7 +1142,7 @@ pub class Workspace:
         self.geometry = self.publisher.geometry
         self.sync_selection()
         session.service.release_result(self.publisher.kept)
-        self.revision += 1
+        self.touch()
         # The frames put off till now, each in the pane that asked, if
         # nobody moved its view since.
         let acting = self.view
@@ -1184,7 +1195,7 @@ pub class Workspace:
             return
         self.placing = none
         self.notice = ""
-        self.revision += 1
+        self.touch()
 
     ## Esc: drop the prompted node (or the reselection) with the transaction.
     pub func cancel_prompt(self) -> unit!:

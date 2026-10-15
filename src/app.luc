@@ -1,15 +1,16 @@
 ## The application: the window and its panels, settings kept between
-## runs, and the error handler. Nothing polls on a timer: the panels catch
-## up each frame, the compute worker wakes the loop through a notifier when
-## it has something (a result, progress), and a wait the panels need (a
-## long press, a tooltip's delay) asks for one turn when it is due
-## (Panels.poll).
+## runs, and the error handler. Nothing polls and an idle window does no
+## work: a change to the workspace notifies the loop, whose next turn
+## refreshes the panels once (Panels.catch_up); the compute worker, Script
+## checks and renders wake it through notifiers when they have something; a
+## timed wait (a long press, a pause in typing) asks for one turn when it is
+## due; frames follow one another only while something plays or renders
+## (Panels.animate); and the settings are written a moment after they change.
 from luce_ui.ui import Application, Font, Notifier
 from luce_cad.cad_geometry import CadGeometry
 import theme
 from workspace import Workspace
 from panels import Panels
-from interop import Connection
 from ui_state import UIState, settings_path
 import node_commands
 import node_paths
@@ -18,20 +19,24 @@ pub class Luce3D:
     pub let app: Application
     pub let workspace: Workspace
     pub let panels: Panels
-    let ticking: Connection
     let settings: UIState
-    ## Runs a panels' poll when the compute worker wakes the loop.
+    ## Notified by each change to the workspace: the panels catch up on the
+    ## next turn, once however many changes came.
+    let changes: Notifier
+    ## The compute worker's: its result or progress is taken then.
     var computed: Notifier? = none
-    ## Wakes the loop when a Script check's sync or job ends (the panels poll).
+    ## Woken when a Script check's sync or job ends.
     var checks: Notifier? = none
     ## Woken when a render has compiled its scene (the viewport's and the
     ## Render panel's), so no frames are drawn while it compiles.
     var renders: Notifier? = none
 
-    pub func init(self, persist: bool = false, width: int = 1400, height: int = 900) -> unit!:
+    ## `persist`: the user's settings and the desktop's clipboard; tests
+    ## keep their settings in `settings_file` (none when empty).
+    pub func init(self, persist: bool = false, width: int = 1400, height: int = 900, settings_file: str = "") -> unit!:
         # Geometry files carry CAD models too (the Cache node).
         _ = CadGeometry.register_codec()
-        self.settings = UIState(settings_path() if persist else "")
+        self.settings = UIState(settings_path() if persist else settings_file)
         self.workspace = Workspace()
         self.panels = Panels(self.workspace, Font())
         # The editor's window copies nodes to the desktop's clipboard; tests'
@@ -44,9 +49,13 @@ pub class Luce3D:
         self.app.focus(self.panels.view.layout())
         self.app.set_commands(self.panels.actions.all)
         self.panels.app = self.app
-        self.ticking = self.app.on_frame(func (elapsed: float) -> unit!:
-            self.panels.poll(elapsed)
-            self.settings.poll(self.panels, elapsed))
+        self.changes = self.app.notifier(self.panels.catch_up)
+        let changes = self.changes
+        self.workspace.on_change = func ():
+            # Only a closed notifier fails, as the editor closes: nothing to show then.
+            changes.notify() catch failure:
+                _ = failure
+        self.panels.on_settings = func () -> unit!: self.settings.changed(self.app, self.panels)
         self.app.set_error_handler(self.panels.report_error)
         self.panels.inspector.on_browse = self.browse_geometry
         self.panels.inspector.on_render = self.panels.render
@@ -68,22 +77,22 @@ pub class Luce3D:
             self.panels.refresh()
 
     ## The compute worker wakes the loop when it has a result or progress:
-    ## the panels poll it then (and only then, between frames).
+    ## the panels take it then (and only then, between frames).
     pub func wake_on_compute(self) -> unit!:
         let session = self.workspace.compute else return
         if self.computed != none:
             return
-        let notifier = self.app.notifier(func () -> unit!: self.panels.poll(0.0))
+        let notifier = self.app.notifier(self.panels.computed)
         session.service.wake_with(notifier)
         self.computed = notifier
 
     pub func run(self, arguments: list[str]) -> unit!:
         self.workspace.enable_compute()
         self.wake_on_compute()
-        let checks = self.app.notifier(func () -> unit!: self.panels.poll(0.0))
+        let checks = self.app.notifier(self.panels.checked)
         self.panels.inspector.wake_checks_with(checks.waker())
         self.checks = checks
-        let renders = self.app.notifier(func () -> unit!: self.panels.poll(0.0))
+        let renders = self.app.notifier(self.panels.animate)
         self.panels.view.wake_renders_with(renders.waker())
         self.panels.render_view.wake_with(renders.waker())
         self.renders = renders
@@ -102,6 +111,8 @@ pub class Luce3D:
     pub func close(self):
         self.settings.save(self.panels) catch failure:
             _ = failure
+        self.workspace.on_change = none
+        self.changes.close()
         if let notifier = self.computed:
             notifier.close()
         self.computed = none
@@ -113,6 +124,5 @@ pub class Luce3D:
         self.renders = none
         if let compute = self.workspace.compute:
             compute.close()
-        self.ticking.disconnect()
         self.panels.close()
         self.app.close()

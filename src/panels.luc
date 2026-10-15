@@ -2,7 +2,11 @@
 ## outliner, render view and takes docked together, with the status line,
 ## the node search, the shading menu, the sketch's value and text boxes,
 ## the tool bar and the viewport's tool shelf (its panel's footer); it
-## routes refreshes and the frame's poll to them.
+## routes refreshes to them. Nothing polls: a change to the workspace
+## refreshes them once a turn (catch_up), the compute worker's and Script
+## checks' notifiers bring their results, a timed wait (a press held, a pause
+## in typing) asks for one turn when due, and frames are drawn one after
+## another only while something moves on by itself (playing, rendering).
 from luce_ui.ui import Application, VStack, HStack, Text, TextField, Font, Button, ButtonStyle, Spacer, DStack, Panel, DockPosition, Size, ScrollView, Menu, TextPrompt, ContextMenu, Point
 from dock_layout import DockLayout
 from project_session import ProjectSession
@@ -40,11 +44,20 @@ from node_context_menu import NodeContextMenu
 from viewport_menu import ViewportMenu
 import selection_commands
 
+## The shortest time between the frames drawn while something moves on.
+let frame_seconds: float = 1.0 / 120.0
+
 pub class Panels:
-    ## The application, for a turn asked at a time (`wake`): none headless.
+    ## The application, for a turn asked at a time (`wake`) and the frames
+    ## drawn while something moves on (`animate`): none headless.
     pub var app: Application? = none
     ## When the turn asked last is due (0: none asked).
     var wake_at: int = 0
+    ## The frame callback while something moves on by itself (`animate`).
+    var frames: Connection? = none
+    ## Told when something the editor's settings keep may have changed (the
+    ## workspace, a view, the panels' layout).
+    pub var on_settings: func() -> unit!? = none
     pub let body: VStack
     pub let view: SceneViewport
     pub let graph: NetworkView
@@ -95,6 +108,8 @@ pub class Panels:
     pub let workspace: Workspace
     let connections: list[Connection]
     var shown_revision: int = -1
+    ## Refreshes so far (tests, and the idle probe: none while idle).
+    pub var refreshes: int = 0
     var shown_scope: int = -2
     var add_x: float = 70.0
     var add_y: float = 70.0
@@ -135,6 +150,7 @@ pub class Panels:
         self.shelf = ToolShelf(workspace, self.actions, self.view.sketch.editor, self.view.tools.chrome.shelf, self.view.layout())
         self.view.tools.chrome.on_shelf = self.shelf.refresh
         self.timeline = TimelinePane(workspace, self.actions, font)
+        self.timeline.on_play = self.animate
         self.project_settings = ProjectSettings(workspace, font)
         self.project_settings.applied = self.refresh
         self.connections.append(self.actions.project_settings.on_trigger(self.project_settings.open))
@@ -153,6 +169,11 @@ pub class Panels:
         self.view.sketch.editor.on_click = self.sketch_value.dismiss
         self.view.on_search = self.open_viewport_search
         self.view.on_add = self.add_from_viewport
+        self.view.on_wait = self.wake
+        self.view.on_input = self.settings_changed
+        self.view.on_resized = self.resized
+        self.inspector.wait_with(self.wake)
+        self.search.on_close = func () -> unit!: self.placed = false
         let types = kinds()
         for index in 0..<types.length:
             let kind = types[index]
@@ -236,6 +257,8 @@ pub class Panels:
         self.dock.select(network)
         self.dock_layout = DockLayout(self.dock, [viewport, rendered, parameters, outliner, takes, network, spreadsheet])
         self.connections.append(self.actions.reset_layout.on_trigger(self.dock_layout.reset))
+        self.connections.append(self.dock.on_select(func (panel: Panel) -> unit!: self.settings_changed()))
+        self.connections.append(self.dock.on_close(func (panel: Panel) -> unit!: self.settings_changed()))
         self.dock.layout().set_flex()
         self.status = Text("", font = font, muted = true)
         # The context display menu, anchored on an empty label in the footer
@@ -247,6 +270,9 @@ pub class Panels:
         self.node_menu = NodeContextMenu(workspace, self.actions, font)
         self.viewport_menu = ViewportMenu(workspace, self.actions, self.view.sketch.editor, font)
         self.view.on_menu = self.open_viewport_menu
+        self.connections.append(self.node_menu.menu.on_close(self.node_menu_closed))
+        # The viewport's menu hid the step's tool bar: it shows again.
+        self.connections.append(self.viewport_menu.menu.on_close(func () -> unit!: self.tool_bar.refresh(false)))
         let footer = HStack([self.status, self.context_menu, self.node_path_picker.menu, self.node_menu.menu, self.viewport_menu.menu], padding = 6.0)
         self.body = VStack([header, self.dock, self.timeline.body, footer, self.search, self.shading, self.sketch_value.body, self.tool_bar.body, self.sketch_text, self.rename_prompt, self.project_settings.dialog, self.projects.confirm], spacing = 0.0)
         self.body.layout().set_flex()
@@ -449,6 +475,7 @@ pub class Panels:
         self.refresh()
 
     pub func refresh(self) -> unit!:
+        self.refreshes += 1
         self.apply_full_screen()
         self.projects.refresh()
         self.path.set_text(self.workspace.network.path())
@@ -468,13 +495,17 @@ pub class Panels:
         self.tool_bar.refresh(self.viewport_menu.is_open())
         self.place_tool_bar()
         self.shelf.refresh()
+        self.network_tools.sync_enabled()
+        self.up.layout().set_enabled(self.actions.parent.is_enabled())
+        self.cad_timeline.sync()
+        self.timeline.sync()
+        self.view.follow_cameras()
         self.view.layout().invalidate()
         self.graph.layout().invalidate()
-        # Once the viewport is laid out, so the box lands by the arrow.
-        if (self.workspace.ask_value or self.view.arrow.clicked >= 0) and self.view.pane_bounds().width > 0.0:
-            self.ask_value()
+        self.ask_if_wanted()
         self.status.set_text(self.status_text())
         self.shown_revision = self.workspace.revision
+        self.animate()
 
     ## The status line: the workspace's notice (a failure), else the
     ## displayed node's warning (an Edit step that could not be built), else
@@ -487,42 +518,102 @@ pub class Panels:
                 return f"{node.name}: {node.warning}"
         return "A / S / D: create, modify, select   D in the network: display flag   B: bypass   Alt + mouse: camera   Cmd/Ctrl-Z: undo"
 
-    pub func poll(self, elapsed: float) -> unit!:
-        self.view.poll_hold()
-        self.timeline.poll()
-        self.network_tools.poll()
-        self.cad_timeline.poll()
-        self.up.layout().set_enabled(self.actions.parent.is_enabled())
-        # Tab or the node menu closed without a choice: its placement is spent.
-        if not self.node_menu.is_open():
-            self.paste_at = none
-            if self.placed and not self.search.is_open():
-                self.placed = false
-        self.inspector.poll()
-        if (self.workspace.ask_value or self.view.arrow.clicked >= 0) and self.view.pane_bounds().width > 0.0:
-            self.ask_value()
-        self.place_tool_bar()
-        if self.workspace.poll_compute():
-            self.graph.layout().invalidate()
+    ## The workspace changed (`Workspace.on_change`, heard once a turn):
+    ## the panels show its new revision.
+    pub func catch_up(self) -> unit!:
         if self.shown_revision != self.workspace.revision:
             self.refresh()
-        if self.render_view.running():
-            self.render_view.layout().invalidate()
+        self.settings_changed()
+
+    ## The compute worker has a result or progress (its notifier): the
+    ## workspace takes it, and the panels show it.
+    pub func computed(self) -> unit!:
+        if self.workspace.poll_compute():
+            self.graph.layout().invalidate()
+        self.catch_up()
+
+    ## A Script check's sync or job ended (its notifier).
+    pub func checked(self) -> unit!:
+        self.inspector.poll_checks()
+
+    ## Something the editor's settings keep may have changed.
+    func settings_changed(self) -> unit!:
+        if let changed = self.on_settings:
+            changed()
+
+    ## A feature's value box, when one is wanted and the viewport is laid
+    ## out (so the box lands by its arrow).
+    func ask_if_wanted(self) -> unit!:
+        if (self.workspace.ask_value or self.view.arrow.clicked >= 0) and self.view.pane_bounds().width > 0.0:
+            self.ask_value()
+
+    ## The viewport drew at a new size: the tool bar follows it, a value
+    ## box waiting for it opens, and the settings keep the window's size.
+    func resized(self) -> unit!:
+        self.place_tool_bar()
+        self.ask_if_wanted()
+        self.settings_changed()
+
+    ## The network's or Outliner's menu closed: where it opened is spent.
+    func node_menu_closed(self) -> unit!:
+        self.paste_at = none
+        self.placed = false
+
+    ## Whether something moves on by itself: playing, or a render taking
+    ## samples (the viewport's Render mode, the Render panel).
+    func animating(self) -> bool:
+        return self.timeline.bar.playing or self.view.rendering() or self.render_view.running()
+
+    ## Draw frame after frame while something moves on by itself, and stop
+    ## once nothing does: called when playing starts, a render's scene has
+    ## compiled, and after each refresh.
+    pub func animate(self) -> unit!:
+        if self.frames != none or not self.animating():
+            return
+        let app = self.app else return
+        self.frames = app.on_frame(self.frame)
+
+    ## One of those frames: playing moves on, a render takes its next
+    ## samples (its view draws again), and the next turn is asked for.
+    func frame(self, elapsed: float) -> unit!:
+        _ = elapsed
+        if self.timeline.bar.playing:
+            self.timeline.play_frame()
+            self.view.layout().invalidate()
         if self.view.rendering():
             self.view.layout().invalidate()
-        if self.timeline.bar.playing:
-            # Playing moves on each frame: draw the next.
+        if self.render_view.running():
+            self.render_view.layout().invalidate()
+        if not self.animating():
+            # One last draw: a render whose viewport settled after a resize
+            # starts again at the new size there (its compile then wakes
+            # the frames, `animate`).
             self.view.layout().invalidate()
-        self.wake()
+            self.stop_frames()
+            return
+        # The next frame soon: at most 120 a second, enough for playing and
+        # a render's samples (a present need not wait for the display, and
+        # frames asked at once would spin).
+        if let app = self.app:
+            app.wake_after(frame_seconds)
 
-    ## Ask the loop for one more turn when the earliest wait the panels time
-    ## is due (a press held, a tooltip's delay, a pause in typing): nothing
-    ## polls on a timer, and a quiet editor sleeps.
+    ## Whether frames are drawn one after another now (tests).
+    pub func drawing_frames(self) -> bool:
+        return self.frames != none
+
+    func stop_frames(self):
+        if let frames = self.frames:
+            frames.disconnect()
+        self.frames = none
+
+    ## Ask the loop for one turn when the earliest timed wait is due (a
+    ## press held, a pause in typing); their owners call this when one
+    ## begins, and a quiet editor sleeps.
     func wake(self) -> unit!:
         let app = self.app else return
         let now = time.now()
         var soon = -1
-        for left in [self.view.waits(now), self.network_tools.waits(now), self.timeline.waits(now), self.inspector.waits(now)]:
+        for left in [self.view.waits(now), self.inspector.waits(now)]:
             if left >= 0 and (soon < 0 or left < soon): soon = left
         if soon < 0:
             return
@@ -532,7 +623,13 @@ pub class Panels:
         self.wake_at = due
         _ = app.after(float(soon) / 1000000000.0, func () -> unit!:
             self.wake_at = 0
-            self.poll(0.0))
+            self.due())
+
+    ## The waits that are due run, and the next one is asked for.
+    func due(self) -> unit!:
+        self.view.due()
+        self.inspector.due()
+        self.wake()
 
     ## The viewport filling the window (Space with F, Window › Full screen
     ## viewport): every other panel and the timeline hidden, their layout
@@ -558,6 +655,12 @@ pub class Panels:
         self.refresh()
 
     pub func close(self):
+        self.stop_frames()
+        self.on_settings = none
+        self.view.on_wait = none
+        self.view.on_input = none
+        self.view.on_resized = none
+        self.search.on_close = none
         self.view.tools.objects.silhouette.close()
         self.projects.close()
         self.timeline.close()

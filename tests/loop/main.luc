@@ -1,0 +1,114 @@
+## The editor in a real window with its loop turning (nothing polls): idle,
+## it refreshes and draws nothing; a change refreshes the panels once; a
+## worker's result arrives by its notifier; a changed setting is written a
+## moment later; playing draws frames while it plays and none after. The
+## test's own timers drive the steps and its frame callback counts the
+## loop's turns. Needs a window: macOS with a desktop session, Linux with a
+## display; skipped elsewhere.
+from app import Luce3D
+from luce_std import files, paths, process
+import node_commands
+import platform
+
+## Whether a window can open here: a logged-in macOS desktop (launchd's
+## manager is Aqua there, Background over SSH) or a Linux display.
+func windowed() -> bool:
+    if platform.macos:
+        let done = process.run("launchctl", ["managername"]) catch failure:
+            return false
+        return done.output.trim() == "Aqua"
+    if platform.linux:
+        return (process.variable("DISPLAY") else "") != "" or (process.variable("WAYLAND_DISPLAY") else "") != ""
+    return false
+
+## What the counters said at one moment.
+class Mark:
+    pub let turns: int
+    pub let refreshes: int
+    pub let draws: int
+
+    pub func init(self, turns: int, refreshes: int, draws: int):
+        self.turns = turns
+        self.refreshes = refreshes
+        self.draws = draws
+
+pub func main(arguments: list[str]) -> int!:
+    if not windowed():
+        print("skip: no window can open here")
+        return 0
+    with files.TemporaryDirectory() as directory:
+        let path = paths.join(directory.path(), "ui.prisma")
+        let editor = Luce3D(settings_file = path)
+        # As the editor starts (main.luc): on luce-linux's Vulkan driver an
+        # editor run without a project crashes in its first presents.
+        editor.panels.projects.new_project()
+        let w = editor.workspace
+        let panels = editor.panels
+        let app = editor.app
+        var turns = 0
+        let counting = app.on_frame(func (elapsed: float):
+            _ = elapsed
+            turns += 1)
+        let marks: list[Mark] = []
+        let mark = func ():
+            marks.append(Mark(turns, panels.refreshes, panels.view.draws))
+        var wide = 0.0
+        var grown = 0.0
+        var first_frame = 0.0
+        var played_frame = 0.0
+        var written = false
+        # 1.5 s: started (the first cooks shown). 4.5 s: three idle seconds
+        # later; then a rename and a bigger box.
+        _ = app.after(1.5, func () -> unit!:
+            wide = (w.geometry else trap("box")).bounds().maximum.x
+            mark())
+        _ = app.after(4.5, func () -> unit!:
+            mark()
+            node_commands.rename(w, "Renamed")
+            let shown = w.network.selected
+            for node in w.network.nodes:
+                if node.kind == "Box":
+                    node_commands.select_node(w, node.id)
+            node_commands.set_parameter(w, 0, 4.0)
+            node_commands.select_node(w, shown))
+        # 6 s: the worker's result is shown; the shading changes (a setting).
+        _ = app.after(6.0, func () -> unit!:
+            mark()
+            grown = (w.geometry else trap("grown")).bounds().maximum.x
+            w.set_display_mode(4))
+        # 7.5 s: the setting is written; play.
+        _ = app.after(7.5, func () -> unit!:
+            written = files.exists(path) and files.read_text(path).contains("shading")
+            first_frame = w.network.frame
+            mark()
+            panels.actions.play.trigger())
+        # 8.5 s: played a second; stop.
+        _ = app.after(8.5, func () -> unit!:
+            played_frame = w.network.frame
+            mark()
+            panels.actions.play.trigger())
+        # 9 s and 11 s: stopped, idle again.
+        _ = app.after(9.0, func () -> unit!: mark())
+        _ = app.after(11.0, func () -> unit!:
+            mark()
+            app.stop())
+        editor.run([])
+        counting.disconnect()
+        editor.close()
+        assert(marks.length == 7, f"{marks.length} marks")
+        let idle = marks[1]
+        let start = marks[0]
+        print(f"idle 3 s: {idle.turns - start.turns} loop turns, {idle.refreshes - start.refreshes} refreshes, {idle.draws - start.draws} viewport draws")
+        assert(idle.refreshes == start.refreshes and idle.draws == start.draws, "an idle editor refreshed or drew")
+        # The rename and the worker's result: refreshed, the box grown.
+        assert(marks[2].refreshes > idle.refreshes and grown > wide * 1.5, f"{wide} then {grown}")
+        assert(written, "the shading was not written to the settings")
+        let playing = marks[4].draws - marks[3].draws
+        print(f"playing 1 s: frame {first_frame} to {played_frame}, {playing} viewport draws")
+        assert(played_frame > first_frame + 5.0 and playing > 10)
+        let after = marks[6]
+        let stopped = marks[5]
+        print(f"stopped 2 s: {after.turns - stopped.turns} loop turns, {after.refreshes - stopped.refreshes} refreshes, {after.draws - stopped.draws} viewport draws")
+        assert(after.refreshes == stopped.refreshes and after.draws == stopped.draws, "frames went on after playing stopped")
+    print("PASS a real window: idle, no refresh or draw; a change and a worker's result shown; a setting written a moment later; frames only while playing")
+    return 0

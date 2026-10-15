@@ -1,0 +1,146 @@
+## The editor without a frame poll: each thing that once caught up every
+## frame follows the change that moves it. Headless, where the loop never
+## turns: the notifiers' callbacks are called as the loop's turn would
+## (tests/loop runs them in a real window).
+from app import Luce3D
+from luce_gpu.gpu import Frame
+from luce_window import window
+from luce_window.input import EventKind, Key
+from luce_ui.ui import Event
+from luce_3d.graphics import Vector3
+from luce_std import files, paths
+from edit_types import edge_level
+from tool_drag_tests import editor_on, choose
+from ui_state import UIState
+from network import kinds
+import modeling_commands
+import node_commands
+import node_room
+
+pub func event_tests() -> unit!:
+    revision_refreshes()
+    worker_results()
+    tool_bar_follows()
+    playing_draws()
+    menus_spend_placement()
+    settings_written()
+    print("PASS no frame poll: a change notifies once and the panels refresh once for it; worker results arrive by notifier; the tool bar follows the viewport's size; playing draws frames; a menu closed spends its placement; settings written when asked, never per change")
+
+## A change tells the workspace's listener (the editor's notifier), and
+## nothing refreshes until the turn it wakes: then once, and not again
+## without another change.
+func revision_refreshes() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    assert(w.on_change != none)
+    var heard = 0
+    w.on_change = func (): heard += 1
+    editor.panels.catch_up()
+    let before = editor.panels.refreshes
+    node_commands.rename(w, "Renamed")
+    w.notice = "Shown"
+    w.touch()
+    assert(heard >= 2 and editor.panels.refreshes == before)
+    editor.panels.catch_up()
+    assert(editor.panels.refreshes == before + 1 and editor.panels.status.text() == "Shown")
+    editor.panels.catch_up()
+    assert(editor.panels.refreshes == before + 1)
+    editor.close()
+
+## The compute worker's result: its notifier's callback takes it, and the
+## panels show it.
+func worker_results() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    w.enable_compute()
+    settle(editor)
+    let box = w.network.selected
+    let wide = (w.geometry else trap("box")).bounds().maximum.x
+    let before = editor.panels.refreshes
+    node_commands.set_parameter(w, 0, 4.0)
+    settle(editor)
+    let grown = (w.geometry else trap("grown")).bounds().maximum.x
+    assert(grown > wide * 1.5, f"{wide} then {grown}, {w.notice}")
+    assert(editor.panels.refreshes > before and w.network.selected == box)
+    (w.compute else trap("compute")).close()
+    editor.close()
+
+## Call the compute notifier's callback until the worker has nothing left.
+func settle(editor: Luce3D) -> unit!:
+    let session = editor.workspace.compute else trap("compute")
+    editor.panels.computed()
+    while session.busy:
+        editor.panels.computed()
+
+## A step's tool bar stays along the bottom of the viewport when the
+## viewport is drawn at another size.
+func tool_bar_follows() -> unit!:
+    let editor = editor_on(Vector3(0.0, 5.0, 0.6))
+    let w = editor.workspace
+    choose(editor, edge_level, "p11-12", 4)
+    modeling_commands.model(w, "Bevel")
+    editor.panels.refresh()
+    assert(editor.panels.tool_bar.is_open())
+    draw(editor, 1400.0, 900.0)
+    let large = editor.panels.tool_bar.placed_at()
+    draw(editor, 1100.0, 700.0)
+    let small = editor.panels.tool_bar.placed_at()
+    # Along the viewport's bottom: higher in the smaller window.
+    assert(large.length == 2 and small.length == 2 and small[1] < large[1], f"{large} then {small}")
+    w.cancel()
+    editor.close()
+
+func draw(editor: Luce3D, width: float, height: float) -> unit!:
+    editor.app.layout(width, height)
+    let frame = Frame(window.Size(width, height, width, height, 1.0))
+    editor.app.render(frame.target())
+    frame.close()
+
+## Play starts the frames (the loop then draws one after another); none
+## are drawn before.
+func playing_draws() -> unit!:
+    let editor = Luce3D()
+    editor.panels.refresh()
+    assert(not editor.panels.drawing_frames())
+    editor.panels.actions.play.trigger()
+    assert(editor.panels.drawing_frames())
+    editor.panels.actions.play.trigger()
+    editor.close()
+
+## Tab's node menu dismissed: a node added from the Create menu then goes
+## below the selected node, not where Tab was pressed.
+func menus_spend_placement() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1400.0, 900.0)
+    editor.panels.refresh()
+    let source = w.selected() else trap("box")
+    editor.panels.graph.pointer_x = 600.0
+    editor.panels.graph.pointer_y = 300.0
+    editor.panels.open_search()
+    editor.app.layout(1400.0, 900.0)
+    assert(editor.panels.search.is_open())
+    editor.app.dispatch(Event(kind = EventKind.key_down, key = Key.escape))
+    assert(not editor.panels.search.is_open())
+    let index = kinds().index_of("Transform") else trap("Transform")
+    editor.panels.actions.add[index].trigger()
+    let added = w.selected() else trap("added")
+    assert(added.kind == "Transform" and added.x == source.x and added.y == source.y + node_room.row, f"at {added.x}, {added.y}")
+    editor.close()
+
+## Settings are not written per change: `changed` asks for one write a
+## moment later (the loop's turn then; tests/loop sees it land), and
+## `save` writes them.
+func settings_written() -> unit!:
+    with files.TemporaryDirectory() as directory:
+        let path = paths.join(directory.path(), "ui.prisma")
+        let editor = Luce3D(settings_file = path)
+        editor.app.layout(1400.0, 900.0)
+        editor.panels.refresh()
+        let settings = UIState(path)
+        settings.changed(editor.app, editor.panels)
+        settings.changed(editor.app, editor.panels)
+        assert(not files.exists(path))
+        settings.save(editor.panels)
+        assert(files.exists(path))
+        editor.close()

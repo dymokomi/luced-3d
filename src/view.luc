@@ -135,6 +135,15 @@ pub class SceneViewport: Widget:
     pub var on_menu: func(float, float) -> unit!? = none
     ## Tab: the node menu, at the pointer.
     pub var on_search: func() -> unit!? = none
+    ## A press the viewport times began (`waits` says when `due` is to run).
+    pub var on_wait: func() -> unit!? = none
+    ## Each input the viewport took.
+    pub var on_input: func() -> unit!? = none
+    ## The viewport drew at a new size (docked elsewhere, the window resized).
+    pub var on_resized: func() -> unit!? = none
+    var drawn_size: list[float] = []
+    ## Draws so far (tests, and the idle probe: none while idle).
+    pub var draws: int = 0
     ## The pointer in the pane under it (what the tools and menus place by),
     ## and in the whole viewport.
     pub var pointer_x: float = 100.0
@@ -162,12 +171,16 @@ pub class SceneViewport: Widget:
                 if soon < 0 or left < soon: soon = left
         return soon
 
-    pub func poll_hold(self) -> unit!:
-        if self.marking.poll(time.now()):
-            self.layout().invalidate()
-        # A pane looking through a camera follows its node; a sketch left
-        # gives its pane's view back.
+    ## A pane looking through a camera follows its node; a sketch left gives
+    ## its pane's view back (as the network changes, and each frame played).
+    pub func follow_cameras(self) -> unit!:
         if camera_views.sync(self.workspace) or sketch_camera.follow(self.workspace):
+            self.layout().invalidate()
+
+    ## When a press the viewport times is due (`waits`): a marking menu's
+    ## family opens, a held shading or context button opens its menu.
+    pub func due(self) -> unit!:
+        if self.marking.poll(time.now()):
             self.layout().invalidate()
         if self.mode_press >= 0 and time.now() - self.mode_press >= 350000000:
             self.mode_press = -1
@@ -258,7 +271,12 @@ pub class SceneViewport: Widget:
     ## Every pane shown, each into its own region through its own view, the
     ## active one last; between four, a gap, the active one outlined.
     pub func draw(self, target: RenderTarget) -> unit!:
+        self.draws += 1
         let size = target.size()
+        if self.drawn_size != [size.width, size.height]:
+            self.drawn_size = [size.width, size.height]
+            if let resized = self.on_resized:
+                resized()
         let painter = Painter(target)
         painter.rectangle(Rect(0.0, 0.0, size.width, size.height), theme.grey(30.0) if self.workspace.panes.four else theme.backdrop())
         painter.close()
@@ -607,7 +625,18 @@ pub class SceneViewport: Widget:
     ## in its coordinates and through its view; that pane becomes the active
     ## one, but while a marking menu, the camera menu or a value box holds
     ## the active pane.
+    ## An input: routed to the chrome, the panes and their tools; then a
+    ## press it began that is timed asks for its turn (`on_wait`), and
+    ## `on_input` hears it (the editor's settings follow views and panes).
     pub func event(self, event: Event) -> unit!:
+        self.route(event)
+        if self.waits(time.now()) >= 0:
+            if let asked = self.on_wait:
+                asked()
+        if let heard = self.on_input:
+            heard()
+
+    func route(self, event: Event) -> unit!:
         let bounds = self.layout().bounds()
         let w = self.workspace
         let pointer = event.kind in [EventKind.pointer_moved, EventKind.pointer_down, EventKind.pointer_up, EventKind.scroll, EventKind.magnify]
@@ -645,7 +674,7 @@ pub class SceneViewport: Widget:
     ## `height` (four panes; none while a press in a pane drags or a menu
     ## is open): hover, a button pressed, the context display button
     ## clicked (the next mode) or held or right-clicked (its menu, as
-    ## poll_hold opens it). Whether the event was the dock's.
+    ## `due` opens it). Whether the event was the dock's.
     func dock_event(self, event: Event, width: float, height: float) -> bool!:
         let chrome = self.tools.chrome
         if not chrome.docked() or self.captured >= 0 or self.marking.is_open() or self.cameras.open_pane >= 0:
