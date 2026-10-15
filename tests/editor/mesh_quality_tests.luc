@@ -11,6 +11,10 @@ from luce_cad.model import MeshQuality
 from luce_cad.solids import CadSolids
 from luce_window.input import Key
 from project_graph import write_graph, read_graph
+from network import Network
+from stamps import stamp_graph
+from usd_nodes import export_quality_slot
+from luce_obj.obj import Obj
 import node_commands
 import mesh_quality
 import time
@@ -21,7 +25,8 @@ pub func mesh_quality_tests() -> unit!:
     saved_and_read()
     dialog_presets()
     remeshed_not_cooked()
-    print("PASS display quality: saved and read (Medium without one), presets fill the fields and an edited field is Custom, a new quality meshes a sphere again at luce-cad's preset counts and cooks nothing (local and worker), undone as one step")
+    exported()
+    print("PASS display quality: saved and read (Medium without one), presets fill the fields and an edited field is Custom, a new quality meshes a sphere again at luce-cad's preset counts and cooks nothing (local and worker), undone as one step; Tessellate and Export start at it and mesh at their own")
 
 func saved_and_read() -> unit!:
     let editor = Luce3D()
@@ -155,6 +160,58 @@ func on_screen(w: Workspace) -> int!:
 
 func near(a: float, b: float) -> bool:
     return math.abs(a - b) <= 1e-9
+
+## Tessellate and Export nodes start at the project's display quality and
+## mesh at their own: an OBJ of a sphere has luce-cad's count for the
+## Export's quality, whatever the project's; the input passes on analytic.
+func exported() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    w.set_mesh_quality(MeshQuality(mesh_quality.angle_of(6.0), 0.01, 0.0))
+    node_commands.add_node(w, "Export", 0.0, 0.0)
+    let export = w.network.require(w.network.selected)
+    let first = export_quality_slot
+    assert(int(export.values[first]) == mesh_quality.custom_index and near(export.values[first + 1], 6.0) and near(export.values[first + 2], 0.01))
+    assert(mesh_quality.same(mesh_quality.of_node(export.values, first), w.network.mesh_quality))
+    w.set_mesh_quality(MeshQuality.high())
+    node_commands.add_node(w, "Tessellate", 0.0, 100.0)
+    let tessellate = w.network.require(w.network.selected)
+    assert(int(tessellate.values[0]) == 2)
+    editor.close()
+    # A sphere written at Low while the project shows Very High.
+    let graph = Network(false)
+    graph.mesh_quality = MeshQuality.very_high()
+    let geo = graph.add("Geo", 0.0, 0.0)
+    graph.scope = geo.id
+    let ball = graph.add("CAD", 0.0, 0.0)
+    graph.scope = ball.id
+    _ = graph.add("Solid Sphere", 0.0, 0.0)
+    graph.scope = geo.id
+    let out = graph.add("Export", 0.0, 60.0)
+    out.texts[0] = "mesh_quality_sphere.obj"
+    out.values[first] = 0.0
+    graph.connect(ball.id, out.id, 0)
+    stamp_graph(graph)
+    let passed = graph.evaluate_data(out.id)
+    assert(passed.holds_cad() and passed.mesh == none)
+    let written = Obj.load("mesh_quality_sphere.obj")
+    let low = CadSolids.sphere(10.0).tessellated(MeshQuality.low())
+    assert(written.face_count() == low.face_count(), f"{written.face_count()} faces written, luce-cad's {low.face_count()} at Low")
+    # Custom: a finer angle writes more.
+    out.values[first] = float(mesh_quality.custom_index)
+    out.values[first + 1] = 5.0
+    graph.invalidate(out.id)
+    stamp_graph(graph)
+    _ = graph.evaluate_data(out.id)
+    let custom = CadSolids.sphere(10.0).tessellated(MeshQuality(mesh_quality.angle_of(5.0), 0.0, 0.0))
+    assert(Obj.load("mesh_quality_sphere.obj").face_count() == custom.face_count() and custom.face_count() > low.face_count())
+    # Tessellate meshes at its own quality, sharing the model's kept mesh.
+    let meshed = graph.add("Tessellate", 200.0, 60.0)
+    meshed.values[0] = 3.0
+    graph.connect(ball.id, meshed.id, 0)
+    stamp_graph(graph)
+    let mesh = graph.evaluate_data(meshed.id).geometry.realized()
+    assert(mesh.face_count() == CadSolids.sphere(10.0).tessellated(MeshQuality.very_high()).face_count())
 
 func settle(w: Workspace) -> unit!:
     let session = w.compute else trap("compute")

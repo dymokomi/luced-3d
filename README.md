@@ -135,9 +135,12 @@ user preference file. See [project schema and persistence](docs/PROJECTS.md).
   and PLY do not show this setting. It is separate from tessellation density. See the
   [import contracts](docs/DESIGN.md#imports) and the
   [CAD tessellation reference](docs/CAD_TESSELLATION.md).
-- Tessellate's **Target edge length / 0 = off** refines boundaries and inserts
-  interior grids. Smaller positive values give denser geometry; quads are used
-  where suitable. Meshes include corner normals and STEP face colors as `Cd`.
+- CAD bodies show at the project's **Display quality** (Window › Project
+  Settings › Display: Low, Medium, High, Very High or a custom max angle, max
+  chord height and max edge length); changing it meshes them again and
+  rebuilds nothing. Tessellate and Export (to OBJ, PLY or FBX) mesh at their
+  own **Mesh quality**, which starts at the project's. Meshes include corner
+  normals and STEP face colors as `Cd`.
 - STEP product/occurrence and solid names become primitive group paths such as
   `Camera - 6/Lens:1/Phone Camera Lens v3:1/LensShell`. File, Transform, Merge,
   Tessellate and Blast preserve these paths. The Outliner shows their hierarchy

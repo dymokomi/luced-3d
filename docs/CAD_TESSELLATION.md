@@ -131,9 +131,16 @@ A full tessellation (`CadModel.tessellate(segments, edge_size)`) runs:
    `curvature.d1`/`d2` their directions. `N` and curvature are per corner, so
    polygons of two B-rep faces meeting at a seam keep each face's own values.
 
-Density controls belong to Tessellate: divisions and a target edge length (0 off;
-positive values are desired source-unit spacing, **not** a minimum edge length
-or a maximum). Import tolerance belongs to File and never changes density.
+Density is a mesh quality (luce-cad's `MeshQuality`), never the model's size
+or its modeling tolerances: the project's display quality for what the viewport
+shows, and Tessellate's and Export's own **Mesh quality** (Low, Medium, High,
+Very High, or Custom max angle, max chord height and max edge length, 0 off),
+which a new node takes from the project's display quality, as Alias's export
+takes Max Chord Height, Max Angle and Max Length. Export meshes CAD bodies at
+its quality for OBJ, PLY and FBX (USD writes them exact, their trims sampled
+at it; prism keeps them analytic) and
+passes its input on as it is. Import tolerance belongs to File and never
+changes density.
 
 ## Invariants
 

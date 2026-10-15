@@ -8,6 +8,7 @@ from luce_obj.obj import Obj
 from luce_geocore.geocore import GeometryFile
 from geometry_data import GeometryData
 from luce_ui import ui
+import mesh_quality
 
 ## Whether `path` names a USD file.
 pub func is_usd_path(path: str) -> bool:
@@ -111,6 +112,16 @@ func counted(count: int, noun: str, more: str = "") -> str:
 ## half; `root` the root prim for USD) and pass
 ## it on, with what the writer left out as the warning. Cooks run when the
 ## node's stamp changes, so the file is written then.
+## The Export node's first mesh quality slot (mesh_quality.node_rows).
+pub let export_quality_slot: int = 3
+
+## Whether an Export to `path` writes meshes, so CAD bodies are meshed for
+## it (OBJ, PLY, FBX); USD writes them exact (NURBS patches, their trims
+## sampled at the node's quality) and prism keeps them analytic.
+pub func is_mesh_export(path: str) -> bool:
+    let lower = path.trim().lower()
+    return lower.ends_with(".obj") or lower.ends_with(".ply") or lower.ends_with(".fbx")
+
 pub func cook_export(path: str, root: str, values: list[float], data: GeometryData) -> GeometryData!:
     let file = path.trim()
     if file == "":
@@ -119,7 +130,9 @@ pub func cook_export(path: str, root: str, values: list[float], data: GeometryDa
     if is_usd_path(lower):
         let name = root.trim() if root.trim() != "" else "geo"
         let precision = int(values[2]) if values.length > 2 else 0
-        Usd.save(data.geometry, file, root = name, split = values[0] != 0.0, precise = values[1] != 0.0, splat_precision = precision)
+        # CAD bodies go exact (NurbsPatch prims), their trims sampled at the
+        # node's mesh quality.
+        Usd.save(data.geometry, file, root = name, split = values[0] != 0.0, precise = values[1] != 0.0, splat_precision = precision, quality = mesh_quality.of_node(values, export_quality_slot))
         let warning = summary(Usd.warnings())
         return data.passed(warning) if warning != "" else data
     if lower.ends_with(".obj"):

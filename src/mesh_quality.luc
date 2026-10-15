@@ -8,6 +8,7 @@
 from luce_cad.model import MeshQuality
 from angles import degrees, radians
 from luce_std import math
+from parameter_rows import Parameter, menu, number
 
 ## The presets, coarsest first (Fusion's display qualities).
 pub func preset_names() -> list[str]: return ["Low", "Medium", "High", "Very High"]
@@ -61,3 +62,41 @@ pub func angle_of(value: float) -> float:
         if math.abs(degrees(angle) - value) <= 1e-9:
             return angle
     return radians(value)
+
+## A Tessellate or Export node's own quality, in four value slots from
+## `first`: a Quality menu (the presets, then Custom) and, for Custom, the
+## angle (degrees), chord height and longest edge (mm, 0: off). A new node
+## starts at the project's display quality (seed).
+pub let custom_index: int = 4
+
+pub func node_rows(first: int) -> list[Parameter]:
+    let quality = menu("Mesh quality", first, "Low|Medium|High|Very High|Custom", 1.0, "How finely CAD bodies are meshed: a display quality, or Custom angle, chord height and edge length. A new node starts at the project's display quality.")
+    quality.key = "mesh_quality"
+    let angle = number("Max angle", first + 1, medium_degrees, finest_degrees, coarsest_degrees, 0.1, "The largest angle a mesh edge may span on a curved surface.", decimals = 2, suffix = "°")
+    let chord = number("Max chord height", first + 2, 0.0, 0.0, 1000.0, 0.001, "The farthest the mesh may stray from its surfaces (0: off).", soft = 1.0)
+    let edge = number("Max edge length", first + 3, 0.0, 0.0, 100000.0, 0.1, "The longest mesh edge (0: off).", soft = 100.0)
+    let rows = [quality, angle, chord, edge]
+    for row in [angle, chord, edge]:
+        row.hide_when = f"{{ mesh_quality != {custom_index} }}"
+    chord.length = true
+    edge.length = true
+    return rows
+
+## Medium's angle in degrees, as a field starts.
+pub let medium_degrees: float = 9.43
+
+## The quality a node's values `v` hold from slot `first`, checked.
+pub func of_node(v: list[float], first: int) -> MeshQuality!:
+    let index = int(v[first])
+    if index >= 0 and index < custom_index:
+        return preset(index)
+    return of_numbers([v[first + 1], v[first + 2], v[first + 3]])
+
+## Put `quality` in a node's values `v` from slot `first`: its preset, or
+## Custom and its numbers.
+pub func seed(v: list[float], first: int, quality: MeshQuality) -> unit:
+    let index = preset_index(quality)
+    v[first] = float(index if index >= 0 else custom_index)
+    let values = numbers(quality)
+    for at in 0..<3:
+        v[first + 1 + at] = values[at]

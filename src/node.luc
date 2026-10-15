@@ -10,7 +10,8 @@ import node_catalog
 from node_evaluation import evaluate_verb, load_geometry, SourceCache
 from geometry_nodes import evaluate_set_verb, is_placement, evaluate_placement, evaluate_attributes, points_deleted
 from cache_node import reads_file, cook_cache, load_frozen
-from usd_nodes import is_usd_path, load_usd, cook_export
+from usd_nodes import is_usd_path, load_usd, cook_export, is_mesh_export, export_quality_slot
+import mesh_quality
 from fbx_nodes import is_fbx_path, load_fbx, export_fbx
 from ply_nodes import is_ply_path, export_ply
 from spz_nodes import is_spz_path, export_spz
@@ -274,6 +275,17 @@ pub class Node:
         kept.tint = result.tint
         return kept
 
+    ## An Export node's write of `data` to its file, in the format its
+    ## extension names.
+    func exported(self, v: list[float], data: GeometryData) -> GeometryData!:
+        if is_fbx_path(self.texts[0]) and self.texts[0].trim() != "":
+            return export_fbx(self.texts[0].trim(), data)
+        if is_ply_path(self.texts[0]):
+            return export_ply(self.texts[0].trim(), data)
+        if is_spz_path(self.texts[0]):
+            return export_spz(self.texts[0].trim(), data)
+        return cook_export(self.texts[0], self.texts[1], v, data)
+
     ## Pure node computation over resolved immutable inputs. Runtime invokes this
     ## only on the compute worker; synchronous callers use the same contract.
     ## `keys` are the inputs' content keys (their nodes' stamps) when the caller
@@ -353,13 +365,12 @@ pub class Node:
         if self.kind == "Cache":
             return cook_cache(reads_file(self.kind, self.enabled, self.values), self.texts[0], self.stamp, data)
         if self.kind == "Export":
-            if is_fbx_path(self.texts[0]) and self.texts[0].trim() != "":
-                return export_fbx(self.texts[0].trim(), data)
-            if is_ply_path(self.texts[0]):
-                return export_ply(self.texts[0].trim(), data)
-            if is_spz_path(self.texts[0]):
-                return export_spz(self.texts[0].trim(), data)
-            return cook_export(self.texts[0], self.texts[1], v, data)
+            # Mesh formats write CAD bodies meshed at the node's own quality;
+            # the input passes on as it is, with what the writer said.
+            if data.holds_cad() and is_mesh_export(self.texts[0]):
+                let written = self.exported(v, data.tessellated(mesh_quality.of_node(v, export_quality_slot), progress))
+                return data.passed(written.warning) if written.warning != "" else data
+            return self.exported(v, data)
         if self.kind == "Blast":
             # Object paths (they have a /) go by path; anything else is a
             # group expression on the mesh, as Houdini's Blast takes:
@@ -374,9 +385,10 @@ pub class Node:
                 delete_values.append(0.0)
             return evaluate_verb("Delete", delete_values, self.texts, data.require_mesh())
         if self.kind == "Tessellate":
+            let quality = mesh_quality.of_node(v, 0)
             if let cache = sources:
-                return cache.tessellated(data, int(v[0]), v[1], progress)
-            return data.tessellated(int(v[0]), v[1], progress)
+                return cache.tessellated(data, quality, progress)
+            return data.tessellated(quality, progress)
         if self.kind == "Transform":
             return data.transformed(translation, rotation, scale)
         if self.kind == "Merge":
