@@ -1736,6 +1736,13 @@ below).
   conversion of the whole mesh on every move (luce-geocore `resolve_group`; 9.2 to 4.8 ms); a
   holding Edit node's steps no longer go to the worker with every request (its result goes
   by key; a long stroke's numbers also overran the 64-number cap on a step, now 1M).
+  Measured again in the stabilization pass (2026-10-14): once the editor stopped polling,
+  the capture's synthetic moves (sent from frames) got a frame only when something else woke
+  the loop, so it read 700 ms between frames; it now asks for a frame every 4 ms as a hand's
+  pointer events would. Frames then came every 27.8 ms: each frame's shading refresh sorted
+  every corner round the moved points (luce-geocore `affected_points`); marking them in a
+  bit per point instead brings frames to 14.1 ms on average (36.8 ms worst), the move 8.8 ms
+  (most of it the dabs' point hash, `PointHash.relocate`).
 - **Dense wires**: in Edit mode a mesh's wires are left out where they would cover its faces
   (more than one edge per two pixels of its footprint on screen; luce-3d
   `mesh_batch.too_dense`). A 1M-face grid in part of the view was drawn as solid wire grey,

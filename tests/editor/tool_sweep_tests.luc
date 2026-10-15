@@ -1,7 +1,8 @@
 ## Every Edit Mesh tool on every fixture (a box, a UV sphere, a torus, a
 ## grid, a non-manifold mesh: a fin of three faces on one edge and a pinch), at each level it is offered, on one element and on everything:
 ## the tool runs (no trap), and either changes the mesh or the selection,
-## or says why not (the workspace's notice or the Edit node's warning);
+## or says why not (the workspace's notice or the Edit node's warning); its
+## tool bar rows each adjusted run it again;
 ## undo gives back the mesh before, redo the mesh after; the panels
 ## refresh after each. A tool that does nothing and says nothing is a dead
 ## end.
@@ -9,6 +10,8 @@ from app import Luce3D
 from workspace import Workspace
 from luce_geocore.geocore import Mesh
 from tool_record import Tool
+from parameter_rows import Parameter
+from luce_std import math
 from edit_types import object_level, point_level, edge_level, face_level
 import tool_registry
 import modeling_commands
@@ -48,6 +51,30 @@ func holding(shape: str) -> Luce3D!:
         modeling_commands.create(w, shape)
     editor.panels.refresh()
     return editor
+
+## The tool bar's rows of the last step each set to another value, as a
+## user adjusting the last action does (one run of the step each): a
+## number a tenth of the way to its maximum, a count, menu or toggle one
+## more. "" when each ran or said why; what failed, else.
+pub func adjusted(editor: Luce3D, rows: list[Parameter]) -> str!:
+    let w = editor.workspace
+    for row in rows:
+        if row.components != 1 or not row.valued():
+            continue
+        let node = w.selected() else return "no node"
+        if node.edits.length == 0 or row.slot >= node.edits[-1].numbers.length:
+            continue
+        let now = node.edits[-1].numbers[row.slot]
+        var value = now + 1.0
+        if row.kind == "number" and not row.integer:
+            value = now + (row.maximum - now) * 0.1 if row.maximum > now else now - (now - row.minimum) * 0.1
+        if row.kind == "toggle":
+            value = 0.0 if now != 0.0 else 1.0
+        value = math.max(row.minimum, math.min(row.maximum, value))
+        modeling_commands.set_last_step(w, row.slot, value, row.minimum, row.maximum) catch failure:
+            return f"adjusting {row.name} to {value} failed: {failure.message}"
+        editor.panels.refresh()
+    return ""
 
 ## What happened when `tool` ran on the held shape at `level`, one
 ## element (`all` false) or every element selected: "" when it behaved.
@@ -103,6 +130,9 @@ func attempt(editor: Luce3D, tool: Tool, level: int, all: bool) -> str!:
         let redone = print_of(w.geometry else return "no mesh on redo")
         if redone != after:
             result += f" redo {redone} not {after}"
+        # Then the last action adjusted from its tool bar.
+        if w.prompt == none and failed == "" and tool.section != "Select":
+            result += adjusted(editor, tool.bar_rows())
     # Back to the shape for the next tool.
     w.end_modal_tool()
     if w.prompt != none:
