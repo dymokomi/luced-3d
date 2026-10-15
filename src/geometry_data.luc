@@ -6,11 +6,12 @@
 ## Tessellate node.
 from luce_geocore.geocore import Mesh, GeometrySet, Fields, InstanceBuilder
 from luce_3d.graphics import Vector3, Matrix4
-from luce_cad.model import CadModel
+from luce_cad.model import CadModel, MeshQuality
 from luce_cad.cad_geometry import CadGeometry
 from luce_cad.cad_curves import CadCurves
 from luce_cad.measure import CadCheck
 from cad_preview import CadPreview, tessellation_warning
+import mesh_quality
 
 pub class GeometryData:
     pub let geometry: GeometrySet
@@ -246,16 +247,28 @@ pub class GeometryData:
     ## The CAD preview, made once. `quick` (a drag's frames) lets models with
     ## moved control vertices show their quick preview; false asks for full
     ## tessellations (replacing a quick preview); none takes what is made.
-    ## `divisions` asks for that fineness (none: what is made, else 16).
-    pub func preview(self, progress: func(float) -> unit!? = none, quick: bool? = none, divisions: int? = none) -> CadPreview!:
+    ## `quality` asks for that mesh quality (none: what is made, else
+    ## Medium); a new one meshes the models again, cooking nothing.
+    pub func preview(self, progress: func(float) -> unit!? = none, quick: bool? = none, quality: MeshQuality? = none) -> CadPreview!:
         let wanted = quick else false
         if let cached = self.preview_cache:
-            let same = divisions == none or divisions == cached.divisions
+            var same = true
+            if let asked = quality:
+                same = mesh_quality.same(asked, cached.quality)
             if same and (quick == none or wanted or not cached.quick):
                 return cached
-        let result = CadPreview(self.models(), progress = progress, quick = wanted, divisions = divisions else 16)
+        let result = CadPreview(self.models(), progress = progress, quick = wanted, quality = quality)
         self.preview_cache = result
         return result
+
+    ## Its CAD previews and its shown instances' made at `quality` (a drag's
+    ## frames `quick`), so what draws them next finds them made.
+    pub func prepare_previews(self, quality: MeshQuality, quick: bool = false) -> unit!:
+        if self.has_cad():
+            _ = self.preview(quick = quick, quality = quality)
+        for index in 0..<self.instance_count():
+            if self.instance_visible(index):
+                self.instance(index).prepare_previews(quality, quick)
 
     pub func merged(self, other: GeometryData) -> GeometryData!:
         let result = GeometryData(geometry = self.geometry.merged(other.geometry))

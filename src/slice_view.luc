@@ -14,7 +14,7 @@
 ## Slicer, which keeps the last slice while the body and plane stay.
 from luce_geocore.geocore import Verbs
 from luce_cad.modeling import CadModeling
-from luce_cad.model import CadModel
+from luce_cad.model import CadModel, MeshQuality
 from luce_cad.sketch import CadSketch
 from luce_cad.cad_geometry import CadGeometry
 from geometry_data import GeometryData
@@ -22,6 +22,7 @@ from network import Network
 from node import Node
 from sketch_node import SketchFrame
 import edit_cad_sketches
+import mesh_quality
 
 ## What the cap faces are named for (their names start with it).
 let cap_tag = "slice"
@@ -56,10 +57,11 @@ pub class Slicer:
         if graph.sketch_object == "" and node.inputs.length > 0:
             if let input = graph.find(node.inputs[0]):
                 body_stamp = input.stamp
-        let key = f"{body_stamp}|{plane.key()}"
+        # A body that does not slice shows clipped at the display quality.
+        let key = f"{body_stamp}|{plane.key()}|{mesh_quality.key(graph.mesh_quality)}"
         if key != self.made_from or self.body == none:
             self.made_from = key
-            self.slice(data, plane)
+            self.slice(data, plane, graph.mesh_quality)
         let made = self.body else return data
         let result = GeometryData(geometry = made.geometry)
         result.sketch_state = data.sketch_state
@@ -71,7 +73,7 @@ pub class Slicer:
     ## Slice every body of `data` by plane `f`, keeping what is behind it:
     ## the sliced bodies and their cap's loops; a body that does not slice,
     ## its tessellation clipped instead.
-    func slice(self, data: GeometryData, f: SketchFrame) -> unit!:
+    func slice(self, data: GeometryData, f: SketchFrame, quality: MeshQuality) -> unit!:
         var shown = GeometryData()
         let cap = CadSketch.parse("")
         self.problem = ""
@@ -79,7 +81,7 @@ pub class Slicer:
             let sliced = CadModeling.sliced(model, f.origin, f.normal(), cap_tag) catch failure:
                 # Uncapped: the tessellation clipped by the plane.
                 self.problem = f"Slice could not cut the body ({failure.message}): it shows clipped, without its cap"
-                shown = shown.merged(clipped(model, f))
+                shown = shown.merged(clipped(model, f, quality))
                 continue
             shown = shown.merged(GeometryData(geometry = CadGeometry.of_model(sliced)))
             for face in 0..<sliced.face_count():
@@ -89,15 +91,16 @@ pub class Slicer:
         self.body = shown
         self.cap = cap.text()
 
-## `model`'s tessellation clipped by plane `f`, keeping what is behind it.
-func clipped(model: CadModel, f: SketchFrame) -> GeometryData!:
+## `model`'s tessellation at `quality` clipped by plane `f`, keeping what
+## is behind it.
+func clipped(model: CadModel, f: SketchFrame, quality: MeshQuality) -> GeometryData!:
     let o = f.origin
     let n = f.normal()
     # Clip: a custom plane through the sketch's origin facing its normal,
     # keeping what is below it (behind the plane, seen from the sketch).
     let numbers = [3.0, 0.0, 0.0, 1.0, o.x, o.y, o.z, n.x, n.y, n.z]
     var result = GeometryData()
-    for mesh in GeometryData(geometry = CadGeometry.of_model(model)).preview().meshes:
+    for mesh in GeometryData(geometry = CadGeometry.of_model(model)).preview(quality = quality).meshes:
         # Every face (group type 3: primitives).
         result = result.merged(GeometryData(Verbs.run("Clip", mesh, "*", 3, numbers).mesh()))
     return result

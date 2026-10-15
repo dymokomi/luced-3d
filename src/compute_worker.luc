@@ -28,6 +28,7 @@ from edit_types import run_step, EditKind
 from shader_nodes import is_shader
 from luce_cad.cad_edits import CadEdits
 from render_geometry import render_geometry
+import mesh_quality
 import sketch_node
 import edit_cad_sketches
 import slice_view
@@ -445,8 +446,8 @@ class Computation:
     ## A root object's whole set, for the viewport's render mode: shared, not
     ## copied.
     func publish_scene(self, node: Node, data: GeometryData) -> unit!:
-        let scene_key = (node.stamp, "scene", self.graph.gesture, self.graph.cad_quality).hash()
-        let scene = data.geometry if self.channel.holds(scene_key) else render_geometry(data, self.graph.gesture, self.graph.cad_quality)
+        let scene_key = (node.stamp, "scene", self.graph.gesture, mesh_quality.key(self.graph.mesh_quality)).hash()
+        let scene = data.geometry if self.channel.holds(scene_key) else render_geometry(data, self.graph.mesh_quality, self.graph.gesture)
         self.channel.scene(scene_key, node.id, scene)
 
     ## Publish a drawn node's meshes and overlays, placed by `matrix`, by
@@ -466,11 +467,11 @@ class Computation:
         let placement = salt if salt != 0 else (0 if matrix.is_identity() else matrix_key(matrix))
         _ = self.display(data, matrix, node, 0, placement)
         # CAD edges are keyed by what they are drawn from (the models' edges
-        # as the viewport's quality samples them), so a CV drag keeps them
+        # as the display quality samples them), so a CV drag keeps them
         # held; normal guides follow the result.
         let edges = data.edges_key()
         if edges != 0:
-            self.publish_lines((edges, "cad-edges", placement, self.graph.cad_quality).hash(), node, data, matrix, true, false)
+            self.publish_lines((edges, "cad-edges", placement, mesh_quality.key(self.graph.mesh_quality)).hash(), node, data, matrix, true, false)
             if self.graph.show_normals:
                 self.publish_lines((node.stamp, "guides", placement).hash(), node, data, matrix, false, true)
         else:
@@ -554,7 +555,7 @@ class Computation:
             # A drag's frames show moved control vertices' quick previews.
             let report = func (fraction: float) -> unit!:
                 self.channel.progress(node.id, fraction * 0.9, "Tessellating CAD")
-            let preview = data.preview(report, self.graph.gesture, self.graph.cad_quality)
+            let preview = data.preview(report, self.graph.gesture, self.graph.mesh_quality)
             if preview.failed_faces > 0:
                 self.preview_warning = f"{preview.failed_faces} CAD preview patches failed: {preview.first_error}"
                 self.channel.progress(node.id, 0.9, f"{preview.failed_faces} preview failures")
@@ -592,16 +593,18 @@ class Computation:
             self.channel.cloud(GaussianSplats.key(data.geometry, matrix), node.id, data.geometry, matrix)
         if data.has_cad():
             for mesh in data.preview().meshes:
-                self.show(mesh, matrix, node, next, false, placement)
+                self.show(mesh, matrix, node, next, false, placement, mesh_quality.key(self.graph.mesh_quality))
                 next += 1
         for index in 0..<data.instance_count():
             if data.instance_visible(index):
                 next = self.display(data.instance(index), matrix.multiply(data.instance_matrix(index)), node, next, placement)
         return next
 
-    func show(self, mesh: Mesh, matrix: Matrix4, node: Node, ordinal: int, overlays: bool, placement: int) -> unit!:
+    ## `quality` (a CAD mesh's display quality key, else 0) keys apart the
+    ## meshes a node shows at another display quality.
+    func show(self, mesh: Mesh, matrix: Matrix4, node: Node, ordinal: int, overlays: bool, placement: int, quality: int = 0) -> unit!:
         let identity = matrix.is_identity()
-        let key = self.key_of(mesh, (node.stamp, ordinal).hash()) if identity and placement == 0 else (node.stamp, ordinal, placement).hash()
+        let key = self.key_of(mesh, (node.stamp, ordinal, quality).hash()) if identity and placement == 0 else (node.stamp, ordinal, placement, quality).hash()
         # Picking runs on the GPU; a query index is built by its first query.
         var shown: Mesh? = none
         if self.channel.holds(key):

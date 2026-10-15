@@ -4,7 +4,7 @@
 ## overlay points reach the viewport through OverlayLines without passing
 ## through Luce. A model that cannot be tessellated shows independent
 ## per-face previews instead. Never replaces the DAG's analytic payload.
-from luce_cad.model import CadModel, CadOverlay, CadPreviewSet
+from luce_cad.model import CadModel, CadOverlay, CadPreviewSet, MeshQuality
 from luce_cad.cad_geometry import CadGeometry
 from luce_geocore.geocore import Mesh
 from luce_3d.graphics import Matrix4
@@ -20,8 +20,8 @@ pub class CadPreview:
     ## Made for a drag's frame: models with moved control vertices may show
     ## quick previews (luce-cad brep/quick.lucb), not full tessellations.
     pub var quick: bool = false
-    ## The surface divisions its meshes were made at.
-    pub var divisions: int = 16
+    ## The quality its meshes were made at (mesh_quality.luc).
+    pub var quality: MeshQuality
     pub var failed_faces: int = 0
     pub var first_error: str = ""
     ## Why some faces do not follow their moved control vertices ("": all do).
@@ -29,16 +29,16 @@ pub class CadPreview:
 
     ## The preview of `models`; or `source`'s placed by `matrix` (its meshes
     ## placed, its overlays shared).
-    pub func init(self, models: list[CadModel], source: CadPreview? = none, matrix: Matrix4? = none, progress: func(float) -> unit!? = none, quick: bool = false, divisions: int = 16) -> unit!:
+    pub func init(self, models: list[CadModel], source: CadPreview? = none, matrix: Matrix4? = none, progress: func(float) -> unit!? = none, quick: bool = false, quality: MeshQuality? = none) -> unit!:
         self.meshes = []
         self.overlays = []
         self.fallbacks = []
         self.matrix = Matrix4()
         self.quick = quick
-        self.divisions = divisions
+        self.quality = quality else MeshQuality.medium()
         if let original = source:
             self.quick = original.quick
-            self.divisions = original.divisions
+            self.quality = original.quality
             let placement = matrix else Matrix4()
             self.failed_faces = original.failed_faces
             self.first_error = original.first_error
@@ -49,9 +49,9 @@ pub class CadPreview:
             self.fallbacks = original.fallbacks
             self.matrix = placement.multiply(original.matrix)
             return
-        # A CAD model shows its tessellation at the viewport's quality, kept
-        # in the model: a Tessellate node with the same divisions places the
-        # same mesh (no copy, no new GPU buffers). A model that cannot be
+        # A CAD model shows its tessellation at the project's display
+        # quality, kept in the model: a Tessellate node at the same quality
+        # places the same mesh (no copy, no new GPU buffers). A model that cannot be
         # tessellated falls back to independent per-face previews. A failure
         # of `progress` (the worker's cancellation) is the caller's: it ends
         # the preview rather than counting as the model's.
@@ -63,7 +63,7 @@ pub class CadPreview:
                     callback((float(index) + fraction) / float(models.length)) catch failure:
                         stopped = failure.message
                         error(failure.code, failure.message)
-            let mesh = model.tessellate(divisions, 0.0, report, model.supports_curvature(), false, quick) catch failure:
+            let mesh = model.tessellated(self.quality, report, model.supports_curvature(), false, quick) catch failure:
                 if let message = stopped:
                     error(failure.code, message)
                 self.failed_faces += model.face_count()

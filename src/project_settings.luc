@@ -1,21 +1,24 @@
 ## Window › Project Settings…: what the open project keeps for itself — the
-## unit lengths show in, the CAD tolerances every body is built under, and
-## its time (frames per second and frame range) — edited as a draft in a
-## floating, centered dialog and applied together, as one undo step.
+## unit lengths show in, the CAD tolerances every body is built under, the
+## display quality CAD bodies are meshed at, and its time (frames per second
+## and frame range) — edited as a draft in a floating, centered dialog and
+## applied together, as one undo step.
 from luce_ui.ui import Widget, Font, Text, Button, VStack, HStack, Spacer, Size, Dialog, ListView, ListItem, NumberField, Menu, Command, Rule
 from luce_ui import ui
-from luce_cad.model import CadTolerances
+from luce_cad.model import CadTolerances, MeshQuality
 from luce_std import math
 from angles import degrees, radians
 from interop import Connection
 from workspace import Workspace
 import timeline_commands
 import edit_held
+import mesh_quality
 
 ## The project settings as the dialog edits them, apart from the project.
 pub struct ProjectValues:
     pub var units: str
     pub var tolerances: CadTolerances
+    pub var quality: MeshQuality
     pub var fps: float
     pub var start: float
     pub var end: float
@@ -23,22 +26,28 @@ pub struct ProjectValues:
 ## The settings `w`'s project has now.
 pub func current(w: Workspace) -> ProjectValues:
     let g = w.network
-    return ProjectValues(units = g.units, tolerances = g.tolerances, fps = g.fps, start = g.start, end = g.end)
+    return ProjectValues(units = g.units, tolerances = g.tolerances, quality = g.mesh_quality, fps = g.fps, start = g.start, end = g.end)
 
 ## Make `values` the project's, as one undo step ("Project settings"); a value
-## already the project's changes nothing.
+## already the project's changes nothing. A new display quality meshes the
+## cooked CAD bodies again and cooks nothing (no stamp holds it).
 pub func apply_values(w: Workspace, values: ProjectValues) -> unit!:
     let before = current(w)
     let same_tolerances = before.tolerances.equals(values.tolerances)
-    if before.units == values.units and same_tolerances and before.fps == values.fps and before.start == values.start and before.end == values.end:
+    let same_quality = mesh_quality.same(before.quality, values.quality)
+    if before.units == values.units and same_tolerances and same_quality and before.fps == values.fps and before.start == values.start and before.end == values.end:
         return
     values.tolerances.checked()
+    values.quality.checked()
     w.perform("Project settings", func () -> unit!:
         w.set_units(values.units)
         if not same_tolerances:
             set_tolerances(w, values.tolerances)
+        w.network.mesh_quality = values.quality
         timeline_commands.set_range(w, values.start, values.end)
         timeline_commands.set_fps(w, values.fps))
+    if not same_quality:
+        w.rebuild()
 
 ## Make `tolerances` the project's: every node cooks again under them (the
 ## worker by its stamps, which hold them; the local cook by invalidation);
@@ -80,6 +89,9 @@ func trimmed_decimals(value: float) -> int:
         scale *= 10.0
     return 6
 
+## A chord or edge limit's decimals: none for 0 (off), else trimmed.
+func limit_decimals(value: float) -> int:
+    return 0 if value == 0.0 else trimmed_decimals(value)
 
 ## The unit names a project chooses among, and how the dialog shows them.
 func unit_names() -> list[str]: return ["mm", "in"]
@@ -102,6 +114,12 @@ pub class ProjectSettings:
     let fit_field: NumberField
     let tangent_field: NumberField
     let curvature_field: NumberField
+    pub let quality_menu: Menu
+    ## The quality presets' commands, as the Preset menu lists them.
+    pub let quality_commands: list[Command]
+    pub let angle_field: NumberField
+    pub let chord_field: NumberField
+    pub let edge_field: NumberField
     let fps_field: NumberField
     let start_field: NumberField
     let end_field: NumberField
@@ -160,6 +178,38 @@ pub class ProjectSettings:
                             self.row("Tangent", self.tangent_field), self.row("Curvature", self.curvature_field),
                             Text("Every body is built under these tolerances.", font = font, muted = true),
                             Text("Changing them rebuilds the model.", font = font, muted = true), Spacer()], spacing = 8.0)
+        # Display: how finely CAD bodies are meshed (mesh_quality.luc), apart
+        # from the tolerances, as Alias's display quality is.
+        self.angle_field = NumberField(9.43, mesh_quality.finest_degrees, mesh_quality.coarsest_degrees, 0.01, 2, suffix = "°", font = font, cells = 10.0)
+        self.chord_field = NumberField(0.0, 0.0, 1000.0, 0.001, 3, font = font, cells = 14.0)
+        self.edge_field = NumberField(0.0, 0.0, 100000.0, 0.1, 1, font = font, cells = 14.0)
+        self.connections.append(self.angle_field.on_change(func (value: float) -> unit!:
+            self.draft.quality.angle = mesh_quality.angle_of(value)
+            self.show_quality()))
+        self.connections.append(self.chord_field.on_change(func (value: float) -> unit!:
+            self.draft.quality.chord = value
+            self.show_quality()))
+        self.connections.append(self.edge_field.on_change(func (value: float) -> unit!:
+            self.draft.quality.edge = value
+            self.show_quality()))
+        self.quality_commands = []
+        for index in 0..<mesh_quality.preset_names().length:
+            let chosen = index
+            let name = mesh_quality.preset_names()[index]
+            let command = Command(name, id = f"project_quality_{name.lower().replace(" ", "_")}")
+            self.connections.append(command.on_trigger(func () -> unit!:
+                self.draft.quality = mesh_quality.preset(chosen)
+                self.show_quality()))
+            self.quality_commands.append(command)
+        self.quality_menu = Menu("Medium ▾", self.quality_commands, font = font)
+        let display = VStack([Text("Display quality", font = font),
+                              self.row("Preset", self.quality_menu, 124.0),
+                              self.row("Max angle", self.angle_field, 124.0),
+                              self.row("Max chord height", self.chord_field, 124.0),
+                              self.row("Max edge length", self.edge_field, 124.0),
+                              Text("How finely CAD bodies are meshed to show,", font = font, muted = true),
+                              Text("pick and render. 0 turns a limit off.", font = font, muted = true),
+                              Text("Changing it meshes again; nothing rebuilds.", font = font, muted = true), Spacer()], spacing = 8.0)
         # Time: what the timeline plays and the nodes that follow it read.
         self.fps_field = NumberField(24.0, 1.0, 1000.0, 1.0, 2, suffix = " fps", font = font, cells = 10.0)
         self.start_field = NumberField(1.0, -100000.0, 100000.0, 1.0, 0, font = font, cells = 10.0)
@@ -168,12 +218,12 @@ pub class ProjectSettings:
         self.connections.append(self.start_field.on_change(func (value: float) -> unit!: self.draft.start = value))
         self.connections.append(self.end_field.on_change(func (value: float) -> unit!: self.draft.end = value))
         let time = VStack([self.row("Frame rate", self.fps_field), self.row("Start frame", self.start_field), self.row("End frame", self.end_field), Spacer()], spacing = 8.0)
-        self.pages = [units, time]
+        self.pages = [units, display, time]
         for page in self.pages:
             page.layout().set_limits(Size(320.0, 320.0), Size(16384.0, 320.0))
             page.layout().set_visible(false)
         self.pages[0].layout().set_visible(true)
-        self.sections = ListView([ListItem(text = "Units"), ListItem(text = "Time")], font = font)
+        self.sections = ListView([ListItem(text = "Units"), ListItem(text = "Display"), ListItem(text = "Time")], font = font)
         self.sections.layout().set_limits(Size(130.0, 320.0), Size(130.0, 320.0))
         self.sections.select(0)
         self.connections.append(self.sections.on_activate(self.show_page))
@@ -183,9 +233,9 @@ pub class ProjectSettings:
         let footer = HStack([Spacer(), self.button("Cancel", self.cancel), self.button("Apply", self.apply)], spacing = 8.0)
         self.dialog = Dialog([Text("Project Settings", font = font), body, footer], width = 520.0)
 
-    func row(self, label: str, control: Widget) -> HStack!:
+    func row(self, label: str, control: Widget, width: float = 100.0) -> HStack!:
         let caption = Text(label, font = self.font, muted = true)
-        caption.layout().set_limits(Size(100.0, 0.0), Size(100.0, 16384.0))
+        caption.layout().set_limits(Size(width, 0.0), Size(width, 16384.0))
         return HStack([caption, control, Spacer()], spacing = 8.0)
 
     func button(self, text: str, callback: func() -> unit!) -> Button!:
@@ -193,7 +243,8 @@ pub class ProjectSettings:
         self.connections.append(button.on_click(callback))
         return button
 
-    ## Show section `index` (0 Units, 1 Time), picked in the list too.
+    ## Show section `index` (0 Units, 1 Display, 2 Time), picked in the list
+    ## too.
     pub func show_page(self, index: int) -> unit!:
         self.sections.select(index)
         for page in 0..<self.pages.length:
@@ -216,7 +267,10 @@ pub class ProjectSettings:
         let shown = ui.unit_named(self.draft.units) else ui.millimeters()
         self.positional_field.set_units(shown)
         self.fit_field.set_units(shown)
+        self.chord_field.set_units(shown)
+        self.edge_field.set_units(shown)
         self.show_tolerances()
+        self.show_quality()
 
     ## The draft's tolerances in the fields, each with as many decimals as
     ## it needs in the shown unit ("0.01 mm", "0.001 mm").
@@ -235,6 +289,23 @@ pub class ProjectSettings:
 
     func show_preset(self) -> unit!:
         self.presets_menu.set_text(preset_of(self.draft.tolerances) + " ▾")
+
+    ## The draft's display quality in the fields, with trimmed zeros (after
+    ## an edit too, so a typed value shows all its digits), and its preset.
+    func show_quality(self) -> unit!:
+        let q = self.draft.quality
+        let shown = ui.unit_named(self.draft.units) else ui.millimeters()
+        self.angle_field.set_decimals(trimmed_decimals(degrees(q.angle)))
+        self.chord_field.set_decimals(limit_decimals(shown.shown(q.chord)))
+        self.edge_field.set_decimals(limit_decimals(shown.shown(q.edge)))
+        self.angle_field.set_value(degrees(q.angle))
+        self.chord_field.set_value(q.chord)
+        self.edge_field.set_value(q.edge)
+        self.show_quality_preset()
+
+    ## The preset the draft's quality is, or Custom (an edited field).
+    func show_quality_preset(self) -> unit!:
+        self.quality_menu.set_text(mesh_quality.preset_name(self.draft.quality) + " ▾")
 
     pub func cancel(self) -> unit!:
         self.dialog.hide()

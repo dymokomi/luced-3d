@@ -40,14 +40,20 @@ below were studied, not linked or copied. Python files are development tools.
 
 File outputs analytic CAD, never polygons. The explicit **Tessellate** node is the
 only CAD-to-polygon conversion in the DAG. CAD-only outputs display the model's
-tessellation at the Tessellate node's defaults (16 divisions, no target edge,
-curvature when the placement allows it), which the B-rep keeps
-(`BrepModel.mesh`): a Tessellate node with those settings places that same
-mesh in O(1), and the renderer reuses the GPU buffers already made for it. The
+tessellation at the project's **display quality** (`Network.mesh_quality`,
+Project Settings › Display; luce-cad's `MeshQuality`: Low, Medium (the
+default), High, Very High or custom angle, chord height and longest edge),
+with curvature when the placement allows it. It is apart from the modeling
+tolerances and from the model's size, as Alias's display quality is. The
+B-rep keeps that mesh (`BrepModel.mesh`): a Tessellate node at the same
+quality places it in O(1), and the renderer reuses the GPU buffers already
+made for it. Display, picking, slices and the Render mode all mesh at the
+display quality; no node's stamp holds it, so a new quality (one undo step)
+meshes the cooked bodies again and cooks nothing. The
 display draws each B-rep edge along the mesh's own samples of it (the mesh
 edges between faces on different surfaces, so a line never dips behind the
 faces it bounds) and a normal guide per face (`CadModel.overlay`, which also
-returns the control-net hull); the lines are keyed by the viewport's CAD
+returns the control-net hull); the lines are keyed by the display
 quality too, so changing it draws them again. A model that
 cannot be tessellated falls back to the independent per-patch preview
 (`CadModel.preview`) and reports its failure.

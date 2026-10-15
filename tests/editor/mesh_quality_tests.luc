@@ -1,0 +1,164 @@
+## The project's display quality (Network.mesh_quality, Project Settings ›
+## Display): saved beside the tolerances, Medium for a project without one;
+## the dialog's preset fills the fields and an edited field makes it Custom;
+## a new quality meshes the cooked CAD bodies again and cooks nothing (the
+## local cook's and the worker's), as one undo step; a sphere shows the
+## triangles luce-cad's preset makes.
+from app import Luce3D
+from workspace import Workspace
+from luce_prism.prism import Document, Value
+from luce_cad.model import MeshQuality
+from luce_cad.solids import CadSolids
+from luce_window.input import Key
+from project_graph import write_graph, read_graph
+import node_commands
+import mesh_quality
+import time
+from luce_std import math
+from tool_drag_tests import type_text, key
+
+pub func mesh_quality_tests() -> unit!:
+    saved_and_read()
+    dialog_presets()
+    remeshed_not_cooked()
+    print("PASS display quality: saved and read (Medium without one), presets fill the fields and an edited field is Custom, a new quality meshes a sphere again at luce-cad's preset counts and cooks nothing (local and worker), undone as one step")
+
+func saved_and_read() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    assert(mesh_quality.same(w.network.mesh_quality, MeshQuality.medium()))
+    w.set_mesh_quality(MeshQuality(0.05, 0.02, 3.5))
+    let document = Document()
+    write_graph(document, w.network)
+    let restored = read_graph(document)
+    assert(mesh_quality.same(restored.mesh_quality, w.network.mesh_quality))
+    # A preset reads back as that preset, not a near custom.
+    w.set_mesh_quality(MeshQuality.very_high())
+    let again = Document()
+    write_graph(again, w.network)
+    assert(mesh_quality.preset_name(read_graph(again).mesh_quality) == "Very High")
+    # A project saved before the setting meshes at Medium.
+    let older = Document()
+    write_graph(older, w.network)
+    older.remove_property("/scene", "mesh_quality")
+    assert(mesh_quality.same(read_graph(older).mesh_quality, MeshQuality.medium()))
+    # A quality the mesher refuses is the file's error.
+    let broken = Document()
+    write_graph(broken, w.network)
+    broken.set("/scene", "mesh_quality", Value.numbers([3], [90.0, 0.0, 0.0]))
+    var message = ""
+    _ = read_graph(broken) catch failure:
+        message = failure.message
+        recover w.network
+    assert(message.starts_with("Invalid project display quality"), message)
+    editor.close()
+
+func dialog_presets() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let dialog = editor.panels.project_settings
+    editor.panels.actions.project_settings.trigger()
+    editor.app.layout(1400.0, 900.0)
+    dialog.show_page(1)
+    # Medium to start: its angle in the field, no chord or edge limit.
+    assert(near(dialog.angle_field.value(), 9.43) and dialog.chord_field.value() == 0.0 and dialog.edge_field.value() == 0.0)
+    # A preset fills the fields.
+    dialog.quality_commands[3].trigger()
+    assert(mesh_quality.preset_name(dialog.draft.quality) == "Very High" and near(dialog.angle_field.value(), 2.36))
+    dialog.quality_commands[0].trigger()
+    assert(near(dialog.angle_field.value(), 25.9))
+    # Typing the angle of a preset is that preset; another angle is Custom.
+    dialog.angle_field.edit()
+    type_text(editor, "4.71")
+    key(editor, Key.enter)
+    assert(mesh_quality.preset_name(dialog.draft.quality) == "High", mesh_quality.preset_name(dialog.draft.quality))
+    dialog.chord_field.edit()
+    type_text(editor, "0.05")
+    key(editor, Key.enter)
+    assert(mesh_quality.preset_name(dialog.draft.quality) == "Custom" and near(dialog.draft.quality.chord, 0.05))
+    # Apply: the project's, as one undo step; nothing changed is no step.
+    dialog.apply()
+    assert(near(w.network.mesh_quality.chord, 0.05) and mesh_quality.preset_name(w.network.mesh_quality) == "Custom")
+    w.undo()
+    assert(mesh_quality.same(w.network.mesh_quality, MeshQuality.medium()))
+    w.redo()
+    assert(near(w.network.mesh_quality.chord, 0.05))
+    # Reopened, the dialog shows the project's quality again.
+    dialog.open()
+    assert(near(dialog.chord_field.value(), 0.05) and near(dialog.angle_field.value(), 4.71))
+    dialog.cancel()
+    editor.close()
+
+## A CAD network of one sphere (radius 10), displayed: its CAD node's id
+## and the sphere's.
+func sphere(w: Workspace) -> (int, int)!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    let cad = w.network.selected
+    node_commands.display_selected(w)
+    node_commands.enter_group(w, cad)
+    node_commands.add_node(w, "Solid Sphere", 0.0, 0.0)
+    return (cad, w.network.selected)
+
+## Triangles of the shown sphere (the CAD network's displayed node), and
+## the quality it was meshed at.
+func shown(w: Workspace, ball: int) -> (int, MeshQuality)!:
+    let preview = w.network.evaluate_data(ball).preview()
+    assert(preview.meshes.length == 1)
+    return (preview.meshes[0].index_count() // 3, preview.quality)
+
+## Triangles luce-cad makes of a radius-10 sphere at `quality`.
+func expected(quality: MeshQuality) -> int!:
+    return CadSolids.sphere(10.0).tessellated(quality).index_count() // 3
+
+func remeshed_not_cooked() -> unit!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    let (cad, ball) = sphere(w)
+    w.rebuild()
+    let cooks = w.network.require(ball).evaluations
+    let (medium, _) = shown(w, ball)
+    assert(medium == expected(MeshQuality.medium()), f"{medium} triangles at Medium")
+    var counts: list[int] = []
+    for index in 0..<mesh_quality.preset_names().length:
+        let quality = mesh_quality.preset(index)
+        w.set_mesh_quality(quality)
+        let (count, made) = shown(w, ball)
+        assert(mesh_quality.same(made, quality) and count == expected(quality), f"{count} triangles at {mesh_quality.preset_names()[index]}, luce-cad's {expected(quality)}")
+        counts.append(count)
+    assert(counts[0] < counts[1] and counts[1] < counts[2] and counts[2] < counts[3])
+    # Picking follows the shown mesh.
+    assert(on_screen(w) == counts[3])
+    # Nothing cooked again, and undo puts the quality back (High), meshing
+    # again, cooking nothing.
+    assert(w.network.require(ball).evaluations == cooks)
+    w.undo()
+    assert(mesh_quality.preset_name(w.network.mesh_quality) == "High")
+    let (undone, _) = shown(w, ball)
+    assert(undone == counts[2] and w.network.require(ball).evaluations == cooks)
+    # The worker meshes again too, cooking nothing.
+    w.enable_compute()
+    settle(w)
+    let worker_cooks = w.network.require(ball).evaluations
+    let before = w.batches.scene_keys.copy()
+    w.set_mesh_quality(MeshQuality.low())
+    settle(w)
+    assert(w.batches.scene_keys != before and w.network.require(ball).evaluations == worker_cooks)
+    assert(on_screen(w) == expected(MeshQuality.low()), f"{on_screen(w)} triangles on screen at Low")
+    editor.close()
+
+## Triangles of the one mesh the viewport shows and picks on.
+func on_screen(w: Workspace) -> int!:
+    let (_, meshes) = w.on_screen()
+    assert(meshes.length == 1, f"{meshes.length} meshes on screen")
+    return meshes[0].index_count() // 3
+
+func near(a: float, b: float) -> bool:
+    return math.abs(a - b) <= 1e-9
+
+func settle(w: Workspace) -> unit!:
+    let session = w.compute else trap("compute")
+    let deadline = time.now() + 20000000000
+    while session.busy and time.now() < deadline:
+        _ = w.poll_compute()
+    assert(not session.busy and w.notice == "", w.notice)
