@@ -431,11 +431,19 @@ now, one undo step.
 
 Edit CAD's levels are Object (a whole model), Faces (a B-rep face), Edges (a
 B-rep edge), CVs (control vertices) and Patch. Object, Faces and Edges pick on
-the models' display tessellations, tagged with their model, face and edge
-(luce-cad's `CadEdits.pick_mesh`), so a pick selects a whole model, face or
-edge; CVs pick on the control-vertex cloud, and show every face's control
-net (a modeled face's too, hidden at the other levels). A step that meshes the faces again
-keeps them selected (`CadEdits.carried`).
+the models' display tessellations at the project's display quality, tagged
+with their model, face and edge (luce-cad's `CadEdits.pick_mesh`; the very
+meshes the viewport draws, so nothing is meshed twice), so a pick selects a
+whole model, face or edge; CVs pick on the control-vertex cloud, and show
+every face's control net (a modeled face's too, hidden at the other levels).
+A step that meshes the faces again keeps them selected (`CadEdits.carried`).
+As Fusion references B-rep entities, a step keeps what it picked as them,
+never as polygons (`cad_picks.luc`, `cad_entities.lucb`): bodies by one face
+each, faces by luce-cad's face names and edges by their references, a piece
+sharing its name with others (a face a cut split) by which of them it is,
+and an edge without a name (a seam) by its B-rep number. Running the step,
+the names become groups on the pick mesh of what it runs on, at whatever
+display quality is set then: a pick made at Low adjusts at Very High.
 
 Edit CAD is Fusion 360's direct modeling ("Do not capture design history"):
 every tool is a step on the model the steps before it made, nothing earlier

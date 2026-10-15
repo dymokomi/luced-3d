@@ -1,0 +1,259 @@
+## Edit CAD keeps what a step picked as B-rep entities (cad_picks.luc), not
+## as polygons of the tessellation it was picked on:
+## - a face picked at Very High is pulled; at Low the last action is
+##   adjusted on the face it named and a face picked at Low builds on it;
+##   nothing cooks for the quality change;
+## - an edge picked at Low is filleted, the radius adjusted at Very High;
+## - bodies (Combine's target, and its tool bodies kept in the step's text)
+##   picked at one quality, combined at another;
+## - a face of a name it shares with another piece (a split face) is that
+##   piece alone;
+## - the viewport picks on the display's own mesh, the one the action's
+##   picks are found on (one tessellation per model and quality);
+## - a step's picks travel through a document (the worker's request, a
+##   project) as written.
+from workspace import Workspace
+from node import Node
+from geometry_data import GeometryData
+from edit_operations import EditStep
+from luce_cad.model import MeshQuality, CadTolerances, CadModel
+from luce_cad.cad_geometry import CadGeometry
+from luce_cad.cad_edits import CadEdits
+from luce_cad.solids import CadSolids
+from luce_geocore.geocore import Mesh, Selection
+from luce_3d.graphics import Vector3, Matrix4
+from luce_prism.prism import Document
+from project_graph import write_graph, read_graph
+import node_commands
+import modeling_commands
+import selection_commands
+import tool_run
+import tool_picks
+import edit_cad
+import edit_cad_faces
+import cad_cook
+import cad_picks
+from luce_std import math
+
+pub func cad_picks_tests() -> unit!:
+    faces_across_qualities()
+    edges_across_qualities()
+    bodies_across_qualities()
+    namesake_pieces()
+    shared_tessellation()
+    written_and_read()
+    print("PASS Edit CAD picks by B-rep entity: faces, edges and bodies picked at one display quality act at another (the last action adjusted, new picks built on it, nothing cooked for the quality); a split face's piece alone; the viewport picks on the display's mesh the action resolves on; picks written and read back as made")
+
+func edit_cad_node(w: Workspace) -> Node!:
+    node_commands.delete_selected(w)
+    node_commands.add_node(w, "CAD", 0.0, 0.0)
+    node_commands.enter_group(w, w.network.selected)
+    node_commands.add_node(w, "Edit CAD", 0.0, 0.0)
+    assert(w.editing())
+    return w.selected() else trap("Edit CAD")
+
+func latest(w: Workspace, node: Node) -> Node!:
+    return w.network.find(node.id) else trap("the node")
+
+func models_of(w: Workspace, node: Node) -> list[CadModel]!:
+    return w.network.evaluate_data(node.id).models()
+
+## The highest point of the node's bodies.
+func top_of(w: Workspace, node: Node) -> float!:
+    var highest = -1.0e9
+    for model in models_of(w, node):
+        highest = math.max(highest, model.tessellated(MeshQuality.low()).bounds().maximum.y)
+    return highest
+
+func faces_of(w: Workspace, node: Node) -> int!:
+    var count = 0
+    for model in models_of(w, node):
+        count += model.face_count()
+    return count
+
+func near(got: float, expected: float, what: str):
+    if math.abs(got - expected) > 1e-6:
+        print(f"{what}: {got}, expected {expected}")
+    assert(math.abs(got - expected) <= 1e-6)
+
+## The first polygon at `level` of the viewport's pick mesh `keep` takes
+## (by its middle and normal) selected; Shift adds with `adding`.
+func select_where(w: Workspace, level: int, keep: func(Vector3, Vector3) -> bool, adding: bool = false) -> unit!:
+    selection_commands.set_mode(w, level)
+    let mesh = w.geometry else trap("pick geometry")
+    for polygon in 0..<mesh.face_count():
+        if keep(mesh.face_center(polygon), mesh.face_normal(polygon)):
+            selection_commands.choose_component(w, polygon, adding)
+            return
+    assert(false, "nothing to select there")
+
+## The B-rep edge under the first mesh edge `keep` takes (by its ends)
+## selected at the Edges level.
+func select_edge(w: Workspace, keep: func(Vector3, Vector3) -> bool) -> unit!:
+    selection_commands.set_mode(w, 2)
+    let mesh = w.geometry else trap("edges")
+    let tag = mesh.find_attribute("cad_edge", 4)
+    for at in 0..<mesh.edge_count():
+        if int(mesh.attribute_value(tag, at)) >= 0 and keep(mesh.point(mesh.edge_point(at, 0)), mesh.point(mesh.edge_point(at, 1))):
+            selection_commands.choose_component(w, at, false)
+            return
+    assert(false, "no such edge")
+
+func up(c: Vector3, n: Vector3) -> bool:
+    return n.y > 0.99
+
+func right(c: Vector3, n: Vector3) -> bool:
+    return n.x > 0.99
+
+## A face picked at Very High pulled; at Low the pull adjusted and another
+## pull on a face picked at Low.
+func faces_across_qualities() -> unit!:
+    let w = Workspace()
+    w.set_mesh_quality(MeshQuality.very_high())
+    let node = edit_cad_node(w)
+    modeling_commands.create(w, "Box")
+    let base = top_of(w, node)
+    select_where(w, 3, up)
+    tool_run.press_pull(w)
+    modeling_commands.set_last_step(w, 0, 1.0, -100000.0, 100000.0)
+    let step = latest(w, node).edits[-1]
+    assert(step.verb == "Offset Face" and step.topology == 0 and step.group.starts_with("cad-faces:"), step.group)
+    assert(latest(w, node).warning == "", latest(w, node).warning)
+    near(top_of(w, node), base + 1.0, "pulled at Very High")
+    let cooks = latest(w, node).evaluations
+    w.set_mesh_quality(MeshQuality.low())
+    assert(latest(w, node).evaluations == cooks)
+    modeling_commands.set_last_step(w, 0, 0.5, -100000.0, 100000.0)
+    assert(latest(w, node).warning == "", latest(w, node).warning)
+    near(top_of(w, node), base + 0.5, "adjusted at Low")
+    select_where(w, 3, up)
+    tool_run.press_pull(w)
+    modeling_commands.set_last_step(w, 0, 0.25, -100000.0, 100000.0)
+    assert(latest(w, node).edits[-1].group.starts_with("cad-faces:"))
+    near(top_of(w, node), base + 0.75, "pulled again at Low")
+
+func upright(a: Vector3, b: Vector3) -> bool:
+    return math.abs(a.x - b.x) < 1e-9 and math.abs(a.z - b.z) < 1e-9 and a.x > 0.9 and a.z > 0.9
+
+## An upright edge picked at Low filleted, its radius adjusted at Very
+## High; another edge picked there filleted too.
+func edges_across_qualities() -> unit!:
+    let w = Workspace()
+    w.set_mesh_quality(MeshQuality.low())
+    let node = edit_cad_node(w)
+    modeling_commands.create(w, "Box")
+    select_edge(w, upright)
+    modeling_commands.model(w, "Fillet")
+    modeling_commands.set_last_step(w, 0, 0.2, 0.0001, 100000.0)
+    let step = latest(w, node).edits[-1]
+    assert(step.verb == "Fillet" and step.topology == 0 and step.group.starts_with("cad-edges:"), step.group)
+    assert(faces_of(w, node) == 7 and latest(w, node).warning == "", latest(w, node).warning)
+    w.set_mesh_quality(MeshQuality.very_high())
+    modeling_commands.set_last_step(w, 0, 0.3, 0.0001, 100000.0)
+    assert(faces_of(w, node) == 7 and latest(w, node).warning == "", latest(w, node).warning)
+    select_edge(w, func(a: Vector3, b: Vector3) -> bool:
+        return math.abs(a.x - b.x) < 1e-9 and math.abs(a.z - b.z) < 1e-9 and a.x < -0.9 and a.z < -0.9)
+    modeling_commands.model(w, "Fillet")
+    modeling_commands.set_last_step(w, 0, 0.2, 0.0001, 100000.0)
+    assert(faces_of(w, node) == 8 and latest(w, node).warning == "", latest(w, node).warning)
+
+## Two boxes: the first picked as Combine's target at Medium, the second
+## as its tool at High (kept in the step's text), cut at Low.
+func bodies_across_qualities() -> unit!:
+    let w = Workspace()
+    let node = edit_cad_node(w)
+    modeling_commands.create(w, "Box")
+    modeling_commands.create(w, "Box")
+    modeling_commands.set_last_step(w, 3, 1.0, -100000.0, 100000.0)
+    assert(models_of(w, node).length == 2)
+    select_where(w, 0, func (c: Vector3, n: Vector3) -> bool: return c.x < -0.9)
+    tool_run.run(w, "Combine")
+    assert(w.prompt != none)
+    w.set_mesh_quality(MeshQuality.high())
+    select_where(w, 0, func (c: Vector3, n: Vector3) -> bool: return c.x > 1.9)
+    tool_picks.accept(w)
+    assert(w.prompt == none)
+    let step = latest(w, node).edits[-1]
+    assert(step.group.starts_with("cad-bodies:") and step.text(edit_cad_faces.target_text).starts_with("cad-bodies:"), step.text(edit_cad_faces.target_text))
+    assert(models_of(w, node).length == 1 and latest(w, node).warning == "", latest(w, node).warning)
+    w.set_mesh_quality(MeshQuality.low())
+    modeling_commands.set_last_step(w, edit_cad_faces.combine_slot, 1.0, 0.0, 2.0)
+    assert(models_of(w, node).length == 1 and latest(w, node).warning == "", latest(w, node).warning)
+    # The cut leaves the half of the first box short of x = 0.
+    let bounds = models_of(w, node)[0].tessellated(MeshQuality.low()).bounds()
+    near(bounds.maximum.x, 0.0, "the second box cut from the first")
+
+## A slot cut across a box's top leaves two pieces of the top face, both
+## keeping its name (luce-cad's Booleans): the piece picked is written as
+## which of the namesakes it is, and is that piece alone on a finer mesh.
+func namesake_pieces() -> unit!:
+    let kind = edit_cad.kind()
+    let quality = MeshQuality.medium()
+    let slot = CadSolids.box(0.5, 1.0, 4.0).placed(Matrix4.compose(Vector3(0.0, 1.0, 0.0), Vector3(), Vector3(1.0, 1.0, 1.0)))
+    let start = kind.start(GeometryData(geometry = CadEdits.with_model(CadGeometry.of_model(CadSolids.box(2.0, 2.0, 2.0)), slot)), "#9")
+    let bodies = kind.pick(start, 0, quality) else trap("boxes")
+    let target = cad_picks.kept(0, 3, bodies, groups_where(bodies, func (c: Vector3, n: Vector3) -> bool: return c.x < -0.5))
+    let tool = cad_picks.kept(0, 3, bodies, groups_where(bodies, func (c: Vector3, n: Vector3) -> bool: return c.y > 1.2))
+    let cut = kind.run(EditStep("Combine", target, 3, [1.0, 0.0], 0, texts = [tool]), 0, start, "#9", none, CadTolerances(), quality)
+    assert(cut.warning == "" and cut.models().length == 1, cut.warning)
+    let pieces = kind.pick(cut, 3, quality) else trap("cut")
+    let named = cad_picks.kept(3, 3, pieces, groups_where(pieces, func (c: Vector3, n: Vector3) -> bool: return n.y > 0.99 and c.x > 0.25 and c.y > 0.99))
+    assert(named.starts_with("cad-faces:") and named.contains("\t"), named)
+    # Found again on a finer mesh: that piece alone.
+    let finer = kind.pick(cut, 3, MeshQuality.very_high()) else trap("finer")
+    let found = Selection.of(finer, cad_picks.group_on(finer, named), 2)
+    var at = found.next(-1)
+    assert(at >= 0)
+    while at >= 0:
+        assert(finer.face_normal(at).y > 0.99 and finer.face_center(at).x > 0.25)
+        at = found.next(at)
+
+## The polygons of `mesh` whose middle and normal `keep` takes, as a group.
+func groups_where(mesh: Mesh, keep: func(Vector3, Vector3) -> bool) -> str!:
+    let picked: list[str] = []
+    for polygon in 0..<mesh.face_count():
+        if keep(mesh.face_center(polygon), mesh.face_normal(polygon)):
+            picked.append(f"{polygon}")
+    assert(picked.length > 0)
+    return picked.join(" ")
+
+## The viewport picks on the display quality's mesh, the very mesh an
+## action's picks are found on; a model meshed for the display is not
+## meshed again for picking.
+func shared_tessellation() -> unit!:
+    let w = Workspace()
+    w.set_mesh_quality(MeshQuality.high())
+    let node = edit_cad_node(w)
+    modeling_commands.create(w, "Sphere")
+    select_where(w, 3, up)
+    let data = w.network.evaluate_data(node.id)
+    let shown = w.geometry else trap("pick geometry")
+    let kept = cad_cook.pick_mesh(data, MeshQuality.high())
+    assert(shown.points_id() == kept.points_id() and shown.face_count() == CadEdits.pick_mesh(data.geometry, MeshQuality.high()).face_count())
+    w.set_mesh_quality(MeshQuality.low())
+    selection_commands.set_mode(w, 3)
+    let low = w.geometry else trap("low pick geometry")
+    assert(low.face_count() < shown.face_count() and low.points_id() == cad_cook.pick_mesh(w.network.evaluate_data(node.id), MeshQuality.low()).points_id())
+    # The display's mesh of a model (luce-cad keeps it) is what the pick
+    # mesh is made of: the same polygons, nothing meshed again.
+    let model = CadSolids.sphere(1.0)
+    let display = model.tessellated(MeshQuality.very_high(), curvature = model.supports_curvature())
+    let pick = CadEdits.pick_mesh(CadGeometry.of_model(model), MeshQuality.very_high())
+    assert(pick.face_count() == display.face_count() and model.tessellated(MeshQuality.very_high(), curvature = model.supports_curvature()).points_id() == display.points_id())
+
+## A step's picks (a face's name with its tab and line breaks) written into
+## a document and read back as they were.
+func written_and_read() -> unit!:
+    let w = Workspace()
+    let node = edit_cad_node(w)
+    modeling_commands.create(w, "Box")
+    select_where(w, 3, up)
+    select_where(w, 3, right, true)
+    tool_run.press_pull(w)
+    let step = latest(w, node).edits[-1]
+    assert(step.group.contains("\n"), step.group)
+    let document = Document()
+    write_graph(document, w.network)
+    let restored = read_graph(document)
+    let read = restored.require(node.id)
+    assert(read.edits.length > 0 and read.edits[-1].group == step.group)

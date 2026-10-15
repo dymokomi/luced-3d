@@ -49,7 +49,9 @@ B-rep keeps that mesh (`BrepModel.mesh`): a Tessellate node at the same
 quality places it in O(1), and the renderer reuses the GPU buffers already
 made for it. Display, picking, slices and the Render mode all mesh at the
 display quality; no node's stamp holds it, so a new quality (one undo step)
-meshes the cooked bodies again and cooks nothing. The
+meshes the cooked bodies again and cooks nothing. Edit CAD's steps and the CAD
+feature nodes find their picks on the same meshes: they keep them by B-rep
+entity (names), never by polygon, so no quality changes what they picked. The
 display draws each B-rep edge along the mesh's own samples of it (the mesh
 edges between faces on different surfaces, so a line never dips behind the
 faces it bounds) and a normal guide per face (`CadModel.overlay`, which also

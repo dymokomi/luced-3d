@@ -4,9 +4,11 @@
 ## (control vertices of surfaces and curves), Edges (a B-rep edge), Faces
 ## (a B-rep face), Patch and Curves (a whole curve); Smart picks edges and
 ## faces. Object, Faces and Edges pick on the models' display tessellations
-## tagged with their models, faces and edges (luce-cad's
-## CadEdits.pick_mesh); CVs on the control-vertex cloud; Curves on the
-## curves' segments (CadCurves.pick_mesh).
+## at the project's display quality, tagged with their models, faces and
+## edges (luce-cad's CadEdits.pick_mesh); CVs on the control-vertex cloud;
+## Curves on the curves' segments (CadCurves.pick_mesh). A step keeps the
+## bodies, faces and edges it picked as B-rep entities, by name
+## (cad_picks.luc), so no tessellation changes what it picked.
 ##
 ## Every tool is a step on the model the steps before it made, and nothing
 ## earlier changes when something later does:
@@ -47,9 +49,10 @@ import edit_cad_sketches
 import edit_cad_nets
 import edit_cad_curves
 import edit_cad_align
+import cad_picks
 from luce_cad.cad_curves import CadCurves
 from luce_ui import ui
-from luce_cad.model import CadTolerances
+from luce_cad.model import CadTolerances, MeshQuality
 
 pub let kind_name = "Edit CAD"
 
@@ -66,7 +69,7 @@ pub func primitive_names() -> list[str]:
 pub func kind() -> EditKind:
     let steps = [edit_cad_sketches.sketch_verb, edit_cad_sketches.edit_sketch_verb, edit_cad_sketches.visibility_verb, edit_cad_sketches.plane_verb, edit_cad_nets.move_verb]
     return EditKind(kind_name, levels(), tool_list(), primitive_names(), start, pick, run, create, smart = [edge_level, face_level], steps = steps,
-                    draw_tools = placing(), drawn = edit_cad_curves.drawn, holds = true, background = background)
+                    draw_tools = placing(), drawn = edit_cad_curves.drawn, holds = true, background = background, kept = cad_picks.kept)
 
 ## Whether `step` runs on the compute worker: every action. A face moved
 ## takes ~17 ms, a fillet or a shell far more; and a result holding CAD
@@ -151,7 +154,7 @@ func start(data: GeometryData, tag: str) -> GeometryData!:
         return stated(data)
     return data.passed("The input has no CAD models; it passes through (create a solid, or connect CAD)")
 
-func pick(data: GeometryData, level: int) -> Mesh?!:
+func pick(data: GeometryData, level: int, quality: MeshQuality) -> Mesh?!:
     if level == curve_level:
         if not data.has_curves():
             return Mesh.empty()
@@ -162,16 +165,18 @@ func pick(data: GeometryData, level: int) -> Mesh?!:
         return CadGeometry.cv_cloud(data.geometry)
     if not data.has_cad():
         return Mesh.empty()
-    return cad_cook.pick_mesh(data)
+    return cad_cook.pick_mesh(data, quality)
 
 
 ## Step number `at` of a recipe on `data`, with the model's sketches told
 ## to the editor (Node.sketch_state); after Insert Knot or Remove Knot, the
 ## surface it works on too (edit_cad_nets.probe_line: the viewport draws
 ## the isoparm under the pointer from it, knot_place.luc), and after Trim
-## its region markers (surface_ops: trim_regions.luc draws them).
-func run(step: EditStep, at: int, data: GeometryData, tag: str, reference: GeometryData?, tolerances: CadTolerances) -> GeometryData!:
-    var made = ran(step, f"{tag}s{at}", data, tolerances)
+## its region markers (surface_ops: trim_regions.luc draws them). What the
+## step picked by name is found on `data`'s pick mesh at the display
+## quality `quality` first (cad_cook.resolved), as its tools take groups.
+func run(step: EditStep, at: int, data: GeometryData, tag: str, reference: GeometryData?, tolerances: CadTolerances, quality: MeshQuality) -> GeometryData!:
+    var made = ran(cad_cook.resolved(step, data, quality), f"{tag}s{at}", data, tolerances, quality)
     # Aligned rows stay aligned: a CV drag on them runs their Align again;
     # the Aligns so far carry on to later steps.
     if step.verb == edit_cad_nets.move_verb or (step.group_type == 1 and step.verb in cv_verbs()):
@@ -193,7 +198,7 @@ func stated(data: GeometryData) -> GeometryData!:
     return data
 
 ## `name` names what the step makes (`#<node>s<n>`).
-func ran(step: EditStep, name: str, data: GeometryData, tolerances: CadTolerances) -> GeometryData!:
+func ran(step: EditStep, name: str, data: GeometryData, tolerances: CadTolerances, quality: MeshQuality) -> GeometryData!:
     if step.verb.starts_with("Create "):
         return created(step, name, data, tolerances)
     if edit_cad_sketches.is_sketch_step(step.verb):
@@ -206,7 +211,7 @@ func ran(step: EditStep, name: str, data: GeometryData, tolerances: CadTolerance
         return moved_cvs(step, data)
     # A CAD tool's step: its declaration's cook (cad_tools.luc).
     if let tool = tool_registry.cad_step(step.verb):
-        return tool.cook(step.invocation(tolerances = tolerances), data, name)
+        return tool.cook(step.invocation(tolerances = tolerances, quality = quality), data, name)
     # The gizmo's CV moves in a frame of their own (Move CVs).
     if step.verb == edit_cad_nets.move_verb:
         cad_cook.needs_models(data)

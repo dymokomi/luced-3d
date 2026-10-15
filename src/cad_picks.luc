@@ -1,0 +1,69 @@
+## What an Edit CAD step picked, kept as B-rep entities rather than as the
+## polygons or edges of the tessellation it was picked on, as Fusion 360
+## keeps B-rep faces and edges: picked at any display quality, a step reads
+## alike on any other, and the viewport picks on the display's own mesh.
+## A step's group (and a pick kept in its texts as a group, Combine's tool
+## bodies) is written so when it is made (edit_steps.edit_step,
+## tool_picks.follow): a head saying what it holds, then the faces, bodies
+## or edges by name (cad_entities.lucb: luce-cad's face names and edge
+## references, a seam edge by its B-rep number). Running the step, Edit CAD
+## turns them back into a group on the pick mesh of what it runs on, at the
+## display quality (cad_cook.resolved), and its tools take that group as
+## they always have. CVs (on the control-vertex cloud) and curves (on their
+## own segments) are no tessellation: their groups stay as they are.
+from luce_geocore.geocore import Mesh
+from edit_operations import EditStep
+from edit_types import object_level, point_level, curve_level
+import cad_entities
+
+let faces_head = "cad-faces:"
+let bodies_head = "cad-bodies:"
+let edges_head = "cad-edges:"
+
+## Group `group` picked at level `level` (on `group_type`: 2 edges, 3
+## faces) of CAD pick mesh `mesh` as the entities it covers: whole bodies
+## at the Object level, B-rep faces at Faces, Patch and Smart, B-rep edges
+## at Edges and Smart. Any other group, or a group on other geometry,
+## stays as it is.
+pub func kept(level: int, group_type: int, mesh: Mesh, group: str) -> str!:
+    if group == "" or level == point_level or level == curve_level:
+        return group
+    if group_type == 2 and mesh.find_attribute("cad_edge_model", 4) >= 0:
+        return edges_head + cad_entities.entity_names(mesh, group, true, false)
+    if group_type == 3 and mesh.find_attribute("cad_model", 2) >= 0:
+        let bodies = level == object_level
+        return (bodies_head if bodies else faces_head) + cad_entities.entity_names(mesh, group, false, bodies)
+    return group
+
+## Whether `text` is a group kept as entities (kept).
+pub func named(text: str) -> bool:
+    return text.starts_with(faces_head) or text.starts_with(bodies_head) or text.starts_with(edges_head)
+
+## Whether step `step` keeps a pick as entities, in its group or a text.
+pub func names_any(step: EditStep) -> bool:
+    if named(step.group):
+        return true
+    for text in step.texts:
+        if named(text):
+            return true
+    return false
+
+## The group on pick mesh `mesh` of `text`: what entities a group kept
+## names on it (an error when they are gone), else `text` as it is.
+pub func group_on(mesh: Mesh, text: str) -> str!:
+    if text.starts_with(faces_head):
+        return cad_entities.entity_group(mesh, text[faces_head.length..], false, false)
+    if text.starts_with(bodies_head):
+        return cad_entities.entity_group(mesh, text[bodies_head.length..], false, true)
+    if text.starts_with(edges_head):
+        return cad_entities.entity_group(mesh, text[edges_head.length..], true, false)
+    return text
+
+## Step `step` with what it keeps as entities as groups on pick mesh
+## `mesh`, which they were not picked on: so it records no topology.
+pub func resolved(step: EditStep, mesh: Mesh) -> EditStep!:
+    let texts: list[str] = []
+    for text in step.texts:
+        texts.append(group_on(mesh, text))
+    let topology = 0 if named(step.group) else step.topology
+    return EditStep(step.verb, group_on(mesh, step.group), step.group_type, step.numbers, topology, step.symmetry, step.keep, texts)

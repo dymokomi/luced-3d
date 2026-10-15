@@ -22,7 +22,7 @@ from held import Held
 from held_store import HeldStore
 from scene_nodes import add_camera, add_light, add_material, assign_material
 import cad_nodes
-from luce_cad.model import CadTolerances
+from luce_cad.model import CadTolerances, MeshQuality
 import cad_blends
 import code_cook
 import script_cook
@@ -294,9 +294,12 @@ pub class Node:
     ## `gesture`: a drag is under way, so an Edit node's last step failing
     ## fails the node (the viewport keeps its last good result) rather than
     ## leaving it out. `tolerances`: the project's CAD tolerances, which every
-    ## body made from nothing is built under (Network.tolerances).
-    pub func compute(self, data: GeometryData, second: GeometryData? = none, progress: func(float) -> unit!? = none, sources: SourceCache? = none, clock: list[float] = [], keys: list[int] = [], direct_children: bool = false, sketch: str = "", gesture: bool = false, tolerances: CadTolerances? = none) -> GeometryData!:
+    ## body made from nothing is built under (Network.tolerances); `quality`:
+    ## its display quality, which CAD tools pick bodies at
+    ## (Network.mesh_quality; none: Medium).
+    pub func compute(self, data: GeometryData, second: GeometryData? = none, progress: func(float) -> unit!? = none, sources: SourceCache? = none, clock: list[float] = [], keys: list[int] = [], direct_children: bool = false, sketch: str = "", gesture: bool = false, tolerances: CadTolerances? = none, quality: MeshQuality? = none) -> GeometryData!:
         let project = tolerances else CadTolerances()
+        let display = quality else MeshQuality.medium()
         if self.frozen != "":
             return load_frozen(self.frozen)
         let v = self.values
@@ -316,7 +319,7 @@ pub class Node:
         if cad_nodes.is_cad_only(self.kind):
             if not self.enabled:
                 return data
-            return cad_nodes.evaluate_cad(self.kind, v, data, cad_nodes.tag_of(self.id), second, self.texts, self.memo, sketch, project)
+            return cad_nodes.evaluate_cad(self.kind, v, data, cad_nodes.tag_of(self.id), second, self.texts, self.memo, sketch, project, display)
         # A primitive: its verb run on nothing.
         if node_catalog.is_mesh_verb(self.kind) and node_catalog.input_count(self.kind) == 0:
             if not self.enabled:
@@ -385,10 +388,10 @@ pub class Node:
                 delete_values.append(0.0)
             return evaluate_verb("Delete", delete_values, self.texts, data.require_mesh())
         if self.kind == "Tessellate":
-            let quality = mesh_quality.of_node(v, 0)
+            let own = mesh_quality.of_node(v, 0)
             if let cache = sources:
-                return cache.tessellated(data, quality, progress)
-            return data.tessellated(quality, progress)
+                return cache.tessellated(data, own, progress)
+            return data.tessellated(own, progress)
         if self.kind == "Transform":
             return data.transformed(translation, rotation, scale)
         if self.kind == "Merge":
@@ -409,7 +412,7 @@ pub class Node:
                 return kind.start(data, tag)
             var result = kind.start(data, tag)
             for at in 0..<self.edits.length:
-                let (next, built) = run_step(kind, self.edits[at], at, result, tag, project, gesture and at == self.edits.length - 1, second)
+                let (next, built) = run_step(kind, self.edits[at], at, result, tag, project, display, gesture and at == self.edits.length - 1, second)
                 result = next
                 if not built:
                     break

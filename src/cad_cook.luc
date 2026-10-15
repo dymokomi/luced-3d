@@ -14,6 +14,8 @@ from geometry_data import GeometryData
 from edit_operations import EditStep
 from tool_record import Invocation
 import cad_names
+import cad_picks
+import mesh_quality
 import edit_cad_faces
 from luce_ui import ui
 
@@ -33,31 +35,37 @@ pub func body_of(data: GeometryData, role: str) -> CadModel!:
         body = CadModeling.combined(body, CadGeometry.model(data.geometry, at), 0)
     return body
 
-## The quality Edit CAD's pick meshes are made at: Medium, whatever the
-## display quality, since a step records the topology of the mesh its faces
-## and edges were picked on (EditStep.topology) and a display quality must
-## not undo a recipe. At the default display quality it is the display's
-## mesh (one tessellation, luce-cad keeps it).
-pub func pick_quality() -> MeshQuality:
-    return MeshQuality.medium()
-
-## The tagged tessellations Edit CAD's Object, Faces and Edges levels pick
-## on (luce-cad's CadEdits.pick_mesh), made once per result, with what the
-## last step created as `.selection` (a group may name it, so steps read
-## their groups on this same mesh).
-pub func pick_mesh(data: GeometryData) -> Mesh!:
+## The tagged tessellation Edit CAD's Object, Faces and Edges levels pick
+## on (luce-cad's CadEdits.pick_mesh) at the display quality `quality`: the
+## models' display meshes, which luce-cad keeps, so nothing is meshed a
+## second time. Made once per result and quality, with what the last step
+## created as `.selection` (a group may name it, so steps read their groups
+## on this same mesh).
+pub func pick_mesh(data: GeometryData, quality: MeshQuality) -> Mesh!:
+    let key = mesh_quality.key(quality)
     if let known = data.pick_cache:
-        return known
-    var made = CadEdits.pick_mesh(data.geometry, pick_quality())
+        if data.pick_key == key:
+            return known
+    var made = CadEdits.pick_mesh(data.geometry, quality)
     if data.created != "":
         made = Groups.with_group(made, ".selection", 2, data.created)
     data.pick_cache = made
+    data.pick_key = key
     return made
 
-## The pick geometry a step's group was selected on: `data`'s, when the
-## models are as they were then.
+## Edit CAD's step `step` on `data` as its tools take it: what it picked,
+## kept as B-rep entities (cad_picks.luc), as groups on `data`'s pick mesh
+## at `quality`.
+pub func resolved(step: EditStep, data: GeometryData, quality: MeshQuality) -> EditStep!:
+    if not cad_picks.names_any(step) or not data.has_cad():
+        return step
+    return cad_picks.resolved(step, pick_mesh(data, quality))
+
+## The pick geometry a step's group is a group of: `data`'s at the call's
+## display quality; a group of polygons (a CV's, a curve's) holds only on
+## the topology it was selected on.
 pub func shown(call: Invocation, data: GeometryData) -> Mesh!:
-    let mesh = pick_mesh(data)
+    let mesh = pick_mesh(data, call.quality)
     if call.topology != 0 and call.topology != mesh.topology_hash():
         error(ui.invalid, "The faces or edges picked are gone (what they were picked on changed): pick them again")
     return mesh
@@ -132,11 +140,12 @@ pub func face_step(call: Invocation, data: GeometryData, tag: str) -> GeometryDa
         error(ui.invalid, f"{call.verb} does not apply to CAD edges")
     return edit_cad_faces.run_face_step(step_of(call), tag, data, mesh)
 
-## The pick geometry of a face tool node's input `input`: its bodies'.
-pub func node_mesh(input: GeometryData, kind: str) -> Mesh!:
+## The pick geometry of face tool node `call`'s input `input`: its
+## bodies', at the display quality.
+pub func node_mesh(call: Invocation, input: GeometryData) -> Mesh!:
     if CadGeometry.model_count(input.geometry) == 0:
-        error(ui.invalid, f"{kind} works on bodies: the chain brings none here")
-    return CadEdits.pick_mesh(input.geometry, pick_quality())
+        error(ui.invalid, f"{call.verb} works on bodies: the chain brings none here")
+    return CadEdits.pick_mesh(input.geometry, call.quality)
 
 ## A face tool node run as Edit CAD's step `verb` on its input `input`: its
 ## names found on `mesh` as `group`, its other picks as the step's

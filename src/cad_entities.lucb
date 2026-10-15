@@ -1,0 +1,236 @@
+## Edit CAD's picks by B-rep entity (cad_picks.luc): a group of a pick mesh
+## (luce-cad's CadEdits.pick_mesh, any quality) written as the B-rep faces
+## or edges it covers, and such a list turned back into a group on another
+## tessellation of the same bodies. One entry a line:
+##
+##   <name>              the entity of that name: a face's `cad_face_name`,
+##                       an edge's `cad_edge_reference` (luce-cad's names)
+##   <name>\t<k>         the k-th of the entities sharing that name (a face
+##                       a cut split keeps its name in each piece), in the
+##                       order of their models and B-rep numbers
+##   \t<model>\t<number> an entity without a name (a seam edge, which lies
+##                       between a face and itself): its model and B-rep
+##                       number, which no tessellation changes either
+##
+## Bodies are written as one face of each. The polygons and edges are
+## gone through here, in Base, once each.
+import interop
+import memory
+import strings
+from luce_geocore.geocore import Mesh, invalid
+from luce_geocore.kernel import group_bits_of, Domain, BitsBuilder, GroupReport, adopt_selection
+from luce_geocore.core.growing import Growing
+from luce_std import sort
+from cad_names import push_number
+
+## One model's entity number `id` as a single key.
+func key_of(model: i64, id: i64) -> i64:
+    return model * 4294967296 + id
+
+## The B-rep entities a pick mesh's polygons (or edges) lie on: their keys
+## sorted, each with one element on it (for its name).
+struct Entities:
+    var keys: Growing[i64]
+    var elements: Growing[i64]
+    ## The attributes read: each element's model and entity number, and
+    ## its name (-1: the mesh has no names).
+    var models: i64
+    var ids: i64
+    var names: i64
+    var domain: i64
+
+    ## The faces (`edges`: edges) of `mesh`.
+    static func of(mesh: const Mesh*, edges: bool) -> Entities!:
+        let domain: i64 = 4 if edges else 2
+        var made = Entities(Growing[i64](), Growing[i64](), mesh.find_attribute("cad_edge_model" if edges else "cad_model", domain),
+                            mesh.find_attribute("cad_edge" if edges else "cad_face", domain), mesh.find_attribute("cad_edge_reference" if edges else "cad_face_name", domain), domain)
+        errdefer made.close()
+        if made.models < 0 or made.ids < 0: error(invalid, "the pick mesh lost its CAD tags")
+        let count = try made.count_of(mesh)
+        for element in 0..<count:
+            let key = try made.key(mesh, element)
+            if key >= 0: try made.keys.push(key)
+        sort.sort(made.keys.items[..<made.keys.count])
+        var unique: usize = 0
+        for at in 0..<made.keys.count:
+            if at == 0 or made.keys.items[at] != made.keys.items[unique - 1]:
+                made.keys.items[unique] = made.keys.items[at]
+                unique += 1
+        made.keys.count = unique
+        try made.elements.fill(unique, -1)
+        for element in 0..<count:
+            let at = made.find(try made.key(mesh, element))
+            if at >= 0 and made.elements.items[(usize)at] < 0: made.elements.items[(usize)at] = element
+        return made
+
+    func close():
+        self.keys.close()
+        self.elements.close()
+
+    func count_of(mesh: const Mesh*) -> i64!:
+        return (try mesh.edge_count()) if self.domain == 4 else mesh.face_count()
+
+    ## Element `element`'s key, -1 on no entity (an edge inside a face).
+    func key(mesh: const Mesh*, element: i64) -> i64!:
+        let id = (i64)(try mesh.attribute_value(self.ids, element))
+        if id < 0: return -1
+        return key_of((i64)(try mesh.attribute_value(self.models, element)), id)
+
+    ## The entity of key `key`, -1 none.
+    func find(key: i64) -> i64:
+        if key < 0: return -1
+        var low: usize = 0
+        var high = self.keys.count
+        while low < high:
+            let middle = (low + high) // 2
+            let here = self.keys.items[middle]
+            if here == key: return (i64)middle
+            if here < key:
+                low = middle + 1
+            else:
+                high = middle
+        return -1
+
+    ## Entity `at`'s name ("" none).
+    func name(mesh: const Mesh*, at: usize) -> str!:
+        if self.names < 0: return ""
+        return try mesh.attribute_text(self.names, self.elements.items[at])
+
+    func model(at: usize) -> i64:
+        return self.keys.items[at] // 4294967296
+
+## Group `group` of `pick` (on faces, or `edges`) as the entries of the
+## entities it covers, in their order; `bodies`: whole models, each by its
+## first face. "" when it covers none.
+pub func entity_names(pick: interop.Reference[Mesh], group: str, edges: bool, bodies: bool) -> interop.Owned[str]!:
+    let mesh = try pick.get()
+    var entities = try Entities.of(mesh, edges)
+    defer entities.close()
+    var bits = try group_bits_of(mesh, group, Domain.edge if edges else Domain.face)
+    defer bits.bits.release()
+    let words = bits.bits.view()
+    var chosen = Growing[bool]()
+    defer chosen.close()
+    try chosen.fill(entities.keys.count, false)
+    for element in 0..<(try entities.count_of(mesh)):
+        if (words[(usize)element >> 6] >> (u64)((usize)element & 63)) & 1 == 0: continue
+        let at = entities.find(try entities.key(mesh, element))
+        if at >= 0: chosen.items[(usize)at] = true
+    if bodies:
+        # A chosen model's first face stands for it.
+        var last: i64 = -1
+        for at in 0..<entities.keys.count:
+            let model = entities.model(at)
+            let picked = chosen.items[at]
+            chosen.items[at] = false
+            if picked and model != last:
+                var first = at
+                while first > 0 and entities.model(first - 1) == model: first -= 1
+                chosen.items[first] = true
+                last = model
+    var text = Growing[u8]()
+    defer text.close()
+    for at in 0..<entities.keys.count:
+        if not chosen.items[at]: continue
+        if text.count > 0: try text.push((u8)10)
+        let name = try entities.name(mesh, at)
+        if name.length == 0:
+            try text.push((u8)9)
+            try push_number(&text, entities.model(at))
+            try text.push((u8)9)
+            try push_number(&text, entities.keys.items[at] - entities.model(at) * 4294967296)
+            continue
+        for c in name.bytes: try text.push(c)
+        var before: i64 = 0
+        var shared = false
+        for other in 0..<entities.keys.count:
+            if other == at or (try entities.name(mesh, other)) != name: continue
+            shared = true
+            if other < at: before += 1
+        if shared:
+            try text.push((u8)9)
+            try push_number(&text, before)
+    return try interop.copy_text((str)text.view())
+
+## The group on `pick` (faces, or `edges`) of what entries `text`
+## (entity_names') name; `bodies`: every polygon of the models they lie
+## on. An entry naming nothing on `pick` is an error: what was picked is
+## gone.
+pub func entity_group(pick: interop.Reference[Mesh], text: str, edges: bool, bodies: bool) -> interop.Owned[str]!:
+    let mesh = try pick.get()
+    var entities = try Entities.of(mesh, edges)
+    defer entities.close()
+    var chosen = Growing[bool]()
+    defer chosen.close()
+    try chosen.fill(entities.keys.count, false)
+    let bytes = text.bytes
+    var start: usize = 0
+    for end in 0..<bytes.length + 1:
+        if end < bytes.length and bytes[end] != (u8)10: continue
+        let entry = (str)bytes[start..<end]
+        start = end + 1
+        if entry.length == 0: continue
+        if not (try mark(mesh, &entities, entry, &chosen)):
+            error(invalid, "the faces or edges picked are gone: pick them again")
+    let count = try entities.count_of(mesh)
+    let wanted = try new bool[(usize)count] in memory.heap
+    defer free(wanted) in memory.heap
+    for element in 0..<count:
+        let at = entities.find(try entities.key(mesh, element))
+        wanted[(usize)element] = at >= 0 and chosen.items[(usize)at]
+    if bodies:
+        var models = Growing[i64]()
+        defer models.close()
+        for at in 0..<entities.keys.count:
+            if chosen.items[at]: try models.push(entities.model(at))
+        for element in 0..<count:
+            let id = (i64)(try mesh.attribute_value(entities.ids, element))
+            if id < 0: continue
+            let model = (i64)(try mesh.attribute_value(entities.models, element))
+            for m in models.view():
+                if m == model:
+                    wanted[(usize)element] = true
+                    break
+    # Written as geocore writes a selection: faces as runs, edges as the
+    # point pairs an edge group is made of.
+    var bits = try BitsBuilder.zeros((usize)count)
+    var any = false
+    for element in 0..<(usize)count:
+        if wanted[element]:
+            bits.set(element)
+            any = true
+    let selection = try adopt_selection(bits.finish(), (usize)count, Domain.edge if edges else Domain.face, (u64)mesh.topology_hash(), GroupReport())
+    defer selection.release()
+    if not any:
+        return try interop.copy_text("!*")
+    return try selection.value().expression(pick)
+
+## Entry `entry` marked among `chosen`; false when it names nothing.
+func mark(mesh: const Mesh*, entities: Entities*, entry: str, chosen: Growing[bool]*) -> bool!:
+    let bytes = entry.bytes
+    var tab: usize = 0
+    while tab < bytes.length and bytes[tab] != (u8)9: tab += 1
+    if tab == 0:
+        # An unnamed entity: its model and number.
+        var second: usize = 1
+        while second < bytes.length and bytes[second] != (u8)9: second += 1
+        if second >= bytes.length: error(invalid, "a picked entity without a name lacks its number")
+        let model = strings.parse_i64((str)bytes[1..<second]) else error(invalid, "a picked entity's model is not a number")
+        let id = strings.parse_i64((str)bytes[second + 1..]) else error(invalid, "a picked entity's number is not a number")
+        let at = entities.find(key_of(model, id))
+        if at < 0: return false
+        chosen.items[(usize)at] = true
+        return true
+    let name = (str)bytes[..<tab]
+    var which: i64 = -1
+    if tab < bytes.length:
+        which = strings.parse_i64((str)bytes[tab + 1..]) else error(invalid, "a picked entity's place among its namesakes is not a number")
+    var seen: i64 = 0
+    var any = false
+    for at in 0..<entities.keys.count:
+        if (try entities.name(mesh, at)) != name: continue
+        if which < 0 or seen == which:
+            chosen.items[at] = true
+            any = true
+        seen += 1
+    return any

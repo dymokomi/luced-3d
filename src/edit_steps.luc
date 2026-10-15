@@ -23,21 +23,31 @@ pub func append_step(w: Workspace, label: str, verb: str, group: str, numbers: l
         w.adopt_output = index >= 0 and Verbs.changes_topology(index)
         w.rebuild())
 
-## A step of Edit node `node`: its soft radius and falloff reach the
-## transform, its symmetry and Keep selection every step.
-pub func edit_step(w: Workspace, node: Node, verb: str, group: str, numbers: list[float], mesh: Mesh) -> EditStep:
+## A step of Edit node `node` on `group` of `mesh`: its soft radius and
+## falloff reach the transform, its symmetry and Keep selection every step.
+## The group is kept as the node's kind keeps it (EditKind.kept: Edit
+## CAD's by B-rep entity, which records no topology).
+pub func edit_step(w: Workspace, node: Node, verb: str, group: str, numbers: list[float], mesh: Mesh) -> EditStep!:
+    let kind = w.kind_of(node.kind)
     var values = numbers.copy()
     if verb == "Transform Components" and values.length >= 15:
         values[13] = node.values[soft_radius_slot]
         values[14] = node.values[falloff_slot]
         # The kind's own numbers after the fifteen (Edit CAD's Create
         # copy), as its Move/Copy tool starts them, so gizmo moves merge.
-        if let kind = w.kind_of(node.kind):
-            for tool in kind.tools:
+        if let editing = kind:
+            for tool in editing.tools:
                 if let starting = tool.numbers:
                     if tool.verb == verb and starting.length > values.length:
                         values = values + starting[values.length..]
-    return EditStep(verb, group, w.group_type(), values, mesh.topology_hash(), int(node.values[symmetry_slot]), node.values[keep_slot] != 0.0)
+    var kept = group
+    var topology = mesh.topology_hash()
+    if let editing = kind:
+        if let keeps = editing.kept:
+            kept = keeps(w.level_index(), w.group_type(), mesh, group)
+            if kept != group:
+                topology = 0
+    return EditStep(verb, kept, w.group_type(), values, topology, int(node.values[symmetry_slot]), node.values[keep_slot] != 0.0)
 
 ## A verb node after the displayed node, inserted before what it fed;
 ## display and selection move to it, and the tool's output selection when

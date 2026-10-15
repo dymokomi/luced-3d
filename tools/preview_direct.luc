@@ -24,6 +24,12 @@
 ##   direct_sketches: two sketches of the model shown, not edited.
 ##   direct_sketch_menu: one of them right-clicked on its curve: Edit and
 ##     Hide it.
+##   direct_picks_faces: a cylinder's side picked at the display quality
+##     (--quality) and pulled; the quality switched to the other end (Low
+##     and Very High), the pull adjusted on the face it named, the top
+##     picked on the new mesh (cad_picks.luc).
+##   direct_picks_edges: the cylinder's top rim picked and filleted, the
+##     quality switched, the radius adjusted, the bottom rim picked.
 import tool_run
 import preview_support
 from luce_ui.ui import Event
@@ -43,11 +49,12 @@ import edit_cad_sketches
 import sketch_source
 import cad_features
 import sketch_camera
+import mesh_quality
 from luce_std import math
 
 pub func scenes() -> list[str]:
     return ["direct_sketch", "direct_extrude", "direct_menu", "direct_face_menu", "direct_marking", "direct_face_sketch", "direct_move_face", "direct_offset",
-            "direct_shell", "direct_failed", "direct_combine", "direct_axis", "direct_sketches", "direct_sketch_menu"]
+            "direct_shell", "direct_failed", "direct_combine", "direct_axis", "direct_sketches", "direct_sketch_menu", "direct_picks_faces", "direct_picks_edges"]
 
 ## Look at `target` from `distance` away. A sketch finished on the way
 ## gives its kept view back first (sketch_camera.luc), which would otherwise
@@ -115,6 +122,28 @@ func select_face(editor: Luce3D, keep: func(Vector3, Vector3) -> bool, level: in
 func top(c: Vector3, n: Vector3) -> bool:
     return n.y > 0.99
 
+func side(c: Vector3, n: Vector3) -> bool:
+    return math.abs(n.y) < 0.01
+
+## The Edges level with the B-rep edge under the first mesh edge whose
+## ends both lie at height `y` selected (a cylinder's rim).
+func select_rim(editor: Luce3D, y: float) -> unit!:
+    let w = editor.workspace
+    selection_commands.set_mode(w, 2)
+    let mesh = preview_support.shown(w) else trap("pick geometry")
+    let tag = mesh.find_attribute("cad_edge", 4)
+    for at in 0..<mesh.edge_count():
+        if int(mesh.attribute_value(tag, at)) >= 0 and math.abs(mesh.point(mesh.edge_point(at, 0)).y - y) < 1e-6 and math.abs(mesh.point(mesh.edge_point(at, 1)).y - y) < 1e-6:
+            selection_commands.choose_component(w, at, false)
+            return
+    trap("no rim at that height")
+
+## The other end of the display qualities: Very High after Low, else Low.
+func other_quality(editor: Luce3D) -> unit!:
+    let w = editor.workspace
+    let low = mesh_quality.preset_index(w.network.mesh_quality) == 0
+    w.set_mesh_quality(mesh_quality.preset(3 if low else 0))
+
 ## Scene `scene` before its first frame.
 pub func setup(editor: Luce3D, scene: str) -> unit!:
     let w = editor.workspace
@@ -179,6 +208,26 @@ pub func setup(editor: Luce3D, scene: str) -> unit!:
         _ = sketch_source.write(w, node, w.edit_sketch, s.text(), "Draw")
         edit_cad_commands.feature_from_sketch(w, "Revolve")
         look(editor, 0.3, 0.4, 60.0, Vector3(6.0, 5.0, 0.0))
+    elif scene in ["direct_picks_faces", "direct_picks_edges"]:
+        modeling_commands.create(w, "Cylinder")
+        let bounds = (preview_support.shown(w) else trap("cylinder")).bounds()
+        let height = bounds.maximum.y
+        if scene == "direct_picks_faces":
+            select_face(editor, side)
+            tool_run.press_pull(w)
+            modeling_commands.set_last_step(w, 0, 0.3, -100000.0, 100000.0)
+            other_quality(editor)
+            modeling_commands.set_last_step(w, 0, 0.5, -100000.0, 100000.0)
+            select_face(editor, top)
+        else:
+            select_rim(editor, height)
+            modeling_commands.model(w, "Fillet")
+            modeling_commands.set_last_step(w, 0, 0.2, 0.0001, 100000.0)
+            other_quality(editor)
+            modeling_commands.set_last_step(w, 0, 0.35, 0.0001, 100000.0)
+            select_rim(editor, bounds.minimum.y)
+        w.ask_value = false
+        look(editor, 0.6, 0.55, 7.0, Vector3(0.0, (height + bounds.minimum.y) * 0.5, 0.0))
     elif scene in ["direct_sketches", "direct_sketch_menu"]:
         sketched(editor, node, plate_text())
         edit_cad_commands.finish_sketch(w)
