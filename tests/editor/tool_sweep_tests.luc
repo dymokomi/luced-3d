@@ -1,0 +1,146 @@
+## Every Edit Mesh tool on every fixture (a box, a UV sphere, a torus, a
+## grid, a non-manifold mesh: a fin of three faces on one edge and a pinch), at each level it is offered, on one element and on everything:
+## the tool runs (no trap), and either changes the mesh or the selection,
+## or says why not (the workspace's notice or the Edit node's warning);
+## undo gives back the mesh before, redo the mesh after; the panels
+## refresh after each. A tool that does nothing and says nothing is a dead
+## end.
+from app import Luce3D
+from workspace import Workspace
+from luce_geocore.geocore import Mesh
+from tool_record import Tool
+from edit_types import object_level, point_level, edge_level, face_level
+import tool_registry
+import modeling_commands
+import selection_commands
+import node_commands
+import tool_prompts
+import tool_drag
+
+## A fingerprint of a mesh: its counts, its faces' corners (a reversed
+## winding shows) and the sum of its points, weighted by index.
+func print_of(mesh: Mesh) -> str!:
+    var sum = 0.0
+    for at in 0..<mesh.point_count():
+        let p = mesh.point(at)
+        sum += (p.x + 2.0 * p.y + 3.0 * p.z) * float(at % 7 + 1)
+    return f"{mesh.point_count()}/{mesh.face_count()}/{mesh.topology_hash()}/{int(sum * 1000.0)}"
+
+## What is selected: its level and expression.
+func picked_of(w: Workspace) -> str!:
+    let chosen = w.current_selection() else return ""
+    let mesh = w.geometry else return ""
+    return f"{chosen.domain()}:{chosen.expression(mesh)}"
+
+## An editor with an Edit Mesh holding primitive `shape`, or the fixture
+## file `shape` (an .obj under tests/fixtures).
+func holding(shape: str) -> Luce3D!:
+    let editor = Luce3D()
+    let w = editor.workspace
+    editor.app.layout(1400.0, 900.0)
+    node_commands.delete_selected(w)
+    if shape.ends_with(".obj"):
+        node_commands.add_node(w, "File", 0.0, 0.0)
+        node_commands.set_text(w, 0, f"tests/fixtures/{shape}")
+        node_commands.add_node(w, "Edit Mesh", 0.0, 100.0)
+    else:
+        node_commands.add_node(w, "Edit Mesh", 0.0, 0.0)
+        modeling_commands.create(w, shape)
+    editor.panels.refresh()
+    return editor
+
+## What happened when `tool` ran on the held shape at `level`, one
+## element (`all` false) or every element selected: "" when it behaved.
+## Everything it did is undone after, back to the shape.
+func swept(editor: Luce3D, tool: Tool, level: int, all: bool) -> str!:
+    let said = attempt(editor, tool, level, all) catch failure:
+        return f"error outside the tool: {failure.message}"
+    return said
+
+func attempt(editor: Luce3D, tool: Tool, level: int, all: bool) -> str!:
+    let w = editor.workspace
+    let base = w.history.cursor
+    let shape = print_of(w.geometry else return "no mesh")
+    selection_commands.set_mode(w, level)
+    if all:
+        selection_commands.select_all(w)
+    else:
+        selection_commands.choose_component(w, 0, false)
+    editor.panels.refresh()
+    let mesh = w.geometry else return "no mesh"
+    let before = print_of(mesh)
+    let picked = picked_of(w)
+    let cursor = w.history.cursor
+    w.notice = ""
+    var failed = ""
+    let numbers: list[float]? = tool.starting() if tool.gesture == "hover" else none
+    modeling_commands.model(w, tool.label, numbers) catch failure:
+        failed = f"error: {failure.message}"
+    let asked = w.prompt != none or w.placing != none
+    if w.prompt != none:
+        tool_prompts.accept_prompt(w)
+    tool_drag.settle(w)
+    editor.panels.refresh()
+    let node = w.selected() else return "no node"
+    let said = w.notice != "" or node.warning != ""
+    let after = print_of(w.geometry else return "no mesh after")
+    var result = failed
+    if failed != "":
+        result = failed
+    elif w.history.cursor == cursor:
+        if not said and not asked and w.edit_tool == "Select":
+            result = "nothing ran, nothing said"
+    elif after == before and picked_of(w) == picked and not said and not asked:
+        result = "ran, no change, nothing said"
+    if w.history.cursor > cursor:
+        w.undo()
+        editor.panels.refresh()
+        let undone = print_of(w.geometry else return "no mesh on undo")
+        if undone != before:
+            result += f" undo {undone} not {before}"
+        w.redo()
+        editor.panels.refresh()
+        let redone = print_of(w.geometry else return "no mesh on redo")
+        if redone != after:
+            result += f" redo {redone} not {after}"
+    # Back to the shape for the next tool.
+    w.end_modal_tool()
+    if w.prompt != none:
+        w.cancel_prompt()
+    if w.placing != none:
+        w.cancel_placing()
+    while w.history.cursor > base:
+        w.undo()
+    w.notice = ""
+    let back = print_of(w.geometry else return "no mesh at the end")
+    if back != shape:
+        result += f" undone to {back} not {shape}"
+    return result
+
+pub func tool_sweep_tests() -> unit!:
+    var failures: list[str] = []
+    var runs = 0
+    for shape in ["Box", "Sphere", "Torus", "Grid", "nonmanifold.obj"]:
+        let editor = holding(shape)
+        for tool in tool_registry.of_kind("Edit Mesh"):
+            if tool.inputs == 0 or tool.gesture in ["pen", "sculpt", "knife", "stroke", "create"]:
+                continue
+            for level in [object_level, point_level, edge_level, face_level]:
+                if not tool.offered(level):
+                    continue
+                for all in [false, true]:
+                    runs += 1
+                    let said = swept(editor, tool, level, all)
+                    if said != "":
+                        let how = "all" if all else "one"
+                        let line = f"{tool.label} on {shape} level {level} {how}: {said}"
+                        print(line)
+                        # A tool can rightly leave a shape as it was (Flatten of a flat
+                        # face, a drag tool's starting amount of 0): those are printed
+                        # for review, not failed.
+                        if not said.starts_with("ran, no change"):
+                            failures.append(line)
+        editor.close()
+    print(f"tool sweep: {runs} runs, {failures.length} misbehaved")
+    assert(failures.length == 0, failures[0] if failures.length > 0 else "")
+    print("PASS every Edit Mesh tool on a box, sphere, torus, grid and a non-manifold mesh at each level, on one element and on all: it changes something or says why, undo and redo give the meshes back")

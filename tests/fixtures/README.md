@@ -20,3 +20,6 @@ points, no faces) is a plain point cloud, drawn as dots.
 `splats.spz` is `splats.ply`'s two splats as SPZ version 4, written by
 Niantic's reference library (PLY axes converted to SPZ's RUB) for the SPZ
 File and Export nodes.
+`nonmanifold.obj` (three quads sharing one edge, a fin, and a fourth quad
+touching them at one point, a pinch) is original: the tool sweep's
+non-manifold input.

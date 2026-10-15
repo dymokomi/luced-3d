@@ -1,0 +1,243 @@
+## End-to-end workflows in the real window, for preview.py: each scene
+## builds a part step by step, a step a frame once the worker is idle, and
+## prints what each step left (the notice, the shown node's warning, the
+## counts, how long the step took); then undoes, redoes, saves, loads the
+## project back, exports, and imports the export again.
+##   stab_mesh: Edit Mesh: a box; its top extruded and the extrusion
+##     adjusted; inset; an edge beveled; undo twice and redo; Loop Cut;
+##     saved and loaded; exported to OBJ, PLY, FBX and USD and each read back
+##     by a File node; the OBJ shown.
+##   stab_cad: a CAD network's Edit CAD: a box; an edge filleted; the top
+##     shelled; a side face offset; undo and redo; saved and loaded; exported
+##     to USD (exact) and OBJ (meshed); the OBJ shown.
+##   stab_step: a STEP assembly read by a File node, an Edit CAD after it, a
+##     fillet on its first B-rep edge, saved and loaded.
+from app import Luce3D
+from luce_geocore.geocore import Mesh
+from edit_types import edge_level, face_level
+
+
+from luce_std import files, paths
+import node_commands
+import modeling_commands
+import selection_commands
+import preview_support
+import time
+
+pub func scenes() -> list[str]:
+    return ["stab_mesh", "stab_cad", "stab_step"]
+
+pub func frames(scene: str) -> int:
+    return 40
+
+## Where the scenes write their projects and exports.
+func scratch() -> str!:
+    let directory = "/Users/sedov/Dev/luce_work/stabilize/scratch-out"
+    files.ensure_directory(directory)
+    return directory
+
+pub func setup(editor: Luce3D, scene: str) -> unit!:
+    let w = editor.workspace
+    node_commands.delete_selected(w)
+    if scene == "stab_mesh":
+        node_commands.add_node(w, "Edit Mesh", 40.0, 40.0)
+        modeling_commands.create(w, "Box")
+    elif scene == "stab_cad":
+        node_commands.add_node(w, "CAD", 40.0, 40.0)
+        node_commands.enter_group(w, w.network.selected)
+        node_commands.add_node(w, "Edit CAD", 40.0, 40.0)
+        preview_support.settle(w)
+        modeling_commands.create(w, "Box")
+    else:
+        node_commands.add_node(w, "CAD", 40.0, 40.0)
+        node_commands.enter_group(w, w.network.selected)
+        node_commands.add_node(w, "File", 40.0, 40.0)
+        node_commands.set_text(w, 0, paths.join(process_root(), "tests/fixtures/assembly.step"))
+        node_commands.add_node(w, "Edit CAD", 40.0, 140.0)
+    preview_support.settle(w)
+    say(editor, "setup", 0)
+
+## The package's directory (preview.py runs the capture from a copy whose
+## fixtures are the package's).
+func process_root() -> str:
+    return "/Users/sedov/Dev/luce_work/stabilize/luced-3d"
+
+## Print what the last step left.
+func say(editor: Luce3D, step: str, started: int) -> unit!:
+    let w = editor.workspace
+    editor.panels.refresh()
+    var warning = ""
+    if let node = w.network.find(w.network.display):
+        warning = node.warning
+    var counts = "no mesh"
+    if let mesh = w.geometry:
+        counts = f"{mesh.point_count()} points {mesh.face_count()} faces"
+    let took = float(time.now() - started) / 1000000.0 if started > 0 else 0.0
+    print(f"step {step}: {counts}; selected {w.selected_count()}; notice '{w.notice}'; warning '{warning}'; {took} ms; history {w.history.cursor}")
+
+## The face whose center is highest.
+func top_face(mesh: Mesh) -> int!:
+    var best = 0
+    for face in 0..<mesh.face_count():
+        if mesh.face_center(face).y > mesh.face_center(best).y:
+            best = face
+    return best
+
+## The face whose center is furthest along +X.
+func side_face(mesh: Mesh) -> int!:
+    var best = 0
+    for face in 0..<mesh.face_count():
+        if mesh.face_center(face).x > mesh.face_center(best).x:
+            best = face
+    return best
+
+## The first mesh edge on a B-rep edge (a CAD body's shown mesh), else 0.
+func brep_edge(mesh: Mesh) -> int!:
+    let owners = mesh.find_attribute("cad_edge", 4)
+    if owners < 0:
+        return 0
+    for edge in 0..<mesh.edge_count():
+        if mesh.attribute_value(owners, edge) >= 0.0:
+            return edge
+    return 0
+
+## Export what the display shows to `name` in the scratch directory by an
+## Export node after it, as a user does, and read it back by a File node:
+## the counts printed. The OBJ's File node stays shown; the others go.
+func round_trip(editor: Luce3D, name: str) -> unit!:
+    let w = editor.workspace
+    let shown = w.network.display
+    node_commands.select_node(w, shown)
+    let path = paths.join(scratch(), name)
+    node_commands.add_node(w, "Export", 300.0, 40.0)
+    let export = w.network.selected
+    node_commands.set_text(w, 0, path)
+    preview_support.settle(w)
+    let written = w.network.require(export)
+    let info = files.metadata(path) catch failure:
+        print(f"export {name}: nothing written ({failure.message}); warning '{written.warning}' failure '{written.failure}'")
+        return
+    node_commands.add_node(w, "File", 500.0, 40.0)
+    let reader = w.network.selected
+    node_commands.set_text(w, 0, path)
+    preview_support.settle(w)
+    let read = preview_support.cooked(w, reader) catch failure:
+        print(f"export {name}: {info.size} bytes, warning '{written.warning}'; reading it back failed: {failure.message}")
+        return
+    var counts = "nothing"
+    if read.has_cad():
+        counts = f"{read.models().length} CAD bodies"
+    elif read.mesh != none:
+        let mesh = read.operand() else trap("mesh")
+        counts = f"{mesh.point_count()} points {mesh.face_count()} faces"
+    print(f"export {name}: {info.size} bytes, warning '{written.warning}'; read back: {counts}, warning '{read.warning}'")
+    if name.lower().ends_with(".obj"):
+        return
+    for id in [reader, export]:
+        node_commands.select_node(w, id)
+        node_commands.delete_selected(w)
+    node_commands.select_node(w, shown)
+    node_commands.display_selected(w)
+
+pub func act(editor: Luce3D, scene: str, frame: int, final: int) -> unit!:
+    let w = editor.workspace
+    let started = time.now()
+    let saved = paths.join(scratch(), f"{scene}.prisma")
+    if scene == "stab_mesh":
+        if frame == 3:
+            selection_commands.set_mode(w, face_level)
+            let mesh = preview_support.shown(w) else trap("box")
+            selection_commands.choose_component(w, top_face(mesh), false)
+            modeling_commands.model(w, "Extrude")
+            say(editor, "extrude", started)
+        elif frame == 4:
+            modeling_commands.set_last_step(w, 0, 0.6, -100.0, 100.0)
+            say(editor, "extrude adjusted to 0.6", started)
+        elif frame == 5:
+            modeling_commands.model(w, "Inset")
+            say(editor, "inset", started)
+        elif frame == 6:
+            selection_commands.set_mode(w, edge_level)
+            selection_commands.choose_component(w, 0, false)
+            modeling_commands.model(w, "Bevel")
+            say(editor, "bevel", started)
+        elif frame == 7:
+            w.undo()
+            say(editor, "undo", started)
+        elif frame == 8:
+            w.undo()
+            say(editor, "undo", started)
+        elif frame == 9:
+            w.redo()
+            say(editor, "redo", started)
+        elif frame == 10:
+            selection_commands.set_mode(w, edge_level)
+            selection_commands.choose_component(w, 1, false)
+            modeling_commands.model(w, "Loop Cut")
+            say(editor, "loop cut", started)
+        elif frame == 12:
+            editor.panels.projects.save_to(saved)
+            say(editor, "saved", started)
+        elif frame == 13:
+            editor.panels.projects.load_from(saved)
+            say(editor, "loaded", started)
+        elif frame == 15:
+            for name in ["stab.ply", "stab.fbx", "stab.usda", "stab.obj"]:
+                round_trip(editor, name)
+            say(editor, "exports read back", started)
+        elif frame == 16:
+            w.frame_cube()
+    elif scene == "stab_cad":
+        if frame == 3:
+            selection_commands.set_mode(w, edge_level)
+            let mesh = preview_support.shown(w) else trap("box")
+            selection_commands.choose_component(w, brep_edge(mesh), false)
+            modeling_commands.model(w, "Fillet")
+            say(editor, "fillet", started)
+        elif frame == 5:
+            selection_commands.set_mode(w, face_level)
+            let mesh = preview_support.shown(w) else trap("box")
+            selection_commands.choose_component(w, top_face(mesh), false)
+            modeling_commands.model(w, "Shell")
+            say(editor, "shell", started)
+        elif frame == 7:
+            selection_commands.set_mode(w, face_level)
+            let mesh = preview_support.shown(w) else trap("box")
+            selection_commands.choose_component(w, side_face(mesh), false)
+            modeling_commands.model(w, "Offset Face")
+            say(editor, "offset face", started)
+        elif frame == 9:
+            w.undo()
+            say(editor, "undo", started)
+        elif frame == 10:
+            w.redo()
+            say(editor, "redo", started)
+        elif frame == 12:
+            editor.panels.projects.save_to(saved)
+            say(editor, "saved", started)
+        elif frame == 13:
+            editor.panels.projects.load_from(saved)
+            say(editor, "loaded", started)
+        elif frame == 15:
+            # Exports are written from the CAD network's parent.
+            node_commands.leave_group(w)
+            for name in ["stab_cad.usda", "stab_cad.fbx", "stab_cad.obj"]:
+                round_trip(editor, name)
+            say(editor, "exports read back", started)
+        elif frame == 16:
+            w.frame_cube()
+    else:
+        if frame == 3:
+            selection_commands.set_mode(w, edge_level)
+            let mesh = preview_support.shown(w) else trap("assembly")
+            selection_commands.choose_component(w, brep_edge(mesh), false)
+            modeling_commands.model(w, "Fillet")
+            say(editor, "fillet on the STEP body", started)
+        elif frame == 6:
+            editor.panels.projects.save_to(saved)
+            say(editor, "saved", started)
+        elif frame == 7:
+            editor.panels.projects.load_from(saved)
+            say(editor, "loaded", started)
+        elif frame == 9:
+            w.frame_cube()

@@ -39,10 +39,26 @@ pub func select_with(w: Workspace, tool: Tool, numbers: list[float]) -> unit!:
             w.touch()
             return
         seed = chosen.filled(true)
-    let made = w.kept(seed.ruled(mesh, tool.name, numbers), chosen)
+    # Rows that mean different things per level start on one that applies
+    # here (Similar's By: Length at Edges, where Normal is no measure).
+    let fitted: list[float] = []
+    for at in 0..<numbers.length:
+        fitted.append(Selection.rule_value(tool.name, seed.domain(), at, numbers[at]))
+    # A rule that cannot take this selection says why (Shortest Path
+    # given one element); one that leaves it as it was says so.
+    let ruled = seed.ruled(mesh, tool.name, fitted) catch failure:
+        w.notice = failure.message
+        w.touch()
+        return
+    let made = w.kept(ruled, chosen)
+    w.last_select = SelectRun(tool, seed, fitted, made)
+    if made.domain() == chosen.domain() and made.count() == chosen.count() and made.expression(mesh) == chosen.expression(mesh):
+        w.notice = f"{tool.label}: the selection stays as it was"
+        w.touch()
+        follow_prompt(w)
+        return
     w.perform(tool.label, func () -> unit!:
         adopt(w, made))
-    w.last_select = SelectRun(tool, seed, numbers, made)
     follow_prompt(w)
 
 ## The Select tool run last with row `slot` set to `value` (within
@@ -91,6 +107,8 @@ pub func set_mode(w: Workspace, mode: int) -> unit!:
         return
     if mode == w.component_mode or not w.level_available(mode):
         return
+    # A refusal for the level left ("Bevel works on Edges") is answered.
+    w.fresh_notice()
     let mesh = w.geometry
     let chosen = w.selection
     let before = w.level_index()
