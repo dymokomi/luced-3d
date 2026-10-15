@@ -9,6 +9,7 @@ from app import Luce3D
 from luce_std import files, paths, process
 import node_commands
 import platform
+import time
 
 ## Whether a window can open here: a logged-in macOS desktop (launchd's
 ## manager is Aqua there, Background over SSH) or a Linux display.
@@ -21,16 +22,54 @@ func windowed() -> bool:
         return (process.variable("DISPLAY") else "") != "" or (process.variable("WAYLAND_DISPLAY") else "") != ""
     return false
 
-## What the counters said at one moment.
+## Seconds since the desktop's last keyboard or pointer input (macOS's
+## HIDIdleTime); -1 where it cannot be read. The test's window opens on a
+## desktop someone may be using: a pointer moved over it is an event, and
+## every event draws the window, so an idle span with input in it says
+## nothing about the editor waking itself.
+func input_idle() -> float:
+    if not platform.macos:
+        return -1.0
+    let done = process.run("ioreg", ["-c", "IOHIDSystem", "-d", "4"]) catch failure:
+        return -1.0
+    for line in done.output.split("\n"):
+        if line.contains("\"HIDIdleTime\""):
+            let value = line.split("=")[-1].trim()
+            let nanoseconds = int(value) catch failure:
+                return -1.0
+            return float(nanoseconds) / 1000000000.0
+    return -1.0
+
+## What the counters said at one moment, and how long the desktop had had
+## no input then.
 class Mark:
     pub let turns: int
     pub let refreshes: int
     pub let draws: int
+    pub let quiet: float
+    ## When it was marked (time.now()).
+    pub let at: int
 
-    pub func init(self, turns: int, refreshes: int, draws: int):
+    pub func init(self, turns: int, refreshes: int, draws: int, quiet: float):
         self.turns = turns
         self.refreshes = refreshes
         self.draws = draws
+        self.quiet = quiet
+        self.at = time.now()
+
+    ## Whether the desktop had input since `earlier` was marked: it has
+    ## been quiet for less than the time between them (unknown: no).
+    pub func touched_since(self, earlier: Mark) -> bool:
+        return self.quiet >= 0.0 and self.quiet < float(self.at - earlier.at) / 1000000000.0
+
+## Assert an idle span from `start` to `end`: no refresh, no draw; unless
+## someone used the desktop meanwhile, which is said instead.
+func idle_span(start: Mark, end: Mark, what: str, message: str) -> unit!:
+    print(f"{what}: {end.turns - start.turns} loop turns, {end.refreshes - start.refreshes} refreshes, {end.draws - start.draws} viewport draws")
+    if end.touched_since(start):
+        print(f"{what}: the desktop had input (a pointer or a key) meanwhile; its draws are that input's, not judged")
+        return
+    assert(end.refreshes == start.refreshes and end.draws == start.draws, message)
 
 pub func main(arguments: list[str]) -> int!:
     if not windowed():
@@ -51,7 +90,7 @@ pub func main(arguments: list[str]) -> int!:
             turns += 1)
         let marks: list[Mark] = []
         let mark = func ():
-            marks.append(Mark(turns, panels.refreshes, panels.view.draws))
+            marks.append(Mark(turns, panels.refreshes, panels.view.draws, input_idle()))
         var wide = 0.0
         var grown = 0.0
         var first_frame = 0.0
@@ -98,8 +137,7 @@ pub func main(arguments: list[str]) -> int!:
         assert(marks.length == 7, f"{marks.length} marks")
         let idle = marks[1]
         let start = marks[0]
-        print(f"idle 3 s: {idle.turns - start.turns} loop turns, {idle.refreshes - start.refreshes} refreshes, {idle.draws - start.draws} viewport draws")
-        assert(idle.refreshes == start.refreshes and idle.draws == start.draws, "an idle editor refreshed or drew")
+        idle_span(start, idle, "idle 3 s", "an idle editor refreshed or drew")
         # The rename and the worker's result: refreshed, the box grown.
         assert(marks[2].refreshes > idle.refreshes and grown > wide * 1.5, f"{wide} then {grown}")
         assert(written, "the shading was not written to the settings")
@@ -108,7 +146,6 @@ pub func main(arguments: list[str]) -> int!:
         assert(played_frame > first_frame + 5.0 and playing > 10)
         let after = marks[6]
         let stopped = marks[5]
-        print(f"stopped 2 s: {after.turns - stopped.turns} loop turns, {after.refreshes - stopped.refreshes} refreshes, {after.draws - stopped.draws} viewport draws")
-        assert(after.refreshes == stopped.refreshes and after.draws == stopped.draws, "frames went on after playing stopped")
+        idle_span(stopped, after, "stopped 2 s", "frames went on after playing stopped")
     print("PASS a real window: idle, no refresh or draw; a change and a worker's result shown; a setting written a moment later; frames only while playing")
     return 0
